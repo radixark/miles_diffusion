@@ -14,9 +14,10 @@ from miles.utils.context_utils import with_defer
 from miles.utils.data import process_rollout_data
 from miles.utils.diffusion_protocol import broadcast_advantage, validate_train_inputs
 from miles.utils.distributed_utils import get_gloo_group
+from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.timer import Timer, timer
 
-from .actor import apply_fsdp2
+from .actor import apply_fsdp2, move_torch_optimizer
 from .lr_scheduler import get_lr_scheduler
 from .parallel import create_fsdp_parallel_state
 from ..training_utils.log_utils import gather_log_data
@@ -33,6 +34,10 @@ class DiffusionFSDPTrainRayActor(TrainRayActor):
 
         self.parallel_state = create_fsdp_parallel_state(args)
         torch.manual_seed(args.seed)
+
+        self.train_parallel_config = {
+            "dp_size": self.parallel_state.dp_size,
+        }
 
         self.fsdp_cpu_offload = getattr(self.args, "fsdp_cpu_offload", False)
         if self.args.offload_train and self.fsdp_cpu_offload:
@@ -71,6 +76,45 @@ class DiffusionFSDPTrainRayActor(TrainRayActor):
 
         return int(getattr(self.args, "start_rollout_id", 0))
 
+    @timer
+    def sleep(self) -> None:  # type: ignore[override]
+        if not self.args.offload_train:
+            return
+
+        print_memory("before offload diffusion model")
+        # Some diffusers pipelines do not expose .cpu(); use .to("cpu") instead.
+        self.pipeline.to("cpu")
+        move_torch_optimizer(self.optimizer, "cpu")
+        clear_memory()
+        dist.barrier(group=get_gloo_group())
+        print_memory("after offload diffusion model")
+
+    @timer
+    def wake_up(self) -> None:  # type: ignore[override]
+        if not self.args.offload_train:
+            return
+
+        self.pipeline.to(torch.cuda.current_device())
+        move_torch_optimizer(self.optimizer, "cuda")
+        dist.barrier(group=get_gloo_group())
+        print_memory("after wake_up diffusion model")
+
+    def save_model(self, rollout_id: int, force_sync: bool = False) -> None:  # type: ignore[override]
+        if self.args.save is None:
+            return
+        logger.warning("DiffusionFSDPTrainRayActor save_model is not implemented; skipping checkpoint save.")
+
+    def update_weights(self) -> None:  # type: ignore[override]
+        # Diffusion rollout does not use rollout engines yet, so there is nothing to sync.
+        return
+
+    def connect_actor_critic(self, critic_group) -> None:  # type: ignore[override]
+        # Diffusion GRPO does not use a critic; keep the hook for interface compliance.
+        return
+
+    def _get_parallel_config(self) -> dict:  # type: ignore[override]
+        return {"dp_size": getattr(self.parallel_state, "dp_size", 1)}
+
     def _encode_prompt(self, prompts: list[str]):
         # Encode prompts into embeddings on the training device.
         prompt_embeds, neg_prompt_embeds, pooled_prompt_embeds, neg_pooled_prompt_embeds = self.pipeline.encode_prompt(
@@ -105,6 +149,18 @@ class DiffusionFSDPTrainRayActor(TrainRayActor):
         prompt_embeds: torch.Tensor,
         pooled_prompt_embeds: torch.Tensor,
     ) -> torch.Tensor:
+        # Ensure scheduler tensors (timesteps/sigmas) live on the same device as latents.
+        device = latents.device
+        steps = timesteps.shape[1]
+        if hasattr(self.pipeline.scheduler, "set_timesteps"):
+            self.pipeline.scheduler.set_timesteps(steps, device=device)
+        if hasattr(self.pipeline.scheduler, "timesteps") and self.pipeline.scheduler.timesteps is not None:
+            self.pipeline.scheduler.timesteps = self.pipeline.scheduler.timesteps.to(device)
+        if hasattr(self.pipeline.scheduler, "sigmas") and self.pipeline.scheduler.sigmas is not None:
+            self.pipeline.scheduler.sigmas = self.pipeline.scheduler.sigmas.to(device)
+        if hasattr(self.pipeline.scheduler, "timesteps") and self.pipeline.scheduler.timesteps is not None:
+            timesteps = timesteps.to(device=device, dtype=self.pipeline.scheduler.timesteps.dtype)
+
         # Recompute per-step log_prob under the current model parameters.
         log_probs = []
         for j in range(timesteps.shape[1]):
@@ -185,7 +241,7 @@ class DiffusionFSDPTrainRayActor(TrainRayActor):
                 batch_rewards = rewards[start:end]
 
                 timesteps = torch.stack([m["timesteps"] for m in batch_meta]).to(
-                    torch.cuda.current_device(), dtype=torch.long
+                    torch.cuda.current_device(), dtype=torch.float32
                 )
                 latents = torch.stack([m["latents"] for m in batch_meta]).to(
                     torch.cuda.current_device(), dtype=torch.float32

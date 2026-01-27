@@ -167,9 +167,10 @@ def create_training_models(args, pgs, rollout_manager):
 
 
 def create_rollout_manager(args, pg):
+    use_diffusion_rollout = "diffusion_rollout" in args.rollout_function_path
     rollout_manager = RolloutManager.options(
         num_cpus=1,
-        num_gpus=0,
+        num_gpus=1 if use_diffusion_rollout else 0,
     ).remote(args, pg)
 
     # calculate num_rollout from num_epoch
