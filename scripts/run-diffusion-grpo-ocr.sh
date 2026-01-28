@@ -1,12 +1,27 @@
-# nohup bash /data/zhiheng/miles/scripts/run-diffusion-grpo-ocr.sh > /data/zhiheng/miles/logs/diffusion_grpo_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+# WANDB_API_KEY=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 nohup bash /data/zhiheng/miles/scripts/run-diffusion-grpo-ocr.sh > /data/zhiheng/miles/logs/diffusion_grpo_$(date +%Y%m%d_%H%M%S).log 2>&1 &
 # ps -ef | grep train.py | grep -v grep
 # rollout needs 1 gpu for now, or there's going to be precision issue.
 # parameter rollout-num-gpus and --rollout-num-gpus-per-engine  only makes sense in sglang diffusion case.
 #!/usr/bin/env bash
+#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
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-export CUDA_VISIBLE_DEVICES=0,1,2,3,4
+export CUDA_VISIBLE_DEVICES=0,1,2,3,5
+# WandB: enable if WANDB_API_KEY is present.
+RUN_NAME="diffusion_grpo_$(date +%Y%m%d_%H%M%S)"
+WANDB_ARGS=()
+if [[ -n "${WANDB_API_KEY:-}" ]]; then
+  WANDB_ARGS+=(
+    --use-wandb
+    --wandb-project miles-diffusion-grpo
+    --wandb-group "${RUN_NAME}"
+    --wandb-key "${WANDB_API_KEY}"
+    --diffusion-log-images 8
+    --diffusion-log-image-interval 10
+    --disable-wandb-random-suffix
+  )
+fi
 # Prepare OCR prompts into JSONL expected by Miles data loader.
 python "${ROOT_DIR}/tools/prepare_ocr_jsonl.py"
 
@@ -30,6 +45,8 @@ python "${ROOT_DIR}/train.py" \
   --num-gpus-per-node 5 \
   --colocate \
   --diffusion-model stabilityai/stable-diffusion-3.5-medium \
+  --diffusion-reward ocr:1.0 \
+  --reward-key avg \
   --diffusion-dtype fp32 \
   --diffusion-num-steps 10 \
   --diffusion-guidance-scale 4.5 \
@@ -40,4 +57,5 @@ python "${ROOT_DIR}/train.py" \
   --sglang-disable-cuda-graph \
   --sglang-mem-fraction-static 0.7 \
   --sglang-cuda-graph-max-bs 16 \
-  --global-batch-size 128
+  --global-batch-size 128 \
+  "${WANDB_ARGS[@]}"

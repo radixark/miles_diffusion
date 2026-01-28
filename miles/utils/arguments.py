@@ -325,6 +325,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Device for diffusion reward model, defaults to diffusion-device.",
             )
             parser.add_argument(
+                "--diffusion-log-images",
+                type=int,
+                default=0,
+                help="Number of diffusion images to log to W&B per rollout (0 disables).",
+            )
+            parser.add_argument(
+                "--diffusion-log-image-interval",
+                type=int,
+                default=1,
+                help="Log diffusion images every N rollouts. Only used when diffusion-log-images > 0.",
+            )
+            parser.add_argument(
                 "--rollout-temperature",
                 type=float,
                 default=1.0,

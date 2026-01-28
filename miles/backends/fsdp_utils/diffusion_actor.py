@@ -16,6 +16,7 @@ from miles.utils.diffusion_protocol import broadcast_advantage, validate_train_i
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.timer import Timer, timer
+from miles.utils.tracking_utils import init_tracking
 
 from .actor import apply_fsdp2, move_torch_optimizer
 from .lr_scheduler import get_lr_scheduler
@@ -38,6 +39,9 @@ class DiffusionFSDPTrainRayActor(TrainRayActor):
         self.train_parallel_config = {
             "dp_size": self.parallel_state.dp_size,
         }
+
+        if dist.get_rank() == 0:
+            init_tracking(args, primary=False)
 
         self.fsdp_cpu_offload = getattr(self.args, "fsdp_cpu_offload", False)
         if self.args.offload_train and self.fsdp_cpu_offload:

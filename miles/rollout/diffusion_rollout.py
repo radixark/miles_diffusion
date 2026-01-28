@@ -1,18 +1,23 @@
 from __future__ import annotations
 
 import logging
+import json
 from argparse import Namespace
 from typing import Any
 
 import torch
 from diffusers import StableDiffusion3Pipeline
 from diffusers.pipelines.stable_diffusion_3.pipeline_stable_diffusion_3 import retrieve_timesteps
+import numpy as np
 
 from flow_grpo import rewards as flow_rewards
 from flow_grpo.diffusers_patch.sd3_pipeline_with_logprob import pipeline_with_logprob
+from flow_grpo.stat_tracking import PerPromptStatTracker
 
 from miles.rollout.base_types import RolloutFnEvalOutput, RolloutFnTrainOutput
+from miles.utils.metric_utils import compute_rollout_step
 from miles.utils.diffusion_protocol import validate_rollout_metadata
+from miles.utils import tracking_utils
 from miles.utils.types import Sample
 
 __all__ = ["generate_rollout"]
@@ -21,6 +26,9 @@ logger = logging.getLogger(__name__)
 
 _PIPELINE = None
 _REWARD_FN = None
+_LOGGED_ROLLOUT_IDS: set[int] = set()
+_STAT_TRACKER: PerPromptStatTracker | None = None
+_REWARD_SPEC = None
 
 
 def _get_device(args: Namespace) -> torch.device:
@@ -52,17 +60,34 @@ def _get_pipeline(args: Namespace) -> StableDiffusion3Pipeline:
 
 def _get_reward_fn(args: Namespace):
     global _REWARD_FN
+    global _REWARD_SPEC
     if _REWARD_FN is not None:
         return _REWARD_FN
 
-    # Reward selection is minimal for now; default to PickScore.
-    reward_name = getattr(args, "diffusion_reward", "pickscore")
+    reward_spec = _parse_reward_spec(args)
+    _REWARD_SPEC = reward_spec
     device = getattr(args, "diffusion_reward_device", None) or str(_get_device(args))
-    if reward_name == "pickscore":
-        _REWARD_FN = flow_rewards.pickscore_score(device=device)
-        return _REWARD_FN
+    _REWARD_FN = flow_rewards.multi_score(device, reward_spec)
+    return _REWARD_FN
 
-    raise ValueError(f"Unsupported diffusion_reward: {reward_name}")
+
+def _parse_reward_spec(args: Namespace) -> dict[str, float]:
+    spec = getattr(args, "diffusion_reward", "pickscore")
+    if isinstance(spec, dict):
+        return spec
+    if isinstance(spec, str):
+        text = spec.strip()
+        if text.startswith("{"):
+            return json.loads(text)
+        if ":" in text:
+            pairs = [p for p in text.split(",") if p]
+            reward_dict: dict[str, float] = {}
+            for pair in pairs:
+                name, weight = pair.split(":")
+                reward_dict[name.strip()] = float(weight)
+            return reward_dict
+        return {text: 1.0}
+    return {"pickscore": 1.0}
 
 
 def _make_generators(prompts: list[str], base_seed: int, seed_offset: int) -> list[torch.Generator]:
@@ -108,6 +133,70 @@ def _fill_sample_metadata(
         if errors:
             raise ValueError(f"Invalid diffusion rollout metadata: {errors}")
 
+
+def _get_stat_tracker(args: Namespace) -> PerPromptStatTracker:
+    global _STAT_TRACKER
+    if _STAT_TRACKER is None:
+        _STAT_TRACKER = PerPromptStatTracker(global_std=False)
+    return _STAT_TRACKER
+
+
+def _calculate_zero_std_ratio(prompts: list[str], rewards: list[float]) -> tuple[float, float]:
+    prompt_array = np.array(prompts)
+    rewards_array = np.array(rewards, dtype=np.float64)
+    unique, inverse_indices, counts = np.unique(prompt_array, return_inverse=True, return_counts=True)
+    if len(unique) == 0:
+        return 0.0, 0.0
+    grouped_rewards = rewards_array[np.argsort(inverse_indices)]
+    split_indices = np.cumsum(counts)[:-1]
+    reward_groups = np.split(grouped_rewards, split_indices)
+    prompt_std_devs = np.array([np.std(group) for group in reward_groups])
+    zero_std_count = np.count_nonzero(prompt_std_devs == 0)
+    zero_std_ratio = zero_std_count / len(prompt_std_devs)
+    return float(zero_std_ratio), float(prompt_std_devs.mean())
+
+def _log_wandb_images_if_enabled(
+    args: Namespace,
+    rollout_id: int,
+    group: list[Sample],
+    images: list,
+    rewards: list[float],
+) -> None:
+    if not getattr(args, "use_wandb", False):
+        return
+    log_n = int(getattr(args, "diffusion_log_images", 0) or 0)
+    if log_n <= 0:
+        return
+    interval = int(getattr(args, "diffusion_log_image_interval", 1) or 1)
+    if interval <= 0:
+        interval = 1
+    if rollout_id % interval != 0:
+        return
+    group_index = getattr(group[0], "group_index", None)
+    if group_index is not None and group_index != 0:
+        return
+    if group_index is None:
+        if rollout_id in _LOGGED_ROLLOUT_IDS:
+            return
+        _LOGGED_ROLLOUT_IDS.add(rollout_id)
+
+    import wandb
+
+    log_images = []
+    for idx, (img, sample, reward) in enumerate(zip(images, group, rewards, strict=False)):
+        if idx >= log_n:
+            break
+        caption = f"reward={reward:.4f} prompt={sample.prompt}"
+        log_images.append(wandb.Image(img, caption=caption))
+
+    if not log_images:
+        return
+
+    metrics = {
+        "diffusion/images": log_images,
+        "rollout/step": compute_rollout_step(args, rollout_id),
+    }
+    wandb.log(metrics)
 
 def _run_rollout_group(
     args: Namespace, rollout_id: int, group: list[Sample], evaluation: bool
@@ -172,11 +261,15 @@ def _run_rollout_group(
     )
 
     reward_fn = _get_reward_fn(args)
-    rewards, _ = reward_fn(images, prompts, [{} for _ in range(len(prompts))])
-    rewards = torch.tensor(rewards).tolist()
+    reward_dict, _ = reward_fn(images, prompts, [{} for _ in range(len(prompts))])
+    reward_dict = {k: np.asarray(v, dtype=np.float64).tolist() for k, v in reward_dict.items()}
+    rewards_avg = reward_dict.get("avg", reward_dict.get("ocr", []))
 
-    for sample, reward in zip(group, rewards, strict=True):
-        sample.reward = float(reward)
+    _log_wandb_images_if_enabled(args, rollout_id, group, images, rewards_avg)
+
+    for idx, sample in enumerate(group):
+        per_sample_reward = {k: float(v[idx]) for k, v in reward_dict.items()}
+        sample.reward = per_sample_reward
         sample.status = Sample.Status.COMPLETED
 
     return group
@@ -192,8 +285,33 @@ def generate_rollout(
     for group in groups:
         output_groups.append(_run_rollout_group(args, rollout_id, group, evaluation=evaluation))
 
+    flat = [sample for group in output_groups for sample in group]
+    prompts = [sample.prompt for sample in flat]
+    rewards_avg = [sample.reward.get("avg", sample.reward.get("ocr", 0.0)) for sample in flat]
+    reward_ocr = [sample.reward.get("ocr", None) for sample in flat]
+
+    tracker = _get_stat_tracker(args)
+    tracker.update(prompts, rewards_avg)
+    group_size, trained_prompt_num = tracker.get_stats()
+    zero_std_ratio, reward_std_mean = _calculate_zero_std_ratio(prompts, rewards_avg)
+    tracker.clear()
+
+    log_dict = {
+        "reward_avg": float(np.mean(rewards_avg)) if rewards_avg else 0.0,
+        "reward_std_mean": reward_std_mean,
+        "zero_std_ratio": zero_std_ratio,
+        "group_size": group_size,
+        "trained_prompt_num": trained_prompt_num,
+        "rollout/step": compute_rollout_step(args, rollout_id),
+    }
+    if any(r is not None for r in reward_ocr):
+        reward_ocr_vals = [r for r in reward_ocr if r is not None]
+        if reward_ocr_vals:
+            log_dict["reward_ocr"] = float(np.mean(reward_ocr_vals))
+
+    tracking_utils.log(args, log_dict, step_key="rollout/step")
+
     if evaluation:
-        flat = [sample for group in output_groups for sample in group]
         return RolloutFnEvalOutput(
             data={
                 "diffusion_eval": {
