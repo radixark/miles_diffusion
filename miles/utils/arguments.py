@@ -278,6 +278,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Number of diffusion inference steps for rollout.",
             )
             parser.add_argument(
+                "--diffusion-num-batches-per-epoch",
+                type=int,
+                default=1,
+                help="Number of rollout batches to aggregate per epoch (matches Flow-GRPO sampling cadence).",
+            )
+            parser.add_argument(
                 "--diffusion-eval-num-steps",
                 type=int,
                 default=None,

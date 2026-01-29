@@ -44,7 +44,9 @@ def _create_placement_group(num_gpus):
     pg = placement_group(bundles, strategy="PACK")
     num_bundles = len(bundles)
 
+    logger.info("Waiting for placement group to be ready...")
     ray.get(pg.ready())
+    logger.info("Placement group is ready.")
     # use info actor to get the GPU id
     info_actors = []
     for i in range(num_bundles):
@@ -104,6 +106,11 @@ def create_placement_groups(args):
             rollout_offset += args.critic_num_nodes * args.critic_num_gpus_per_node
 
     logger.info(f"Creating placement group with {num_gpus} GPUs...")
+    logger.info(
+        "Placement group offsets: rollout_offset=%s, critic_offset=%s",
+        rollout_offset,
+        critic_offset if args.use_critic else None,
+    )
     pg, actor_pg_reordered_bundle_indices, actor_pg_reordered_gpu_ids = _create_placement_group(num_gpus)
 
     rollout_pg_reordered_bundle_indices = actor_pg_reordered_bundle_indices[rollout_offset:]
@@ -130,6 +137,7 @@ def allocate_train_group(args, num_nodes, num_gpus_per_node, pg):
 
 
 def create_training_models(args, pgs, rollout_manager):
+    logger.info("Initializing actor/critic models...")
     actor_model = allocate_train_group(
         args=args,
         num_nodes=args.actor_num_nodes,
@@ -147,9 +155,11 @@ def create_training_models(args, pgs, rollout_manager):
     else:
         critic_model = None
 
+    logger.info("Initializing actor model...")
     start_rollout_ids = ray.get(
         actor_model.async_init(args, role="actor", with_ref=args.kl_coef != 0 or args.use_kl_loss)
     )
+    logger.info("Actor model initialized.")
 
     assert len(set(start_rollout_ids)) == 1
     if args.start_rollout_id is None:
@@ -158,6 +168,7 @@ def create_training_models(args, pgs, rollout_manager):
     if args.use_critic:
         ray.get(critic_init_handle)
         actor_model.connect(critic_model)
+        logger.info("Critic model initialized and connected.")
 
     actor_model.set_rollout_manager(rollout_manager)
     if args.rollout_global_dataset:
@@ -168,6 +179,11 @@ def create_training_models(args, pgs, rollout_manager):
 
 def create_rollout_manager(args, pg):
     use_diffusion_rollout = "diffusion_rollout" in args.rollout_function_path
+    logger.info(
+        "Creating rollout manager (diffusion=%s, num_gpus=%s)",
+        use_diffusion_rollout,
+        1 if use_diffusion_rollout else 0,
+    )
     rollout_manager = RolloutManager.options(
         num_cpus=1,
         num_gpus=1 if use_diffusion_rollout else 0,
@@ -176,9 +192,11 @@ def create_rollout_manager(args, pg):
     # calculate num_rollout from num_epoch
     num_rollout_per_epoch = None
     if args.num_rollout is None:
+        logger.info("Fetching num_rollout_per_epoch from rollout manager...")
         num_rollout_per_epoch = ray.get(rollout_manager.get_num_rollout_per_epoch.remote())
         args.num_rollout = num_rollout_per_epoch * args.num_epoch
         assert args.num_rollout > 0
+        logger.info("Computed num_rollout=%s (num_rollout_per_epoch=%s)", args.num_rollout, num_rollout_per_epoch)
 
     if args.check_weight_update_equal:
         ray.get(rollout_manager.check_weights.remote(action="snapshot"))
@@ -187,4 +205,5 @@ def create_rollout_manager(args, pg):
     if args.offload_rollout:
         ray.get(rollout_manager.offload.remote())
 
+    logger.info("Rollout manager created.")
     return rollout_manager, num_rollout_per_epoch

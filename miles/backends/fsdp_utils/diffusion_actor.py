@@ -17,6 +17,8 @@ from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.timer import Timer, timer
 from miles.utils.tracking_utils import init_tracking
+from miles.utils.metric_utils import compute_rollout_step
+from miles.utils import tracking_utils
 
 from .actor import apply_fsdp2, move_torch_optimizer
 from .lr_scheduler import get_lr_scheduler
@@ -118,6 +120,30 @@ class DiffusionFSDPTrainRayActor(TrainRayActor):
 
     def _get_parallel_config(self) -> dict:  # type: ignore[override]
         return {"dp_size": getattr(self.parallel_state, "dp_size", 1)}
+
+    def _gather_and_log_metrics(self, rollout_id: int, log_dict: dict[str, float]) -> None:
+        """Reduce per-rank scalars and log with Flow-GRPO-aligned keys."""
+        if self.parallel_state.dp_cp_rank == 0:
+            dp_size = self.parallel_state.dp_cp_size
+            gathered = [None] * dp_size
+            dist.gather_object(
+                log_dict,
+                gathered,
+                dst=self.parallel_state.dp_src_rank,
+                group=self.parallel_state.dp_cp_group_gloo,
+            )
+            reduced = {k: sum(d[k] for d in gathered) / dp_size for k in log_dict}
+            reduced["epoch"] = float(rollout_id)
+            reduced["inner_epoch"] = 0.0
+            reduced["rollout/step"] = compute_rollout_step(self.args, rollout_id)
+            tracking_utils.log(self.args, reduced, step_key="rollout/step")
+        else:
+            dist.gather_object(
+                log_dict,
+                None,
+                dst=self.parallel_state.dp_src_rank,
+                group=self.parallel_state.dp_cp_group_gloo,
+            )
 
     def _encode_prompt(self, prompts: list[str]):
         # Encode prompts into embeddings on the training device.
@@ -231,11 +257,13 @@ class DiffusionFSDPTrainRayActor(TrainRayActor):
 
             log_stats = {
                 "loss": [],
+                "policy_loss": [],
+                "kl_loss": [],
                 "approx_kl": [],
                 "clipfrac": [],
                 "clipfrac_gt_one": [],
                 "clipfrac_lt_one": [],
-                "reward_mean": [],
+                "reward_avg": [],
             }
 
             for start in range(0, batch_size, micro_batch):
@@ -286,7 +314,9 @@ class DiffusionFSDPTrainRayActor(TrainRayActor):
                 clipped = -advantages * torch.clamp(
                     ratio, 1.0 - self.args.diffusion_clip_range, 1.0 + self.args.diffusion_clip_range
                 )
-                loss = torch.mean(torch.maximum(unclipped, clipped))
+                policy_loss = torch.mean(torch.maximum(unclipped, clipped))
+                kl_loss = torch.zeros((), device=policy_loss.device)
+                loss = policy_loss + kl_loss
 
                 self.optimizer.zero_grad(set_to_none=True)
                 loss.backward()
@@ -294,6 +324,8 @@ class DiffusionFSDPTrainRayActor(TrainRayActor):
                 self.lr_scheduler.step()
 
                 log_stats["loss"].append(loss.detach().float())
+                log_stats["policy_loss"].append(policy_loss.detach().float())
+                log_stats["kl_loss"].append(kl_loss.detach().float())
                 log_stats["approx_kl"].append(0.5 * torch.mean((log_prob_new - log_prob_old) ** 2).detach().float())
                 log_stats["clipfrac"].append(
                     torch.mean((torch.abs(ratio - 1.0) > self.args.diffusion_clip_range).float()).detach().float()
@@ -304,18 +336,12 @@ class DiffusionFSDPTrainRayActor(TrainRayActor):
                 log_stats["clipfrac_lt_one"].append(
                     torch.mean((1.0 - ratio > self.args.diffusion_clip_range).float()).detach().float()
                 )
-                log_stats["reward_mean"].append(batch_rewards.mean().detach().float())
+                log_stats["reward_avg"].append(batch_rewards.mean().detach().float())
 
             if log_stats["loss"]:
-                # Reduce and log diffusion training metrics on DP source rank.
                 reduced = {k: torch.stack(v).mean().item() for k, v in log_stats.items()}
-                gather_log_data(
-                    metric_name="diffusion_train",
-                    args=self.args,
-                    rollout_id=rollout_id,
-                    log_dict=reduced,
-                    parallel_state=self.parallel_state,
-                )
+                # Log with Flow-GRPO-aligned keys (no diffusion_train/ prefix).
+                self._gather_and_log_metrics(rollout_id, reduced)
 
         if self.args.offload_train:
             self.sleep()

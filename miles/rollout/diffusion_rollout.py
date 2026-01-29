@@ -21,6 +21,7 @@ from miles.utils import tracking_utils
 from miles.utils.types import Sample
 
 __all__ = ["generate_rollout"]
+__all__.extend(["offload_rollout", "onload_rollout"])
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +57,22 @@ def _get_pipeline(args: Namespace) -> StableDiffusion3Pipeline:
     _PIPELINE = StableDiffusion3Pipeline.from_pretrained(model_id, torch_dtype=dtype)
     _PIPELINE.to(device)
     return _PIPELINE
+
+
+def offload_rollout(args: Namespace) -> None:
+    """Move diffusion rollout pipeline to CPU to free GPU memory."""
+    global _PIPELINE
+    if _PIPELINE is None:
+        return
+    _PIPELINE.to("cpu")
+
+
+def onload_rollout(args: Namespace) -> None:
+    """Move diffusion rollout pipeline back to the target device."""
+    global _PIPELINE
+    if _PIPELINE is None:
+        return
+    _PIPELINE.to(_get_device(args))
 
 
 def _get_reward_fn(args: Namespace):
@@ -193,7 +210,7 @@ def _log_wandb_images_if_enabled(
         return
 
     metrics = {
-        "diffusion/images": log_images,
+        "images": log_images,
         "rollout/step": compute_rollout_step(args, rollout_id),
     }
     wandb.log(metrics)
@@ -280,10 +297,15 @@ def generate_rollout(
 ) -> RolloutFnTrainOutput | RolloutFnEvalOutput:
     assert args.rollout_global_dataset
 
-    groups = data_source.get_samples(args.rollout_batch_size)
+    num_batches = getattr(args, "diffusion_num_batches_per_epoch", 1)
+    if num_batches is None or num_batches <= 0:
+        num_batches = 1
+
     output_groups = []
-    for group in groups:
-        output_groups.append(_run_rollout_group(args, rollout_id, group, evaluation=evaluation))
+    for _ in range(num_batches):
+        groups = data_source.get_samples(args.rollout_batch_size)
+        for group in groups:
+            output_groups.append(_run_rollout_group(args, rollout_id, group, evaluation=evaluation))
 
     flat = [sample for group in output_groups for sample in group]
     prompts = [sample.prompt for sample in flat]

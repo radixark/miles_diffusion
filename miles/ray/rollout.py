@@ -43,6 +43,7 @@ class RolloutManager:
     def __init__(self, args, pg):
         configure_logger()
 
+        logger.info("RolloutManager init start")
         self.args = args
         self.pg = pg
         _start_router(args)
@@ -67,15 +68,23 @@ class RolloutManager:
         logger.info(f"import {self.args.eval_function_path} as eval_generate_rollout function.")
 
         use_diffusion_rollout = "diffusion_rollout" in self.args.rollout_function_path
+        self.use_diffusion_rollout = use_diffusion_rollout
+        self._diffusion_offload_fn = None
+        self._diffusion_onload_fn = None
+        if use_diffusion_rollout:
+            self._diffusion_offload_fn = load_function("miles.rollout.diffusion_rollout.offload_rollout")
+            self._diffusion_onload_fn = load_function("miles.rollout.diffusion_rollout.onload_rollout")
         if self.args.debug_train_only or use_diffusion_rollout:
             # Diffusion rollout runs locally and does not need sglang engines.
             self.all_rollout_engines = []
             self.num_new_engines = 0
+            logger.info("RolloutManager using local diffusion rollout (no sglang engines).")
         else:
             num_gpu_per_engine = min(args.rollout_num_gpus_per_engine, args.num_gpus_per_node)
             num_engines = args.rollout_num_gpus // num_gpu_per_engine
             self.all_rollout_engines = [None] * num_engines
             self.num_new_engines = init_rollout_engines(args, pg, self.all_rollout_engines)
+            logger.info("RolloutManager started %s rollout engines", len(self.all_rollout_engines))
         self.nodes_per_engine = max(1, args.rollout_num_gpus_per_engine // args.num_gpus_per_node)
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
         self.rollout_id = -1
@@ -86,6 +95,7 @@ class RolloutManager:
             self._health_monitor = RolloutHealthMonitor(self, args)
             self._health_monitor.start()  # Start the monitor thread (in paused state)
             self._ci_fault_injection_pending = self.args.ci_test  # Flag for CI fault injection
+        logger.info("RolloutManager init done")
 
     def _try_ci_fault_injection(self):
         """Try to inject fault during generate (when health monitor is running)."""
@@ -131,12 +141,14 @@ class RolloutManager:
         start_time = time.time()
         self.rollout_id = rollout_id
         self.health_monitoring_resume()
+        logger.info("RolloutManager generate start: rollout_id=%s", rollout_id)
         if self.args.ci_test and self.args.use_fault_tolerance and rollout_id >= 2:
             self._try_ci_fault_injection()
         data, metrics = self._get_rollout_data(rollout_id=rollout_id)
         self._save_debug_rollout_data(data, rollout_id=rollout_id, evaluation=False)
         _log_rollout_data(rollout_id, self.args, data, metrics, time.time() - start_time)
         data = self._convert_samples_to_train_data(data)
+        logger.info("RolloutManager generate done: rollout_id=%s", rollout_id)
         return self._split_train_data_by_dp(data, self.train_parallel_config["dp_size"])
 
     def eval(self, rollout_id):
@@ -160,11 +172,19 @@ class RolloutManager:
 
     def offload(self):
         self.health_monitoring_pause()
+        if self.use_diffusion_rollout:
+            if self._diffusion_offload_fn is not None:
+                return self._diffusion_offload_fn(self.args)
+            return None
         return ray.get(
             [engine.release_memory_occupation.remote() for engine in self.rollout_engines if engine is not None]
         )
 
     def onload(self, tags: list[str] | None = None):
+        if self.use_diffusion_rollout:
+            if self._diffusion_onload_fn is not None:
+                return self._diffusion_onload_fn(self.args)
+            return None
         return ray.get(
             [
                 engine.resume_memory_occupation.remote(tags=tags)
