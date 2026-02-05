@@ -39,6 +39,7 @@ config_flags.DEFINE_config_file("config", "config/base.py", "Training configurat
 
 logger = get_logger(__name__)
 
+#for text-only dataset
 class TextPromptDataset(Dataset):
     def __init__(self, dataset, split='train'):
         self.file_path = os.path.join(dataset, f'{split}.txt')
@@ -57,6 +58,7 @@ class TextPromptDataset(Dataset):
         metadatas = [example["metadata"] for example in examples]
         return prompts, metadatas
 
+#read prompts and metadata from geneval dataset
 class GenevalPromptDataset(Dataset):
     def __init__(self, dataset, split='train'):
         self.file_path = os.path.join(dataset, f'{split}_metadata.jsonl')
@@ -76,6 +78,7 @@ class GenevalPromptDataset(Dataset):
         metadatas = [example["metadata"] for example in examples]
         return prompts, metadatas
 
+# used for grpo training with distributed k-repeat sampling
 class DistributedKRepeatSampler(Sampler):
     def __init__(self, dataset, batch_size, k, num_replicas, rank, seed=0):
         self.dataset = dataset
@@ -537,8 +540,12 @@ def main(_):
         raise NotImplementedError("Only general_ocr is supported with dataset")
 
 
+    #for CFG
+    # neg_prompt_ember: token-level embeddings for negative prompt, shape: (1, seq_len, embed_dim)
+    # neg_pooled_prompt_embed: sentence-level embeddings for negative prompt, shape: (1, embed_dim)
     neg_prompt_embed, neg_pooled_prompt_embed = compute_text_embeddings([""], text_encoders, tokenizers, max_sequence_length=128, device=accelerator.device)
 
+    # repeat to batch size
     sample_neg_prompt_embeds = neg_prompt_embed.repeat(config.sample.train_batch_size, 1, 1)
     train_neg_prompt_embeds = neg_prompt_embed.repeat(config.train.batch_size, 1, 1)
     sample_neg_pooled_prompt_embeds = neg_pooled_prompt_embed.repeat(config.sample.train_batch_size, 1)
@@ -615,9 +622,12 @@ def main(_):
             disable=not accelerator.is_local_main_process,
             position=0,
         ):
+            #train_sampler: DistributedKRepeatSampler
             train_sampler.set_epoch(epoch * config.sample.num_batches_per_epoch + i)
             prompts, prompt_metadata = next(train_iter)
 
+            #prompt_embeds (B, seqlen, hidden)
+            #pooled_prompt_embed (B,hidden)
             prompt_embeds, pooled_prompt_embeds = compute_text_embeddings(
                 prompts, 
                 text_encoders, 
@@ -625,6 +635,7 @@ def main(_):
                 max_sequence_length=128, 
                 device=accelerator.device
             )
+            #for later logging, shape (B, seq_len)
             prompt_ids = tokenizers[0](
                 prompts,
                 padding="max_length",
@@ -640,6 +651,9 @@ def main(_):
                 generator = None
             with autocast():
                 with torch.no_grad():
+                    #H',W': latent spatial size, which is usually resolution/8
+                    #C': latent channels, usually decided by the VAE architecture
+                    #image:(B, 3, H, W), latents: list of (B,T+1, C', H', W'), log_probs: list of (B,T) (after stacking)
                     images, latents, log_probs = pipeline_with_logprob(
                         pipeline,
                         prompt_embeds=prompt_embeds,
@@ -660,6 +674,7 @@ def main(_):
             )  # (batch_size, num_steps + 1, 16, 96, 96)
             log_probs = torch.stack(log_probs, dim=1)  # shape after stack (batch_size, num_steps)
 
+            #（T, ) -> (B, T)
             timesteps = pipeline.scheduler.timesteps.repeat(
                 config.sample.train_batch_size, 1
             )  # (batch_size, num_steps)
@@ -693,6 +708,9 @@ def main(_):
             disable=not accelerator.is_local_main_process,
             position=0,
         ):
+            #rewards is a dict here, st every key is corresponding to a reward type rewards[key] has shape (B, )
+            #exampls: rewards["avg"], rewards["strict_accuracy"], etc.
+            #has more entries if config.reward_fn has multiple reward types
             rewards, reward_metadata = sample["rewards"].result()
             # accelerator.print(reward_metadata)
             sample["rewards"] = {
@@ -701,6 +719,8 @@ def main(_):
             }
 
         # collate samples into dict where each entry has shape (num_batches_per_epoch * sample.batch_size, ...)
+        # before: samples are list of dicts, each dict has entries of shape (batch_size, ...)
+        # after: samples is a dict, each entry has shape (num_batches_per_epoch * batch_size, ...)
         samples = {
             k: torch.cat([s[k] for s in samples], dim=0)
             if not isinstance(samples[0][k], dict)
@@ -742,8 +762,10 @@ def main(_):
                 )
         samples["rewards"]["ori_avg"] = samples["rewards"]["avg"]
         # The purpose of repeating `adv` along the timestep dimension here is to make it easier to introduce timestep-dependent advantages later, such as adding a KL reward.
+        # shape (batch_size, num_train_timesteps) from (batch_size, )
         samples["rewards"]["avg"] = samples["rewards"]["avg"].unsqueeze(1).repeat(1, num_train_timesteps)
         # gather rewards across processes
+        # rewards from all process, has shape (num_processes * batch_size, ...)
         gathered_rewards = {key: accelerator.gather(value) for key, value in samples["rewards"].items()}
         gathered_rewards = {key: value.cpu().numpy() for key, value in gathered_rewards.items()}
         # log rewards and images
@@ -799,6 +821,7 @@ def main(_):
         del samples["prompt_ids"]
 
         # Get the mask for samples where all advantages are zero across the time dimension
+        # current samples are a large set of sample across every batch in a epoch
         mask = (samples["advantages"].abs().sum(dim=1) != 0)
         
         # If the number of True values in mask is not divisible by config.sample.num_batches_per_epoch,
@@ -854,6 +877,9 @@ def main(_):
                 position=0,
                 disable=not accelerator.is_local_main_process,
             ):
+                #cfg embeddings, Note that with or without cfg, the embeddings have different shapes
+                #with cfg, shape: (2*batch_size, seq_len, embed_dim), (2*batch_size, embed_dim)
+                #without cfg, shape: (batch_size, seq_len, embed_dim), (batch_size, embed_dim)
                 if config.train.cfg:
                     # concat negative prompts to sample prompts to avoid two forward passes
                     embeds = torch.cat(
