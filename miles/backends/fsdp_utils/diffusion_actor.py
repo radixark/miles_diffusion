@@ -5,6 +5,7 @@ from argparse import Namespace
 
 import torch
 import torch.distributed as dist
+import numpy as np
 from diffusers import StableDiffusion3Pipeline
 
 from flow_grpo.diffusers_patch.sd3_sde_with_logprob import sde_step_with_logprob
@@ -233,12 +234,38 @@ class DiffusionFSDPTrainRayActor(TrainRayActor):
 
         return torch.stack(log_probs, dim=1)
 
+    def _calculate_zero_std_ratio(
+        self, prompts: list[str], rewards: list[float]
+    ) -> tuple[float, float]:
+        prompt_array = np.array(prompts)
+        rewards_array = np.array(rewards, dtype=np.float64)
+        if len(prompt_array) == 0:
+            return 0.0, 0.0
+        unique_prompts, inverse_indices, counts = np.unique(
+            prompt_array, return_inverse=True, return_counts=True
+        )
+        if len(unique_prompts) == 0:
+            return 0.0, 0.0
+        grouped_rewards = rewards_array[np.argsort(inverse_indices)]
+        split_indices = np.cumsum(counts)[:-1]
+        reward_groups = np.split(grouped_rewards, split_indices)
+        prompt_std_devs = np.array([np.std(group) for group in reward_groups])
+        zero_std_count = np.count_nonzero(prompt_std_devs == 0)
+        zero_std_ratio = zero_std_count / len(prompt_std_devs)
+        return float(zero_std_ratio), float(prompt_std_devs.mean())
+
     def _compute_per_prompt_advantages(
         self, prompts: list[str], rewards: torch.Tensor
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, dict[str, float]]:
         use_per_prompt = not getattr(self.args, "diffusion_disable_per_prompt_stat_tracking", False)
         if not use_per_prompt:
-            return rewards
+            stats = {
+                "group_size": 0.0,
+                "trained_prompt_num": 0.0,
+                "zero_std_ratio": 0.0,
+                "reward_std_mean": 0.0,
+            }
+            return rewards, stats
 
         # Gather prompts and rewards across ranks to match Flow-GRPO global grouping.
         group = self.parallel_state.dp_cp_group_gloo
@@ -260,6 +287,8 @@ class DiffusionFSDPTrainRayActor(TrainRayActor):
         global_std = bool(getattr(self.args, "diffusion_global_std", 1))
         tracker = PerPromptStatTracker(global_std=global_std)
         advantages_all = tracker.update(all_prompts, all_rewards)
+        group_size, trained_prompt_num = tracker.get_stats()
+        zero_std_ratio, reward_std_mean = self._calculate_zero_std_ratio(all_prompts, all_rewards)
         tracker.clear()
 
         # Split back to local slice by rank order.
@@ -272,7 +301,14 @@ class DiffusionFSDPTrainRayActor(TrainRayActor):
                 break
             offset += length
 
-        return torch.tensor(local_adv, device=torch.cuda.current_device(), dtype=torch.float32)
+        stats = {
+            "group_size": float(group_size),
+            "trained_prompt_num": float(trained_prompt_num),
+            "zero_std_ratio": float(zero_std_ratio),
+            "reward_std_mean": float(reward_std_mean),
+        }
+
+        return torch.tensor(local_adv, device=torch.cuda.current_device(), dtype=torch.float32), stats
 
     def train(self, rollout_id: int, rollout_data_ref):  # type: ignore[override]
         if self.args.offload_train:
@@ -298,7 +334,7 @@ class DiffusionFSDPTrainRayActor(TrainRayActor):
             if micro_batch is None or micro_batch <= 0:
                 micro_batch = batch_size
 
-            advantages_1d = self._compute_per_prompt_advantages(prompts, rewards)
+            advantages_1d, per_prompt_stats = self._compute_per_prompt_advantages(prompts, rewards)
 
             log_stats = {
                 "loss": [],
@@ -387,6 +423,7 @@ class DiffusionFSDPTrainRayActor(TrainRayActor):
 
             if log_stats["loss"]:
                 reduced = {k: torch.stack(v).mean().item() for k, v in log_stats.items()}
+                reduced.update(per_prompt_stats)
                 # Log with Flow-GRPO-aligned keys (no diffusion_train/ prefix).
                 self._gather_and_log_metrics(rollout_id, reduced, step=self.global_step)
 

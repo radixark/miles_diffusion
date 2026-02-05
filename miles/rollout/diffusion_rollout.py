@@ -312,18 +312,8 @@ def generate_rollout(
     rewards_avg = [sample.reward.get("avg", sample.reward.get("ocr", 0.0)) for sample in flat]
     reward_ocr = [sample.reward.get("ocr", None) for sample in flat]
 
-    tracker = _get_stat_tracker(args)
-    tracker.update(prompts, rewards_avg)
-    group_size, trained_prompt_num = tracker.get_stats()
-    zero_std_ratio, reward_std_mean = _calculate_zero_std_ratio(prompts, rewards_avg)
-    tracker.clear()
-
     log_dict = {
         "reward_avg": float(np.mean(rewards_avg)) if rewards_avg else 0.0,
-        "reward_std_mean": reward_std_mean,
-        "zero_std_ratio": zero_std_ratio,
-        "group_size": group_size,
-        "trained_prompt_num": trained_prompt_num,
         "rollout/step": compute_rollout_step(args, rollout_id),
     }
     if any(r is not None for r in reward_ocr):
