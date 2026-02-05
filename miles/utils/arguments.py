@@ -133,7 +133,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--diffusion-clip-range",
                 type=float,
-                default=0.2,
+                default=1e-4,
                 help="Clip range for diffusion GRPO ratio.",
             )
             parser.add_argument(
@@ -141,6 +141,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=float,
                 default=5.0,
                 help="Max absolute value for advantage clipping in diffusion training.",
+            )
+            parser.add_argument(
+                "--diffusion-disable-per-prompt-stat-tracking",
+                action="store_true",
+                default=False,
+                help="Disable per-prompt advantage normalization for diffusion GRPO.",
+            )
+            parser.add_argument(
+                "--diffusion-global-std",
+                type=int,
+                default=1,
+                help="Use global std for per-prompt normalization (1=true, 0=false).",
             )
             parser.add_argument(
                 "--diffusion-beta",

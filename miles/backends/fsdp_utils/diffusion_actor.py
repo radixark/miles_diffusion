@@ -8,6 +8,7 @@ import torch.distributed as dist
 from diffusers import StableDiffusion3Pipeline
 
 from flow_grpo.diffusers_patch.sd3_sde_with_logprob import sde_step_with_logprob
+from flow_grpo.stat_tracking import PerPromptStatTracker
 
 from miles.ray.train_actor import TrainRayActor
 from miles.utils.context_utils import with_defer
@@ -121,7 +122,7 @@ class DiffusionFSDPTrainRayActor(TrainRayActor):
     def _get_parallel_config(self) -> dict:  # type: ignore[override]
         return {"dp_size": getattr(self.parallel_state, "dp_size", 1)}
 
-    def _gather_and_log_metrics(self, rollout_id: int, log_dict: dict[str, float]) -> None:
+    def _gather_and_log_metrics(self, rollout_id: int, log_dict: dict[str, float], step: int) -> None:
         """Reduce per-rank scalars and log with Flow-GRPO-aligned keys."""
         if self.parallel_state.dp_cp_rank == 0:
             dp_size = self.parallel_state.dp_cp_size
@@ -136,7 +137,8 @@ class DiffusionFSDPTrainRayActor(TrainRayActor):
             reduced["epoch"] = float(rollout_id)
             reduced["inner_epoch"] = 0.0
             reduced["rollout/step"] = compute_rollout_step(self.args, rollout_id)
-            tracking_utils.log(self.args, reduced, step_key="rollout/step")
+            reduced["global_step"] = float(step)
+            tracking_utils.log(self.args, reduced, step_key="global_step")
         else:
             dist.gather_object(
                 log_dict,
@@ -231,6 +233,47 @@ class DiffusionFSDPTrainRayActor(TrainRayActor):
 
         return torch.stack(log_probs, dim=1)
 
+    def _compute_per_prompt_advantages(
+        self, prompts: list[str], rewards: torch.Tensor
+    ) -> torch.Tensor:
+        use_per_prompt = not getattr(self.args, "diffusion_disable_per_prompt_stat_tracking", False)
+        if not use_per_prompt:
+            return rewards
+
+        # Gather prompts and rewards across ranks to match Flow-GRPO global grouping.
+        group = self.parallel_state.dp_cp_group_gloo
+        local_payload = {
+            "prompts": prompts,
+            "rewards": rewards.detach().float().cpu().tolist(),
+        }
+        gathered = [None] * self.parallel_state.dp_cp_size
+        dist.all_gather_object(gathered, local_payload, group=group)
+
+        all_prompts: list[str] = []
+        all_rewards: list[float] = []
+        lengths: list[int] = []
+        for item in gathered:
+            all_prompts.extend(item["prompts"])
+            all_rewards.extend(item["rewards"])
+            lengths.append(len(item["prompts"]))
+
+        global_std = bool(getattr(self.args, "diffusion_global_std", 1))
+        tracker = PerPromptStatTracker(global_std=global_std)
+        advantages_all = tracker.update(all_prompts, all_rewards)
+        tracker.clear()
+
+        # Split back to local slice by rank order.
+        local_rank = dist.get_rank(group=group)
+        offset = 0
+        local_adv = []
+        for rank, length in enumerate(lengths):
+            if rank == local_rank:
+                local_adv = advantages_all[offset : offset + length]
+                break
+            offset += length
+
+        return torch.tensor(local_adv, device=torch.cuda.current_device(), dtype=torch.float32)
+
     def train(self, rollout_id: int, rollout_data_ref):  # type: ignore[override]
         if self.args.offload_train:
             self.wake_up()
@@ -255,6 +298,8 @@ class DiffusionFSDPTrainRayActor(TrainRayActor):
             if micro_batch is None or micro_batch <= 0:
                 micro_batch = batch_size
 
+            advantages_1d = self._compute_per_prompt_advantages(prompts, rewards)
+
             log_stats = {
                 "loss": [],
                 "policy_loss": [],
@@ -271,6 +316,7 @@ class DiffusionFSDPTrainRayActor(TrainRayActor):
                 batch_meta = rollout_data["metadata"][start:end]
                 batch_prompts = prompts[start:end]
                 batch_rewards = rewards[start:end]
+                batch_advantages = advantages_1d[start:end]
 
                 timesteps = torch.stack([m["timesteps"] for m in batch_meta]).to(
                     torch.cuda.current_device(), dtype=torch.float32
@@ -286,7 +332,7 @@ class DiffusionFSDPTrainRayActor(TrainRayActor):
                 )
 
                 # Broadcast per-sample reward into per-timestep advantage.
-                advantage = broadcast_advantage(batch_rewards, timesteps)
+                advantage = broadcast_advantage(batch_advantages, timesteps)
                 prompt_embeds, pooled_prompt_embeds = self._encode_prompt(batch_prompts)
 
                 log_prob_new = self._compute_log_prob_new(
@@ -322,6 +368,7 @@ class DiffusionFSDPTrainRayActor(TrainRayActor):
                 loss.backward()
                 self.optimizer.step()
                 self.lr_scheduler.step()
+                self.global_step += 1
 
                 log_stats["loss"].append(loss.detach().float())
                 log_stats["policy_loss"].append(policy_loss.detach().float())
@@ -341,7 +388,7 @@ class DiffusionFSDPTrainRayActor(TrainRayActor):
             if log_stats["loss"]:
                 reduced = {k: torch.stack(v).mean().item() for k, v in log_stats.items()}
                 # Log with Flow-GRPO-aligned keys (no diffusion_train/ prefix).
-                self._gather_and_log_metrics(rollout_id, reduced)
+                self._gather_and_log_metrics(rollout_id, reduced, step=self.global_step)
 
         if self.args.offload_train:
             self.sleep()
