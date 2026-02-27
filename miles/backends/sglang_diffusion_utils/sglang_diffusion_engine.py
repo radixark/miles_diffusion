@@ -51,7 +51,7 @@ def _to_local_gpu_id(physical_gpu_id: int) -> int:
 
 
 def launch_server_process(server_args: ServerArgs) -> multiprocessing.Process:
-    from sglang.srt.entrypoints.http_server import launch_server
+    from sglang.multimodal_gen import launch_server
 
     multiprocessing.set_start_method("spawn", force=True)
     server_args.host = server_args.host.strip("[]")
@@ -106,7 +106,7 @@ def _wait_server_healthy(base_url, api_key, is_process_alive):
             time.sleep(2)
 
 
-class SGLangEngine(RayActor):
+class SGLangDiffusionEngine(RayActor):
     def __init__(self, args, rank: int, worker_type: str = "regular", base_gpu_id: int | None = None):
         self.args = args
         self.rank = rank

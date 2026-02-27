@@ -67,20 +67,9 @@ class RolloutManager:
         logger.info(f"import {self.args.rollout_function_path} as generate_rollout function.")
         logger.info(f"import {self.args.eval_function_path} as eval_generate_rollout function.")
 
-        use_diffusion_rollout = "diffusion_rollout" in self.args.rollout_function_path
-        self.use_diffusion_rollout = use_diffusion_rollout
         logger.info("RolloutManager rollout_num_gpus=%s", getattr(self.args, "rollout_num_gpus", None))
-        self._diffusion_offload_fn = None
-        self._diffusion_onload_fn = None
-        self._diffusion_set_pg_fn = None
-        if use_diffusion_rollout:
-            self._diffusion_offload_fn = load_function("miles.rollout.diffusion_rollout.offload_rollout")
-            self._diffusion_onload_fn = load_function("miles.rollout.diffusion_rollout.onload_rollout")
-            self._diffusion_set_pg_fn = load_function("miles.rollout.diffusion_rollout.set_rollout_pg")
-            if self._diffusion_set_pg_fn is not None:
-                self._diffusion_set_pg_fn(pg)
-        if self.args.debug_train_only or use_diffusion_rollout:
-            # Diffusion rollout runs locally and does not need sglang engines.
+
+        if self.args.debug_train_only:
             self.all_rollout_engines = []
             self.num_new_engines = 0
             logger.info("RolloutManager using local diffusion rollout (no sglang engines).")
@@ -540,17 +529,15 @@ class RolloutManager:
 def init_rollout_engines(args, pg, all_rollout_engines):
     if args.debug_train_only:
         return 0
-    if "diffusion_rollout" in args.rollout_function_path:
-        return 0
-
+    
     num_gpu_per_engine = min(args.rollout_num_gpus_per_engine, args.num_gpus_per_node)
     num_engines = args.rollout_num_gpus // num_gpu_per_engine
     assert len(all_rollout_engines) == num_engines
-    if args.prefill_num_servers is not None:
-        prefill_num_servers = args.prefill_num_servers * args.rollout_num_gpus_per_engine // num_gpu_per_engine
-        assert (
-            num_engines > prefill_num_servers
-        ), f"num_engines {num_engines} should be larger than prefill_num_servers {prefill_num_servers}"
+    # if args.prefill_num_servers is not None:
+    #     prefill_num_servers = args.prefill_num_servers * args.rollout_num_gpus_per_engine // num_gpu_per_engine
+    #     assert (
+    #         num_engines > prefill_num_servers
+    #     ), f"num_engines {num_engines} should be larger than prefill_num_servers {prefill_num_servers}"
 
     pg, reordered_bundle_indices, reordered_gpu_ids = pg
 
