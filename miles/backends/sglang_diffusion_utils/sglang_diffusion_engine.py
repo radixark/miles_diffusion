@@ -80,6 +80,7 @@ def _wait_server_healthy(base_url, api_key, is_process_alive):
     with requests.Session() as session:
         while True:
             try:
+                # SGL-D health_generate
                 response = session.get(f"{base_url}/health_generate", headers=headers)
                 if response.status_code == 200:
                     break
@@ -90,10 +91,6 @@ def _wait_server_healthy(base_url, api_key, is_process_alive):
                 raise Exception("Server process terminated unexpectedly.")
 
             time.sleep(2)
-
-        # use flush_cache to make sure the working queue is empty, so that we can do offload
-        # TODO: check if sglang-D need flush_cache
-
 
 class SGLangDiffusionEngine(RayActor):
     def __init__(self, args, rank: int, base_gpu_id: int | None = None):
@@ -139,18 +136,21 @@ class SGLangDiffusionEngine(RayActor):
         self.server_host = server_args_dict["host"]  # with [] if ipv6
         self.server_port = server_args_dict["port"]
 
+        # keep external rollout engine for debug
         if self.args.rollout_external:
             self._init_external(server_args_dict, external_engine_need_check_fields=external_engine_need_check_fields)
         else:
             self._init_normal(server_args_dict)
 
     def _init_external(self, expect_server_args, external_engine_need_check_fields):
-        logger.info(f"Use external SGLang engine (rank={self.rank}, expect_server_args={expect_server_args})")
+        logger.info(f"Use external SGLang-Diffusion engine (rank={self.rank}, expect_server_args={expect_server_args})")
 
-        def _get_actual_server_args():
-            response = requests.get(f"http://{self.server_host}:{self.server_port}/get_server_info")
-            response.raise_for_status()
-            return response.json()
+        # TODO: miles diffusion support sanity check
+        # SGL-D TODO: SGLang-D support get actual server args
+        # def _get_actual_server_args():
+        #     response = requests.get(f"http://{self.server_host}:{self.server_port}/get_server_info")
+        #     response.raise_for_status()
+        #     return response.json()
 
         def _sanity_check_server_args(actual_server_args, expect_server_args):
             for name in external_engine_need_check_fields:
@@ -165,18 +165,21 @@ class SGLangDiffusionEngine(RayActor):
             api_key=None,
             is_process_alive=lambda: True,
         )
-        actual_server_args = _get_actual_server_args()
-        _sanity_check_server_args(actual_server_args, expect_server_args)
+
+        # TODO: miles diffusion support sanity check
+        # SGL-D TODO: SGLang-D support get actual server args
+        # actual_server_args = _get_actual_server_args()
+        # _sanity_check_server_args(actual_server_args, expect_server_args)
 
     def _init_normal(self, server_args_dict):
         logger.info(f"Launch HttpServerEngineAdapter at: {self.server_host}:{self.server_port}")
         self.process = launch_server_process(ServerArgs(**server_args_dict))
 
         if self.node_rank == 0 and self.router_ip and self.router_port:
-            if parse(sglang_router.__version__) <= parse("0.2.1") or self.args.use_miles_router:
+            if self.args.use_miles_router:
                 assert (
                     self.worker_type == "regular"
-                ), "pd disaggregation is not supported in old router or miles router."
+                ), "Miles-diffusion now only support regular worker"
                 response = requests.post(
                     f"http://{self.router_ip}:{self.router_port}/add_worker?url=http://{self.server_host}:{self.server_port}"
                 )
@@ -185,12 +188,6 @@ class SGLangDiffusionEngine(RayActor):
                     "url": f"http://{self.server_host}:{self.server_port}",
                     "worker_type": self.worker_type,
                 }
-                if self.worker_type == "prefill":
-                    payload["bootstrap_port"] = server_args_dict["disaggregation_bootstrap_port"]
-                response = requests.post(
-                    f"http://{self.router_ip}:{self.router_port}/workers",
-                    json=payload,
-                )
             response.raise_for_status()
 
     def _make_request(self, endpoint: str, payload: dict | None = None):
@@ -216,7 +213,7 @@ class SGLangDiffusionEngine(RayActor):
         return response.json()
 
     def health_generate(self, timeout: float = 5.0) -> bool:
-        """Run /health_generate on the underlying SGLang HTTP server.
+        """Run /health_generate on the underlying SGLang-Diffusion HTTP server.
 
         Args:
             timeout: Timeout for the health request in seconds.
@@ -241,7 +238,6 @@ class SGLangDiffusionEngine(RayActor):
         self,
         serialized_named_tensors: list[str],
         load_format: str | None = None,
-        flush_cache: bool = False,
         weight_version: str | None = None,
     ):
         """
@@ -250,10 +246,10 @@ class SGLangDiffusionEngine(RayActor):
         Note: The model should be on GPUs rather than CPU for this functionality to work properly.
         If you encounter issues, ensure your model is loaded on GPU devices rather than CPU.
         """
+        # SGL-D TODO: SGLang-Diffusion support update weights from tensor
         payload = {
             "serialized_named_tensors": serialized_named_tensors,
-            "load_format": load_format,
-            "flush_cache": flush_cache,
+            "load_format": load_format
         }
         if weight_version is not None:
             payload["weight_version"] = weight_version
@@ -261,25 +257,6 @@ class SGLangDiffusionEngine(RayActor):
             "update_weights_from_tensor",
             payload,
         )
-
-    def flush_cache(self):
-        """Flush the cache of the server."""
-        if self.node_rank != 0:
-            return
-        # flush cache will not return status_code 200 when there are pending requests
-        for _ in range(60):
-            try:
-                response = requests.get(f"http://{self.server_host}:{self.server_port}/flush_cache")
-                if response.status_code == 200:
-                    break
-            except NewConnectionError as e:
-                raise e
-            except Exception as e:
-                logger.info(f"Error flushing cache: {e}")
-                time.sleep(1)
-                continue
-        else:
-            raise TimeoutError("Timeout while flushing cache.")
 
     def shutdown(self):
         if self.args.rollout_external:
@@ -289,27 +266,13 @@ class SGLangDiffusionEngine(RayActor):
         if self.node_rank == 0:
             worker_url = f"http://{self.server_host}:{self.server_port}"
             response = None
-            if parse(sglang_router.__version__) <= parse("0.2.1") or self.args.use_miles_router:
+            if self.args.use_miles_router:
                 response = requests.post(
                     f"http://{self.router_ip}:{self.router_port}/remove_worker?url=http://{self.server_host}:{self.server_port}"
                 )
-            elif parse(sglang_router.__version__) < parse("0.3.0"):
-                worker_url = quote(worker_url, safe="")
-                response = requests.delete(f"http://{self.router_ip}:{self.router_port}/workers/{worker_url}")
             else:
-                try:
-                    all_workers = requests.get(f"http://{self.router_ip}:{self.router_port}/workers").json()["workers"]
-                    for worker in all_workers:
-                        if worker["url"] == worker_url:
-                            worker_id = worker["id"]
-                            response = requests.delete(
-                                f"http://{self.router_ip}:{self.router_port}/workers/{worker_id}"
-                            )
-                            break
-                    else:
-                        logger.warning(f"Worker {worker_url} not found in router during shutdown.")
-                except Exception as e:
-                    logger.warning(f"Failed to fetch workers list or remove worker: {e}")
+                # SGL-D router TODO: shutdown for sglang-diffusion router
+                logger.warning(f"Failed to fetch workers list or remove worker: now only support miles_router")
 
             if response is not None:
                 response.raise_for_status()
@@ -318,28 +281,33 @@ class SGLangDiffusionEngine(RayActor):
     def get_weight_version(self):
         if self.node_rank != 0:
             return
+        # SGL-D TODO: SGLang-Diffusion support get weight version
         url = f"http://{self.server_host}:{self.server_port}/get_weight_version"
         response = requests.get(url)
         response.raise_for_status()
         return response.json()["weight_version"]
 
     def release_memory_occupation(self):
-        self.flush_cache()
+        # SGL-D TODO: SGLang-Diffusion support release/resume memory occupation
+        # This function is used by offload/recover
         return self._make_request("release_memory_occupation")
 
     def resume_memory_occupation(self, tags: list[str] = None):
-        """
-        Available tags for multi-stage resume: weights, kv_cache
-        """
+        # SGL-D TODO: SGLang-Diffusion support release/resume memory occupation
+        # This function is used by offload/recover
         return self._make_request(
             "resume_memory_occupation",
             {"tags": tags},
         )
 
     def check_weights(self, action: str):
+        # SGL-D TODO: SGLang-Diffusion support weights checker
+        # Weight checker supports a series of actions through which user can check weights
+        # e.g. snapshot, compare, reset_tensors, etc.
         return self._make_request("weights_checker", {"action": action})
 
     def init_weights_update_group(self, master_address, master_port, rank_offset, world_size, group_name, backend):
+        # SGL-D TODO: Support weights update group for in-memory weight update
         return self._make_request(
             "init_weights_update_group",
             {
@@ -353,6 +321,7 @@ class SGLangDiffusionEngine(RayActor):
         )
 
     def destroy_weights_update_group(self, group_name):
+        # SGL-D TODO: Support weights update group for in-memory weight update
         try:
             return self._make_request(
                 "destroy_weights_update_group",
