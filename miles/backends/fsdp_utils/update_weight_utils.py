@@ -170,8 +170,11 @@ class UpdateWeightFromTensor(UpdateWeight):
                 ray.get(ref)
 
         if dist.get_rank() == self._ipc_gather_src:
-            ref = self._ipc_engine.flush_cache.remote()
-            ray.get(ref)
+            try:
+                ref = self._ipc_engine.flush_cache.remote()
+                ray.get(ref)
+            except Exception as e:
+                logger.warning("skip flush_cache after update_weights_from_tensor: %s", e)
 
 
 class UpdateWeightFromDistributed(UpdateWeight):
