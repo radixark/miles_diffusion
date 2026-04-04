@@ -32,7 +32,7 @@ from miles.utils import tracking_utils
 from .actor import apply_fsdp2, move_torch_optimizer
 from .lr_scheduler import get_lr_scheduler
 from .parallel import create_fsdp_parallel_state
-from .update_weight_utils import UpdateWeightFromTensor
+from .diffusion_update_weight_utils import DiffusionUpdateWeightFromTensor
 from torch.distributed.checkpoint.state_dict import StateDictOptions, get_model_state_dict
 from torch.distributed.tensor import DTensor
 
@@ -104,7 +104,7 @@ class DiffusionFSDPTrainRayActor(TrainRayActor):
         rollout_fn = str(getattr(self.args, "rollout_function_path", ""))
         self._use_tensor_weight_update = self.args.colocate and "sglang_diffusion_rollout" in rollout_fn
         if self._use_tensor_weight_update:
-            self.weight_updater = UpdateWeightFromTensor(self.args, self.model)
+            self.weight_updater = DiffusionUpdateWeightFromTensor(self.args, self.model)
 
         return int(getattr(self.args, "start_rollout_id", 0))
 

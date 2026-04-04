@@ -238,7 +238,6 @@ class SGLangDiffusionEngine(RayActor):
         self,
         serialized_named_tensors: list[str],
         load_format: str | None = None,
-        flush_cache: bool = False,
         weight_version: str | None = None,
     ):
         """
@@ -251,7 +250,6 @@ class SGLangDiffusionEngine(RayActor):
         payload = {
             "serialized_named_tensors": serialized_named_tensors,
             "load_format": load_format,
-            "flush_cache": flush_cache,
         }
         if weight_version is not None:
             payload["weight_version"] = weight_version
@@ -337,15 +335,12 @@ class SGLangDiffusionEngine(RayActor):
             # catch the case there the engine is just created and does not have the group.
             pass
 
-    def update_weights_from_distributed(
-        self, names, dtypes, shapes, group_name, flush_cache=False, weight_version: str | None = None
-    ):
+    def update_weights_from_distributed(self, names, dtypes, shapes, group_name, weight_version: str | None = None):
         payload = {
             "names": names,
             "dtypes": [str(dtype).replace("torch.", "") for dtype in dtypes],
             "shapes": shapes,
             "group_name": group_name,
-            "flush_cache": flush_cache,
         }
         if weight_version is not None:
             payload["weight_version"] = weight_version
