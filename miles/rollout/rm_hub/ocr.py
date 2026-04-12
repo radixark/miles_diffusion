@@ -120,6 +120,8 @@ def _rgb_hwc_from_generated(sample: Sample) -> np.ndarray:
         out = (hwc * 255.0).clip(0, 255).astype(np.uint8)
     else:
         out = hwc.clip(0, 255).astype(np.uint8)
+    # VAE outputs RGB; PaddleOCR (OpenCV-based) expects BGR.
+    out = out[:, :, ::-1]
     return out
 
 async def ocr_rm(args, sample: Sample):
