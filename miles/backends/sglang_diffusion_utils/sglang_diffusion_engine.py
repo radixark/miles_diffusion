@@ -273,7 +273,7 @@ class SGLangDiffusionEngine(RayActor):
     def release_memory_occupation(self):
         return self._make_request("release_memory_occupation")
 
-    def resume_memory_occupation(self):
+    def resume_memory_occupation(self, tags: list[str] | None = None):
         return self._make_request("resume_memory_occupation")
 
     def init_weights_update_group(self, master_address, master_port, rank_offset, world_size, group_name, backend):

@@ -300,6 +300,12 @@ class FSDPTrainRayActor(TrainRayActor):
         self.scheduler._step_index = None
         self.scheduler._begin_index = None
 
+        # Skip last N denoising steps for training: at small σ the SDE
+        # noise_std_dev is tiny, amplifying any noise_pred diff into large
+        # log_prob error.  FlowGRPO skips 1, DanceGRPO also skips 1.
+        skip_last = int(getattr(self.args, "diffusion_ignore_last", 0))
+        train_num_timesteps = max(1, num_timesteps - skip_last)
+
         trajectories_per_step = max(1, int(getattr(self.args, "diffusion_grad_accum_steps", 1)))
         timestep_batch = int(getattr(self.args, "diffusion_timestep_batch", 1))
         num_steps_per_rollout = (batch_size + trajectories_per_step - 1) // trajectories_per_step
@@ -323,8 +329,8 @@ class FSDPTrainRayActor(TrainRayActor):
                 reward_i = rewards[i]
 
                 # Batch multiple timesteps for GPU utilization.
-                for t_start in range(0, num_timesteps, timestep_batch):
-                    t_end = min(num_timesteps, t_start + timestep_batch)
+                for t_start in range(0, train_num_timesteps, timestep_batch):
+                    t_end = min(train_num_timesteps, t_start + timestep_batch)
                     tb = t_end - t_start
                     lat_chunk = latents[t_start:t_end]
                     ts_chunk = timesteps_i[t_start:t_end]
@@ -353,11 +359,18 @@ class FSDPTrainRayActor(TrainRayActor):
                             flush=True,
                         )
 
+                    # Match rollout's bf16 input dtype exactly. Rollout runs under
+                    # torch.autocast("cuda", bf16) so all inputs enter the DiT as
+                    # bf16. Without explicit cast here, FSDP MixedPrecision only
+                    # casts params but leaves fp32 inputs → first matmul runs at
+                    # higher precision than rollout → systematic noise_pred drift.
+                    _dt = torch.bfloat16
+                    _cast = lambda d: {k: v.to(_dt) if isinstance(v, torch.Tensor) else v for k, v in d.items()}
                     noise_pred_pos = self.model(
-                        hidden_states=lat_chunk,
-                        timestep=ts_chunk_for_model,
+                        hidden_states=lat_chunk.to(_dt),
+                        timestep=ts_chunk_for_model.to(_dt),
                         return_dict=False,
-                        **pos_batch,
+                        **_cast(pos_batch),
                     )[0]
                     if t_start == 0 and i == traj_start:
                         print(
@@ -377,10 +390,10 @@ class FSDPTrainRayActor(TrainRayActor):
                     if use_cfg and neg_cond is not None:
                         neg_batch = tpc.expand_cond_for_timestep_batch(neg_cond, tb)
                         noise_pred_neg = self.model(
-                            hidden_states=lat_chunk,
-                            timestep=ts_chunk_for_model,
+                            hidden_states=lat_chunk.to(_dt),
+                            timestep=ts_chunk_for_model.to(_dt),
                             return_dict=False,
-                            **neg_batch,
+                            **_cast(neg_batch),
                         )[0]
                         noise_pred = tpc.cfg_combine(
                             noise_pred_pos,

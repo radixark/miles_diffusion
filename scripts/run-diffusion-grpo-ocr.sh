@@ -76,6 +76,7 @@ python -u "${ROOT_DIR}/train_diffusion.py" \
   --diffusion-height 256 \
   --diffusion-width 256 \
   --global-batch-size 32 \
+  --diffusion-ignore-last 1 \
   --diffusion-rollout-debug-mode \
   --debug-skip-optimizer-step \
   "${WANDB_ARGS[@]}"

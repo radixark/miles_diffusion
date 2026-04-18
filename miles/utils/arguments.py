@@ -1318,6 +1318,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             # LoRA
+            parser.add_argument("--diffusion-ignore-last", type=int, default=0,
+                help="Skip last N denoising steps for training (avoids small-sigma numerical issues). FlowGRPO/DanceGRPO use 1.")
             parser.add_argument("--use-lora", action="store_true", default=False,
                 help="Use LoRA adapters instead of full finetune.")
             parser.add_argument("--lora-rank", type=int, default=64)
