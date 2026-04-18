@@ -10,15 +10,20 @@
 pkill -9 sgl*
 sleep 3
 ray stop --force
-pkill -9 ray
-pkill -9 python
+pkill -9 ray*
+pkill -9 python*
 sleep 3
-pkill -9 ray
-pkill -9 python
+pkill -9 ray*
+pkill -9 python*
+
+
+# pkill can't reap zombies — kill their live parents so init reaps them.
+ps -eo ppid,state,comm --no-headers | awk '$2=="Z" && $1!=1 && $3~/ray|python|sglang/ {print $1}' | sort -u | xargs -r kill -9 2>/dev/null || true
+sleep 2
 
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-export CUDA_VISIBLE_DEVICES=4,5
+export CUDA_VISIBLE_DEVICES=0,1,2,3,
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 # WandB: enable if WANDB_API_KEY is present.
 RUN_NAME="diffusion_grpo_$(date +%Y%m%d_%H%M%S)"
@@ -48,18 +53,22 @@ python -u "${ROOT_DIR}/train_diffusion.py" \
   --hf-checkpoint gpt2 \
   --prompt-data "${ROOT_DIR}/data/ocr/train.jsonl" \
   --input-key input \
-  --rollout-batch-size 4 \
-  --n-samples-per-prompt 8 \
+  --rollout-batch-size 16 \
+  --n-samples-per-prompt 16 \
   --num-rollout 100000 \
-  --diffusion-timestep-batch 10 \
+  --diffusion-timestep-batch 5 \
   --gradient-checkpointing \
-  --actor-num-gpus-per-node 2 \
-  --rollout-num-gpus 2 \
+  --actor-num-gpus-per-node 4 \
+  --rollout-num-gpus 4 \
   --rollout-num-gpus-per-engine 1 \
-  --num-gpus-per-node 2 \
+  --num-gpus-per-node 4 \
   --colocate \
   --use-lora \
   --lora-rank 64 \
+  --lora-alpha 128 \
+  --lr 3e-4 \
+  --adam-beta2 0.999 \
+  --weight-decay 1e-4 \
   --use-miles-router \
   --sglang-server-concurrency 4 \
   --diffusion-model Qwen/Qwen-Image \
@@ -69,14 +78,13 @@ python -u "${ROOT_DIR}/train_diffusion.py" \
   --rm-type ocr \
   --diffusion-dtype bf16 \
   --diffusion-num-steps 10 \
-  --diffusion-num-batches-per-epoch 8 \
+  --diffusion-num-batches-per-epoch 2 \
+  --diffusion-grad-accum-steps 64 \
   --diffusion-guidance-scale 4.0 \
   --diffusion-true-cfg-scale 4.0 \
-  --diffusion-rollout-noise-level 0.7 \
-  --diffusion-height 256 \
-  --diffusion-width 256 \
-  --global-batch-size 32 \
+  --diffusion-rollout-noise-level 1.2 \
+  --diffusion-height 512 \
+  --diffusion-width 512 \
+  --global-batch-size 256 \
   --diffusion-ignore-last 1 \
-  --diffusion-rollout-debug-mode \
-  --debug-skip-optimizer-step \
   "${WANDB_ARGS[@]}"

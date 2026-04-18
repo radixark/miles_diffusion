@@ -165,7 +165,7 @@ class DiffusionUpdateWeightFromTensor(DiffusionUpdateWeight):
                 ref = self._ipc_engine.update_weights_from_tensor.remote(**kwargs)
                 ray.get(ref)
 
-
+# TODO: update weights only for sgl-d LoRA params
 class DiffusionUpdateWeightFromTensorLoRA(DiffusionUpdateWeightFromTensor):
     """LoRA-aware updater: merges adapters into base before pushing to rollout.
 
