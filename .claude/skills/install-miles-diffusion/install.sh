@@ -3,18 +3,26 @@
 # Idempotent: re-running skips steps that are already done.
 #
 # Overrides (env vars):
-#   ENV_NAME    conda env name (default: miles-diffusion)
-#   PY_VER      python version (default: 3.11)
-#   SGLANG_DIR  where to clone sglang (default: ../sglang)
-#   SGLANG_PR   sglang PR number (default: 20464)
-#   CUDA_VER    torch cuda tag (default: 12.4 -> cu124)
+#   ENV_NAME        conda env name (default: miles-diffusion)
+#   PY_VER          python version (default: 3.11)
+#   SGLANG_DIR      where to clone sglang (default: ../sglang)
+#   SGLANG_REPO     sglang git URL (default: https://github.com/Rockdu/sglang.git)
+#   SGLANG_BRANCH   sglang branch to check out (default: sglang-diffusion-rollout-test)
+#   CUDA_VER        torch cuda tag (default: 12.4 -> cu124)
+#
+# sglang source of truth: the sglang-diffusion fork lives at
+#   Rockdu/sglang @ sglang-diffusion-rollout-test
+# miles-diffusion depends on that branch (multimodal_gen +
+# update_weights_from_tensor for RL weight sync). Override SGLANG_REPO /
+# SGLANG_BRANCH only if you know what you're doing.
 
 set -euo pipefail
 
 ENV_NAME="${ENV_NAME:-miles-diffusion}"
 PY_VER="${PY_VER:-3.11}"
 CUDA_VER="${CUDA_VER:-12.4}"
-SGLANG_PR="${SGLANG_PR:-20464}"
+SGLANG_REPO="${SGLANG_REPO:-https://github.com/Rockdu/sglang.git}"
+SGLANG_BRANCH="${SGLANG_BRANCH:-sglang-diffusion-rollout-test}"
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 SGLANG_DIR="${SGLANG_DIR:-$(dirname "$REPO_DIR")/sglang}"
@@ -28,7 +36,7 @@ need() { command -v "$1" >/dev/null 2>&1 || die "missing required tool: $1"; }
 # ------------------------------------------------------------------ preflight
 log "repo:   $REPO_DIR"
 log "env:    $ENV_NAME (python $PY_VER)"
-log "sglang: $SGLANG_DIR (PR #$SGLANG_PR)"
+log "sglang: $SGLANG_DIR ($SGLANG_REPO @ $SGLANG_BRANCH)"
 log "cuda:   $CUDA_VER"
 
 need git
@@ -76,20 +84,27 @@ else
 fi
 
 # ---------------------------------------------------------------- sglang-diffusion
+# Depends on Rockdu/sglang @ sglang-diffusion-rollout-test (sglang-diffusion
+# fork with update_weights_from_tensor for multimodal_gen).
 if [[ ! -d "$SGLANG_DIR" ]]; then
-  log "cloning sglang -> $SGLANG_DIR"
-  git clone https://github.com/sgl-project/sglang "$SGLANG_DIR"
+  log "cloning $SGLANG_REPO -> $SGLANG_DIR"
+  git clone --branch "$SGLANG_BRANCH" --single-branch "$SGLANG_REPO" "$SGLANG_DIR"
 fi
 
 pushd "$SGLANG_DIR" >/dev/null
-if ! git rev-parse --verify --quiet "pr-$SGLANG_PR" >/dev/null; then
-  log "fetching sglang PR #$SGLANG_PR"
-  git fetch origin "pull/$SGLANG_PR/head:pr-$SGLANG_PR"
+# Make sure the "rockdu" remote is registered so `git fetch rockdu` works even
+# if the repo was cloned earlier from a different URL.
+if ! git remote get-url rockdu >/dev/null 2>&1; then
+  git remote add rockdu "$SGLANG_REPO"
+fi
+if ! git rev-parse --verify --quiet "$SGLANG_BRANCH" >/dev/null; then
+  log "fetching $SGLANG_BRANCH from rockdu"
+  git fetch rockdu "$SGLANG_BRANCH:$SGLANG_BRANCH"
 fi
 CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
-if [[ "$CURRENT_BRANCH" != "pr-$SGLANG_PR" ]]; then
-  log "checkout sglang pr-$SGLANG_PR"
-  git checkout "pr-$SGLANG_PR"
+if [[ "$CURRENT_BRANCH" != "$SGLANG_BRANCH" ]]; then
+  log "checkout sglang $SGLANG_BRANCH"
+  git checkout "$SGLANG_BRANCH"
 fi
 
 if python -c "import sglang.multimodal_gen" 2>/dev/null; then

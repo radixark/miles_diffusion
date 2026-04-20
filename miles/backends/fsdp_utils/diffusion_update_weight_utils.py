@@ -1,5 +1,7 @@
 import abc
+import hashlib
 import logging
+import os
 from argparse import Namespace
 from collections.abc import Sequence
 
@@ -165,7 +167,7 @@ class DiffusionUpdateWeightFromTensor(DiffusionUpdateWeight):
                 ref = self._ipc_engine.update_weights_from_tensor.remote(**kwargs)
                 ray.get(ref)
 
-
+# TODO: update weights only for sgl-d LoRA params
 class DiffusionUpdateWeightFromTensorLoRA(DiffusionUpdateWeightFromTensor):
     """LoRA-aware updater: merges adapters into base before pushing to rollout.
 
@@ -195,10 +197,9 @@ class DiffusionUpdateWeightFromTensorLoRA(DiffusionUpdateWeightFromTensor):
 
     def update_weights(self):
         self.weight_version += 1
-        deltas = {
-            k: (self._gather_full(B.weight) @ self._gather_full(A.weight)) * s
-            for k, (A, B, s) in self._lora_index.items()
-        }
+
+        verify = os.environ.get("MILES_VERIFY_WEIGHT_SYNC", "").lower() in ("1", "true", "yes")
+        verify_pairs: list[tuple[str, torch.Tensor]] = [] if verify else None
 
         bucket, bucket_size = [], 0
         for name, param in self.model.state_dict().items():
@@ -212,17 +213,85 @@ class DiffusionUpdateWeightFromTensorLoRA(DiffusionUpdateWeightFromTensor):
                     async_op=True,
                 ).to_local()
 
-            if name in deltas:
+            if name in self._lora_index:
+                # Merge LoRA for this layer on the fly instead of pre-computing
+                # all 720 deltas up front: Qwen-Image's MLP + attn deltas total
+                # tens of GB at peak — here only one delta is resident at a time.
+                A, B, s = self._lora_index[name]
+                delta = (self._gather_full(B.weight) @ self._gather_full(A.weight)) * s
                 param = param.wait() if hasattr(param, "wait") else param
-                param = param + deltas[name].to(param.device, param.dtype)
+                param = param + delta.to(param.device, param.dtype)
+                del delta
 
-            clean = name.replace(".base_layer", "")
+            # Strip PEFT's two wrapping layers so the name matches sglang-d's
+            # un-wrapped DiT state_dict (WeightsUpdater.load_weights_into_model
+            # silently drops any name not in ``module.named_parameters()``):
+            #
+            #   LoRA target  in: base_model.model.transformer_blocks.0.attn.to_q.base_layer.weight
+            #                out: transformer_blocks.0.attn.to_q.weight
+            #   non-target   in: base_model.model.transformer_blocks.0.norm1.weight
+            #                out: transformer_blocks.0.norm1.weight
+            #
+            # ``.base_layer`` is the inner wrapper (lora.Linear.base_layer);
+            # ``base_model.model.`` is PeftModel.base_model (=LoraModel) .model.
+            sglang_d_param_name = name.replace(".base_layer", "")
+            if sglang_d_param_name.startswith("base_model.model."):
+                sglang_d_param_name = sglang_d_param_name[len("base_model.model."):]
+
+
             sz = param.numel() * param.element_size()
             if bucket and bucket_size + sz >= self.args.update_weight_buffer_size:
                 self.wait_and_update_bucket_weights(bucket)
                 bucket, bucket_size = [], 0
-            bucket.append((clean, param))
+            bucket.append((sglang_d_param_name, param))
             bucket_size += sz
+            if verify_pairs is not None:
+                # Wait on async redistribute handle, snapshot CPU copy so the
+                # hash matches what the rollout engine stored (bytes-identical).
+                t = param.wait() if hasattr(param, "wait") else param
+                verify_pairs.append((sglang_d_param_name, t.detach().cpu().contiguous()))
 
         if bucket:
             self.wait_and_update_bucket_weights(bucket)
+
+        if verify_pairs is not None:
+            self._verify_weight_sync(verify_pairs)
+
+    def _verify_weight_sync(self, pairs: list[tuple[str, torch.Tensor]]) -> None:
+        """Compare our expected merged-transformer SHA-256 against the live
+        rollout engine's checksum. Must match exactly — same algorithm as
+        sglang-d's ``compute_weights_checksum`` (sorted by name, raw byte hash).
+        """
+        if dist.get_rank() != self._ipc_gather_src:
+            return
+
+        expected = self._sha256_named_tensors(pairs)
+
+        try:
+            remote = ray.get(
+                self._ipc_engine.get_weights_checksum.remote([self.target_module])
+            )
+        except Exception as e:
+            logger.error(f"[weight_sync verify] failed to fetch remote checksum: {e}")
+            return
+
+        actual = (remote or {}).get(self.target_module)
+        match = expected == actual
+        logger.warning(
+            f"[weight_sync verify v{self.weight_version}] "
+            f"module={self.target_module} match={match} "
+            f"expected={expected[:16] if expected else None} "
+            f"actual={(actual or '')[:16] if isinstance(actual, str) else actual}"
+        )
+
+    @staticmethod
+    def _sha256_named_tensors(pairs: list[tuple[str, torch.Tensor]]) -> str:
+        """Mirror ``sglang.multimodal_gen.runtime.loader.weight_utils.compute_weights_checksum``."""
+        hasher = hashlib.sha256()
+        for name, tensor in sorted(pairs, key=lambda x: x[0]):
+            hasher.update(name.encode())
+            t = tensor.detach()
+            if isinstance(t, DTensor):
+                t = t._local_tensor
+            hasher.update(t.cpu().contiguous().reshape(-1).view(torch.uint8).numpy().data)
+        return hasher.hexdigest()

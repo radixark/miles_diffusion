@@ -20,7 +20,7 @@ Components:
 1. **apt system libs** — `libglib2.0-0 libgl1` (paddleocr / cv2 runtime).
 2. **Conda env** — Python 3.11 (configurable via `PY_VER`).
 3. **PyTorch** — CUDA 12.4 build matched to the sglang-diffusion branch.
-4. **sglang-diffusion** — clones `sgl-project/sglang` into `$SGLANG_DIR` (default `../sglang` sibling of miles), fetches PR #20464 (`update_weights_from_tensor` for `multimodal_gen`), installs `python[all]` in editable mode.
+4. **sglang-diffusion** — clones **`Rockdu/sglang` @ `sglang-diffusion-rollout-test`** into `$SGLANG_DIR` (default `../sglang` sibling of miles) and installs `python[all]` in editable mode. That branch is the sglang-diffusion fork miles-diffusion depends on (multimodal_gen + `update_weights_from_tensor` for RL weight sync). Override via `SGLANG_REPO` / `SGLANG_BRANCH` only if you know what you're doing.
 5. **miles package** — `pip install -e .` plus `requirements.txt`.
 6. **flow_grpo OCR deps** — runs `flow_grpo/setup.sh` (paddleocr 2.9.1, peft 0.10.0, diffusers 0.33.1, etc., all `--no-deps` to avoid the usual paddlepaddle dep-hell).
 7. **torch_memory_saver** — optional, skipped silently on failure.
@@ -33,6 +33,8 @@ Before doing anything, surface these to the user and let them override:
 - `ENV_NAME` (default `miles-diffusion`)
 - `PY_VER` (default `3.11`)
 - `SGLANG_DIR` (default `$(dirname "$PWD")/sglang`)
+- `SGLANG_REPO` (default `https://github.com/Rockdu/sglang.git`)
+- `SGLANG_BRANCH` (default `sglang-diffusion-rollout-test`)
 - `CUDA_VER` (default `12.4`)
 
 Then:
@@ -47,7 +49,7 @@ It's long — run with `run_in_background: true` and stream with Monitor, or let
 
 - **No conda/mamba** — helper aborts with a message telling the user to install miniforge. Don't auto-install conda.
 - **No CUDA toolkit / no GPU** — `nvidia-smi` fails at smoke-test; install still succeeds but warn the user.
-- **sglang PR conflicts** — if the PR branch has merge conflicts vs main, helper prints the conflict and stops. Don't try to auto-resolve; surface to user.
+- **sglang branch missing / renamed** — if `Rockdu/sglang` no longer has `sglang-diffusion-rollout-test`, the clone/fetch fails. Do not silently fall back to upstream sgl-project/sglang: the required changes (multimodal_gen + weight-sync RPC) only live on the Rockdu fork. Surface the failure to the user and ask which branch to pin to instead.
 - **paddlepaddle-gpu wheel mismatch** — pinned to 2.6.2 in flow_grpo/setup.sh. If the machine's CUDA is too new, you may need to swap the pin. Report the mismatch; don't silently change the pin.
 - **System apt missing sudo** — fall back to `apt-get` without sudo (works in containers). If both fail, tell the user which .so is missing.
 

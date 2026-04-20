@@ -42,7 +42,7 @@ def build_rollout_sampling_params(
     num_steps = int(eval_steps) if evaluation and eval_steps is not None else args.diffusion_num_steps
 
     sampling_params: dict[str, Any] = {
-        "generator_device": getattr(args, "diffusion_rollout_generator_device", "cuda"),
+        "generator_device": getattr(args, "diffusion_generator_device", "cuda"),
         "negative_prompt": neg,
         "width": getattr(args, "diffusion_width", None),
         "height": getattr(args, "diffusion_height", None),
@@ -57,10 +57,10 @@ def build_rollout_sampling_params(
         sampling_params.update(
             {
                 "rollout": True,
-                "rollout_sde_type": getattr(args, "diffusion_rollout_sde_type", "sde"),
-                "rollout_noise_level": float(getattr(args, "diffusion_rollout_noise_level", 0.7)),
-                "rollout_log_prob_no_const": bool(getattr(args, "diffusion_rollout_log_prob_no_const", False)),
-                "rollout_debug_mode": bool(getattr(args, "diffusion_rollout_debug_mode", False)),
+                "rollout_sde_type": getattr(args, "diffusion_sde_type", "sde"),
+                "rollout_noise_level": float(getattr(args, "diffusion_noise_level", 0.7)),
+                "rollout_log_prob_no_const": bool(getattr(args, "diffusion_log_prob_no_const", False)),
+                "rollout_debug_mode": bool(getattr(args, "diffusion_debug_mode", False)),
                 "rollout_return_denoising_env": True,
                 "rollout_return_dit_trajectory": True,
             }
@@ -95,6 +95,11 @@ class GenerateState(metaclass=SingletonMeta):
             args.sglang_server_concurrency * args.rollout_num_gpus // args.rollout_num_gpus_per_engine
         )
         self.sampling_params = build_rollout_sampling_params(args)
+        self.step_strategy_fn = (
+            load_function(args.diffusion_step_strategy_path)
+            if getattr(args, "diffusion_step_strategy_path", None)
+            else None
+        )
         sampling_seed_base = args.rollout_seed
         self.group_sampling_seeds = [sampling_seed_base + i for i in range(args.n_samples_per_prompt)]
 
@@ -150,6 +155,18 @@ async def generate_microgroup(
     # Prepare payload for sglang-diffusion server
     # SGL-D TODO: support seed list for multiple samples in one request
     # currently only support assigning the first seed, SGL-D generates samples with seed, seed+1, seed+2, ...
+    if not evaluation and state.step_strategy_fn is not None:
+        sde_indices, return_indices = state.step_strategy_fn(
+            args,
+            microgroup[0],
+            int(sampling_params["num_inference_steps"]),
+            int(sampling_params["seed"]),
+        )
+        sampling_params["rollout_sde_step_indices"] = sde_indices
+        sampling_params["rollout_return_step_indices"] = return_indices
+    else:
+        sde_indices = None
+
     payload = build_rollout_generate_payload(
         sampling_params,
         microgroup[0].prompt,
@@ -162,6 +179,14 @@ async def generate_microgroup(
         for sample, response in zip(microgroup, output, strict=True)
     ]
     microgroup = await asyncio.to_thread(ray.get, refs)
+
+    # Stash the SDE/training step indices on each sample so _train_core can
+    # slice the full-length trajectory & rollout_log_probs down to the window.
+    if sde_indices is not None:
+        for sample in microgroup:
+            md = sample.train_metadata or {}
+            md["sde_step_indices"] = list(sde_indices)
+            sample.train_metadata = md
 
     if not evaluation:
         # TODO: get real seeds from SGL-D

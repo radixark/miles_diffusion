@@ -14,6 +14,8 @@ class QwenImageTrainPipelineConfig(TrainPipelineConfig):
     lora_target_modules = [
         "to_q", "to_k", "to_v", "to_out.0",
         "add_q_proj", "add_k_proj", "add_v_proj", "to_add_out",
+        "img_mlp.net.0.proj", "img_mlp.net.2",
+        "txt_mlp.net.0.proj", "txt_mlp.net.2",
     ]
 
     def prepare_cond_kwargs(self, cond: CondKwargs | None, device: torch.device) -> dict:
