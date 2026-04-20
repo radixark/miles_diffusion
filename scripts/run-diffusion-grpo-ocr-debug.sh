@@ -80,6 +80,7 @@ python -u "${ROOT_DIR}/train_diffusion.py" \
   --use-lora \
   --lora-rank 64 \
   --lora-alpha 128 \
+  --diffusion-init-lora-weight gaussian \
   --use-miles-router \
   --sglang-server-concurrency 4 \
   --diffusion-model Qwen/Qwen-Image \

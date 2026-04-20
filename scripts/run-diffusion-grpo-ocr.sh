@@ -66,6 +66,7 @@ python -u "${ROOT_DIR}/train_diffusion.py" \
   --use-lora \
   --lora-rank 64 \
   --lora-alpha 128 \
+  --diffusion-init-lora-weight gaussian \
   --lr 3e-4 \
   --adam-beta2 0.999 \
   --diffusion-clip-range 1e-4 \
