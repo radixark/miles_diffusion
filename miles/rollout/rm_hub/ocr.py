@@ -108,7 +108,14 @@ class AsyncOcrPool(metaclass=SingletonMeta):
         return float(await loop.run_in_executor(None, ray.get, ref))
 
 def _rgb_hwc_from_generated(sample: Sample) -> np.ndarray:
-    """``generated_output``: ``[C, F, H, W]``; use time index 0 (``F==1`` for still images)."""
+    """``generated_output``: ``[C, F, H, W]``; use time index 0 (``F==1`` for still images).
+
+    Feeds PaddleOCR the exact same ``(RGB, uint8 HWC)`` array that flow_grpo's
+    ``ocr_score`` wrapper does — `(images * 255).round().clamp(0,255).to(uint8)`
+    then ``transpose(0, 2, 3, 1)``, no channel swap. PaddleOCR's OpenCV stack
+    would prefer BGR, but flow_grpo trains against the (slightly-off) RGB
+    convention, so we match that to keep the reward signal bit-identical.
+    """
     t = sample.generated_output
     if t is None:
         raise ValueError("generated_output is None")
@@ -117,11 +124,9 @@ def _rgb_hwc_from_generated(sample: Sample) -> np.ndarray:
     frame_chw = t[:, 0, :, :]
     hwc = frame_chw.numpy().transpose(1, 2, 0)
     if float(hwc.max()) <= 1.0 + 1e-3:
-        out = (hwc * 255.0).clip(0, 255).astype(np.uint8)
+        out = np.round(hwc * 255.0).clip(0, 255).astype(np.uint8)
     else:
         out = hwc.clip(0, 255).astype(np.uint8)
-    # VAE outputs RGB; PaddleOCR (OpenCV-based) expects BGR.
-    out = out[:, :, ::-1]
     return out
 
 async def ocr_rm(args, sample: Sample):
