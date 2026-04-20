@@ -511,7 +511,11 @@ class FSDPTrainRayActor(TrainRayActor):
                 self.optimizer.zero_grad(set_to_none=True)
             self.global_step += 1
 
-            reduced = {k: torch.stack(v).mean().item() for k, v in log_stats.items()}
+            # Prefix with "train/" so wandb groups these under the Train panel
+            # and picks up define_metric("train/*", step_metric="train/step") —
+            # otherwise they fall into the default "Charts" section and plot
+            # against wandb's auto-incrementing internal step.
+            reduced = {f"train/{k}": torch.stack(v).mean().item() for k, v in log_stats.items()}
             self._gather_and_log_metrics(rollout_id, reduced, step=self.global_step)
 
 
