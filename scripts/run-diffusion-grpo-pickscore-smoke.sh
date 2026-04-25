@@ -68,12 +68,13 @@ fi
   --use-lora \
   --lora-rank 64 \
   --lora-alpha 128 \
+  --diffusion-init-lora-weight gaussian \
   --use-miles-router \
   --sglang-server-concurrency 2 \
   --diffusion-model Qwen/Qwen-Image \
   --diffusion-reward pickscore:1.0 \
   --advantage-estimator grpo \
-  --globalize-reward-norm \
+  --globalize-reward-std \
   --rm-type pickscore \
   --pickscore-num-workers "${SMOKE_PICKSCORE_NUM_WORKERS}" \
   --pickscore-num-gpus-per-worker "${SMOKE_PICKSCORE_NUM_GPUS_PER_WORKER}" \
@@ -85,6 +86,9 @@ fi
   --diffusion-guidance-scale 4.0 \
   --diffusion-true-cfg-scale 4.0 \
   --diffusion-rollout-noise-level 1.2 \
+  --diffusion-step-strategy-path miles.rollout.step_strategy_hub.sde_window \
+  --diffusion-sde-window-size 2 \
+  --diffusion-sde-window-range 0,5 \
   --diffusion-height 256 \
   --diffusion-width 256 \
   --global-batch-size 2 \
