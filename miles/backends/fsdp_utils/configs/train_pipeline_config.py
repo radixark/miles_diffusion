@@ -47,6 +47,7 @@ class TrainPipelineConfig(abc.ABC):
     """Base class. Subclass per model family."""
 
     lora_target_modules: list[str] = ["to_q", "to_k", "to_v", "to_out.0"]
+    needs_timestep_scaling: bool = True
 
     def prepare_trajectory(
         self,
@@ -86,6 +87,20 @@ class TrainPipelineConfig(abc.ABC):
                 out[k] = v * batch_size if len(v) == 1 else v
             else:
                 out[k] = v
+        return out
+
+    def concat_cfg_cond_batches(self, neg_cond_kwargs: dict, pos_cond_kwargs: dict) -> dict:
+        """Concatenate unconditional and conditional kwargs for one CFG forward."""
+        out = {}
+        for key in pos_cond_kwargs:
+            pos_value = pos_cond_kwargs[key]
+            neg_value = neg_cond_kwargs.get(key)
+            if isinstance(pos_value, torch.Tensor) and isinstance(neg_value, torch.Tensor):
+                out[key] = torch.cat([neg_value, pos_value], dim=0)
+            elif isinstance(pos_value, list) and isinstance(neg_value, list):
+                out[key] = neg_value + pos_value
+            else:
+                out[key] = pos_value
         return out
 
     @abc.abstractmethod
