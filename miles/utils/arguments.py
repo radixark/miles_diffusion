@@ -142,6 +142,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Max absolute value for advantage clipping in diffusion training.",
             )
             parser.add_argument(
+                "--diffusion-kl-beta",
+                type=float,
+                default=0.0,
+                help=(
+                    "Reference KL coefficient for diffusion GRPO. When > 0 with LoRA, "
+                    "the trainer disables the LoRA adapter to compute the base-model reference."
+                ),
+            )
+            parser.add_argument(
                 "--diffusion-gradient-accumulation-steps",
                 type=int,
                 default=1,
@@ -1295,6 +1304,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "Skip loss.backward() and optimizer.step() so trainer weights "
                     "never drift. Used with --debug-disable-weight-sync to measure "
                     "pure forward-path divergence from the rollout engine."
+                ),
+            )
+            parser.add_argument(
+                "--debug-check-update-direction",
+                action="store_true",
+                default=False,
+                help=(
+                    "After each diffusion optimizer step, recompute log-probs on "
+                    "the same rollout batch and report whether positive-advantage "
+                    "samples increased log-prob while negative-advantage samples decreased it."
                 ),
             )
             # LoRA

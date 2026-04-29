@@ -1,7 +1,9 @@
 import logging
+import json
 import os
 from argparse import Namespace
 from collections import defaultdict
+from contextlib import nullcontext
 
 import ray
 import torch
@@ -20,6 +22,7 @@ from miles.utils import tracking_utils
 
 from .configs.train_pipeline_config import get_train_pipeline_config
 import miles.backends.fsdp_utils.configs.qwen_image  # noqa: F401 — register pipeline config
+import miles.backends.fsdp_utils.configs.sd3  # noqa: F401 — register pipeline config
 
 from . import checkpoint
 from .lr_scheduler import get_lr_scheduler
@@ -124,6 +127,19 @@ class FSDPTrainRayActor(TrainRayActor):
         else:
             raise ValueError(f"Unsupported optimizer: {args.optimizer}")
 
+        # GradScaler is required for stable fp16 training. With FSDP MixedPrecision
+        # (param_dtype=fp16, reduce_dtype=fp32), backward gradients are produced in
+        # fp16 before reduce-scatter; small policy-gradient signals (~1e-6 to 1e-7)
+        # underflow without scaling, leaving updates dominated by numerical noise.
+        # ShardedGradScaler all-reduces the found_inf flag across DP ranks so all
+        # shards step or skip together — using a plain GradScaler with FSDP2
+        # would let ranks diverge if only some saw an inf/NaN. bf16 / fp32 do not
+        # need scaling so the scaler is only enabled for fp16.
+        from torch.distributed.fsdp.sharded_grad_scaler import ShardedGradScaler
+        self.scaler = ShardedGradScaler(
+            enabled=(self._compute_dtype == torch.float16),
+        )
+
         self.lr_scheduler = get_lr_scheduler(args, self.optimizer)
         self.global_step = 0
         self.micro_step = 0
@@ -190,6 +206,12 @@ class FSDPTrainRayActor(TrainRayActor):
         rollout_engines, rollout_engine_lock, num_new_engines = ray.get(
             self.rollout_manager.get_rollout_engines_and_lock.remote()
         )
+        if not rollout_engines:
+            self._save_weights_to_disk()
+            dist.barrier(group=get_gloo_group())
+            clear_memory()
+            return
+
         if num_new_engines > 0:
             self.weight_updater.connect_rollout_engines(rollout_engines, rollout_engine_lock)
             dist.barrier(group=get_gloo_group())
@@ -198,6 +220,81 @@ class FSDPTrainRayActor(TrainRayActor):
 
         self.weight_updater.update_weights()
         clear_memory()
+
+    def _save_weights_to_disk(self) -> None:
+        """Save trainer weights for local diffusers rollout.
+
+        gather_full() uses DTensor.redistribute(Replicate()), which is a
+        collective and requires every DP rank to participate in lockstep.
+        Previously we returned early on rank != 0 and rank 0 hung on the
+        all_gather. Now every rank walks the state_dict together, but only
+        rank 0 actually writes the gathered tensor to disk.
+        """
+        from torch.distributed.tensor import DTensor, Replicate
+
+        is_writer = dist.get_rank() == 0
+
+        base_dir = getattr(self.args, "save", None) or os.path.join("/tmp", "miles_rollout_weights")
+        if is_writer:
+            os.makedirs(base_dir, exist_ok=True)
+        meta_path = os.path.join(base_dir, "diffusion_transformer.meta.json")
+
+        version = getattr(self, "_disk_weight_version", 0) + 1
+        self._disk_weight_version = version
+
+        lora_index = getattr(self.weight_updater, "_lora_index", {})
+
+        def gather_full(tensor: torch.Tensor) -> torch.Tensor:
+            tensor = tensor.cuda()
+            if isinstance(tensor, DTensor):
+                tensor = tensor.redistribute(placements=[Replicate()] * tensor.device_mesh.ndim).to_local()
+            return tensor
+
+        if getattr(self.args, "use_lora", False):
+            adapter_path = os.path.join(base_dir, "diffusion_lora_adapter.pt")
+            adapter_state = {}
+            for name, param in self.model.state_dict().items():
+                if "lora_" not in name:
+                    continue
+                gathered = gather_full(param)
+                if is_writer:
+                    adapter_state[name] = gathered.detach().cpu()
+                del gathered
+
+            if is_writer:
+                torch.save(adapter_state, adapter_path)
+                with open(meta_path, "w", encoding="utf-8") as f:
+                    json.dump({"version": version, "weight_type": "peft_lora"}, f)
+                logger.info("[weight_sync] saved local rollout LoRA adapter v%s to %s", version, adapter_path)
+            return
+
+        weights_path = os.path.join(base_dir, "diffusion_transformer.pt")
+        merged = {}
+        for name, param in self.model.state_dict().items():
+            if "lora_" in name:
+                continue
+
+            full_param = gather_full(param)
+            if name in lora_index:
+                lora_a, lora_b, scale = lora_index[name]
+                delta = (gather_full(lora_b.weight) @ gather_full(lora_a.weight)) * scale
+                full_param = full_param + delta.to(full_param.device, full_param.dtype)
+                del delta
+
+            clean_name = name.replace(".base_layer", "")
+            if clean_name.startswith("base_model.model."):
+                clean_name = clean_name[len("base_model.model."):]
+            elif clean_name.startswith("base_model."):
+                clean_name = clean_name[len("base_model."):]
+
+            if is_writer:
+                merged[clean_name] = full_param.detach().cpu()
+
+        if is_writer:
+            torch.save(merged, weights_path)
+            with open(meta_path, "w", encoding="utf-8") as f:
+                json.dump({"version": version, "weight_type": "full_transformer"}, f)
+            logger.info("[weight_sync] saved local rollout transformer weights v%s to %s", version, weights_path)
 
     def _gather_and_log_metrics(self, rollout_id: int, log_dict: dict[str, float], step: int) -> None:
         """Reduce per-rank scalars and log."""
@@ -286,6 +383,11 @@ class FSDPTrainRayActor(TrainRayActor):
         use_cfg = cfg_scale > 0
         clip_range = float(getattr(self.args, "diffusion_clip_range", 1e-4))
         adv_clip_max = float(getattr(self.args, "diffusion_adv_clip_max", 5.0))
+        kl_beta = float(getattr(self.args, "diffusion_kl_beta", 0.0))
+        if kl_beta > 0 and not getattr(self.args, "use_lora", False):
+            raise ValueError("--diffusion-kl-beta currently requires --use-lora so the base model can be used as reference.")
+        if kl_beta > 0 and not hasattr(self.model, "disable_adapter"):
+            raise RuntimeError("Diffusion KL requires a PEFT model exposing disable_adapter() after FSDP wrapping.")
         noise_level = float(getattr(self.args, "diffusion_noise_level", 0.7))
         num_timesteps = dit_trajectories[0].timesteps.shape[0]
 
@@ -312,21 +414,110 @@ class FSDPTrainRayActor(TrainRayActor):
         self.scheduler._step_index = None
         self.scheduler._begin_index = None
 
-        train_num_timesteps = max(1, num_timesteps)
+        skip_last = int(getattr(self.args, "diffusion_ignore_last", 0))
+        train_num_timesteps = max(1, num_timesteps - skip_last)
 
         trajectories_per_step = max(1, int(getattr(self.args, "diffusion_gradient_accumulation_steps", 1)))
         timestep_batch = int(getattr(self.args, "diffusion_timestep_batch", 1))
         num_steps_per_rollout = (batch_size + trajectories_per_step - 1) // trajectories_per_step
 
+        traj_indices = list(range(batch_size))
+        torch.manual_seed(self.global_step)
+        traj_indices = [traj_indices[i] for i in torch.randperm(batch_size).tolist()]
+        check_update_direction = bool(getattr(self.args, "debug_check_update_direction", False))
+
+        def forward_noise_pred(
+            tpc,
+            lat_chunk: torch.Tensor,
+            ts_chunk_for_model: torch.Tensor,
+            tb: int,
+            pos_batch: dict,
+            neg_cond,
+            *,
+            disable_adapter: bool = False,
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            """Run the DiT once, optionally disabling LoRA for reference KL."""
+            _dt = self._compute_dtype
+            _cast = lambda d: {k: v.to(_dt) if isinstance(v, torch.Tensor) else v for k, v in d.items()}
+            adapter_ctx = self.model.disable_adapter() if disable_adapter else nullcontext()
+            with adapter_ctx:
+                if use_cfg and neg_cond is not None:
+                    neg_batch = tpc.expand_cond_for_timestep_batch(neg_cond, tb)
+                    cfg_batch = tpc.concat_cfg_cond_batches(
+                        _cast(neg_batch),
+                        _cast(pos_batch),
+                    )
+                    noise_pred = self.model(
+                        hidden_states=torch.cat([lat_chunk, lat_chunk], dim=0).to(_dt),
+                        timestep=torch.cat([ts_chunk_for_model, ts_chunk_for_model], dim=0).to(_dt),
+                        return_dict=False,
+                        **cfg_batch,
+                    )[0]
+                    noise_pred_neg, noise_pred_pos = noise_pred.chunk(2)
+                    noise_pred = tpc.cfg_combine(
+                        noise_pred_pos,
+                        noise_pred_neg,
+                        guidance_scale,
+                        true_cfg_scale=true_cfg_scale,
+                    )
+                else:
+                    noise_pred_pos = self.model(
+                        hidden_states=lat_chunk.to(_dt),
+                        timestep=ts_chunk_for_model.to(_dt),
+                        return_dict=False,
+                        **_cast(pos_batch),
+                    )[0]
+                    noise_pred = noise_pred_pos
+            return noise_pred, noise_pred_pos
+
+        def recompute_log_prob_chunk(sample_idx: int, t_start: int, t_end: int) -> torch.Tensor:
+            """Recompute log-prob for a chunk using the current model weights."""
+            tpc = self.train_pipeline_config
+            latents, next_latents, timesteps_i = tpc.prepare_trajectory(dit_trajectories[sample_idx], device)
+            env = denoising_envs[sample_idx]
+            pos_cond = tpc.prepare_cond_kwargs(env.pos_cond_kwargs, device)
+            neg_cond = tpc.prepare_cond_kwargs(env.neg_cond_kwargs, device) if use_cfg else None
+
+            sde_idx = sde_step_indices_list[sample_idx]
+            if sde_idx is not None:
+                idx = torch.as_tensor(sde_idx, device=device, dtype=torch.long)
+                latents = latents[idx]
+                next_latents = next_latents[idx]
+                timesteps_i = timesteps_i[idx]
+
+            lat_chunk = latents[t_start:t_end]
+            next_chunk = next_latents[t_start:t_end]
+            ts_chunk = timesteps_i[t_start:t_end]
+            if self.train_pipeline_config.needs_timestep_scaling:
+                ts_chunk_for_model = ts_chunk / float(num_train_timesteps)
+            else:
+                ts_chunk_for_model = ts_chunk
+
+            tb = t_end - t_start
+            pos_batch = tpc.expand_cond_for_timestep_batch(pos_cond, tb)
+            noise_pred, _ = forward_noise_pred(tpc, lat_chunk, ts_chunk_for_model, tb, pos_batch, neg_cond)
+
+            _, log_prob_new, _, _ = sde_step_with_logprob(
+                self.scheduler,
+                noise_pred.float(),
+                ts_chunk,
+                lat_chunk.float(),
+                prev_sample=next_chunk.float(),
+                noise_level=noise_level,
+            )
+            return log_prob_new
+
         for step_id in range(num_steps_per_rollout):
             self.optimizer.zero_grad(set_to_none=True)
             log_stats = defaultdict(list)
+            update_direction_chunks: list[tuple[int, int, int, torch.Tensor, torch.Tensor]] = []
 
             traj_start = step_id * trajectories_per_step
             traj_end = min(batch_size, traj_start + trajectories_per_step)
+            num_traj_in_step = traj_end - traj_start
 
             # Inner loop: accumulate gradients over multiple trajectories.
-            for i in range(traj_start, traj_end):
+            for i in traj_indices[traj_start:traj_end]:
                 tpc = self.train_pipeline_config
                 latents, next_latents, timesteps_i = tpc.prepare_trajectory(dit_trajectories[i], device)
                 env = denoising_envs[i]
@@ -358,11 +549,10 @@ class FSDPTrainRayActor(TrainRayActor):
                     lat_chunk = latents[t_start:t_end]
                     ts_chunk = timesteps_i[t_start:t_end]
 
-                    # sgl-d's Qwen DiT divides timestep by num_train_timesteps
-                    # inside forward; diffusers' Qwen DiT does NOT — so we must
-                    # pre-scale here to land at the same time-embedding input.
-                    # Ref: sglang/.../models/dits/qwen_image.py (`timestep = timestep / 1000`).
-                    ts_chunk_for_model = ts_chunk / float(num_train_timesteps)
+                    if self.train_pipeline_config.needs_timestep_scaling:
+                        ts_chunk_for_model = ts_chunk / float(num_train_timesteps)
+                    else:
+                        ts_chunk_for_model = ts_chunk
 
                     pos_batch = tpc.expand_cond_for_timestep_batch(pos_cond, tb)
                     if t_start == 0 and i == traj_start:
@@ -385,17 +575,15 @@ class FSDPTrainRayActor(TrainRayActor):
                     # Match rollout's compute dtype exactly. Rollout runs under
                     # torch.autocast("cuda", <dtype>) so all inputs enter the DiT
                     # as that dtype. Without explicit cast here, FSDP MixedPrecision
-                    # only casts params but leaves fp32 inputs → first matmul runs
-                    # at higher precision than rollout → systematic noise_pred drift.
-                    # When diffusion_dtype=fp32, this is a no-op (inputs already fp32).
-                    _dt = self._compute_dtype
-                    _cast = lambda d: {k: v.to(_dt) if isinstance(v, torch.Tensor) else v for k, v in d.items()}
-                    noise_pred_pos = self.model(
-                        hidden_states=lat_chunk.to(_dt),
-                        timestep=ts_chunk_for_model.to(_dt),
-                        return_dict=False,
-                        **_cast(pos_batch),
-                    )[0]
+                    # only casts params but leaves fp32 inputs → systematic drift.
+                    noise_pred, noise_pred_pos = forward_noise_pred(
+                        tpc,
+                        lat_chunk,
+                        ts_chunk_for_model,
+                        tb,
+                        pos_batch,
+                        neg_cond,
+                    )
                     if t_start == 0 and i == traj_start:
                         print(
                             f"[noise_pred_pos traj=0 chunk_t={t_start}:{t_end}] "
@@ -410,23 +598,6 @@ class FSDPTrainRayActor(TrainRayActor):
                         alloc = torch.cuda.memory_allocated() / 1e9
                         reserved = torch.cuda.memory_reserved() / 1e9
                         print(f"[DEBUG] after first forward: allocated={alloc:.2f}GB reserved={reserved:.2f}GB", flush=True)
-
-                    if use_cfg and neg_cond is not None:
-                        neg_batch = tpc.expand_cond_for_timestep_batch(neg_cond, tb)
-                        noise_pred_neg = self.model(
-                            hidden_states=lat_chunk.to(_dt),
-                            timestep=ts_chunk_for_model.to(_dt),
-                            return_dict=False,
-                            **_cast(neg_batch),
-                        )[0]
-                        noise_pred = tpc.cfg_combine(
-                            noise_pred_pos,
-                            noise_pred_neg,
-                            guidance_scale,
-                            true_cfg_scale=true_cfg_scale,
-                        )
-                    else:
-                        noise_pred = noise_pred_pos
 
                     # DEBUG: compare training's noise_pred with rollout's stored
                     # model_output for the first trajectory / first chunk. If the
@@ -462,7 +633,7 @@ class FSDPTrainRayActor(TrainRayActor):
                                     flush=True,
                                 )
 
-                    _, log_prob_new, _, _ = sde_step_with_logprob(
+                    _, log_prob_new, prev_sample_mean, std_dev_t = sde_step_with_logprob(
                         self.scheduler,
                         noise_pred.float(),
                         timesteps_i[t_start:t_end],
@@ -479,13 +650,45 @@ class FSDPTrainRayActor(TrainRayActor):
                     clipped = -adv_chunk * torch.clamp(
                         ratio, 1.0 - clip_range, 1.0 + clip_range
                     )
-                    loss = torch.mean(torch.maximum(unclipped, clipped))
+                    policy_loss = torch.mean(torch.maximum(unclipped, clipped))
+                    kl_loss = log_prob_new.new_zeros(())
+                    if kl_beta > 0:
+                        with torch.no_grad():
+                            ref_noise_pred, _ = forward_noise_pred(
+                                tpc,
+                                lat_chunk,
+                                ts_chunk_for_model,
+                                tb,
+                                pos_batch,
+                                neg_cond,
+                                disable_adapter=True,
+                            )
+                            _, _, prev_sample_mean_ref, _ = sde_step_with_logprob(
+                                self.scheduler,
+                                ref_noise_pred.float(),
+                                timesteps_i[t_start:t_end],
+                                latents[t_start:t_end].float(),
+                                prev_sample=next_latents[t_start:t_end].float(),
+                                noise_level=noise_level,
+                            )
+                        kl_loss = ((prev_sample_mean - prev_sample_mean_ref) ** 2).mean(
+                            dim=tuple(range(1, prev_sample_mean.ndim)),
+                            keepdim=True,
+                        ) / (2 * std_dev_t**2)
+                        kl_loss = kl_loss.mean()
+                    loss = policy_loss + kl_beta * kl_loss
+                    loss_scaled = loss / num_traj_in_step
                     if not getattr(self.args, "debug_skip_optimizer_step", False):
-                        loss.backward()
+                        # GradScaler is a no-op (just .backward()) when disabled
+                        # (bf16/fp32). For fp16 it scales the loss to keep small
+                        # gradients above fp16's underflow threshold (~6e-5).
+                        self.scaler.scale(loss_scaled).backward()
 
                     with torch.no_grad():
                         per_elem = torch.maximum(unclipped, clipped)
                         log_stats["loss"].append(loss.detach())
+                        log_stats["policy_loss"].append(policy_loss.detach())
+                        log_stats["kl_loss"].append(kl_loss.detach())
                         # Diagnostic: abs-mean shows raw loss magnitude before sign cancellation
                         log_stats["loss_abs_mean"].append(per_elem.abs().mean().detach())
                         log_stats["adv_abs_mean"].append(adv_chunk.abs().mean().detach())
@@ -496,15 +699,63 @@ class FSDPTrainRayActor(TrainRayActor):
                         log_stats["clipfrac"].append(
                             torch.mean((torch.abs(ratio - 1.0) > clip_range).float()).detach()
                         )
+                        log_stats["clipfrac_gt_one"].append(
+                            torch.mean((ratio - 1.0 > clip_range).float()).detach()
+                        )
+                        log_stats["clipfrac_lt_one"].append(
+                            torch.mean((1.0 - ratio > clip_range).float()).detach()
+                        )
                         log_stats["log_prob_new_idx_0"].append(log_prob_new[0].detach())
                         log_stats["log_prob_old_idx_0"].append(old_chunk[0].detach())
                         log_stats["log_prob_mean_abs_diff"].append(torch.mean(torch.abs(log_prob_new - old_chunk)).detach())
+                        if check_update_direction:
+                            update_direction_chunks.append((
+                                i,
+                                t_start,
+                                t_end,
+                                log_prob_new.detach().cpu(),
+                                adv_chunk.detach().cpu(),
+                            ))
 
             # One optimizer step per step_id.
             if not getattr(self.args, "debug_skip_optimizer_step", False):
+                # When fp16 + scaler is enabled, gradients in optimizer.param_groups
+                # are still scaled. Unscale before clip_grad so the threshold (1.0)
+                # is applied to the true gradient norm, then let scaler.step()
+                # detect inf/NaN and skip the update if needed.
+                self.scaler.unscale_(self.optimizer)
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip_grad)
-                self.optimizer.step()
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
                 self.lr_scheduler.step()
+                if check_update_direction and update_direction_chunks:
+                    with torch.no_grad():
+                        before_list = []
+                        after_list = []
+                        adv_list = []
+                        for sample_idx, t_start, t_end, before_logp, adv_chunk in update_direction_chunks:
+                            after_logp = recompute_log_prob_chunk(sample_idx, t_start, t_end)
+                            before_list.append(before_logp.to(device))
+                            after_list.append(after_logp.detach())
+                            adv_list.append(adv_chunk.to(device))
+                        before_all = torch.cat(before_list).float()
+                        after_all = torch.cat(after_list).float()
+                        adv_all = torch.cat(adv_list).float()
+                        delta = after_all - before_all
+                        pos_mask = adv_all > 0
+                        neg_mask = adv_all < 0
+                        signed = torch.sign(adv_all) * delta
+                        pos_delta = delta[pos_mask].mean().item() if pos_mask.any() else float("nan")
+                        neg_delta = delta[neg_mask].mean().item() if neg_mask.any() else float("nan")
+                        signed_mean = signed[adv_all != 0].mean().item() if (adv_all != 0).any() else float("nan")
+                        print(
+                            f"[update direction] rollout={rollout_id} step={step_id} "
+                            f"pos_delta={pos_delta:.4e} neg_delta={neg_delta:.4e} "
+                            f"signed_adv_delta={signed_mean:.4e} "
+                            f"delta_mean={delta.mean().item():.4e} delta_abs_mean={delta.abs().mean().item():.4e} "
+                            f"pos_n={int(pos_mask.sum().item())} neg_n={int(neg_mask.sum().item())}",
+                            flush=True,
+                        )
             else:
                 # Keep weights frozen so noise_pred / log_prob alignment checks
                 # remain interpretable across iterations.
