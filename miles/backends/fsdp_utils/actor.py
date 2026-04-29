@@ -359,15 +359,15 @@ class FSDPTrainRayActor(TrainRayActor):
                     device=device,
                 )
 
-                window_sample_count = grids["window_sample_count"]
-                window_tstep_count = grids["window_tstep_count"]
+                local_batch_size = grids["local_batch_size"]
+                sde_window_size = grids["sde_window_size"]
                 sample_microbatch = min(
-                    sample_microbatch_arg if sample_microbatch_arg is not None else window_sample_count,
-                    window_sample_count,
+                    sample_microbatch_arg if sample_microbatch_arg is not None else local_batch_size,
+                    local_batch_size,
                 )
                 tstep_microbatch = min(
                     tstep_microbatch_arg if tstep_microbatch_arg is not None else 1,
-                    window_tstep_count,
+                    sde_window_size,
                 )
                 sample_microbatch = max(1, sample_microbatch)
                 tstep_microbatch = max(1, tstep_microbatch)
@@ -492,8 +492,8 @@ class FSDPTrainRayActor(TrainRayActor):
             "cond": cond_collated,
             "per_sample_pos_cond": positive_cond_kwargs_list,
             "per_sample_neg_cond": negative_cond_kwargs_list,
-            "window_sample_count": int(traj_end - traj_start),
-            "window_tstep_count": int(sde_window_size or 0),
+            "local_batch_size": int(traj_end - traj_start),
+            "sde_window_size": int(sde_window_size or 0),
         }
 
     def _run_optim_window(
@@ -512,12 +512,12 @@ class FSDPTrainRayActor(TrainRayActor):
     ) -> dict[str, list[torch.Tensor]]:
         """Iterate tiles across the window grid; one DiT forward + PPO loss +
         backward per tile. All tiles share `(loss / num_tiles).backward()` so
-        net gradient = mean over (window_sample × window_tstep) cells."""
+        net gradient = mean over (local_batch_size × sde_window_size) cells."""
         device = grids["latents"].device
-        window_sample_count = grids["window_sample_count"]
-        window_tstep_count = grids["window_tstep_count"]
-        sample_chunks = _chunked_indices(window_sample_count, sample_microbatch, device)
-        tstep_chunks = _chunked_indices(window_tstep_count, tstep_microbatch, device)
+        local_batch_size = grids["local_batch_size"]
+        sde_window_size = grids["sde_window_size"]
+        sample_chunks = _chunked_indices(local_batch_size, sample_microbatch, device)
+        tstep_chunks = _chunked_indices(sde_window_size, tstep_microbatch, device)
         num_tiles = len(sample_chunks) * len(tstep_chunks)
 
         if iter_order == "sample_major":
@@ -572,7 +572,7 @@ class FSDPTrainRayActor(TrainRayActor):
         train_pipeline_config = self.train_pipeline_config
         tile_sample_count = int(sample_indices.numel())
         tile_tstep_count = int(tstep_indices.numel())
-        window_sample_count = grids["window_sample_count"]
+        local_batch_size = grids["local_batch_size"]
 
         latents_tile = grids["latents"][sample_indices][:, tstep_indices]
         next_latents_tile = grids["next_latents"][sample_indices][:, tstep_indices]
@@ -608,7 +608,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 grids["cond"],
                 sample_indices=sample_indices,
                 tile_tstep_count=tile_tstep_count,
-                tile_sample_count=tile_sample_count,
+                local_batch_size=local_batch_size,
                 use_cfg=use_cfg,
             )
 
@@ -706,16 +706,16 @@ def _tile_collated_cond(
     *,
     sample_indices: torch.Tensor,
     tile_tstep_count: int,
-    tile_sample_count: int,
+    local_batch_size: int,
     use_cfg: bool,
 ) -> tuple[dict, dict | None]:
-    """Pick `sample_indices` rows from a sample-windowed cond and tile each
-    row `tile_tstep_count` times along the batch dim, yielding per-tile
-    (pos, neg) dicts each shaped (tile_sample_count * tile_tstep_count, ...).
+    """Pick `sample_indices` rows from a window-collated cond and tile each
+    row `tile_tstep_count` times along the batch dim. Output dicts have
+    batch = sample_indices.numel() * tile_tstep_count.
 
-    For CFG the input packs [pos_M | neg_M] along batch=2M; pos and neg
-    halves are extracted separately. Returns (pos, None) when use_cfg is
-    False."""
+    For CFG the input packs [pos_M | neg_M] along batch=2*local_batch_size;
+    pos and neg halves are extracted separately, the latter via offset
+    `+ local_batch_size`. Returns (pos, None) when use_cfg is False."""
     def _tile_value(value, rows: torch.Tensor):
         if isinstance(value, torch.Tensor):
             return value.index_select(0, rows).repeat_interleave(tile_tstep_count, dim=0)
@@ -727,7 +727,7 @@ def _tile_collated_cond(
     pos = {k: _tile_value(v, sample_indices) for k, v in cond.items()}
     if not use_cfg:
         return pos, None
-    neg_indices = sample_indices + tile_sample_count
+    neg_indices = sample_indices + local_batch_size
     neg = {k: _tile_value(v, neg_indices) for k, v in cond.items()}
     return pos, neg
 
