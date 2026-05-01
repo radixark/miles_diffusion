@@ -48,6 +48,7 @@ class TrainPipelineConfig(abc.ABC):
 
     lora_target_modules: list[str] = ["to_q", "to_k", "to_v", "to_out.0"]
     needs_timestep_scaling: bool = True
+    optimizer_state_allowed_missing: list[str] = []
 
     def prepare_trajectory(
         self,
@@ -103,6 +104,21 @@ class TrainPipelineConfig(abc.ABC):
                 out[key] = pos_value
         return out
 
+    def collate_cond_for_sample_batch(
+        self,
+        per_sample_cond_kwargs: list[dict],
+        device: torch.device,
+    ) -> dict:
+        """Stack a list of per-sample cond_kwargs (output of prepare_cond_kwargs)
+        into a single batched dict suitable for one DiT forward over M samples.
+
+        Model-specific because variable-length text embeds need padding + mask.
+        Default: naive concat along batch dim, only valid when shapes match.
+        """
+        raise NotImplementedError(
+            f"Must implement collate_cond_for_sample_batch to enable --micro-batch-size-sample in fsdp training"
+        )
+
     @abc.abstractmethod
     def cfg_combine(
         self,
@@ -112,3 +128,8 @@ class TrainPipelineConfig(abc.ABC):
         true_cfg_scale: float | None = None,
     ) -> torch.Tensor:
         """Apply classifier-free guidance. Model-specific (e.g. rescale or not)."""
+
+    @abc.abstractmethod
+    def preprocess_model_before_fsdp(self, model: torch.nn.Module) -> None:
+        """Preprocess the model before FSDP."""
+        pass

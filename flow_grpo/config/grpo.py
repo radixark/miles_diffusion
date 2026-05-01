@@ -737,6 +737,192 @@ def pickscore_qwenimage():
     return config
 
 
+def general_ocr_qwenimage_2gpu_diag():
+    gpu_number = 2
+    config = compressibility()
+    config.dataset = os.path.join(os.getcwd(), "dataset/ocr")
+
+    config.pretrained.model = "Qwen/Qwen-Image"
+    config.sample.num_steps = 10
+    config.sample.eval_num_steps = 50
+    config.sample.guidance_scale = 4
+
+    config.resolution = 512
+    # Matched with miles at 64 (sample, timestep) pairs globally per optim step.
+    # (We settled on 64 after flow_grpo bs=32 OOM'd on 140GB — Qwen-Image's
+    # 512-res × bs=32 activations blow past the GPU even with grad checkpoint.)
+    # flow_grpo: train_batch_size=16 × num_image_per_prompt=8 × 2 ranks = 64 global
+    #            num_batches_per_epoch=2, gradient_accum=1, num_train_timesteps=2
+    #            → 2 optim steps/epoch, 16 items/rank/optim-step × 2 timesteps
+    # miles (script): rollout_batch=8 × n_samples=8 × 2 ranks = 64 global/rollout,
+    #                 num_steps_per_rollout=2 → 16 items/rank/optim-step × 2 timesteps
+    # Both → 64 (sample, timestep) pairs globally per optim step.
+    # Sampler invariant (num_replicas * train_batch_size) % num_image_per_prompt == 0:
+    # 2*16 = 32, 32 % 8 = 0 ✓
+    config.sample.train_batch_size = 16
+    config.sample.num_image_per_prompt = 8
+    config.sample.num_batches_per_epoch = 2
+    assert config.sample.num_batches_per_epoch % 2 == 0
+    assert (gpu_number * config.sample.train_batch_size) % config.sample.num_image_per_prompt == 0
+    config.sample.test_batch_size = 4
+
+    config.train.batch_size = config.sample.train_batch_size
+    config.train.gradient_accumulation_steps = config.sample.num_batches_per_epoch // 2
+    config.train.num_inner_epochs = 1
+    config.train.beta = 0
+    config.train.learning_rate = 3e-4
+    config.train.adam_beta2 = 0.999
+    config.train.adam_weight_decay = 1e-4
+    config.train.max_grad_norm = 1.0
+    config.train.clip_range = 1e-4
+    config.sample.global_std = True
+    config.sample.same_latent = False
+    config.train.ema = False
+    config.sample.noise_level = 1.2
+    config.sample.sde_window_size = 2
+    config.sample.sde_window_range = (0, config.sample.num_steps // 2)
+    config.mixed_precision = "bf16"
+    config.use_lora = True
+    config.activation_checkpointing = True
+    config.fsdp_optimizer_offload = True
+    config.num_epochs = 1
+    config.save_freq = 10000
+    config.eval_freq = 10000
+    config.save_dir = "logs/ocr/qwenimage_2gpu_diag"
+    config.run_name = "flow_grpo_qwenimage_2gpu_diag"
+    config.reward_fn = {"ocr": 1.0}
+
+    config.prompt_fn = "general_ocr"
+    config.per_prompt_stat_tracking = True
+    return config
+
+
+def ocr_qwenimage_4gpu():
+    """4-GPU OCR config — copied verbatim from the canonical
+    ``flow_grpo/config/grpo.py:ocr_qwenimage_4gpu`` in the backup tree
+    (miles-claude-tmp-1) plus one explicit override to match miles formal:
+
+        sde_window_range = (3, 5)  ← matches `--diffusion-sde-window-range 3,5`
+                                     in the miles 4-GPU running cmd line.
+                                     Canonical default is (0, num_steps//2).
+
+    Per-rollout math (matches miles 4-GPU global totals):
+        4 ranks × train_batch_size=4 / num_image_per_prompt=16 = 1 unique
+        prompt × 16 samples per batch = 16 items/batch (global).
+        num_batches_per_epoch = 32, gradient_accum = 16 → 2 optim steps/epoch.
+        16 batches/optim-step × 16 items = 256 items/optim-step (global) ✓
+        32 batches × 1 unique prompt = 32 unique prompts/epoch ✓ (matches miles
+            --rollout-batch-size 32).
+
+    All other knobs (lr=3e-4, adam_beta2=0.999, weight_decay=1e-4,
+    max_grad_norm=1.0, clip_range=1e-4) inherit from base.get_config() and
+    happen to match miles' command line exactly.
+    """
+    gpu_number = 4
+    config = compressibility()
+    config.dataset = os.path.join(os.getcwd(), "dataset/ocr")
+
+    # qwen-image
+    config.pretrained.model = "Qwen/Qwen-Image"
+    config.sample.num_steps = 10
+    config.sample.eval_num_steps = 50
+    config.sample.guidance_scale = 4
+
+    config.resolution = 512
+    config.sample.train_batch_size = 4
+    config.sample.num_image_per_prompt = 16
+    config.sample.num_batches_per_epoch = int(32/(gpu_number*config.sample.train_batch_size/config.sample.num_image_per_prompt))
+    assert config.sample.num_batches_per_epoch % 2 == 0, "Please set config.sample.num_batches_per_epoch to an even number! This ensures that config.train.gradient_accumulation_steps = config.sample.num_batches_per_epoch / 2, so that gradients are updated twice per epoch."
+    config.sample.test_batch_size = 4
+
+    config.train.batch_size = config.sample.train_batch_size
+    config.train.gradient_accumulation_steps = config.sample.num_batches_per_epoch//2
+    config.train.num_inner_epochs = 1
+    config.train.beta = 0
+    config.sample.global_std = True
+    config.sample.same_latent = False
+    config.train.ema = False
+    config.sample.noise_level = 1.2
+    config.sample.sde_window_size = 2
+    # Canonical uses (0, num_steps//2). Miles formal uses --diffusion-sde-window-range 3,5.
+    config.sample.sde_window_range = (3, 5)
+    config.mixed_precision = "bf16"
+    config.use_lora = True
+    config.activation_checkpointing = True
+    config.fsdp_optimizer_offload = True
+    config.save_freq = 100000  # disabled — curves-only run
+    config.eval_freq = 30
+    config.save_dir = "logs/ocr/qwenimage-4gpu"
+    config.reward_fn = {
+        "ocr": 1.0,
+    }
+
+    config.prompt_fn = "general_ocr"
+
+    config.per_prompt_stat_tracking = True
+    return config
+
+
+def ocr_qwenimage_2gpu_aligned_with_miles_4gpu():
+    """2-GPU OCR config that produces the SAME GLOBAL per-rollout totals as the
+    canonical 4-GPU miles formal run, so we can run the LoRA merge-vs-additive
+    bf16 test on 2 GPUs (GPUs 1 & 7) without disturbing the parallel 4-GPU run.
+
+    Mirrors `ocr_qwenimage_4gpu` (canonical, m=1 unique prompt per batch, 16 k-
+    repeat) but with gpu_number=2:
+        2 ranks × train_batch_size=8 / num_image_per_prompt=16 = 1 prompt/batch
+        num_batches_per_epoch = 32 → 32 unique prompts/epoch ✓
+        2 ranks × 8 × 32 = 512 items/epoch ✓
+        gradient_accumulation_steps = 16 → 2 optim steps/epoch ✓
+        16 batches × 16 items/batch = 256 items/optim-step (global) ✓
+
+    Identical to canonical 4-GPU config in every other knob (lr, clip, beta2,
+    sde_window_range=(3,5), noise_level=1.2, etc.). FSDP MixedPrecision uses
+    flow_grpo's default bf16 reduce_dtype (matches what flow_grpo always does;
+    asymmetric with miles' fp32 reduce, but we accept that as a flow_grpo
+    fixture for this test).
+    """
+    gpu_number = 2
+    config = compressibility()
+    config.dataset = os.path.join(os.getcwd(), "dataset/ocr")
+
+    config.pretrained.model = "Qwen/Qwen-Image"
+    config.sample.num_steps = 10
+    config.sample.eval_num_steps = 50
+    config.sample.guidance_scale = 4
+
+    config.resolution = 512
+    config.sample.train_batch_size = 8
+    config.sample.num_image_per_prompt = 16
+    config.sample.num_batches_per_epoch = int(32/(gpu_number*config.sample.train_batch_size/config.sample.num_image_per_prompt))
+    assert config.sample.num_batches_per_epoch % 2 == 0
+    assert (gpu_number * config.sample.train_batch_size) % config.sample.num_image_per_prompt == 0
+    config.sample.test_batch_size = 4
+
+    config.train.batch_size = config.sample.train_batch_size
+    config.train.gradient_accumulation_steps = config.sample.num_batches_per_epoch // 2
+    config.train.num_inner_epochs = 1
+    config.train.beta = 0
+    config.sample.global_std = True
+    config.sample.same_latent = False
+    config.train.ema = False
+    config.sample.noise_level = 1.2
+    config.sample.sde_window_size = 2
+    config.sample.sde_window_range = (3, 5)
+    config.mixed_precision = "bf16"
+    config.use_lora = True
+    config.activation_checkpointing = True
+    config.fsdp_optimizer_offload = True
+    config.save_freq = 100000
+    config.eval_freq = 30
+    config.save_dir = "logs/ocr/qwenimage-2gpu-aligned"
+    config.reward_fn = {"ocr": 1.0}
+
+    config.prompt_fn = "general_ocr"
+    config.per_prompt_stat_tracking = True
+    return config
+
+
 def pickscore_qwenimage_8gpu():
     gpu_number=8
     config = compressibility()

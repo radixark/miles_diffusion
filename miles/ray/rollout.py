@@ -184,6 +184,19 @@ class RolloutManager:
         data = result.data
         self._save_debug_rollout_data(data, rollout_id=rollout_id, evaluation=True)
         metrics = _log_eval_rollout_data(rollout_id, self.args, data, result.metrics)
+        max_images = int(getattr(self.args, "diffusion_log_images", 0) or 0)
+        if max_images > 0:
+            self._log_images(
+                {
+                    f"eval_media/{name}_images": payload["samples"]
+                    for name, payload in data.items()
+                    if payload.get("samples")
+                },
+                max_images=max_images,
+                step_key="eval/step",
+                step_value=compute_rollout_step(self.args, rollout_id),
+                reward_key=self.args.eval_reward_key or self.args.reward_key,
+            )
         if self._metric_checker is not None:
             self._metric_checker.on_eval(metrics)
 
@@ -400,7 +413,16 @@ class RolloutManager:
         reward_stats["rollout/step"] = compute_rollout_step(self.args, self.rollout_id)
         tracking_utils.log(self.args, reward_stats, step_key="rollout/step")
 
-        self._log_rollout_images(samples)
+        max_images = int(getattr(self.args, "diffusion_log_images", 0) or 0)
+        interval = max(1, int(getattr(self.args, "diffusion_log_image_interval", 1) or 1))
+        if max_images > 0 and self.rollout_id % interval == 0:
+            self._log_images(
+                {"rollout_media/sample_images": samples},
+                max_images=max_images,
+                step_key="rollout/step",
+                step_value=compute_rollout_step(self.args, self.rollout_id),
+                reward_key=self.args.reward_key,
+            )
 
         train_data = {
             # RL
@@ -428,38 +450,43 @@ class RolloutManager:
 
         return train_data
 
-    def _log_rollout_images(self, samples: list[Sample]) -> None:
-        """Log a few rollout images to wandb under ``rollout/sample_images``.
-        Gated by ``--diffusion-log-images`` / ``--diffusion-log-image-interval``."""
-        max_images = int(getattr(self.args, "diffusion_log_images", 0) or 0)
-        if max_images <= 0:
-            return
-        interval = max(1, int(getattr(self.args, "diffusion_log_image_interval", 1) or 1))
-        if self.rollout_id % interval != 0:
-            return
+    def _log_images(
+        self,
+        media_key_to_samples: dict[str, list[Sample]],
+        *,
+        max_images: int,
+        step_key: str,
+        step_value: int,
+        reward_key: str | None,
+    ) -> None:
+        """Log per-key sample image grids under their own media namespace.
 
+        Caller decides whether to invoke (gating like ``--diffusion-log-images``
+        > 0 or rollout-side interval lives at the call site, not here). wandb
+        media panels do not honor ``step_metric`` (they slide on the internal
+        commit step), so panels pile up over a run — keeping them in their
+        own namespace at least groups them in one UI section.
+        """
         import wandb
-        images = []
-        for s in samples[:max_images]:
-            t = s.generated_output
-            if t is None or t.ndim != 4:
-                continue
-            frame = t[:, 0, :, :].float().cpu().numpy().transpose(1, 2, 0)
-            if frame.max() <= 1.0 + 1e-3:
-                frame = frame * 255.0
-            frame = np.clip(frame, 0, 255).astype(np.uint8)
-            reward = s.reward if not self.args.reward_key else (s.reward or {}).get(self.args.reward_key)
-            images.append(wandb.Image(frame, caption=f"{str(s.prompt)[:160]} | reward={reward}"))
-        if not images:
+        log_dict: dict = {}
+        for media_key, samples in media_key_to_samples.items():
+            images = []
+            for s in samples[:max_images]:
+                t = s.generated_output
+                if t is None or t.ndim != 4:
+                    continue
+                frame = t[:, 0, :, :].float().cpu().numpy().transpose(1, 2, 0)
+                if frame.max() <= 1.0 + 1e-3:
+                    frame = frame * 255.0
+                frame = np.clip(frame, 0, 255).astype(np.uint8)
+                reward = s.reward if not reward_key else (s.reward or {}).get(reward_key)
+                images.append(wandb.Image(frame, caption=f"{str(s.prompt)[:160]} | reward={reward}"))
+            if images:
+                log_dict[media_key] = images
+        if not log_dict:
             return
-        tracking_utils.log(
-            self.args,
-            {
-                "rollout/sample_images": images,
-                "rollout/step": compute_rollout_step(self.args, self.rollout_id),
-            },
-            step_key="rollout/step",
-        )
+        log_dict[step_key] = step_value
+        tracking_utils.log(self.args, log_dict, step_key=step_key)
 
     def set_train_parallel_config(self, config: dict):
         self.train_parallel_config = config

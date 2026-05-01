@@ -44,6 +44,20 @@ class SD3TrainPipelineConfig(TrainPipelineConfig):
 
         return kwargs
 
+    def collate_cond_for_sample_batch(
+        self,
+        per_sample_cond_kwargs: list[dict],
+        device: torch.device,
+    ) -> dict:
+        out = {}
+        for key in per_sample_cond_kwargs[0]:
+            values = [kwargs[key] for kwargs in per_sample_cond_kwargs if key in kwargs]
+            if values and isinstance(values[0], torch.Tensor):
+                out[key] = torch.cat(values, dim=0).to(device)
+            else:
+                out[key] = values
+        return out
+
     def cfg_combine(
         self,
         noise_pred_pos: torch.Tensor,
@@ -53,3 +67,6 @@ class SD3TrainPipelineConfig(TrainPipelineConfig):
     ) -> torch.Tensor:
         scale = true_cfg_scale if true_cfg_scale is not None else guidance_scale
         return noise_pred_neg + scale * (noise_pred_pos - noise_pred_neg)
+
+    def preprocess_model_before_fsdp(self, model: torch.nn.Module) -> None:
+        return None

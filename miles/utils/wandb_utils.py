@@ -114,6 +114,7 @@ def init_wandb_secondary(args, router_addr=None):
             mode="shared",
             x_primary=False,
             x_update_finish_state=False,
+            x_disable_stats=True,
         )
 
     if getattr(args, "sglang_enable_metrics", False) and router_addr is not None:
@@ -160,9 +161,10 @@ def _init_wandb_common():
     wandb.define_metric("rollout/step")
     wandb.define_metric("rollout/*", step_metric="rollout/step")
     wandb.define_metric("rollout/reward/*", step_metric="rollout/step")
-    wandb.define_metric("rollout/sample_images", step_metric="rollout/step")
+    wandb.define_metric("rollout_media/*", step_metric="rollout/step")
     wandb.define_metric("multi_turn/*", step_metric="rollout/step")
     wandb.define_metric("passrate/*", step_metric="rollout/step")
     wandb.define_metric("eval/step")
     wandb.define_metric("eval/*", step_metric="eval/step")
+    wandb.define_metric("eval_media/*", step_metric="eval/step")
     wandb.define_metric("perf/*", step_metric="rollout/step")

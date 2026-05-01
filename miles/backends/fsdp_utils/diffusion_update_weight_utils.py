@@ -278,10 +278,39 @@ class DiffusionUpdateWeightFromTensorLoRA(DiffusionUpdateWeightFromTensor):
         actual = (remote or {}).get(self.target_module)
         match = expected == actual
         logger.warning(
-            f"[weight_sync verify v{self.weight_version}] "
-            f"module={self.target_module} match={match} "
+            f"[weight_sync verify v{self.weight_version}] rank={dist.get_rank()} "
+            f"paired_engine_match={match} "
             f"expected={expected[:16] if expected else None} "
             f"actual={(actual or '')[:16] if isinstance(actual, str) else actual}"
+        )
+
+        # Cross-engine comparison: only rank 0 does this so we don't spam.
+        # Queries ALL engines' checksums and prints them side by side — the
+        # rank-specific noise_pred drift we've seen is consistent with
+        # engines diverging silently, so this pins it down.
+        if dist.get_rank() != 0:
+            return
+        try:
+            per_engine = ray.get([
+                e.get_weights_checksum.remote([self.target_module])
+                for e in self.rollout_engines
+            ])
+        except Exception as e:
+            logger.error(f"[weight_sync verify cross-engine] failed: {e}")
+            return
+        engine_sums = [
+            (idx, (r or {}).get(self.target_module))
+            for idx, r in enumerate(per_engine)
+        ]
+        first_sum = engine_sums[0][1]
+        all_equal = all(s == first_sum for _, s in engine_sums)
+        pretty = "  ".join(
+            f"eng{idx}={s[:16] if isinstance(s, str) else s}"
+            for idx, s in engine_sums
+        )
+        logger.warning(
+            f"[weight_sync verify v{self.weight_version} cross-engine] "
+            f"all_equal={all_equal}  {pretty}"
         )
 
     @staticmethod

@@ -1,32 +1,35 @@
-# ps -ef | grep train_diffusion.py | grep -v grep
-#WANDB_API_KEY=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 nohup bash /data/zhiheng/miles/scripts/run-diffusion-grpo-ocr.sh > /data/zhiheng/miles/logs/diffusion_grpo_$(date +%Y%m%d_%H%M%S).log 2>&1 &
-# nohup bash /data/zhiheng/miles/scripts/run-diffusion-grpo-ocr.sh > /data/zhiheng/miles/logs/diffusion_grpo_$(date +%Y%m%d_%H%M%S).log 2>&1 &
-# pkill -f "/data/zhiheng/miles/train_diffusion.py"
-# rollout needs 1 gpu for now, or there's going to be precision issue.
-# parameter rollout-num-gpus and --rollout-num-gpus-per-engine  only makes sense in sglang diffusion case.
 #!/usr/bin/env bash
+# 2-GPU OCR run, flow_grpo math-equivalent.
+# Per-rollout (= flow_grpo per-epoch):
+#   * 32 unique prompts × k=16 = 512 items / rollout
+#   * num_steps_per_rollout = 2 (= flow_grpo num_optim_per_epoch)
+#   * global_batch_size = 256 (auto-derived: 512 / 2)
+#   * local_batch_size  = 128 (per rank: 256 / 2 GPUs)
+#   * sample_microbatch = 4  (= flow_grpo train_batch_size)
+#   * tstep_microbatch  = 2  (= SDE window size, full window per forward)
+#   * gradient accumulation per optim step per rank = 128/4 = 32 forwards
+# Master + forward dtype = fp32 / bf16 (= flow_grpo's mixed precision).
+# SDE window range 3,5 covers steps {3,4} (per the flow_grpo bug we mirror).
+# Checkpoint: LoRA-only (auto via use_lora), every 20 rollouts.
+# Eval on test split every 50 rollouts.
 
-# NOTE: cleanup pkill / ray-stop block intentionally disabled — these are
-# global (pkill python*, ray stop --force) and would kill any concurrent
-# training on other GPUs. Re-enable manually only if no other trainings are
-# running.
-pkill -9 sgl*
+pkill -9 sgl* 2>/dev/null
 sleep 3
-ray stop --force
-pkill -9 ray*
-pkill -9 python*
+ray stop --force 2>&1 | tail -1
+pkill -9 ray* 2>/dev/null
+pkill -9 python* 2>/dev/null
 sleep 3
-pkill -9 ray*
-pkill -9 python*
+pkill -9 ray* 2>/dev/null
+pkill -9 python* 2>/dev/null
 ps -eo ppid,state,comm --no-headers | awk '$2=="Z" && $1!=1 && $3~/ray|python|sglang/ {print $1}' | sort -u | xargs -r kill -9 2>/dev/null || true
 sleep 2
 
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-export CUDA_VISIBLE_DEVICES=4,5,6,7
+export CUDA_VISIBLE_DEVICES=4,5
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-# WandB: enable if WANDB_API_KEY is present.
-RUN_NAME="diffusion_grpo_$(date +%Y%m%d_%H%M%S)"
+RUN_NAME="diffusion_grpo_ocr_2gpu_fg_aligned_$(date +%Y%m%d_%H%M%S)"
+SAVE_DIR="${ROOT_DIR}/logs/${RUN_NAME}/ckpt"
 
 WANDB_ARGS=()
 if [[ -n "${WANDB_API_KEY:-}" ]]; then
@@ -40,12 +43,9 @@ if [[ -n "${WANDB_API_KEY:-}" ]]; then
     --disable-wandb-random-suffix
   )
 fi
-# Prepare OCR prompts into JSONL expected by Miles data loader.
+
 python "${ROOT_DIR}/tools/prepare_ocr_jsonl.py"
 
-# Minimal diffusion GRPO run, aligned with flow_grpo single-node settings.
-
-#hf-checkpoint can be any text generation model from HuggingFace, used to generate initial prompts for diffusion model.
 python -u "${ROOT_DIR}/train_diffusion.py" \
   --train-backend fsdp \
   --rollout-function-path miles.rollout.sglang_diffusion_rollout.generate_rollout \
@@ -55,11 +55,15 @@ python -u "${ROOT_DIR}/train_diffusion.py" \
   --rollout-batch-size 32 \
   --n-samples-per-prompt 16 \
   --num-rollout 100000 \
+  --diffusion-microgroup-size 16 \
+  --micro-batch-size-sample 4 \
+  --micro-batch-size-tstep 2 \
+  --diffusion-train-iter-order sample_major \
   --gradient-checkpointing \
-  --actor-num-gpus-per-node 4 \
-  --rollout-num-gpus 4 \
+  --actor-num-gpus-per-node 2 \
+  --rollout-num-gpus 2 \
   --rollout-num-gpus-per-engine 1 \
-  --num-gpus-per-node 4 \
+  --num-gpus-per-node 2 \
   --colocate \
   --use-lora \
   --lora-rank 64 \
@@ -71,13 +75,14 @@ python -u "${ROOT_DIR}/train_diffusion.py" \
   --weight-decay 1e-4 \
   --use-miles-router \
   --sglang-server-concurrency 4 \
+  --update-weight-buffer-size 2147483648 \
   --diffusion-model Qwen/Qwen-Image \
   --diffusion-reward ocr:1.0 \
   --advantage-estimator grpo \
   --globalize-reward-std \
   --rm-type ocr \
-  --diffusion-forward-dtype bf16 \
   --fsdp-master-dtype fp32 \
+  --diffusion-forward-dtype bf16 \
   --diffusion-num-steps 10 \
   --diffusion-eval-num-steps 50 \
   --num-steps-per-rollout 2 \
@@ -88,9 +93,10 @@ python -u "${ROOT_DIR}/train_diffusion.py" \
   --diffusion-sde-window-size 2 \
   --diffusion-sde-window-range 3,5 \
   --apply-qwen-image-sgl-d-patch \
-  --update-weight-buffer-size 2147483648 \
   --diffusion-height 512 \
   --diffusion-width 512 \
+  --save "${SAVE_DIR}" \
+  --save-interval 20 \
   --eval-prompt-data ocr_test "${ROOT_DIR}/data/ocr/test.jsonl" \
   --eval-interval 50 \
   --skip-eval-before-train \

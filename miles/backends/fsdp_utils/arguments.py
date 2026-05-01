@@ -22,7 +22,11 @@ class FSDPArgs:
     override_lr_scheduler: bool = False
     weight_decay: float = 0.0
     adam_beta1: float = 0.9
-    adam_beta2: float = 0.95
+    # Aligned with flow_grpo (config/base.py:80) and PyTorch's Adam paper default.
+    # Old miles default was 0.95 (LLM-pretraining convention) — switched here so
+    # users who forget --adam-beta2 don't silently fall out of sync with flow_grpo
+    # diffusion comparisons.
+    adam_beta2: float = 0.999
     adam_eps: float = 1e-8
     warmup_ratio: float = 0.03
 

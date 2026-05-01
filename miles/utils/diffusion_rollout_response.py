@@ -40,6 +40,9 @@ def _deserialize_rollout_log_probs(
     *,
     deserialize_func: Callable[[Any], torch.Tensor | None],
 ) -> torch.Tensor | None:
+    # Eval-mode rollout (rollout=False) sends no log_probs; train-mode always does.
+    if value is None:
+        return None
     assert isinstance(value, dict) and value.get("__tensor__") is not None
     return deserialize_func(value["data"]).detach().cpu()
 
@@ -86,6 +89,7 @@ def _parse_dit_trajectory(
     return DiTTrajectory(
         latents=deserialize_func(data.get("latents")),
         timesteps=deserialize_func(data.get("timesteps")),
+        sigmas=deserialize_func(data.get("sigmas")),
     )
 
 

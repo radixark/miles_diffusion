@@ -62,15 +62,16 @@ python "${ROOT_DIR}/tools/prepare_ocr_jsonl.py"
 # `log_prob_mean_abs_diff`, `approx_kl`, and `[noise_pred align ...]`.
 python -u "${ROOT_DIR}/train_diffusion.py" \
   --train-backend fsdp \
-  --diffusion-train \
   --rollout-function-path miles.rollout.sglang_diffusion_rollout.generate_rollout \
-  --hf-checkpoint gpt2 \
+  --hf-checkpoint Qwen/Qwen-Image \
   --prompt-data "${ROOT_DIR}/data/ocr/train.jsonl" \
   --input-key input \
   --rollout-batch-size 1 \
   --n-samples-per-prompt 8 \
   --num-rollout 100000 \
-  --diffusion-timestep-batch 10 \
+  --micro-batch-size-sample 1 \
+  --micro-batch-size-tstep 10 \
+  --diffusion-train-iter-order timestep_major \
   --gradient-checkpointing \
   --actor-num-gpus-per-node 2 \
   --rollout-num-gpus 2 \
@@ -88,7 +89,7 @@ python -u "${ROOT_DIR}/train_diffusion.py" \
   --advantage-estimator grpo \
   --globalize-reward-std \
   --rm-type ocr \
-  --diffusion-dtype bf16 \
+  --diffusion-forward-dtype bf16 \
   --diffusion-num-steps 10 \
   --diffusion-guidance-scale 4.0 \
   --diffusion-true-cfg-scale 4.0 \
@@ -98,7 +99,10 @@ python -u "${ROOT_DIR}/train_diffusion.py" \
   --diffusion-sde-window-range 0,5 \
   --diffusion-height 256 \
   --diffusion-width 256 \
-  --global-batch-size 8 \
   --diffusion-debug-mode \
+  --update-weight-buffer-size 2147483648 \
   --debug-skip-optimizer-step \
+  --eval-prompt-data ocr_test "${ROOT_DIR}/data/ocr/test.jsonl" \
+  --eval-interval 50 \
+  --skip-eval-before-train \
   "${WANDB_ARGS[@]}"

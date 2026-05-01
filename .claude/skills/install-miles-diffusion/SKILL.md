@@ -5,7 +5,9 @@ description: One-click install of miles-diffusion on a fresh Linux GPU machine. 
 
 # install-miles-diffusion
 
-Drives the install helper at `.claude/skills/install-miles-diffusion/install.sh` and verifies the result. The helper is idempotent — re-running it skips steps that already succeeded (conda env exists, sglang checkout present, etc.).
+Drives the install helper at `.claude/skills/install-miles-diffusion/install.sh` and verifies the result. The helper is idempotent — re-running it skips steps that already succeeded (conda env exists, sglang at pinned commit, etc.).
+
+**All package versions are pinned**, including torch, sglang (commit SHA), transformers, accelerate, ray, diffusers, peft, paddleocr, paddlepaddle-gpu, and the entire flow_grpo dep set. Pins reflect the currently-validated working environment.
 
 ## When to invoke
 
@@ -13,18 +15,19 @@ User says anything like: "install miles-diffusion", "set up this repo on a new m
 
 ## What it installs
 
-End goal: `bash scripts/run-diffusion-grpo-ocr.sh` boots cleanly on this host.
+End goal: `bash scripts/run-diffusion-grpo-ocr.sh` boots cleanly on this host with **bit-reproducible** package versions.
 
-Components:
+Components (every version pinned):
 
 1. **apt system libs** — `libglib2.0-0 libgl1` (paddleocr / cv2 runtime).
-2. **Conda env** — Python 3.11 (configurable via `PY_VER`).
-3. **PyTorch** — CUDA 12.4 build matched to the sglang-diffusion branch.
-4. **sglang-diffusion** — clones **`Rockdu/sglang` @ `sglang-diffusion-rollout-test`** into `$SGLANG_DIR` (default `../sglang` sibling of miles) and installs `python[all]` in editable mode. That branch is the sglang-diffusion fork miles-diffusion depends on (multimodal_gen + `update_weights_from_tensor` for RL weight sync). Override via `SGLANG_REPO` / `SGLANG_BRANCH` only if you know what you're doing.
-5. **miles package** — `pip install -e .` plus `requirements.txt`.
-6. **flow_grpo OCR deps** — runs `flow_grpo/setup.sh` (paddleocr 2.9.1, peft 0.10.0, diffusers 0.33.1, etc., all `--no-deps` to avoid the usual paddlepaddle dep-hell).
-7. **torch_memory_saver** — optional, skipped silently on failure.
-8. **Smoke test** — `nvidia-smi`, then `python -c "import train_diffusion"`.
+2. **Conda env** — Python `3.11` (configurable via `PY_VER`).
+3. **Tooling** — `pip==26.0.1`, `wheel==0.45.1`, `setuptools==82.0.1` (resolver behaviour depends on these).
+4. **PyTorch** — `torch==2.9.1` on `cu129` (override via `TORCH_VER` / `CUDA_VER`).
+5. **sglang-diffusion** — clones **`Rockdu/sglang` @ `sglang-diffusion-rollout-test`** into `$SGLANG_DIR` (default `../sglang`) and `git checkout --detach $SGLANG_COMMIT` (default `0372158dd66bc7cb0740c733bd60047db790ec7d`). Installed editable as `python[all]`. Pinning to a SHA (not just the branch tip) is required for bit-exact rollout reproducibility. Override `SGLANG_REPO` / `SGLANG_BRANCH` / `SGLANG_COMMIT` only if you know what you're doing.
+6. **miles package** — `pip install -r requirements.txt` (all `==`-pinned: transformers 5.5.4, accelerate 1.12.0, ray 2.53.0, datasets 4.4.2, safetensors 0.7.0, wandb 0.23.1, …) plus `pip install -e . --no-deps`.
+7. **flow_grpo OCR deps** — runs `flow_grpo/setup.sh` (every line `--no-deps` and `==`-pinned: paddleocr 2.9.1, paddlepaddle-gpu 2.6.2, peft 0.18.1, diffusers 0.37.0, opencv 4.11.0.86, etc.).
+8. **torch_memory_saver** — pinned to `0.0.9`, skipped silently on failure.
+9. **Smoke test** — `nvidia-smi`, then `python -c "import train_diffusion"`.
 
 ## How to run
 
@@ -35,7 +38,9 @@ Before doing anything, surface these to the user and let them override:
 - `SGLANG_DIR` (default `$(dirname "$PWD")/sglang`)
 - `SGLANG_REPO` (default `https://github.com/Rockdu/sglang.git`)
 - `SGLANG_BRANCH` (default `sglang-diffusion-rollout-test`)
-- `CUDA_VER` (default `12.4`)
+- `SGLANG_COMMIT` (default `0372158dd66bc7cb0740c733bd60047db790ec7d`)
+- `CUDA_VER` (default `12.9`)
+- `TORCH_VER` (default `2.9.1`)
 
 Then:
 

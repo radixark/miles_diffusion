@@ -40,6 +40,26 @@ tqdm = partial(tqdm.tqdm, dynamic_ncols=True)
 
 FLAGS = flags.FLAGS
 config_flags.DEFINE_config_file("config", "config/base.py", "Training configuration.")
+flags.DEFINE_float(
+    "simulate_offpolicy",
+    0.0,
+    "If > 0, inject Gaussian noise N(0, value^2) onto training-side noise_pred "
+    "in compute_log_prob so log_prob diverges from rollout-stored log_prob in a "
+    "controlled way. The argument is the std-dev (e.g. 1e-2 → each element gets "
+    "an independent N(0, 1e-2^2) perturbation added). 0 disables. Used to "
+    "study how a fixed-std train↔rollout drift maps to clipfrac/loss.",
+)
+flags.DEFINE_boolean(
+    "rollout_merge_lora",
+    False,
+    "If True, run sampling rollout with LoRA merged into base weights "
+    "(W_merged = W_base + (alpha/r) * B @ A, single matmul) while keeping "
+    "training-side compute_log_prob on the additive PEFT forward path. "
+    "The two bf16 paths are mathematically equivalent but differ by ~1-2 "
+    "ULPs per Linear, compounding to ~2% noise_pred drift over 60 blocks "
+    "→ tests whether the LoRA merge-vs-additive bf16 mismatch reproduces "
+    "round-2+ on-policy clipfrac > 0 (the miles bug we identified).",
+)
 
 def gather_tensor(tensor, world_size):
     if world_size == 1:
@@ -143,6 +163,55 @@ class DistributedKRepeatSampler(Sampler):
         self.epoch = epoch  # Used to synchronize random state across epochs
 
 
+@contextlib.contextmanager
+def _merged_lora_forward():
+    """Temporarily replace PEFT lora.Linear.forward with a merged-W single-matmul
+    forward. Computes W' = W_base + Σ_α (α/r) · B_α @ A_α inline at every call,
+    then does ``F.linear(x, W')``. This matches sgl-d's post-weight-sync path
+    where rollout receives merged weights and runs vanilla Linear.
+
+    The bf16 round-order is different from PEFT's default additive path
+    (``W_base @ x + (α/r) · (B @ (A @ x))``) — that's the entire point. Two
+    paths are mathematically equivalent but differ by 1-2 ULPs per Linear.
+
+    Caveats:
+        - Recomputes ``B @ A`` per forward (no caching). Negligible overhead vs
+          the transformer matmuls.
+        - Ignores LoRA dropout (rollout runs with ``torch.no_grad`` so dropout
+          is in eval mode → identity).
+    """
+    import peft.tuners.lora as _lora_mod
+    import torch.nn.functional as F
+
+    orig_forward = _lora_mod.Linear.forward
+
+    def merged_forward(self, x, *args, **kwargs):
+        if getattr(self, "merged", False) or getattr(self, "disable_adapters", False):
+            return self.base_layer(x, *args, **kwargs)
+        W = self.base_layer.weight
+        bias = getattr(self.base_layer, "bias", None)
+        actives = (
+            self.active_adapters
+            if hasattr(self, "active_adapters") and self.active_adapters
+            else [self.active_adapter]
+        )
+        for active in actives:
+            if active not in self.lora_A:
+                continue
+            A = self.lora_A[active].weight
+            B = self.lora_B[active].weight
+            scaling = self.scaling[active]
+            delta = (B @ A) * scaling
+            W = W + delta.to(W.dtype)
+        return F.linear(x, W, bias)
+
+    _lora_mod.Linear.forward = merged_forward
+    try:
+        yield
+    finally:
+        _lora_mod.Linear.forward = orig_forward
+
+
 def compute_text_embeddings(prompt, text_encoders, tokenizers, max_sequence_length, device):
     with torch.no_grad():
         prompt_embeds, pooled_prompt_embeds, text_ids = encode_prompt(
@@ -229,6 +298,12 @@ def compute_log_prob(transformer, pipeline, sample, j, config, rank):
     cond_norm = torch.norm(noise_pred, dim=-1, keepdim=True)
     noise_norm = torch.norm(comb_pred, dim=-1, keepdim=True)
     noise_pred = comb_pred * (cond_norm / noise_norm)
+
+    if FLAGS.simulate_offpolicy > 0:
+        # N(0, simulate_offpolicy^2) per element, dtype/device match noise_pred.
+        noise = torch.randn_like(noise_pred) * FLAGS.simulate_offpolicy
+        noise_pred = noise_pred + noise
+
     # compute the log prob of next_latents given latents under the current model
     prev_sample, log_prob, prev_sample_mean, std_dev_t = sde_step_with_logprob(
         pipeline.scheduler,
@@ -285,7 +360,7 @@ def eval(pipeline, test_dataloader, config, rank, local_rank, world_size, device
         truncation=True,
         return_tensors="pt",
     ).input_ids.to(device)
-    last_batch_prompt_ids_gather = gather_tensor(last_batch_prompt_ids, world_size).cpu().float().numpy()
+    last_batch_prompt_ids_gather = gather_tensor(last_batch_prompt_ids, world_size).cpu().long().numpy()
     last_batch_prompts_gather = pipeline.tokenizer.batch_decode(
         last_batch_prompt_ids_gather, skip_special_tokens=True
     )
@@ -652,22 +727,26 @@ def main(_):
                 generator = create_generator(prompts, base_seed=epoch*10000+i)
             else:
                 generator = None
+            _rollout_ctx = (
+                _merged_lora_forward() if FLAGS.rollout_merge_lora else contextlib.nullcontext()
+            )
             with autocast():
                 with torch.no_grad():
-                    collected_data = pipeline_with_logprob(
-                        pipeline,
-                        prompts,
-                        negative_prompt=[" "]*len(prompts),
-                        num_inference_steps=config.sample.num_steps,
-                        true_cfg_scale=config.sample.guidance_scale,
-                        output_type="pt",
-                        height=config.resolution,
-                        width=config.resolution, 
-                        noise_level=config.sample.noise_level,
-                        generator=generator,
-                        sde_window_size=config.sample.sde_window_size,
-                        sde_window_range=config.sample.sde_window_range,
-                )
+                    with _rollout_ctx:
+                        collected_data = pipeline_with_logprob(
+                            pipeline,
+                            prompts,
+                            negative_prompt=[" "]*len(prompts),
+                            num_inference_steps=config.sample.num_steps,
+                            true_cfg_scale=config.sample.guidance_scale,
+                            output_type="pt",
+                            height=config.resolution,
+                            width=config.resolution,
+                            noise_level=config.sample.noise_level,
+                            generator=generator,
+                            sde_window_size=config.sample.sde_window_size,
+                            sde_window_range=config.sample.sde_window_range,
+                        )
 
             latents = torch.stack(collected_data["all_latents"], dim=1) 
             log_probs = torch.stack(collected_data["all_log_probs"], dim=1)  
@@ -794,7 +873,7 @@ def main(_):
         # per-prompt mean/std tracking
         if config.per_prompt_stat_tracking:
             # gather the prompts across processes
-            prompt_ids = gather_tensor(samples["prompt_ids"], world_size).cpu().float().numpy()
+            prompt_ids = gather_tensor(samples["prompt_ids"], world_size).cpu().long().numpy()
             prompts = pipeline.tokenizer.batch_decode(
                 prompt_ids, skip_special_tokens=True
             )

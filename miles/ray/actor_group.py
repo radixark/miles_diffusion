@@ -57,10 +57,8 @@ class RayTrainGroup:
             "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": "1",
             **self.args.train_env_vars,
         }
-        # For diffusion training, let Ray set CUDA_VISIBLE_DEVICES per actor
-        # to avoid all ranks sharing GPU0.
-        if not self.args.diffusion_train:
-            env_vars.update({name: "1" for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST})
+        # Let Ray set CUDA_VISIBLE_DEVICES per actor to avoid all ranks
+        # sharing GPU0. (Old --diffusion-train branch removed.)
 
         if self.args.offload_train and self.args.train_backend == "megatron":
             import torch_memory_saver
