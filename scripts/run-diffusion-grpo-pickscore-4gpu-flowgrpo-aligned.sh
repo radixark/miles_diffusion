@@ -43,14 +43,16 @@ fi
 
 PYTHON_BIN="${PYTHON_BIN:-python}"
 
-# data/pickscore/{train,test}.jsonl preseeded in the worktree
-# (converted from flow_grpo/dataset/pickscore/{train,test}.txt).
+DATASETS_DIR="/root/datasets/miles-diffusion-datasets"
+hf download --repo-type dataset rockdu/miles-diffusion-datasets \
+  --include "flowgrpo_pickscore/**" \
+  --local-dir "${DATASETS_DIR}"
 
 "${PYTHON_BIN}" -u "${ROOT_DIR}/train_diffusion.py" \
   --train-backend fsdp \
   --rollout-function-path miles.rollout.sglang_diffusion_rollout.generate_rollout \
   --hf-checkpoint Qwen/Qwen-Image \
-  --prompt-data "${ROOT_DIR}/data/pickscore/train.jsonl" \
+  --prompt-data "${DATASETS_DIR}/flowgrpo_pickscore/train.jsonl" \
   --input-key input \
   --rollout-batch-size 32 \
   --n-samples-per-prompt 16 \
@@ -103,7 +105,7 @@ PYTHON_BIN="${PYTHON_BIN:-python}"
   --diffusion-width 512 \
   --save "${SAVE_DIR}" \
   --save-interval 10 \
-  --eval-prompt-data pickscore_test "${ROOT_DIR}/data/pickscore/test.jsonl" \
+  --eval-prompt-data pickscore_test "${DATASETS_DIR}/flowgrpo_pickscore/test.jsonl" \
   --eval-interval 30 \
   --skip-eval-before-train \
   "${WANDB_ARGS[@]}"
