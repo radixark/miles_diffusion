@@ -43,7 +43,6 @@ python "${ROOT_DIR}/tools/prepare_ocr_jsonl.py"
 
 python -u "${ROOT_DIR}/train_diffusion.py" \
   --train-backend fsdp \
-  --diffusion-train \
   --rollout-function-path miles.rollout.diffusion_rollout.generate_rollout \
   --hf-checkpoint gpt2 \
   --prompt-data "${ROOT_DIR}/data/ocr/train.jsonl" \
@@ -51,7 +50,7 @@ python -u "${ROOT_DIR}/train_diffusion.py" \
   --rollout-batch-size 1 \
   --n-samples-per-prompt 8 \
   --num-rollout 100000 \
-  --diffusion-timestep-batch 10 \
+  --micro-batch-size-tstep 10 \
   --gradient-checkpointing \
   --actor-num-gpus-per-node 1 \
   --rollout-num-gpus 1 \
@@ -66,7 +65,7 @@ python -u "${ROOT_DIR}/train_diffusion.py" \
   --advantage-estimator grpo \
   --globalize-reward-std \
   --rm-type ocr \
-  --diffusion-dtype bf16 \
+  --diffusion-forward-dtype bf16 \
   --diffusion-num-steps 10 \
   --diffusion-guidance-scale 4.5 \
   --diffusion-noise-level 0.7 \

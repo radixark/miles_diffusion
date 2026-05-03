@@ -49,7 +49,6 @@ fi
 
 "${PYTHON_BIN}" -u "${ROOT_DIR}/train_diffusion.py" \
   --train-backend fsdp \
-  --diffusion-train \
   --rollout-function-path miles.rollout.sglang_diffusion_rollout.generate_rollout \
   --hf-checkpoint gpt2 \
   --prompt-data "${ROOT_DIR}/data/ocr/train.jsonl" \
@@ -57,7 +56,7 @@ fi
   --rollout-batch-size 1 \
   --n-samples-per-prompt 2 \
   --num-rollout 1 \
-  --diffusion-timestep-batch 10 \
+  --micro-batch-size-tstep 10 \
   --gradient-checkpointing \
   --actor-num-gpus-per-node "${SMOKE_ACTOR_GPUS_PER_NODE}" \
   --rollout-num-gpus "${SMOKE_ROLLOUT_GPUS}" \

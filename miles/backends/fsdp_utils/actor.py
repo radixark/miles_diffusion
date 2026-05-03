@@ -68,10 +68,11 @@ class FSDPTrainRayActor(TrainRayActor):
 
         self._master_dtype = _resolve_dtype(args.fsdp_master_dtype)
         self._forward_dtype = _resolve_dtype(args.diffusion_forward_dtype)
+        diffusion_model_id = getattr(args, "diffusion_model", None) or args.hf_checkpoint
 
         with self._get_init_weight_context_manager():
             pipeline = DiffusionPipeline.from_pretrained(
-                self.args.hf_checkpoint,
+                diffusion_model_id,
                 torch_dtype=self._master_dtype,
                 trust_remote_code=True,
                 text_encoder=None,
@@ -117,6 +118,15 @@ class FSDPTrainRayActor(TrainRayActor):
             )
         else:
             raise ValueError(f"Unsupported optimizer: {args.optimizer}")
+
+        # fp16 policy gradients are small enough to underflow without scaling.
+        # ShardedGradScaler keeps the found_inf decision synchronized across
+        # FSDP ranks; it is a no-op for bf16/fp32.
+        from torch.distributed.fsdp.sharded_grad_scaler import ShardedGradScaler
+
+        self.scaler = ShardedGradScaler(
+            enabled=(self._forward_dtype == torch.float16),
+        )
 
         self.lr_scheduler = get_lr_scheduler(args, self.optimizer)
         self.global_step = 0
@@ -431,6 +441,9 @@ class FSDPTrainRayActor(TrainRayActor):
         skip_last = int(getattr(self.args, "diffusion_ignore_last", 0))
         train_num_timesteps = max(1, num_timesteps - skip_last)
         local_batch_size = max(1, int(getattr(self.args, "local_batch_size", 1)))
+        legacy_accum_steps = int(getattr(self.args, "diffusion_gradient_accumulation_steps", 1))
+        if legacy_accum_steps > 1:
+            local_batch_size = min(batch_size, legacy_accum_steps)
         num_optim_steps_per_rollout = (batch_size + local_batch_size - 1) // local_batch_size
 
         sample_microbatch_arg = getattr(self.args, "micro_batch_size_sample", None)
@@ -486,9 +499,11 @@ class FSDPTrainRayActor(TrainRayActor):
 
                 self.prof.step(rollout_id=rollout_id)
                 if not getattr(self.args, "debug_skip_optimizer_step", False):
+                    self.scaler.unscale_(self.optimizer)
                     grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip_grad)
                     log_stats["grad_norm"].append(grad_norm.detach())
-                    self.optimizer.step()
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
                     self.lr_scheduler.step()
                 else:
                     # Keep weights frozen so noise_pred / log_prob alignment
@@ -659,7 +674,7 @@ class FSDPTrainRayActor(TrainRayActor):
                     log_stats=log_stats,
                 )
                 if not skip_optimizer_step:
-                    (loss / num_tiles).backward()
+                    self.scaler.scale(loss / num_tiles).backward()
 
         return log_stats
 

@@ -116,6 +116,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default="megatron",
                 help="The backend for training.",
             )
+            parser.add_argument(
+                "--diffusion-train",
+                action="store_true",
+                default=False,
+                help=argparse.SUPPRESS,
+            )
             # Diffusion GRPO training knobs (used by DiffusionFSDPTrainRayActor).
             #
             # Per-optim-step the train loop sees an (M, T_sde) grid — M samples
@@ -145,6 +151,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=int,
                 default=1,
                 help="SDE timesteps per DiT forward in train (tstep-axis tile size). Default 1.",
+            )
+            parser.add_argument(
+                "--diffusion-timestep-batch",
+                dest="micro_batch_size_tstep",
+                type=int,
+                default=argparse.SUPPRESS,
+                help=argparse.SUPPRESS,
             )
             parser.add_argument(
                 "--diffusion-train-iter-order",
@@ -220,6 +233,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "and the training-side input cast that matches rollout "
                     "for log-prob alignment."
                 ),
+            )
+            parser.add_argument(
+                "--diffusion-dtype",
+                dest="diffusion_forward_dtype",
+                type=str,
+                choices=["fp16", "bf16", "fp32"],
+                default=argparse.SUPPRESS,
+                help=argparse.SUPPRESS,
             )
             parser.add_argument(
                 "--qkv-format",

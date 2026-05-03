@@ -57,7 +57,6 @@ python "${ROOT_DIR}/tools/prepare_ocr_jsonl.py"
 # SD3.5 diffusion GRPO run with OCR reward, aligned with flow_grpo SD3 settings.
 python -u "${ROOT_DIR}/train_diffusion.py" \
   --train-backend fsdp \
-  --diffusion-train \
   --rollout-function-path miles.rollout.diffusion_rollout.generate_rollout \
   --hf-checkpoint gpt2 \
   --prompt-data "${ROOT_DIR}/data/ocr/train.jsonl" \
@@ -65,7 +64,7 @@ python -u "${ROOT_DIR}/train_diffusion.py" \
   --rollout-batch-size 8 \
   --n-samples-per-prompt 16 \
   --num-rollout 100000 \
-  --diffusion-timestep-batch 5 \
+  --micro-batch-size-tstep 5 \
   --gradient-checkpointing \
   --actor-num-gpus-per-node 1 \
   --rollout-num-gpus 1 \
@@ -85,7 +84,7 @@ python -u "${ROOT_DIR}/train_diffusion.py" \
   --advantage-estimator grpo \
   --globalize-reward-std \
   --rm-type ocr \
-  --diffusion-dtype fp16 \
+  --diffusion-forward-dtype fp16 \
   --diffusion-num-steps 10 \
   --diffusion-eval-num-steps 40 \
   --diffusion-gradient-accumulation-steps 64 \
