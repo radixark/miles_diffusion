@@ -79,6 +79,7 @@ python -u "${ROOT_DIR}/train_diffusion.py" \
   --weight-decay 1e-4 \
   --diffusion-kl-beta 0.04 \
   --diffusion-model stabilityai/stable-diffusion-3.5-medium \
+  --diffusion-device cuda \
   --diffusion-reward ocr:1.0 \
   --reward-key avg \
   --advantage-estimator grpo \
