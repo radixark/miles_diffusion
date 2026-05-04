@@ -232,12 +232,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
-                "--true-on-policy-mode",
-                action="store_true",
-                default=False,
-                help="Whether to enable true-on-policy mode.",
-            )
-            parser.add_argument(
                 "--train-env-vars",
                 type=json.loads,
                 default="{}",
@@ -248,12 +242,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=int,
                 default=1024**3,
                 help="Add margin for train memory allocation. By default we will reserve 1GB as margin.",
-            )
-            parser.add_argument(
-                "--disable-weights-backuper",
-                action="store_false",
-                dest="enable_weights_backuper",
-                help="Whether to disable weights backuper to save host memory.",
             )
             parser.add_argument(
                 "--recompute-loss-function",
@@ -719,15 +707,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "This reduces checkpoint size but disables training resumption from the saved checkpoint."
                 ),
             )
-            parser.add_argument(
-                "--save-hf",
-                type=str,
-                default=None,
-                help=(
-                    "Path to save the model in HuggingFace format when using Megatron backend. "
-                    "The model will be saved to `save_hf.format(rollout_id)`. "
-                ),
-            )
             reset_arg(parser, "--seed", type=int, default=1234)
             reset_arg(parser, "--clip-grad", type=float, default=1.0)
             reset_arg(parser, "--calculate-per-token-loss", action="store_true")
@@ -803,15 +782,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "Whether to calculate the entropy when calculating the logprobs from actor and reference model. "
                     "This is useful for doing special loss mask."
-                ),
-            )
-            parser.add_argument(
-                "--reset-optimizer-states",
-                action="store_true",
-                default=False,
-                help=(
-                    "Whether to reset optimizer states after each rollout. "
-                    "If enabled, the optimizer's history will be cleared at the end of each rollout, which can sometimes help with training stability or fulfill specific experiment requirements."
                 ),
             )
             return parser
@@ -944,16 +914,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
-                "--debug-disable-weight-sync",
-                action="store_true",
-                default=False,
-                help=(
-                    "Skip weight sync from trainer to rollout engine. "
-                    "Useful to isolate whether update_weights is the source of "
-                    "trainer/rollout log-prob misalignment."
-                ),
-            )
-            parser.add_argument(
                 "--debug-skip-optimizer-step",
                 action="store_true",
                 default=False,
@@ -999,11 +959,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help=("Dump all details of training for post-hoc analysis and visualization."),
             )
-            parser.add_argument("--check-weight-update-equal", action="store_true")
             return parser
 
         def add_network_arguments(parser):
-            parser.add_argument("--http-proxy", type=str, default=None)
             parser.add_argument("--use-distributed-post", action="store_true", default=False)
             return parser
 
@@ -1076,15 +1034,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             return parser
 
-        def add_prefill_decode_disaggregation_arguments(parser):
-            parser.add_argument(
-                "--prefill-num-servers",
-                type=int,
-                default=None,
-                help="Number of prefill servers for disaggregation.",
-            )
-            return parser
-
         def add_ci_arguments(parser):
             parser.add_argument(
                 "--ci-test",
@@ -1137,7 +1086,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         parser = add_sglang_diffusion_arguments(parser)
         parser = add_network_arguments(parser)
         parser = add_reward_model_arguments(parser)
-        parser = add_prefill_decode_disaggregation_arguments(parser)
         parser = add_ci_arguments(parser)
         reset_arg(
             parser,
@@ -1349,11 +1297,6 @@ def miles_validate_args(args):
             if hasattr(args, k):
                 logger.info(f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}.")
             setattr(args, k, v)
-
-    assert not (
-        args.prefill_num_servers is not None and args.rollout_external
-    ), "prefill_num_servers cannot be set when rollout_external is set."
-
 
 def hf_validate_args(args, hf_config):
     def equal(x, y):

@@ -214,10 +214,6 @@ def create_rollout_manager(args, pg):
         assert args.num_rollout > 0
         logger.info("Computed num_rollout=%s (num_rollout_per_epoch=%s)", args.num_rollout, num_rollout_per_epoch)
 
-    if args.check_weight_update_equal:
-        ray.get(rollout_manager.check_weights.remote(action="snapshot"))
-        ray.get(rollout_manager.check_weights.remote(action="reset_tensors"))
-
     if args.offload_rollout:
         ray.get(rollout_manager.offload.remote())
 

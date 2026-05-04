@@ -632,7 +632,6 @@ def _start_router(args):
         args.sglang_router_port = find_available_port(random.randint(3000, 4000))
 
     if args.use_miles_router:
-        assert args.prefill_num_servers is None, "miles router does not support prefill_num_servers."
         from miles.router.router import run_router
 
         router_args = args

@@ -35,9 +35,6 @@ def train(args):
     # always update weight first so that sglang has the loaded weights from training.
     actor_model.update_weights()
 
-    # if args.check_weight_update_equal:
-    # ray.get(rollout_manager.check_weights.remote(action="compare"))
-
     # special case for eval-only
     if args.num_rollout == 0 and args.eval_interval is not None:
         ray.get(rollout_manager.eval.remote(rollout_id=0))
