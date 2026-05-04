@@ -164,6 +164,19 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Max absolute value for advantage clipping in diffusion training.",
             )
             parser.add_argument(
+                "--fsdp-cfg-batching",
+                action=argparse.BooleanOptionalAction,
+                default=False,
+                help=(
+                    "Batch positive and negative CFG branches into a single DiT "
+                    "forward (concat along batch dim, one forward, then chunk). "
+                    "Default False = two separate forwards. Set True to bit-exact "
+                    "match sgl-d models that join CFG into one batched forward "
+                    "(e.g. Flux variants); leave False for split-CFG models like "
+                    "Qwen-Image."
+                ),
+            )
+            parser.add_argument(
                 "--fsdp-cpu-offload",
                 action=argparse.BooleanOptionalAction,
                 default=False,

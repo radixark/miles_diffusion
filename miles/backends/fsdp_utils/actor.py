@@ -646,6 +646,19 @@ class FSDPTrainRayActor(TrainRayActor):
 
         if not use_cfg:
             noise_pred_flat = _forward(pos_cond_tile)
+        elif self.args.fsdp_cfg_batching:
+            joint_cond = _pack_cond_for_joint_cfg(pos_cond_tile, neg_cond_tile)
+            # forward as a batch to align with some implementations in sglang-d
+            joint_out = self.model(
+                hidden_states=torch.cat([latents_input, latents_input], dim=0),
+                timestep=torch.cat([timesteps_input, timesteps_input], dim=0),
+                return_dict=False,
+                **joint_cond,
+            )[0]
+            noise_pred_pos, noise_pred_neg = joint_out.chunk(2, dim=0)
+            noise_pred_flat = train_pipeline_config.cfg_combine(
+                noise_pred_pos, noise_pred_neg, guidance_scale, true_cfg_scale=true_cfg_scale,
+            )
         else:
             noise_pred_pos = _forward(pos_cond_tile)
             noise_pred_neg = _forward(neg_cond_tile)
@@ -746,6 +759,20 @@ def _tile_collated_cond(
     neg_indices = sample_indices + num_samples_in_window
     neg = {k: _tile_value(v, neg_indices) for k, v in cond.items()}
     return pos, neg
+
+
+def _pack_cond_for_joint_cfg(pos: dict, neg: dict) -> dict:
+    """Pack pos and neg per-tile cond dicts into a single [pos | neg] dict
+    along the batch dim, for joint CFG forward."""
+    out: dict = {}
+    for key, value in pos.items():
+        if isinstance(value, torch.Tensor):
+            out[key] = torch.cat([value, neg[key]], dim=0)
+        elif isinstance(value, list):
+            out[key] = value + neg[key]
+        else:
+            out[key] = value
+    return out
 
 
 def _cast_cond_to_dtype(cond: dict, dtype: torch.dtype) -> dict:
