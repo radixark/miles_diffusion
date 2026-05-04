@@ -1,9 +1,7 @@
-import itertools
 import json
 import logging
 import os
 import random
-import re
 
 from miles.utils.types import Sample
 
@@ -13,46 +11,22 @@ logger = logging.getLogger(__name__)
 
 
 def read_file(path):
-    path, row_slice = _parse_generalized_path(path)
-
     if not os.path.exists(path):
         raise FileNotFoundError(f"Prompt dataset path '{path}' does not exist.")
 
-    if path.endswith(".jsonl"):
-
-        def jsonl_reader(p):
-            with open(p, encoding="utf-8") as f:
-                for line_num, line in enumerate(f):
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        yield json.loads(line)
-                    except json.JSONDecodeError as e:
-                        print(f"JSON decode error at line {line_num}: {e}")
-                        continue
-
-        reader = jsonl_reader(path)
-
-    else:
+    if not path.endswith(".jsonl"):
         raise ValueError(f"Unsupported file format: {path}. Supported format is .jsonl.")
 
-    if row_slice is not None:
-
-        logger.info("read_file path=%s applying slice row_slice=%s", path, row_slice)
-        reader = itertools.islice(reader, row_slice.start, row_slice.stop, row_slice.step)
-
-    yield from reader
-
-
-def _parse_generalized_path(s: str):
-    if (m := re.match(r"^(?P<real_path>.*)@\[(?P<start>-?\d*):(?P<end>-?\d*)\]$", s)) is not None:
-        path = m.group("real_path")
-        start = int(x) if (x := m.group("start")) != "" else None
-        end = int(x) if (x := m.group("end")) != "" else None
-        return path, slice(start, end)
-
-    return s, None
+    with open(path, encoding="utf-8") as f:
+        for line_num, line in enumerate(f):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                yield json.loads(line)
+            except json.JSONDecodeError as e:
+                print(f"JSON decode error at line {line_num}: {e}")
+                continue
 
 
 class Dataset:

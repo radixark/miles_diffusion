@@ -9,7 +9,6 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.responses import Response
 
-from miles.utils.misc import load_function
 
 logger = logging.getLogger(__name__)
 
@@ -56,12 +55,6 @@ class MilesRouter:
         )
 
         self._setup_routes()
-
-        for middleware_path in args.miles_router_middleware_paths or []:
-            if self.verbose:
-                print(f"[miles-router] Loading middleware from: {middleware_path}")
-            middleware = load_function(middleware_path)
-            self.app.add_middleware(middleware, router=self)
 
     def _setup_routes(self):
         """Setup all the HTTP routes"""

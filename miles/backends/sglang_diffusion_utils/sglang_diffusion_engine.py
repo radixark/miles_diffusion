@@ -136,7 +136,7 @@ class SGLangDiffusionEngine(RayActor):
 
         host = _format_v6_uri(host)
 
-        server_args_dict, external_engine_need_check_fields = _compute_server_args(
+        server_args_dict = _compute_server_args(
             self.args,
             host=host,
             port=port,
@@ -286,25 +286,11 @@ class SGLangDiffusionEngine(RayActor):
                 response.raise_for_status()
         kill_process_tree(self.process.pid)
 
-    def get_weight_version(self):
-        if self.node_rank != 0:
-            return
-        # SGL-D TODO: SGLang-Diffusion support get weight version
-        url = f"http://{self.server_host}:{self.server_port}/get_weight_version"
-        response = requests.get(url)
-        response.raise_for_status()
-        return response.json()["weight_version"]
-
     def release_memory_occupation(self):
         return self._make_request("release_memory_occupation")
 
     def resume_memory_occupation(self, tags: list[str] | None = None):
         return self._make_request("resume_memory_occupation")
-
-    def init_weights_update_group(self, master_address, master_port, rank_offset, world_size, group_name, backend):
-        # SGL-D TODO: Support weights update group for in-memory weight update
-        del master_address, master_port, rank_offset, world_size, group_name, backend
-        raise NotImplementedError("init_weights_update_group is not implemented in SGL-D yet")
 
     def simulate_crash(self):
         if not getattr(self, "process", None):
@@ -344,13 +330,4 @@ def _compute_server_args(args, host, port, nccl_port):
         if hasattr(args, f"sglang_{attr.name}") and attr.name not in kwargs:
             kwargs[attr.name] = getattr(args, f"sglang_{attr.name}")
 
-    external_engine_need_check_fields = [
-        k for k in kwargs.keys() if k not in _EXTERNAL_ENGINE_SKIP_CHECK_FIELDS
-    ]
-    return kwargs, external_engine_need_check_fields
-
-
-# Fields to skip when verifying an external SGLang-Diffusion engine's server args
-# against what miles would have computed. Empty for now; add field names here as
-# the external-engine sanity check grows (e.g. ports that legitimately differ).
-_EXTERNAL_ENGINE_SKIP_CHECK_FIELDS: list[str] = []
+    return kwargs

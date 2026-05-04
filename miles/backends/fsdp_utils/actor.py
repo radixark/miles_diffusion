@@ -249,7 +249,6 @@ class FSDPTrainRayActor(TrainRayActor):
             rollout_id=rollout_id,
             args=self.args,
             is_primary_rank=dist.get_rank() == 0,
-            compute_total_fwd_flops=None,
         )
 
     def _train_core(self, rollout_id: int, rollout_data) -> None:
