@@ -705,18 +705,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             return parser
 
         def add_algo_arguments(parser):
-            parser.add_argument(
-                "--ref-load",
-                type=str,
-                default=None,
-                help=(
-                    "The checkpoint for reference model. "
-                    "When --load is not set, this will be used as the initial checkpoint for training. "
-                ),
-            )
-            parser.add_argument(
-                "--ref-ckpt-step", type=int, default=None, help="The checkpoint step for reference model. "
-            )
             reset_arg(parser, "--load", type=str, default=None)
             reset_arg(parser, "--save", type=str, default=None)
             reset_arg(parser, "--save-interval", type=int, default=None)
@@ -748,12 +736,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument("--eps-clip", type=float, default=0.2, help="PPO clip range")
             parser.add_argument("--eps-clip-high", type=float, default=None, help="PPO clip upper range")
             parser.add_argument(
-                "--kl-coef",
-                type=float,
-                default=0.00,
-                help="KL penalty coefficient for reward shaping. This is applied to the reward signal before advantage calculation.",
-            )
-            parser.add_argument(
                 "--loss-type",
                 type=str,
                 choices=["policy_loss", "sft_loss", "custom_loss"],
@@ -762,13 +744,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "Choose loss type, currently support ppo policy_loss or sft_loss, "
                     "if custom_loss is set, we will use the function path from `--custom-loss-function-path`."
                 ),
-            )
-            parser.add_argument(
-                "--kl-loss-type",
-                type=str,
-                choices=["k1", "k2", "k3", "low_var_kl"],
-                default="k1",
-                help="Choose KL loss type: kl, k2, k3, low_var_kl",
             )
             parser.add_argument(
                 "--advantage-estimator",
@@ -787,15 +762,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "If set, we will not compute the advantages and returns, "
                     "This is useful for sft or custom loss function."
                 ),
-            )
-            parser.add_argument(
-                "--use-kl-loss", action="store_true", default=False, help="whether to use KL loss from GRPO"
-            )
-            parser.add_argument(
-                "--kl-loss-coef",
-                type=float,
-                default=0.0,
-                help="KL penalty coefficient for the loss function. This is added to the final PPO loss.",
             )
             parser.add_argument("--entropy-coef", type=float, default=0.0, help="Entropy loss coef")
             parser.add_argument("--normalize-advantages", action="store_true", default=False)
@@ -1284,23 +1250,11 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
 def miles_validate_args(args):
     args.eval_datasets = _resolve_eval_datasets(args)
 
-    if args.kl_coef != 0 or args.use_kl_loss:
-        if not os.path.exists(args.ref_load):
-            raise FileNotFoundError(f"ref_load {args.ref_load} does not exist, please check the path.")
-
-        if not os.path.exists(os.path.join(args.ref_load, "latest_checkpointed_iteration.txt")):
-            logger.info(
-                f"ref_load {args.ref_load} does not have latest_checkpointed_iteration.txt, "
-                "please make sure it is a valid megatron checkpoint directory."
-            )
-
     if args.eval_interval is not None:
         assert args.eval_datasets, "Evaluation datasets must be configured when eval_interval is set."
 
     if args.save_interval is not None:
         assert args.save is not None, "'--save' is required when save_interval is set."
-
-    assert not (args.kl_coef != 0 and args.kl_loss_coef != 0), "Only one of kl_coef and kl_loss_coef can be set"
 
     if args.advantage_estimator in ["reinforce_plus_plus", "reinforce_plus_plus_baseline"]:
         assert args.normalize_advantages, (
