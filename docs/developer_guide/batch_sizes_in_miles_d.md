@@ -27,13 +27,12 @@ Anchor commit: miles `diffusion_RL_v0.1`.
    ┌──────────────────────────────────────────────────────┐
    │ samples_per_rollout    = rollout_batch_size × n_samples_per_prompt           │
    │ args.global_batch_size = samples_per_rollout ÷ num_steps_per_rollout         │
-   │ args.local_batch_size  = args.global_batch_size ÷ dp_size                    │
    └──────────────────────────────────────────────────────┘
                               │
                               ▼
                     ── actor.py runtime ──
    ┌──────────────────────────────────────────────────────┐
-   │ num_rollout_samples         = len(denoising_envs)    (== args.local_batch_size × num_optim_steps_per_rollout)
+   │ num_rollout_samples         = len(denoising_envs)    (== global_batch_size ÷ dp_size × num_optim_steps_per_rollout)
    │ num_optim_steps_per_rollout = args.num_steps_per_rollout
    │ num_samples_per_optim_step  = num_rollout_samples ÷ num_optim_steps_per_rollout
    │ num_samples_in_window       = traj_end − traj_start  (actual; ≤ nominal at tail)
@@ -75,7 +74,6 @@ These are not user-set; they are computed inside `arguments.py` after CLI parse.
 | Field | Computed as | Unit | Notes |
 | --- | --- | --- | --- |
 | `args.global_batch_size` | `rollout_batch_size × n_samples_per_prompt ÷ num_steps_per_rollout` (when `--num-steps-per-rollout` is set; else user-supplied; else falls back to `dp_size`) | sample | Total samples per grad step across all DP ranks. Validated to be divisible by `dp_size`. |
-| `args.local_batch_size` | `args.global_batch_size ÷ dp_size` (or 1 if no global_batch_size) | sample/DP-rank | Per-DP-rank samples per grad step. Equal to `num_samples_per_optim_step` in `actor.py`. |
 | `args.train_iters` (`lr_scheduler.py`) | `args.num_rollout × args.rollout_batch_size × args.n_samples_per_prompt ÷ args.global_batch_size`, equivalent to `num_rollout × num_steps_per_rollout` | (count) | Total optimizer steps the LR scheduler should plan for. |
 
 ---
@@ -86,9 +84,9 @@ Live only on the training side, computed at the entry of `train()` and propagate
 
 | Variable | Computed as | Unit | Equivalent CLI / derived |
 | --- | --- | --- | --- |
-| `num_rollout_samples` | `len(denoising_envs)` | sample (per-DP) | `args.local_batch_size × num_optim_steps_per_rollout` |
+| `num_rollout_samples` | `len(denoising_envs)` | sample (per-DP) | `args.global_batch_size ÷ dp_size × num_optim_steps_per_rollout` |
 | `num_optim_steps_per_rollout` | `args.num_steps_per_rollout` | (count) | `--num-steps-per-rollout` |
-| `num_samples_per_optim_step` | `num_rollout_samples ÷ num_optim_steps_per_rollout` | sample (per-DP) | `args.local_batch_size` |
+| `num_samples_per_optim_step` | `num_rollout_samples ÷ num_optim_steps_per_rollout` | sample (per-DP) | `args.global_batch_size ÷ dp_size` |
 | `num_samples_in_window` | `traj_end − traj_start`, returned as `grids["num_samples_in_window"]` | sample | Equals `num_samples_per_optim_step` for full windows; smaller for the trailing window when `num_rollout_samples` is not divisible by `num_optim_steps_per_rollout`. |
 | `sample_microbatch` | `min(args.micro_batch_size_sample if not None else num_samples_in_window, num_samples_in_window)` | sample | `--micro-batch-size-sample` clamped to actual window. |
 | `tstep_microbatch` | `min(args.micro_batch_size_tstep if not None else 1, sde_window_size)` | denoising-step | `--micro-batch-size-tstep` clamped to actual SDE window. |
@@ -118,17 +116,16 @@ Derived in `arguments.py`:
 ```
 samples_per_rollout    = 32 × 16  = 512
 args.global_batch_size = 512 ÷ 2  = 256          (samples per grad step, all DP)
-args.local_batch_size  = 256 ÷ 4  = 64           (samples per grad step, per DP)
 args.train_iters       = num_rollout × 2
 ```
 
 In `actor.py` per-rollout (per DP rank):
 
 ```
-num_rollout_samples         = 128                     (= 512 / dp_size = 4)
-                              # = 64 × 2 = local_batch_size × num_optim_steps_per_rollout
+num_rollout_samples         = 128                     (= 512 ÷ dp_size = 4)
+                              # = 64 × 2 = (global_batch_size ÷ dp_size) × num_optim_steps_per_rollout
 num_optim_steps_per_rollout = 2
-num_samples_per_optim_step  = 128 / 2 = 64            (= args.local_batch_size)
+num_samples_per_optim_step  = 128 / 2 = 64            (= global_batch_size ÷ dp_size)
 
 # inside the optim loop
 num_samples_in_window       = 64                       (full window, 128 % 2 == 0)
@@ -154,7 +151,6 @@ This table answers "I see `X` in some file — what unit is it in?":
 | `rollout_batch_size` | prompt | one rollout, all DP |
 | `n_samples_per_prompt` | sample/prompt | per prompt |
 | `global_batch_size` / `args.global_batch_size` | sample | one grad step, all DP |
-| `local_batch_size` / `args.local_batch_size` | sample | one grad step, per DP |
 | `num_rollout_samples` | sample | one rollout, per DP |
 | `num_samples_per_optim_step` | sample | one grad step, per DP |
 | `num_samples_in_window` | sample | one optim step's actual window, per DP |

@@ -138,7 +138,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--micro-batch-size-sample",
                 type=int,
                 default=None,
-                help="Samples per DiT forward in train (sample-axis tile size). None = full window (= local_batch_size).",
+                help="Samples per DiT forward in train (sample-axis tile size). None = full window (= num_samples_in_window).",
             )
             parser.add_argument(
                 "--micro-batch-size-tstep",
@@ -1973,9 +1973,7 @@ def miles_validate_args(args):
         assert args.global_batch_size % dp_size == 0, (
             f"global_batch_size {args.global_batch_size} is not divisible by dp_size {dp_size}"
         )
-        args.local_batch_size = args.global_batch_size // dp_size
     else:
-        args.local_batch_size = 1
         args.global_batch_size = dp_size
 
     if args.n_samples_per_prompt == 1:
