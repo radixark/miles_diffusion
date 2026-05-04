@@ -1018,18 +1018,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=0.0,
                 help="KL penalty coefficient for the loss function. This is added to the final PPO loss.",
             )
-            parser.add_argument(
-                "--use-unbiased-kl",
-                action="store_true",
-                default=False,
-                help="Whether to enable unbiased KL estimation.",
-            )
-            parser.add_argument(
-                "--ref-update-interval",
-                type=int,
-                default=None,
-                help="Interval (in rollout steps) to update ref model from actor. If None, ref model is not updated.",
-            )
             parser.add_argument("--entropy-coef", type=float, default=0.0, help="Entropy loss coef")
             parser.add_argument("--normalize-advantages", action="store_true", default=False)
             parser.add_argument(
@@ -1073,12 +1061,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
-                "--get-mismatch-metrics",
-                action="store_true",
-                default=False,
-                help="Whether to calculate the mismatch metrics.",
-            )
-            parser.add_argument(
                 "--reset-optimizer-states",
                 action="store_true",
                 default=False,
@@ -1086,71 +1068,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "Whether to reset optimizer states after each rollout. "
                     "If enabled, the optimizer's history will be cleared at the end of each rollout, which can sometimes help with training stability or fulfill specific experiment requirements."
                 ),
-            )
-            parser.add_argument(
-                "--use-rollout-logprobs",
-                action="store_true",
-                default=False,
-                help=(
-                    "Whether to use the rollout logprobs when calculating the importance sampling ratios. "
-                    "If not set, we will use the logprobs from the actor model."
-                ),
-            )
-            # Off-Policy Correction using Importance Sampling: https://fengyao.notion.site/off-policy-rl
-            parser.add_argument(
-                "--use-tis",
-                action="store_true",
-                default=False,
-                help="Enable TIS from https://fengyao.notion.site/off-policy-rl for off-policy importance sampling.",
-            )
-            parser.add_argument(
-                "--tis-clip",
-                type=float,
-                default=2.0,
-                help="Clipping threshold C for importance sampling ratios to control variance.",
-            )
-            parser.add_argument(
-                "--tis-clip-low",
-                type=float,
-                default=0,
-                help="Lower bound clipping threshold C for importance sampling ratios to control variance.",
-            )
-            parser.add_argument(
-                "--custom-tis-function-path",
-                type=str,
-                default=None,
-                help="Path to the custom TIS/RS function (e.g., examples/train_infer_mismatch_helper/mis.py:compute_mis_weights_with_cp).",
-            )
-            parser.add_argument(
-                "--custom-pg-loss-reducer-function-path",
-                type=str,
-                default=None,
-                help="Path to a custom reducer function for pg_loss only. When set, pg_loss will use this custom reducer while other metrics (pg_clipfrac, ppo_kl, entropy_loss, etc.) still use the default sum_of_sample_mean. (e.g., examples/Dr.GRPO/custom_reducer.py:get_pg_loss_reducer).",
-            )
-
-            parser.add_argument(
-                "--use-routing-replay",
-                action="store_true",
-                default=False,
-                help="The routing replay technique from https://arxiv.org/abs/2507.18071",
-            )
-            parser.add_argument(
-                "--use-rollout-routing-replay",
-                action="store_true",
-                default=False,
-                help="The rollout routing replay technique from https://arxiv.org/abs/2510.11370",
-            )
-            parser.add_argument(
-                "--use-opsm",
-                action="store_true",
-                default=False,
-                help="Whether to enable Off-Policy Sequence Masking (OPSM).",
-            )
-            parser.add_argument(
-                "--opsm-delta",
-                type=float,
-                default=1e-4,
-                help="The threshold for Off-Policy Sequence Masking (OPSM).",
             )
             return parser
 
@@ -1755,19 +1672,6 @@ def miles_validate_args(args):
             "require advantage normalization. Please add `--normalize-advantages` to your command."
         )
 
-    if args.use_rollout_logprobs:
-        assert not args.use_tis, "use_rollout_logprobs and use_tis cannot be set at the same time."
-
-    if args.get_mismatch_metrics:
-        assert (
-            args.custom_tis_function_path is not None
-        ), "custom_tis_function_path must be set when get_mismatch_metrics is set"
-
-        if args.use_rollout_logprobs:
-            logger.info(
-                "get_mismatch_metrics is set; For metrics calculation, the log probs will still be recomputed by training engine. One more forward pass will be applied."
-            )
-
     if args.use_dynamic_batch_size:
         assert args.max_tokens_per_gpu is not None, "max_tokens_per_gpu must be set when use_dynamic_batch_size is set"
         if args.log_probs_max_tokens_per_gpu is None:
@@ -1876,9 +1780,6 @@ def miles_validate_args(args):
         assert args.num_rollout is not None, (
             "num_epoch is not set, but num_rollout is not set, " "please set --num-rollout or --num-epoch"
         )
-
-    if args.use_rollout_routing_replay:
-        args.use_routing_replay = True
 
     if args.custom_config_path:
         with open(args.custom_config_path) as f:

@@ -73,10 +73,6 @@ class RayTrainGroup:
             env_vars["TMS_INIT_ENABLE"] = "1"
             env_vars["TMS_INIT_ENABLE_CPU_BACKUP"] = "1"
 
-        # We cannot do routing replay for critic.
-        if self.args.use_routing_replay and self.role == "actor":
-            env_vars["ENABLE_ROUTING_REPLAY"] = "1"
-
         from miles.backends.fsdp_utils import FSDPTrainRayActor
 
         TrainRayActor = ray.remote(num_gpus=1, runtime_env={"env_vars": env_vars})(FSDPTrainRayActor)
