@@ -37,8 +37,6 @@ The rollout-parallel accuracy checks were run on:
 | `Qwen/Qwen-Image` | 1024 x 1024 | 50 | 1-2 | diffusers, single GPU, TP1 SP1, no CFGP |
 | `Tongyi-MAI/Z-Image-Turbo` | 1024 x 1024 | 9 | 1-2 | diffusers, single GPU, TP1 SP1, no CFGP |
 
-
-
 ## Accuracy Summary
 
 | Parallel strategy | `rollout_log_probs` vs single-GPU reference | DiT-side tensors vs single-GPU reference | Practical interpretation |
@@ -78,23 +76,6 @@ bit-exactness with the non-rollout deterministic scheduler step. For this
 reason, SGLang keeps the ODE branch dtype-preserving instead of applying the
 same fp32 entry cast used by SDE/CPS.
 
-## Why SP Log-Prob Needed Special Handling
-
-Before the SP log-prob fix, SP rollout could drift from the single-GPU reference
-even when the visible per-step difference looked small. The root cause was a
-combination of:
-
-1. a 0-dim fp32 `noise_std_dev`;
-2. an N-dim bf16 `variance_noise`;
-3. PyTorch wrapped-scalar promotion demoting the scalar in multiplication;
-4. non-associative bf16 reductions across SP shards.
-
-The corrected rollout path computes log-prob from the full pre-shard noise
-buffer on each SP rank. This avoids local bf16 partial sums and removes the
-need for an SP all-reduce in the log-prob path. SDE and CPS also cast
-`model_output` to fp32 at entry to match the FlowGRPO-style precision policy and
-avoid the scalar-promotion issue.
-
 ## Practical Guidance
 
 - Prefer SP / Ulysses when the main goal is scaling rollout resolution while
@@ -108,9 +89,3 @@ avoid the scalar-promotion issue.
   `rollout_log_probs` were still bit-exact in the tested rollout path.
 - For SDE/CPS, expect fp32 rollout log-prob computation. For ODE, preserve the
   native deterministic scheduler path.
-
-## Known Limits
-
-These results are empirical for the tested models, resolutions, and parallel
-sizes. They should not be generalized to every DiT architecture or future kernel
-without re-running the rollout trajectory comparison.
