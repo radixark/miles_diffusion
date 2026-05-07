@@ -229,25 +229,28 @@ def create_rollout_manager(args, pg):
     logger.info(
         "Creating rollout manager (diffusion=%s, num_gpus=%s)",
         use_diffusion_rollout,
-        0 if (use_diffusion_rollout and getattr(args, "rollout_num_gpus", 1) > 1) else (1 if use_diffusion_rollout else 0),
+        0 if use_diffusion_rollout else 1,
     )
     scheduling_strategy = None
     if use_diffusion_rollout:
         pg_tuple = pg
-        # If rollout uses multiple GPUs, do NOT bind RolloutManager to the rollout PG.
-        # Otherwise it consumes a GPU bundle and starves rollout workers.
-        if getattr(args, "rollout_num_gpus", 1) <= 1:
-            pg, reordered_bundle_indices, _ = pg_tuple
-            bundle_index = reordered_bundle_indices[0] if reordered_bundle_indices else 0
-            scheduling_strategy = PlacementGroupSchedulingStrategy(
-                placement_group=pg,
-                placement_group_capture_child_tasks=True,
-                placement_group_bundle_index=bundle_index,
-            )
+        # Do NOT bind RolloutManager to any placement-group bundle.
+        #
+        # Each bundle has exactly {"GPU": 1, "CPU": 1}.  SGLangDiffusionEngine
+        # actors each claim num_gpus=0.2 and num_cpus=0.2 from a bundle.  If
+        # the RolloutManager is bound to the same bundle (even with num_gpus=0)
+        # it consumes num_cpus=1, exhausting the bundle's CPU quota and
+        # preventing the engine actor from being scheduled — an invisible
+        # deadlock where ray.get(engine._get_current_node_ip_and_free_port
+        # .remote()) never returns.
+        #
+        # The engines are explicitly bound to their own bundles inside
+        # init_rollout_engines(), so no PG binding is needed here.
+        pass  # scheduling_strategy stays None
 
     rollout_manager = RolloutManager.options(
         num_cpus=1,
-        num_gpus=0 if (use_diffusion_rollout and getattr(args, "rollout_num_gpus", 1) > 1) else (1 if use_diffusion_rollout else 0),
+        num_gpus=0 if use_diffusion_rollout else 1,
         scheduling_strategy=scheduling_strategy,
     ).remote(args, pg_tuple if use_diffusion_rollout else pg)
 

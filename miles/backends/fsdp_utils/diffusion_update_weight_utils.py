@@ -1,7 +1,9 @@
 import abc
+import base64
 import hashlib
 import logging
 import os
+import pickle
 from argparse import Namespace
 from collections.abc import Sequence
 
@@ -133,13 +135,23 @@ class DiffusionUpdateWeightFromTensor(DiffusionUpdateWeight):
             # sglang-d WeightsUpdater expects per-module keyed dicts when
             # load_format="flattened_bucket"; wrap each bucket under the
             # target module name (default "transformer").
+            #
+            # Move to CPU before serializing: the training actor and sglang
+            # engine may be on different physical GPUs.  CUDA IPC handles
+            # (used by MultiprocessingSerializer for GPU tensors) encode a
+            # device UUID that is only valid within the same GPU context, so
+            # the sglang process would fail with "Invalid device_uuid=...".
+            # Using standard pickle (not ForkingPickler) avoids both the UUID
+            # issue and the IndexError from monkey_patch_torch_reductions which
+            # assumes CUDA tensor tuple structure (index 6 = device).
             flattened_tensor_data = {
                 target_module: {
-                    "flattened_tensor": flattened_tensor_bucket.get_flattened_tensor(),
+                    "flattened_tensor": flattened_tensor_bucket.get_flattened_tensor().cpu(),
                     "metadata": metadata,
                 }
             }
-            serialized_tensors.append(MultiprocessingSerializer.serialize(flattened_tensor_data, output_str=True))
+            cpu_serialized = base64.b64encode(pickle.dumps(flattened_tensor_data)).decode()
+            serialized_tensors.append(cpu_serialized)
 
         if self._ipc_gather_src == dist.get_rank():
             gathered_serialized_batches = [None for _ in range(dist.get_world_size(self._ipc_gather_group))]

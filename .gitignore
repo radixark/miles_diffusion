@@ -178,6 +178,7 @@ settings.json
 
 wandb/
 outputs/
+data/
 local/
 **/rollout_data/
 **/buffer_stats/
