@@ -58,6 +58,16 @@ SD3_MODEL="${SD3_MODEL:-stabilityai/stable-diffusion-3.5-medium}"
 RUN_NAME="diffusion_grpo_sd3_ocr_sglang_$(date +%Y%m%d_%H%M%S)"
 ROLLOUT_WEIGHT_DIR="/tmp/miles_sd3_rollout_weights_${RUN_NAME}"
 rm -rf "${ROLLOUT_WEIGHT_DIR}"
+NUM_ROLLOUT="${NUM_ROLLOUT:-100000}"
+
+DEBUG_ARGS=()
+if [[ "${MILES_DEBUG_ALIGNMENT:-0}" == "1" ]]; then
+  export MILES_VERIFY_WEIGHT_SYNC="${MILES_VERIFY_WEIGHT_SYNC:-1}"
+  DEBUG_ARGS+=(
+    --diffusion-debug-mode
+    --debug-skip-optimizer-step
+  )
+fi
 
 # ── WandB ──────────────────────────────────────────────────────────────────────
 WANDB_ARGS=()
@@ -90,7 +100,7 @@ python -u "${ROOT_DIR}/train_diffusion.py" \
   --input-key input \
   --rollout-batch-size 8 \
   --n-samples-per-prompt 16 \
-  --num-rollout 100000 \
+  --num-rollout "${NUM_ROLLOUT}" \
   --micro-batch-size-sample 8 \
   --micro-batch-size-tstep 5 \
   --gradient-checkpointing \
@@ -99,6 +109,7 @@ python -u "${ROOT_DIR}/train_diffusion.py" \
   --rollout-num-gpus-per-engine 1 \
   --num-gpus-per-node 2 \
   --no-offload-rollout \
+  --colocate \
   --use-miles-router \
   --sglang-server-concurrency 4 \
   --use-lora \
@@ -120,7 +131,8 @@ python -u "${ROOT_DIR}/train_diffusion.py" \
   --sglang-vae-slicing \
   --diffusion-num-steps 10 \
   --diffusion-eval-num-steps 40 \
-  --diffusion-gradient-accumulation-steps 128 \
+  --diffusion-gradient-accumulation-steps 64 \
+  --update-weight-buffer-size 2147483648 \
   --diffusion-guidance-scale 4.5 \
   --diffusion-noise-level 0.7 \
   --diffusion-ignore-last 1 \
@@ -128,4 +140,5 @@ python -u "${ROOT_DIR}/train_diffusion.py" \
   --diffusion-width 512 \
   --global-batch-size 128 \
   --save "${ROLLOUT_WEIGHT_DIR}" \
+  "${DEBUG_ARGS[@]}" \
   "${WANDB_ARGS[@]}"

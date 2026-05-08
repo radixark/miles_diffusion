@@ -1,9 +1,7 @@
 import abc
-import base64
 import hashlib
 import logging
 import os
-import pickle
 from argparse import Namespace
 from collections.abc import Sequence
 
@@ -136,22 +134,24 @@ class DiffusionUpdateWeightFromTensor(DiffusionUpdateWeight):
             # load_format="flattened_bucket"; wrap each bucket under the
             # target module name (default "transformer").
             #
-            # Move to CPU before serializing: the training actor and sglang
-            # engine may be on different physical GPUs.  CUDA IPC handles
-            # (used by MultiprocessingSerializer for GPU tensors) encode a
-            # device UUID that is only valid within the same GPU context, so
-            # the sglang process would fail with "Invalid device_uuid=...".
-            # Using standard pickle (not ForkingPickler) avoids both the UUID
-            # issue and the IndexError from monkey_patch_torch_reductions which
-            # assumes CUDA tensor tuple structure (index 6 = device).
+            # Use CUDA IPC (zero-copy via MultiprocessingSerializer / ForkingPickler)
+            # instead of CPU pickle+base64. This requires actor and sglang
+            # engine to share the same physical GPU (i.e. --colocate so both
+            # ray actors are scheduled on the same placement-group bundle and
+            # see the same CUDA_VISIBLE_DEVICES). Without --colocate the two
+            # processes get disjoint visible devices and sglang's
+            # monkey_patch_torch_reductions raises "Invalid device_uuid=..."
+            # when trying to map the sender's GPU UUID — fix that by adding
+            # --colocate, not by going through CPU.
             flattened_tensor_data = {
                 target_module: {
-                    "flattened_tensor": flattened_tensor_bucket.get_flattened_tensor().cpu(),
+                    "flattened_tensor": flattened_tensor_bucket.get_flattened_tensor(),
                     "metadata": metadata,
                 }
             }
-            cpu_serialized = base64.b64encode(pickle.dumps(flattened_tensor_data)).decode()
-            serialized_tensors.append(cpu_serialized)
+            serialized_tensors.append(
+                MultiprocessingSerializer.serialize(flattened_tensor_data, output_str=True)
+            )
 
         if self._ipc_gather_src == dist.get_rank():
             gathered_serialized_batches = [None for _ in range(dist.get_world_size(self._ipc_gather_group))]
