@@ -6,6 +6,7 @@ import os
 import time
 
 import requests
+from sglang.multimodal_gen.configs.pipeline_configs.base import PipelineConfig
 from sglang.multimodal_gen.runtime.server_args import ServerArgs
 from sglang.multimodal_gen.runtime.launch_server import kill_process_tree
 
@@ -33,22 +34,44 @@ def _to_local_gpu_id(physical_gpu_id: int) -> int:
     )
 
 
-def _scheduler_process_with_qwen_image_patch(*args, **kwargs):
+def _scheduler_process_with_miles_patches(*args, apply_qwen_image_patch: bool = False, **kwargs):
     # Runs inside sglang-d's scheduler grandchild (spawned by launch_server via
     # mp.Process). Grandchild re-imports modules from scratch under spawn, so
     # any monkey patches done in the middle child are gone. Apply them HERE,
     # before calling the real run_scheduler_process, so the DiT that's
     # constructed inside the grandchild sees the patched classes.
-    from miles.backends.fsdp_utils.models.qwen_image_patch import (
-        apply_qwen_image_diffusers_parity_patches,
+    #
+    # Always-on patches:
+    # - sgl_d_dit_precision_patch: makes DenoisingStage honor
+    #   --sglang-dit-precision (otherwise hardcoded bf16, which causes
+    #   systematic logprob mismatch vs the trainer's fp16 FSDP forward for
+    #   fp16-trained models like SD3).
+    from miles.backends.fsdp_utils.models.sgl_d_dtype_patch import (
+        apply_sgl_d_dit_precision_patch,
     )
-    apply_qwen_image_diffusers_parity_patches()
-    from sglang.multimodal_gen.runtime.layers.layernorm import RMSNorm as _RN
-    print(
-        f"[apply-qwen-image-sgl-d-patch grandchild] Qwen-Image diffusers-parity patches applied; "
-        f"RMSNorm.forward = {_RN.forward.__qualname__}",
-        flush=True,
-    )
+    apply_sgl_d_dit_precision_patch()
+
+    # Same reason as in _launch_server_target: ensure sglang's reduction
+    # patches are installed in the scheduler grandchild before any cuda-IPC
+    # tensor rebuild (spawn re-imports modules from scratch).
+    try:
+        from sglang.srt.utils.patch_torch import monkey_patch_torch_reductions
+    except ImportError:
+        from sglang.srt.patch_torch import monkey_patch_torch_reductions  # type: ignore[no-redef]
+    monkey_patch_torch_reductions()
+
+    if apply_qwen_image_patch:
+        from miles.backends.fsdp_utils.models.qwen_image_patch import (
+            apply_qwen_image_diffusers_parity_patches,
+        )
+        apply_qwen_image_diffusers_parity_patches()
+        from sglang.multimodal_gen.runtime.layers.layernorm import RMSNorm as _RN
+        print(
+            f"[miles-sgl-d-patch grandchild] Qwen-Image diffusers-parity patches applied; "
+            f"RMSNorm.forward = {_RN.forward.__qualname__}",
+            flush=True,
+        )
+
     from sglang.multimodal_gen.runtime.managers.gpu_worker import run_scheduler_process
     return run_scheduler_process(*args, **kwargs)
 
@@ -61,20 +84,46 @@ def _launch_server_target(server_args, apply_qwen_image_sgl_d_patch: bool = Fals
     if server_args.attention_backend_config is not None:
         server_args.attention_backend_config = addict.Dict(server_args.attention_backend_config)
 
-    if apply_qwen_image_sgl_d_patch:
-        # launch_server spawns its scheduler via mp.Process(target=run_scheduler_process).
-        # Under spawn, target is pickled by qualname and re-imported in the grandchild,
-        # so patching in THIS process doesn't help. Instead, rebind the name inside
-        # launch_server's own module to point at our wrapper — pickle then carries
-        # the miles qualname across to the grandchild, which applies the patch before
-        # calling the real scheduler entrypoint.
-        import sglang.multimodal_gen.runtime.launch_server as _ls_mod
-        _ls_mod.run_scheduler_process = _scheduler_process_with_qwen_image_patch
-        print(
-            "[apply-qwen-image-sgl-d-patch] rebound launch_server.run_scheduler_process to miles wrapper "
-            "so grandchild scheduler process applies Qwen-Image diffusers-parity patches.",
-            flush=True,
-        )
+    # Install sglang's reduction patches in this server process so that
+    # MultiprocessingSerializer.deserialize can rebuild cuda tensors that the
+    # trainer side serialized via ForkingPickler. Every srt update-weights
+    # entrypoint calls this (model_runner / tp_worker / eagle_worker), but the
+    # sgl-d path in multimodal_gen/runtime/loader/weights_updater.py forgot to,
+    # so the receiver hits "AttributeError: module
+    # 'torch.multiprocessing.reductions' has no attribute
+    # '_rebuild_cuda_tensor_original'" the first time the trainer pushes a
+    # cuda-IPC bucket. monkey_patch_torch_reductions is idempotent.
+    try:
+        from sglang.srt.utils.patch_torch import monkey_patch_torch_reductions
+    except ImportError:
+        from sglang.srt.patch_torch import monkey_patch_torch_reductions  # type: ignore[no-redef]
+    monkey_patch_torch_reductions()
+    print(
+        "[miles-sgl-d-patch] monkey_patch_torch_reductions applied in "
+        "launch_server process (sgl-d weights_updater path needs it).",
+        flush=True,
+    )
+
+    # launch_server spawns its scheduler via mp.Process(target=run_scheduler_process).
+    # Under spawn, target is pickled by qualname and re-imported in the grandchild,
+    # so patching in THIS process doesn't help. Instead, rebind the name inside
+    # launch_server's own module to point at our wrapper — pickle then carries
+    # the miles qualname across to the grandchild, which applies the patches
+    # before calling the real scheduler entrypoint.
+    #
+    # The dtype patch always runs; the qwen-image parity patch only when opted
+    # in via --apply-qwen-image-sgl-d-patch.
+    import functools
+    import sglang.multimodal_gen.runtime.launch_server as _ls_mod
+    _ls_mod.run_scheduler_process = functools.partial(
+        _scheduler_process_with_miles_patches,
+        apply_qwen_image_patch=apply_qwen_image_sgl_d_patch,
+    )
+    print(
+        f"[miles-sgl-d-patch] rebound launch_server.run_scheduler_process to miles wrapper "
+        f"(qwen_image_patch={apply_qwen_image_sgl_d_patch})",
+        flush=True,
+    )
 
     from sglang.multimodal_gen.runtime.launch_server import launch_server
     launch_server(server_args)
@@ -383,6 +432,26 @@ def _compute_server_args(args, host, port, nccl_port):
         if hasattr(args, f"sglang_{attr.name}") and attr.name not in kwargs:
             kwargs[attr.name] = getattr(args, f"sglang_{attr.name}")
 
+    # ServerArgs.add_cli_args() also registers PipelineConfig flags (for
+    # example --dit-precision and --vae-slicing). Our parser prefixes them as
+    # --sglang-*, but they are not ServerArgs dataclass fields, so the generic
+    # loop above used to drop them. Build the PipelineConfig explicitly instead
+    # of passing those flat keys into ServerArgs.__init__().
+    pipeline_config_kwargs = {
+        "model_path": args.diffusion_model,
+        "pipeline_class_name": kwargs.get("pipeline_class_name"),
+        "backend": kwargs.get("backend"),
+        "model_id": kwargs.get("model_id"),
+        "component_paths": kwargs.get("component_paths"),
+    }
+    for attr in dataclasses.fields(PipelineConfig):
+        prefixed_name = f"sglang_{attr.name}"
+        if hasattr(args, prefixed_name):
+            value = getattr(args, prefixed_name)
+            if _is_non_default_pipeline_arg(attr, value):
+                pipeline_config_kwargs[attr.name] = value
+    kwargs["pipeline_config"] = PipelineConfig.from_kwargs(pipeline_config_kwargs)
+
     external_engine_need_check_fields = [
         k for k in kwargs.keys() if k not in _EXTERNAL_ENGINE_SKIP_CHECK_FIELDS
     ]
@@ -393,3 +462,22 @@ def _compute_server_args(args, host, port, nccl_port):
 # against what miles would have computed. Empty for now; add field names here as
 # the external-engine sanity check grows (e.g. ports that legitimately differ).
 _EXTERNAL_ENGINE_SKIP_CHECK_FIELDS: list[str] = []
+
+
+def _is_non_default_pipeline_arg(attr: dataclasses.Field, value) -> bool:
+    """Return True only when a prefixed PipelineConfig arg was overridden.
+
+    The SGLang parser registers base PipelineConfig defaults even when the
+    selected model has a more specific PipelineConfig class. Forwarding every
+    default would overwrite model-specific settings (for SD3, three text
+    encoders) with base defaults. We only pass values that differ from the base
+    default; this preserves model-specific defaults while allowing explicit
+    overrides such as --sglang-dit-precision fp16.
+    """
+    if attr.default is not dataclasses.MISSING:
+        default = attr.default
+    elif attr.default_factory is not dataclasses.MISSING:  # type: ignore[attr-defined]
+        default = attr.default_factory()  # type: ignore[misc]
+    else:
+        return value is not None
+    return value != default
