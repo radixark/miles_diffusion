@@ -425,13 +425,20 @@ class FSDPTrainRayActor(TrainRayActor):
         advantages = rewards.unsqueeze(1).expand(-1, num_timesteps).clone()
         advantages = torch.clamp(advantages, -adv_clip_max, adv_clip_max)
 
-        # Use rollout's exact timesteps AND derive matching sigmas.
-        # Qwen-Image flow-match uses `use_dynamic_shifting=True` (mu depends on
-        # image resolution), so the rollout's timesteps are post-shift.
+        # Use rollout's exact timesteps AND sigmas. Reconstructing sigmas from
+        # timesteps via timesteps/num_train_timesteps can drift from the
+        # rollout's actual sigmas (Qwen-Image flow-match with
+        # `use_dynamic_shifting=True` makes timesteps post-shift, so the
+        # reconstruction can mismatch). Prefer the snapshot the rollout sent;
+        # fall back to reconstruction only if it isn't available.
         timesteps_ref = dit_trajectories[0].timesteps.to(device).float()
-        num_train_timesteps = self.scheduler.config.num_train_timesteps
-        sigmas_ref = timesteps_ref / float(num_train_timesteps)
-        sigmas_ref = torch.cat([sigmas_ref, sigmas_ref.new_zeros(1)])
+        sigmas_snapshot = getattr(dit_trajectories[0], "sigmas", None)
+        if sigmas_snapshot is not None:
+            sigmas_ref = sigmas_snapshot.to(device).float()
+        else:
+            num_train_timesteps = self.scheduler.config.num_train_timesteps
+            sigmas_ref = timesteps_ref / float(num_train_timesteps)
+            sigmas_ref = torch.cat([sigmas_ref, sigmas_ref.new_zeros(1)])
 
         self.scheduler.timesteps = timesteps_ref
         self.scheduler.sigmas = sigmas_ref
