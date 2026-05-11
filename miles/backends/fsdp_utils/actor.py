@@ -54,21 +54,21 @@ class FSDPTrainRayActor(TrainRayActor):
         if self.args.debug_rollout_only:
             return 0
 
-        self.fsdp_cpu_offload = getattr(self.args, "fsdp_cpu_offload", False)
+        self.fsdp_cpu_offload = self.args.fsdp_cpu_offload
         if self.args.offload_train and self.fsdp_cpu_offload:
             self.args.offload_train = False
 
         if dist.get_rank() == 0:
             init_tracking(args, primary=False)
 
-        if getattr(self.args, "start_rollout_id", None) is None:
+        if self.args.start_rollout_id is None:
             self.args.start_rollout_id = 0
 
         self.prof = TrainProfiler(args)
 
         self._master_dtype = _resolve_dtype(args.fsdp_master_dtype)
         self._forward_dtype = _resolve_dtype(args.diffusion_forward_dtype)
-        diffusion_model_id = getattr(args, "diffusion_model", None) or args.hf_checkpoint
+        diffusion_model_id = args.diffusion_model or args.hf_checkpoint
 
         with self._get_init_weight_context_manager():
             pipeline = DiffusionPipeline.from_pretrained(
@@ -85,7 +85,7 @@ class FSDPTrainRayActor(TrainRayActor):
 
         self.train_pipeline_config = get_train_pipeline_config(args.diffusion_model)
 
-        if getattr(args, "use_lora", False):
+        if args.use_lora:
             model = apply_lora(model, args, self.train_pipeline_config)
 
         model.train()
@@ -138,12 +138,12 @@ class FSDPTrainRayActor(TrainRayActor):
         # Allow bypass for alignment debugging: both training and rollout load
         # from the same HF checkpoint, so in theory no sync is needed until
         # training actually updates weights.
-        disable_sync = bool(getattr(self.args, "debug_disable_weight_sync", False))
+        disable_sync = bool(self.args.debug_disable_weight_sync)
         if self.args.debug_train_only or disable_sync:
             self.weight_updater = None
             if disable_sync and dist.get_rank() == 0:
                 logger.info("[debug] weight sync disabled via --debug-disable-weight-sync")
-        elif getattr(self.args, "use_lora", False):
+        elif self.args.use_lora:
             self.weight_updater = DiffusionUpdateWeightFromTensorLoRA(self.args, self.model)
         else:
             self.weight_updater = DiffusionUpdateWeightFromTensor(self.args, self.model)
@@ -155,7 +155,7 @@ class FSDPTrainRayActor(TrainRayActor):
 
         self.prof.on_init_end()
 
-        return int(getattr(self.args, "start_rollout_id", 0))
+        return self.args.start_rollout_id
 
     def _get_parallel_config(self) -> dict:
         return {"dp_size": getattr(self.parallel_state, "dp_size", 1)}
@@ -245,7 +245,7 @@ class FSDPTrainRayActor(TrainRayActor):
 
         is_writer = dist.get_rank() == 0
 
-        base_dir = getattr(self.args, "save", None) or os.path.join("/tmp", "miles_rollout_weights")
+        base_dir = self.args.save or os.path.join("/tmp", "miles_rollout_weights")
         if is_writer:
             os.makedirs(base_dir, exist_ok=True)
         meta_path = os.path.join(base_dir, "diffusion_transformer.meta.json")
@@ -261,7 +261,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 tensor = tensor.redistribute(placements=[Replicate()] * tensor.device_mesh.ndim).to_local()
             return tensor
 
-        if getattr(self.args, "use_lora", False):
+        if self.args.use_lora:
             adapter_path = os.path.join(base_dir, "diffusion_lora_adapter.pt")
             adapter_state = {}
             for name, param in self.model.state_dict().items():
@@ -406,20 +406,20 @@ class FSDPTrainRayActor(TrainRayActor):
         sde_step_indices_list = rollout_data.get("sde_step_indices") or [None] * len(denoising_envs)
 
         batch_size = len(denoising_envs)
-        guidance_scale = float(getattr(self.args, "diffusion_guidance_scale", 0))
-        true_cfg_scale_arg = getattr(self.args, "diffusion_true_cfg_scale", None)
+        guidance_scale = float(self.args.diffusion_guidance_scale)
+        true_cfg_scale_arg = self.args.diffusion_true_cfg_scale
         true_cfg_scale = float(true_cfg_scale_arg) if true_cfg_scale_arg is not None else None
         # Mirror sglang-d: use true_cfg_scale when set, else guidance_scale.
         cfg_scale = true_cfg_scale if true_cfg_scale is not None else guidance_scale
         use_cfg = cfg_scale > 0
-        clip_range = float(getattr(self.args, "diffusion_clip_range", 1e-4))
-        adv_clip_max = float(getattr(self.args, "diffusion_adv_clip_max", 5.0))
-        kl_beta = float(getattr(self.args, "diffusion_kl_beta", 0.0))
-        if kl_beta > 0 and not getattr(self.args, "use_lora", False):
+        clip_range = float(self.args.diffusion_clip_range)
+        adv_clip_max = float(self.args.diffusion_adv_clip_max)
+        kl_beta = float(self.args.diffusion_kl_beta)
+        if kl_beta > 0 and not self.args.use_lora:
             raise ValueError("--diffusion-kl-beta currently requires --use-lora so the base model can be used as reference.")
         if kl_beta > 0 and not hasattr(self.model, "disable_adapter"):
             raise RuntimeError("Diffusion KL requires a PEFT model exposing disable_adapter() after FSDP wrapping.")
-        noise_level = float(getattr(self.args, "diffusion_noise_level", 0.7))
+        noise_level = float(self.args.diffusion_noise_level)
         num_timesteps = dit_trajectories[0].timesteps.shape[0]
 
         advantages = rewards.unsqueeze(1).expand(-1, num_timesteps).clone()
@@ -445,17 +445,17 @@ class FSDPTrainRayActor(TrainRayActor):
         self.scheduler._step_index = None
         self.scheduler._begin_index = None
 
-        skip_last = int(getattr(self.args, "diffusion_ignore_last", 0))
+        skip_last = int(self.args.diffusion_ignore_last)
         train_num_timesteps = max(1, num_timesteps - skip_last)
-        local_batch_size = max(1, int(getattr(self.args, "local_batch_size", 1)))
-        legacy_accum_steps = int(getattr(self.args, "diffusion_gradient_accumulation_steps", 1))
+        local_batch_size = max(1, int(self.args.local_batch_size))
+        legacy_accum_steps = int(self.args.diffusion_gradient_accumulation_steps)
         if legacy_accum_steps > 1:
             local_batch_size = min(batch_size, legacy_accum_steps)
         num_optim_steps_per_rollout = (batch_size + local_batch_size - 1) // local_batch_size
 
-        sample_microbatch_arg = getattr(self.args, "micro_batch_size_sample", None)
-        tstep_microbatch_arg = getattr(self.args, "micro_batch_size_tstep", None)
-        iter_order = getattr(self.args, "diffusion_train_iter_order", "sample_major")
+        sample_microbatch_arg = self.args.micro_batch_size_sample
+        tstep_microbatch_arg = self.args.micro_batch_size_tstep
+        iter_order = self.args.diffusion_train_iter_order
         assert iter_order in ("sample_major", "timestep_major"), iter_order
 
         with timer("actor_train"):
@@ -505,7 +505,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 )
 
                 self.prof.step(rollout_id=rollout_id)
-                if not getattr(self.args, "debug_skip_optimizer_step", False):
+                if not self.args.debug_skip_optimizer_step:
                     self.scaler.unscale_(self.optimizer)
                     grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip_grad)
                     log_stats["grad_norm"].append(grad_norm.detach())
@@ -599,7 +599,7 @@ class FSDPTrainRayActor(TrainRayActor):
         # will ever have sample > 1: a model that only does timestep-only tiling
         # then doesn't need to override collate_cond_for_sample_batch.
         local_batch_size = int(traj_end - traj_start)
-        sample_microbatch_arg = getattr(self.args, "micro_batch_size_sample", None)
+        sample_microbatch_arg = self.args.micro_batch_size_sample
         needs_multi_sample_tile = (
             sample_microbatch_arg is None or sample_microbatch_arg > 1
         ) and local_batch_size > 1
@@ -659,7 +659,7 @@ class FSDPTrainRayActor(TrainRayActor):
             outer_chunks, inner_chunks = sample_chunks, tstep_chunks
 
         log_stats: dict[str, list[torch.Tensor]] = defaultdict(list)
-        skip_optimizer_step = bool(getattr(self.args, "debug_skip_optimizer_step", False))
+        skip_optimizer_step = bool(self.args.debug_skip_optimizer_step)
 
         for outer in outer_chunks:
             for inner in inner_chunks:
@@ -773,7 +773,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 **cond,
             )[0]
 
-        cfg_batching = bool(getattr(self.args, "fsdp_cfg_batching", False))
+        cfg_batching = bool(self.args.fsdp_cfg_batching)
 
         def _compute_noise_pred(disable_adapter: bool = False) -> torch.Tensor:
             adapter_ctx = self.model.disable_adapter() if disable_adapter else nullcontext()
@@ -957,8 +957,8 @@ def apply_lora(model: torch.nn.Module, args: Namespace, train_pipeline_config) -
     """
     from peft import LoraConfig, get_peft_model
 
-    targets = getattr(args, "lora_target_modules", None) or train_pipeline_config.lora_target_modules
-    init_lora_weight = getattr(args, "diffusion_init_lora_weight", "gaussian")
+    targets = args.lora_target_modules or train_pipeline_config.lora_target_modules
+    init_lora_weight = args.diffusion_init_lora_weight
     # "kaiming-uniform" is the default for PEFT's LoraConfig (passed as `True`).
     # Other init methods: "gaussian", "olora", "pissa", "pissa_niter_N", "loftq", ...
     if init_lora_weight == "kaiming-uniform":

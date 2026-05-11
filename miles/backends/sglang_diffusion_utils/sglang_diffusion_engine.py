@@ -40,16 +40,6 @@ def _scheduler_process_with_miles_patches(*args, apply_qwen_image_patch: bool = 
     # any monkey patches done in the middle child are gone. Apply them HERE,
     # before calling the real run_scheduler_process, so the DiT that's
     # constructed inside the grandchild sees the patched classes.
-    #
-    # Always-on patches:
-    # - sgl_d_dit_precision_patch: makes DenoisingStage honor
-    #   --sglang-dit-precision (otherwise hardcoded bf16, which causes
-    #   systematic logprob mismatch vs the trainer's fp16 FSDP forward for
-    #   fp16-trained models like SD3).
-    from miles.backends.fsdp_utils.models.sgl_d_dtype_patch import (
-        apply_sgl_d_dit_precision_patch,
-    )
-    apply_sgl_d_dit_precision_patch()
 
     # Same reason as in _launch_server_target: ensure sglang's reduction
     # patches are installed in the scheduler grandchild before any cuda-IPC

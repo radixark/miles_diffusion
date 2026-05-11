@@ -27,7 +27,6 @@ from .rm_hub import async_rm, batched_async_rm
 __all__ = ["generate_rollout"]
 
 logger = logging.getLogger(__name__)
-_MAX_DIFFUSION_SEED = 2**31
 
 
 def build_rollout_sampling_params(
@@ -135,7 +134,6 @@ class GenerateState(metaclass=SingletonMeta):
                         self.args,
                         group,
                         sampling_params=self.sampling_params.copy(),
-                        rollout_id=rollout_id,
                         evaluation=False,
                     )
                 )
@@ -229,42 +227,22 @@ async def generate_and_rm_microgroup(
     return microgroup
 
 
-def _train_microgroup_seed(
-    args: Namespace,
-    *,
-    rollout_id: int,
-    group: list[Sample],
-    microgroup_start_idx: int,
-) -> int:
-    group_index = getattr(group[0], "group_index", 0) or 0
-    samples_per_prompt = max(1, int(getattr(args, "n_samples_per_prompt", 1)))
-    rollout_batch_size = max(1, int(getattr(args, "rollout_batch_size", 1)))
-    rollout_stride = rollout_batch_size * samples_per_prompt
-    seed_offset = (
-        int(rollout_id) * rollout_stride
-        + int(group_index) * samples_per_prompt
-        + int(microgroup_start_idx)
-    )
-    return (int(getattr(args, "rollout_seed", 0)) + seed_offset) % _MAX_DIFFUSION_SEED
-
-
 async def generate_and_rm_group(
-    args: Namespace,
-    group: list[Sample],
-    sampling_params: dict[str, Any],
-    rollout_id: int = 0,
-    evaluation: bool = False,
+    args: Namespace, group: list[Sample], sampling_params: dict[str, Any], evaluation: bool = False
 ) -> list[Sample]:
+    state = GenerateState(args)
+
+    # N-spaced base so sgl-d's seed→[seed+0..seed+N-1] expansion stays disjoint
+    # per (rollout, prompt-group); group_index is monotonic across the run.
+    n_per_prompt = int(args.n_samples_per_prompt)
+    group_index = int(getattr(group[0], "group_index", 0) or 0)
+    seed_base = (int(args.rollout_seed) + group_index * n_per_prompt) % (2**31)
+
     tasks = []
     for idx in range(0, len(group), args.diffusion_microgroup_size):
         microgroup = group[idx:min(idx + args.diffusion_microgroup_size, len(group))]
         current_sampling_params = sampling_params.copy()
-        current_sampling_params["seed"] = _train_microgroup_seed(
-            args,
-            rollout_id=rollout_id,
-            group=group,
-            microgroup_start_idx=idx,
-        )
+        current_sampling_params["seed"] = seed_base + idx
         tasks.append(
             asyncio.create_task(generate_and_rm_microgroup(args, microgroup, current_sampling_params, evaluation=evaluation))
         )

@@ -243,19 +243,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=argparse.SUPPRESS,
             )
             parser.add_argument(
-                "--qkv-format",
-                type=str,
-                choices=["thd", "bshd"],
-                default="thd",
-                help="The qkv layout for Megatron backend.",
-            )
-            parser.add_argument(
-                "--true-on-policy-mode",
-                action="store_true",
-                default=False,
-                help="Whether to enable true-on-policy mode.",
-            )
-            parser.add_argument(
                 "--train-env-vars",
                 type=json.loads,
                 default="{}",
@@ -2050,12 +2037,6 @@ def miles_validate_args(args):
     assert not (
         args.prefill_num_servers is not None and args.rollout_external
     ), "prefill_num_servers cannot be set when rollout_external is set."
-
-    if args.qkv_format == "bshd":
-        assert args.train_backend == "megatron", "bshd format is only supported for megatron backend."
-        assert (
-            args.use_dynamic_batch_size is False
-        ), "Dynamic batch size is not supported for bshd format. Please specify --micro-batch-size instead."
 
 
 def hf_validate_args(args, hf_config):
