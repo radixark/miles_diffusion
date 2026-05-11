@@ -66,11 +66,21 @@ class OptimizerState(Stateful):
         return {"optim": optimizer_state_dict}
 
     def load_state_dict(self, state_dict):
+        optim_state = state_dict["optim"]
+        if self.allowed_missing:
+            # set_state_dict KeyErrors on missing fqn for any requires_grad param (no
+            # strict flag covers it); empty {} is valid never-stepped state for AdamW.
+            loaded = optim_state.setdefault("state", {})
+            for fqn, param in self.model.named_parameters():
+                if not param.requires_grad or fqn in loaded:
+                    continue
+                if any(pattern in fqn for pattern in self.allowed_missing):
+                    loaded[fqn] = {}
         set_state_dict(
             self.model,
             optimizers=self.optimizer,
             model_state_dict=None,
-            optim_state_dict=state_dict["optim"],
+            optim_state_dict=optim_state,
         )
 
 

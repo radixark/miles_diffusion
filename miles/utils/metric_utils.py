@@ -107,14 +107,5 @@ def compression_ratio(
     return ratio, savings_pct
 
 
-def has_repetition(text: str):
-    if len(text) > 10000 and compression_ratio(text[-10000:])[0] > 10:
-        return True
-    else:
-        return False
-
-
 def compute_rollout_step(args, rollout_id):
-    if args.wandb_always_use_train_step:
-        return rollout_id * args.rollout_batch_size * args.n_samples_per_prompt // args.global_batch_size
     return rollout_id

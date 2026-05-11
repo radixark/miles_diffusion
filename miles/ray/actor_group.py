@@ -73,20 +73,13 @@ class RayTrainGroup:
             env_vars["TMS_INIT_ENABLE"] = "1"
             env_vars["TMS_INIT_ENABLE_CPU_BACKUP"] = "1"
 
-        # We cannot do routing replay for critic.
-        if self.args.use_routing_replay and self.role == "actor":
-            env_vars["ENABLE_ROUTING_REPLAY"] = "1"
-
         backend = self.args.train_backend
-        if backend == "megatron":
-            from miles.backends.megatron_utils.actor import MegatronTrainRayActor
-
-            actor_impl = MegatronTrainRayActor
-
-        else:
+        if backend == "fsdp":
             from miles.backends.fsdp_utils import FSDPTrainRayActor
 
             actor_impl = FSDPTrainRayActor
+        else:
+            raise NotImplementedError(f"Training backend {backend!r} is not supported.")
 
         TrainRayActor = ray.remote(num_gpus=1, runtime_env={"env_vars": env_vars})(actor_impl)
 
@@ -133,14 +126,6 @@ class RayTrainGroup:
 
     def clear_memory(self):
         return ray.get([actor.clear_memory.remote() for actor in self._actor_handlers])
-
-    def connect(self, critic_group):
-        return ray.get(
-            [
-                actor.connect_actor_critic.remote(critic)
-                for actor, critic in zip(self._actor_handlers, critic_group._actor_handlers, strict=False)
-            ]
-        )
 
     def set_rollout_manager(self, rollout_manager):
         return ray.get([actor.set_rollout_manager.remote(rollout_manager) for actor in self._actor_handlers])

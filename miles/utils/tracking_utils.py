@@ -1,5 +1,4 @@
 import wandb
-from miles.utils.tensorboard_utils import _TensorboardAdapter
 
 from . import wandb_utils
 
@@ -11,8 +10,8 @@ def init_tracking(args, primary: bool = True, **kwargs):
         wandb_utils.init_wandb_secondary(args, **kwargs)
 
 
-# TODO further refactor, e.g. put TensorBoard init to the "init" part
-def log(args, metrics, step_key: str):
+def log(args, metrics, step_key):
+    del step_key
     if args.use_wandb:
         # Do NOT pass step=... to wandb.log: wandb requires the explicit step
         # argument to be monotonically increasing across all log calls, but
@@ -26,7 +25,3 @@ def log(args, metrics, step_key: str):
         # (``rollout/step`` / ``train/step`` / ``eval/step``) — that's the
         # step_metric wiring set up in wandb_utils._init_wandb_common().
         wandb.log(metrics)
-
-    if args.use_tensorboard:
-        metrics_except_step = {k: v for k, v in metrics.items() if k != step_key}
-        _TensorboardAdapter(args).log(data=metrics_except_step, step=metrics[step_key])

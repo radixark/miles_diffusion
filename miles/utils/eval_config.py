@@ -6,32 +6,11 @@ from typing import Any
 
 _MISSING = object()
 
-# TODO: This is ugly, temporarily leave this. We should unify all the config name for dataset, default, and args. (advice from Tom.)
 DATASET_RUNTIME_SPECS: dict[str, dict[str, tuple[str, ...]]] = {
     "n_samples_per_eval_prompt": {
         "dataset_keys": ("n_samples_per_eval_prompt",),
         "default_keys": ("n_samples_per_eval_prompt",),
         "arg_attrs": ("n_samples_per_eval_prompt", "n_samples_per_prompt"),
-    },
-    "temperature": {
-        "dataset_keys": ("temperature",),
-        "default_keys": ("temperature",),
-        "arg_attrs": ("eval_temperature", "rollout_temperature"),
-    },
-    "top_p": {
-        "dataset_keys": ("top_p",),
-        "default_keys": ("top_p",),
-        "arg_attrs": ("eval_top_p", "rollout_top_p"),
-    },
-    "top_k": {
-        "dataset_keys": ("top_k",),
-        "default_keys": ("top_k",),
-        "arg_attrs": ("eval_top_k", "rollout_top_k"),
-    },
-    "max_response_len": {
-        "dataset_keys": ("max_response_len",),
-        "default_keys": ("max_response_len",),
-        "arg_attrs": ("eval_max_response_len", "rollout_max_response_len"),
     },
 }
 
@@ -94,14 +73,6 @@ class EvalDatasetConfig:
     metadata_key: str | None = None
 
     n_samples_per_eval_prompt: int | None = None
-
-    temperature: float | None = None
-    top_p: float | None = None
-    top_k: int | None = None
-    max_response_len: int | None = None
-    stop: list[str] | None = None
-    stop_token_ids: list[int] | None = None
-    min_new_tokens: int | None = None
 
     metadata_overrides: dict[str, Any] = field(default_factory=dict)
 

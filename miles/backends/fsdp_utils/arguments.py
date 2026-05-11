@@ -53,13 +53,6 @@ class FSDPArgs:
 
     # Context Parallelism
     context_parallel_size: int = 1  # Context Parallelism size
-    # Profile
-    record_memory_history: bool = False
-    memory_snapshot_path: str = "snapshot.pickle"
-    use_pytorch_profiler: bool = False
-    profile_step_start: int = 10
-    profile_step_end: int = 12
-    tensorboard_dir: str | None = None
 
     # YAML bookkeeping
     config: str | None = None

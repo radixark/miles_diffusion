@@ -44,7 +44,6 @@ def main(
             args = SimpleNamespace(
                 advantage_estimator="grpo",
                 reward_key=None,
-                log_reward_category=None,
             )
             sample_objects = [Sample.from_dict(s) for s in sample_dicts]
             metrics = compute_perf_metrics_from_samples(args, sample_objects)

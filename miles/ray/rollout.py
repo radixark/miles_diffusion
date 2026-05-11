@@ -21,14 +21,12 @@ from miles.utils.http_utils import _wrap_ipv6, find_available_port, get_host_inf
 from miles.utils.iter_utils import group_by
 from miles.utils.logging_utils import configure_logger
 from miles.utils.metric_checker import MetricChecker
-from miles.utils.metric_utils import compute_pass_rate, compute_rollout_step, compute_statistics, dict_add_prefix
+from miles.utils.metric_utils import compute_rollout_step, compute_statistics, dict_add_prefix
 from miles.utils.misc import load_function
 from miles.utils.ray_utils import Box
-from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.tracking_utils import init_tracking
 from miles.utils.types import Sample
 
-from ..utils.metric_utils import has_repetition
 from .utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST, Lock
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -76,14 +74,16 @@ class RolloutManager:
         self.generate_rollout = load_function(self.args.rollout_function_path)
         print("[DEBUG] RolloutManager: loading eval_generate_rollout...", flush=True)
         self.eval_generate_rollout = load_function(self.args.eval_function_path)
-        self.custom_reward_post_process_func = None
-        if self.args.custom_reward_post_process_path is not None:
-            self.custom_reward_post_process_func = load_function(self.args.custom_reward_post_process_path)
-        self.custom_convert_samples_to_train_data_func = None
-        if self.args.custom_convert_samples_to_train_data_path is not None:
-            self.custom_convert_samples_to_train_data_func = load_function(
-                self.args.custom_convert_samples_to_train_data_path
-            )
+        self.custom_reward_post_process_func = (
+            load_function(self.args.custom_reward_post_process_path)
+            if self.args.custom_reward_post_process_path is not None
+            else None
+        )
+        self.custom_convert_samples_to_train_data_func = (
+            load_function(self.args.custom_convert_samples_to_train_data_path)
+            if self.args.custom_convert_samples_to_train_data_path is not None
+            else None
+        )
         print(f"[DEBUG] RolloutManager: import {self.args.rollout_function_path} done", flush=True)
         logger.info(f"import {self.args.rollout_function_path} as generate_rollout function.")
         logger.info(f"import {self.args.eval_function_path} as eval_generate_rollout function.")
@@ -279,53 +279,17 @@ class RolloutManager:
             while isinstance(data[0], list):
                 data = list(itertools.chain.from_iterable(data))
 
-            if not self.args.disable_rollout_trim_samples:
-                global_batch_size = self.args.global_batch_size
-                if self.args.use_dynamic_global_batch_size:
-                    logger.info(f"Collected {len(data)} samples from rollout to train with dynamic global batch size")
-                    # TODO: this is a temporary solution, we should directly save dynamic_global_batch_size to rollout data
-                    self._dynamic_global_batch_size = self._compute_dynamic_global_batch_size(len(data))
-                    global_batch_size = self._dynamic_global_batch_size
-
-                if len(data) % global_batch_size != 0:
-                    trim_len = (len(data) // global_batch_size) * global_batch_size
-                    if trim_len == 0:
-                        raise ValueError(f"Not enough samples {len(data)} for global_batch_size {global_batch_size}")
-                    origin_data_length = len(data)
-                    data = data[:trim_len]
-                    logger.info(f"trim number of samples from {origin_data_length} to {trim_len}")
-                logger.info(f"Final collected {len(data)} samples from rollout to train")
+            global_batch_size = self.args.global_batch_size
+            if len(data) % global_batch_size != 0:
+                trim_len = (len(data) // global_batch_size) * global_batch_size
+                if trim_len == 0:
+                    raise ValueError(f"Not enough samples {len(data)} for global_batch_size {global_batch_size}")
+                origin_data_length = len(data)
+                data = data[:trim_len]
+                logger.info(f"trim number of samples from {origin_data_length} to {trim_len}")
+            logger.info(f"Final collected {len(data)} samples from rollout to train")
 
         return data, metrics
-
-    def _compute_dynamic_global_batch_size(self, num_samples: int) -> int:
-        """Calculate dynamic global_batch_size to ensure only one training step.
-
-        Strategy: global_batch_size = num_samples rounded down to a multiple of dp_size
-        This ensures num_steps_per_rollout = num_samples // global_batch_size = 1
-        """
-        dp_size = self.train_parallel_config["dp_size"]
-        original_gbs = self.args.global_batch_size
-
-        # Round down to a multiple of dp_size to ensure only one training step
-        dynamic_gbs = (num_samples // dp_size) * dp_size
-
-        if dynamic_gbs == 0:
-            # Too few samples, use at least dp_size
-            dynamic_gbs = dp_size
-            logger.warning(f"num_samples={num_samples} < dp_size={dp_size}, using dp_size as global_batch_size")
-
-        # Calculate how many samples will be discarded
-        wasted = num_samples - dynamic_gbs
-
-        if dynamic_gbs != original_gbs or wasted > 0:
-            logger.info(
-                f"Dynamic global_batch_size: {original_gbs} -> {dynamic_gbs} "
-                f"(num_samples={num_samples}, dp_size={dp_size}, "
-                f"num_steps=1, wasted={wasted})"
-            )
-
-        return dynamic_gbs
 
     def _save_debug_rollout_data(self, data, rollout_id, evaluation: bool):
         # TODO to be refactored (originally Buffer._set_data)
@@ -352,8 +316,6 @@ class RolloutManager:
             return self.custom_reward_post_process_func(self.args, samples)
 
         raw_rewards = [sample.get_reward_value(self.args) for sample in samples]
-        if not self.args.rewards_normalization:
-            return raw_rewards, raw_rewards
 
         # --globalize-reward-mean / --globalize-reward-std are orthogonal. flow_grpo
         # pickscore_qwenimage uses per-prompt mean + global std (PerPromptStatTracker
@@ -445,9 +407,6 @@ class RolloutManager:
             ],
         }
 
-        if hasattr(self, "_dynamic_global_batch_size"):
-            train_data["dynamic_global_batch_size"] = self._dynamic_global_batch_size
-
         return train_data
 
     def _log_images(
@@ -499,7 +458,7 @@ class RolloutManager:
         # Keys to partition (per-sample lists)
         partition_keys = [k for k in data if isinstance(data[k], list) and len(data[k]) == num_samples]
         # Keys to broadcast (global, not per-sample)
-        broadcast_keys = [k for k in data if k not in partition_keys and k != "dynamic_global_batch_size"]
+        broadcast_keys = [k for k in data if k not in partition_keys]
 
         rollout_data_refs = []
         for i in range(dp_size):
@@ -509,28 +468,8 @@ class RolloutManager:
                 rollout_data[key] = [data[key][j] for j in partition]
             for key in broadcast_keys:
                 rollout_data[key] = data[key]
-            if hasattr(self, "_dynamic_global_batch_size"):
-                rollout_data["dynamic_global_batch_size"] = self._dynamic_global_batch_size
             rollout_data_refs.append(Box(ray.put(rollout_data)))
         return rollout_data_refs
-
-    def _split_prompt_data_by_dp(self, data: dict[str, Any], dp_size: int):
-        total = len(data["prompt"])
-        partitions = [range(i, total, dp_size) for i in range(dp_size)]
-        rollout_data_refs = []
-        for i in range(dp_size):
-            partition = list(partitions[i])
-            rollout_data = {
-                "partition": partition,
-                "prompt": [data["prompt"][j] for j in partition],
-                "sample_indices": [data["sample_indices"][j] for j in partition],
-                "total_lengths": data["total_lengths"],
-            }
-            if hasattr(self, "_dynamic_global_batch_size"):
-                rollout_data["dynamic_global_batch_size"] = self._dynamic_global_batch_size
-            rollout_data_refs.append(Box(ray.put(rollout_data)))
-        return rollout_data_refs
-
 
 def init_rollout_engines(args, pg, all_rollout_engines):
     if args.debug_train_only:
@@ -592,12 +531,9 @@ def init_rollout_engines(args, pg, all_rollout_engines):
     if num_new_engines == 0:
         return num_new_engines
 
-    if args.rollout_external:
-        addr_and_ports = _allocate_rollout_engine_addr_and_ports_external(args=args, rollout_engines=rollout_engines)
-    else:
-        addr_and_ports = _allocate_rollout_engine_addr_and_ports_normal(
-            args=args, num_engines=num_engines, rollout_engines=rollout_engines
-        )
+    addr_and_ports = _allocate_rollout_engine_addr_and_ports_normal(
+        args=args, num_engines=num_engines, rollout_engines=rollout_engines
+    )
 
     # TODO: don't ray.get here to overlap train actor init with rollout engine init.
     # somehow if we don't sync here, the --debug-rollout-only mode will crash.
@@ -605,22 +541,6 @@ def init_rollout_engines(args, pg, all_rollout_engines):
     ray.get(init_handles)
 
     return num_new_engines
-
-
-def _allocate_rollout_engine_addr_and_ports_external(args, rollout_engines):
-    addr_and_ports = []
-    for rank, _ in rollout_engines:
-        addr = args.rollout_external_engine_addrs[rank]
-        [host, port] = addr.split(":")
-        addr_and_ports.append(
-            dict(
-                dist_init_addr=addr,
-                nccl_port=None,
-                host=host,
-                port=int(port),
-            )
-        )
-    return addr_and_ports
 
 
 def _allocate_rollout_engine_addr_and_ports_normal(*, args, num_engines, rollout_engines):
@@ -703,7 +623,6 @@ def _start_router(args):
         args.sglang_router_port = find_available_port(random.randint(3000, 4000))
 
     if args.use_miles_router:
-        assert args.prefill_num_servers is None, "miles router does not support prefill_num_servers."
         from miles.router.router import run_router
 
         router_args = args
@@ -734,18 +653,6 @@ def _log_eval_rollout_data(rollout_id, args, data, extra_metrics: dict[str, Any]
         log_dict[f"eval/{key}"] = sum(rewards) / len(rewards)
         if (samples := data[key].get("samples")) is not None:
             log_dict |= dict_add_prefix(compute_metrics_from_samples(args, samples), f"eval/{key}/")
-        if "truncated" in data[key]:
-            truncated = data[key]["truncated"]
-            log_dict[f"eval/{key}-truncated_ratio"] = sum(truncated) / len(truncated)
-        if args.log_passrate:
-            log_dict |= dict_add_prefix(
-                compute_pass_rate(
-                    flat_rewards=rewards,
-                    group_size=args.n_samples_per_eval_prompt,
-                ),
-                f"eval/{key}-",
-            )
-
     logger.info(f"eval {rollout_id}: {log_dict}")
 
     step = compute_rollout_step(args, rollout_id)
@@ -776,7 +683,6 @@ def _log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_
 def compute_metrics_from_samples(args, samples):
     log_dict = {}
     log_dict |= _compute_zero_std_metrics(args, samples)
-    log_dict |= _compute_reward_cat_metrics(args, samples)
     return log_dict
 
 
@@ -802,35 +708,10 @@ def compute_perf_metrics_from_samples(args, samples, rollout_time):
     if max(non_generation_time) > 0:
         log_dict |= dict_add_prefix(compute_statistics(non_generation_time), "non_generation_time/")
 
-    def token_perf(response_lengths, non_generation_time, key=""):
-        max_response_length = max(response_lengths)
-        if args.rollout_num_gpus:
-            log_dict[f"{key}tokens_per_gpu_per_sec"] = sum(response_lengths) / rollout_time / args.rollout_num_gpus
-        log_dict[f"longest_{key}sample_tokens_per_sec"] = max_response_length / rollout_time
-
-        if max(non_generation_time) == 0:
-            return
-
-        non_generation_time = [
-            t for t, length in zip(non_generation_time, response_lengths, strict=True) if length == max_response_length
-        ]
-        mean_non_generation_time = sum(non_generation_time) / len(non_generation_time)
-
-        log_dict[f"longest_{key}sample_non_generation_time"] = mean_non_generation_time
-        log_dict[f"longest_{key}sample_tokens_per_sec_without_non_generation"] = max_response_length / (
-            rollout_time - mean_non_generation_time
-        )
-
-    # token_perf
-
     return log_dict
 
 
 def _compute_zero_std_metrics(args, all_samples: list[Sample]):
-    # only compute in GRPO-like algorithms where one prompt has multiple responses
-    if args.advantage_estimator == "ppo":
-        return {}
-
     def _is_zero_std(samples: list[Sample]):
         rewards = [sample.get_reward_value(args) for sample in samples]
         return len(rewards) == 0 or all(rewards[0] == r for r in rewards)
@@ -843,11 +724,3 @@ def _compute_zero_std_metrics(args, all_samples: list[Sample]):
     return {f"zero_std/count_{reward}": len(items) for reward, items in group_by(interesting_rewards).items()}
 
 
-def _compute_reward_cat_metrics(args, all_samples: list[Sample]):
-    reward_cat_key = args.log_reward_category
-    if reward_cat_key is None:
-        return {}
-
-    samples_of_reward_cat = group_by(all_samples, lambda s: s.reward[reward_cat_key])
-
-    return {f"error_cat/{reward_cat}": len(s) / len(all_samples) for reward_cat, s in samples_of_reward_cat.items()}
