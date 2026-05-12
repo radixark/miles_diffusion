@@ -21,6 +21,7 @@ from miles.utils.profile_utils import TrainProfiler
 
 from .configs.train_pipeline_config import get_train_pipeline_config
 import miles.backends.fsdp_utils.configs.qwen_image  # noqa: F401 — register pipeline config
+import miles.backends.fsdp_utils.configs.wan2_2  # noqa: F401 — register pipeline config
 
 from . import checkpoint
 from .lr_scheduler import get_lr_scheduler
@@ -594,10 +595,6 @@ class FSDPTrainRayActor(TrainRayActor):
         )
         timesteps_flat = timesteps_tile.reshape(tile_sample_count * tile_tstep_count)
 
-        # sgl-d's Qwen DiT divides timestep by num_train_timesteps inside
-        # forward; diffusers' does not — pre-scale to match.
-        timesteps_normalized = timesteps_flat / float(num_train_timesteps)
-
         # tile_sample==1: skip window-collated cond and use the per-sample
         # un-padded cond + expand along tstep.
         if tile_sample_count == 1:
@@ -634,7 +631,10 @@ class FSDPTrainRayActor(TrainRayActor):
         # leaves fp32 inputs, which would run first matmul at higher precision
         # than rollout → systematic noise_pred drift.
         latents_input = latents_flat.to(forward_dtype)
-        timesteps_input = timesteps_normalized.to(forward_dtype)
+        timesteps_input = train_pipeline_config.prepare_timesteps_for_model(
+            timesteps_flat,
+            num_train_timesteps=num_train_timesteps,
+        ).to(forward_dtype)
 
         def _forward(cond: dict) -> torch.Tensor:
             return self.model(

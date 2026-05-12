@@ -49,6 +49,15 @@ class TrainPipelineConfig(abc.ABC):
     lora_target_modules: list[str] = ["to_q", "to_k", "to_v", "to_out.0"]
     optimizer_state_allowed_missing: list[str] = []
 
+    def prepare_timesteps_for_model(
+        self,
+        timesteps: torch.Tensor,
+        *,
+        num_train_timesteps: int,
+    ) -> torch.Tensor:
+        """Convert scheduler timesteps to the scale expected by the DiT."""
+        return timesteps / float(num_train_timesteps)
+
     def prepare_trajectory(
         self,
         traj: DiTTrajectory,
