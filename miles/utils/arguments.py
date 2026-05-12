@@ -307,10 +307,22 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Number of diffusion inference steps for eval rollout. Defaults to diffusion-num-steps.",
             )
             parser.add_argument(
+                "--diffusion-output-num-frames",
+                type=int,
+                default=1,
+                help="Requested decoded video frame count for diffusion video rollout. Wan2.2 MVP uses 1.",
+            )
+            parser.add_argument(
                 "--diffusion-guidance-scale",
                 type=float,
                 default=4.0,
                 help="Guidance scale for diffusion rollout.",
+            )
+            parser.add_argument(
+                "--diffusion-guidance-scale-2",
+                type=float,
+                default=None,
+                help="Optional Wan2.2 low-noise guidance scale for diffusion rollout.",
             )
             parser.add_argument(
                 "--diffusion-noise-level",

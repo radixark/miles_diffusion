@@ -66,6 +66,15 @@ def build_rollout_sampling_params(
             }
         )
 
+    output_num_frames = getattr(args, "diffusion_output_num_frames", None)
+    if output_num_frames is not None:
+        sampling_params["num_frames"] = int(output_num_frames)
+
+    guidance_scale_2 = getattr(args, "diffusion_guidance_scale_2", None)
+    if guidance_scale_2 is not None:
+        extra_sampling_params = dict(extra_sampling_params or {})
+        extra_sampling_params["guidance_scale_2"] = float(guidance_scale_2)
+
     if extra_sampling_params:
         sampling_params["extra_sampling_params"] = extra_sampling_params
 
