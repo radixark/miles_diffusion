@@ -22,8 +22,8 @@ def sde_window(
     to the window for loss / backprop. Keeping the full trajectory avoids the
     sglang-d-side trailing ``x_final`` aliasing issue when the window ends before
     the last denoising step."""
-    window_size = int(args.diffusion_sde_window_size)
-    range_raw = getattr(args, "diffusion_sde_window_range", None)
+    window_size = args.diffusion_sde_window_size
+    range_raw = args.diffusion_sde_window_range
     if range_raw:
         parts = [int(x) for x in str(range_raw).split(",")]
         lo, hi = parts[0], parts[1]

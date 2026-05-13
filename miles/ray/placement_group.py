@@ -158,14 +158,14 @@ def create_rollout_manager(args, pg):
     logger.info(
         "Creating rollout manager (diffusion=%s, num_gpus=%s)",
         use_diffusion_rollout,
-        0 if (use_diffusion_rollout and getattr(args, "rollout_num_gpus", 1) > 1) else (1 if use_diffusion_rollout else 0),
+        0 if (use_diffusion_rollout and args.rollout_num_gpus > 1) else (1 if use_diffusion_rollout else 0),
     )
     scheduling_strategy = None
     if use_diffusion_rollout:
         pg_tuple = pg
         # If rollout uses multiple GPUs, do NOT bind RolloutManager to the rollout PG.
         # Otherwise it consumes a GPU bundle and starves rollout workers.
-        if getattr(args, "rollout_num_gpus", 1) <= 1:
+        if args.rollout_num_gpus <= 1:
             pg, reordered_bundle_indices, _ = pg_tuple
             bundle_index = reordered_bundle_indices[0] if reordered_bundle_indices else 0
             scheduling_strategy = PlacementGroupSchedulingStrategy(
@@ -176,7 +176,7 @@ def create_rollout_manager(args, pg):
 
     rollout_manager = RolloutManager.options(
         num_cpus=1,
-        num_gpus=0 if (use_diffusion_rollout and getattr(args, "rollout_num_gpus", 1) > 1) else (1 if use_diffusion_rollout else 0),
+        num_gpus=0 if (use_diffusion_rollout and args.rollout_num_gpus > 1) else (1 if use_diffusion_rollout else 0),
         scheduling_strategy=scheduling_strategy,
     ).remote(args, pg_tuple if use_diffusion_rollout else pg)
 

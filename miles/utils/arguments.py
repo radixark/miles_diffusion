@@ -720,6 +720,24 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             reset_arg(parser, "--save", type=str, default=None)
             reset_arg(parser, "--save-interval", type=int, default=None)
             reset_arg(parser, "--async-save", action="store_true")
+            parser.add_argument(
+                "--ckpt-step",
+                type=int,
+                default=None,
+                help="Checkpoint iteration to load from --load. Defaults to latest_checkpointed_iteration.txt.",
+            )
+            parser.add_argument(
+                "--no-load-optim",
+                action="store_true",
+                default=False,
+                help="Do not load optimizer state when resuming from --load.",
+            )
+            parser.add_argument(
+                "--no-load-rng",
+                action="store_true",
+                default=False,
+                help="Do not restore RNG state when resuming from --load.",
+            )
             reset_arg(
                 parser,
                 "--no-save-optim",
@@ -1212,6 +1230,11 @@ def miles_validate_args(args):
 
     if args.eval_reward_key is None:
         args.eval_reward_key = args.reward_key
+
+    if args.diffusion_log_image_interval < 1:
+        raise ValueError(
+            f"diffusion_log_image_interval must be >= 1, got {args.diffusion_log_image_interval}"
+        )
 
     if args.dump_details is not None:
         args.save_debug_rollout_data = f"{args.dump_details}/rollout_data/{{rollout_id}}.pt"

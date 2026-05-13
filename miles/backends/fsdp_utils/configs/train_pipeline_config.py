@@ -48,6 +48,7 @@ class TrainPipelineConfig(abc.ABC):
 
     lora_target_modules: list[str] = ["to_q", "to_k", "to_v", "to_out.0"]
     optimizer_state_allowed_missing: list[str] = []
+    update_weight_target_module: str = "transformer"
 
     def prepare_trajectory(
         self,

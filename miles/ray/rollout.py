@@ -77,8 +77,8 @@ class RolloutManager:
         logger.info(f"import {self.args.rollout_function_path} as generate_rollout function.")
         logger.info(f"import {self.args.eval_function_path} as eval_generate_rollout function.")
 
-        print(f"[DEBUG] RolloutManager rollout_num_gpus={getattr(self.args, 'rollout_num_gpus', None)}", flush=True)
-        logger.info("RolloutManager rollout_num_gpus=%s", getattr(self.args, "rollout_num_gpus", None))
+        print(f"[DEBUG] RolloutManager rollout_num_gpus={self.args.rollout_num_gpus}", flush=True)
+        logger.info("RolloutManager rollout_num_gpus=%s", self.args.rollout_num_gpus)
 
         if self.args.debug_train_only:
             self.all_rollout_engines = []
@@ -173,7 +173,7 @@ class RolloutManager:
         data = result.data
         self._save_debug_rollout_data(data, rollout_id=rollout_id, evaluation=True)
         metrics = _log_eval_rollout_data(rollout_id, self.args, data, result.metrics)
-        max_images = int(getattr(self.args, "diffusion_log_images", 0) or 0)
+        max_images = self.args.diffusion_log_images
         if max_images > 0:
             self._log_images(
                 {
@@ -184,7 +184,7 @@ class RolloutManager:
                 max_images=max_images,
                 step_key="eval/step",
                 step_value=compute_rollout_step(self.args, rollout_id),
-                reward_key=self.args.eval_reward_key or self.args.reward_key,
+                reward_key=self.args.eval_reward_key,
             )
         if self._metric_checker is not None:
             self._metric_checker.on_eval(metrics)
@@ -349,7 +349,7 @@ class RolloutManager:
             **_reward_stats_dict(norm_t, "rollout/reward/norm_"),
         }
         # Per-prompt (group) stats — meaningful for GRPO-style algorithms.
-        if getattr(self.args, "advantage_estimator", None) == "grpo" and self.args.n_samples_per_prompt > 1:
+        if self.args.advantage_estimator == "grpo" and self.args.n_samples_per_prompt > 1:
             groups_raw = raw_t.view(-1, self.args.n_samples_per_prompt)
             reward_stats["rollout/reward/group_mean_avg"] = float(groups_raw.mean(dim=-1).mean())
             if groups_raw.shape[-1] > 1:
@@ -364,8 +364,8 @@ class RolloutManager:
         reward_stats["rollout/step"] = compute_rollout_step(self.args, self.rollout_id)
         tracking_utils.log(self.args, reward_stats, step_key="rollout/step")
 
-        max_images = int(getattr(self.args, "diffusion_log_images", 0) or 0)
-        interval = max(1, int(getattr(self.args, "diffusion_log_image_interval", 1) or 1))
+        max_images = self.args.diffusion_log_images
+        interval = self.args.diffusion_log_image_interval
         if max_images > 0 and self.rollout_id % interval == 0:
             self._log_images(
                 {"rollout_media/sample_images": samples},

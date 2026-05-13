@@ -152,7 +152,7 @@ class SGLangDiffusionEngine(RayActor):
     def _init_normal(self, server_args_dict):
         logger.info(f"Launch HttpServerEngineAdapter at: {self.server_host}:{self.server_port}")
         self._pin_to_assigned_gpu()
-        apply_sgld_monkey_patches = bool(getattr(self.args, "apply_sgld_monkey_patches", False))
+        apply_sgld_monkey_patches = self.args.apply_sgld_monkey_patches
         if apply_sgld_monkey_patches:
             logger.info(
                 "Launching sglang-d with sgl-d → diffusers monkey patches "

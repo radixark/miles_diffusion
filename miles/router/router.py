@@ -41,13 +41,13 @@ class MilesRouter:
         self.dead_workers: set[str] = set()
         self.max_weight_version = None
 
-        max_connections = getattr(args, "miles_router_max_connections", None)
+        max_connections = args.miles_router_max_connections
         if max_connections is None:
             max_connections = (
                 args.sglang_server_concurrency * args.rollout_num_gpus // args.rollout_num_gpus_per_engine
             )
 
-        timeout = getattr(args, "miles_router_timeout", None)
+        timeout = args.miles_router_timeout
 
         self.client = httpx.AsyncClient(
             limits=httpx.Limits(max_connections=max_connections),

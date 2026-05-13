@@ -37,18 +37,18 @@ def build_rollout_sampling_params(
 ) -> dict[str, Any]:
     """Build static fields in JSON body for ``POST /rollout/generate`` (``RolloutImageRequest``). 
     """
-    neg = getattr(args, "diffusion_negative_prompt", None)
-    eval_steps = getattr(args, "diffusion_eval_num_steps", None)
-    num_steps = int(eval_steps) if evaluation and eval_steps is not None else args.diffusion_num_steps
+    neg = args.diffusion_negative_prompt
+    eval_steps = args.diffusion_eval_num_steps
+    num_steps = eval_steps if evaluation and eval_steps is not None else args.diffusion_num_steps
 
     sampling_params: dict[str, Any] = {
-        "generator_device": getattr(args, "diffusion_generator_device", "cuda"),
+        "generator_device": args.diffusion_generator_device,
         "negative_prompt": neg,
-        "width": getattr(args, "diffusion_width", None),
-        "height": getattr(args, "diffusion_height", None),
+        "width": args.diffusion_width,
+        "height": args.diffusion_height,
         "num_inference_steps": num_steps,
-        "guidance_scale": getattr(args, "diffusion_guidance_scale", None),
-        "true_cfg_scale": getattr(args, "diffusion_true_cfg_scale", None),
+        "guidance_scale": args.diffusion_guidance_scale,
+        "true_cfg_scale": args.diffusion_true_cfg_scale,
     }
 
     if evaluation:
@@ -57,10 +57,10 @@ def build_rollout_sampling_params(
         sampling_params.update(
             {
                 "rollout": True,
-                "rollout_sde_type": getattr(args, "diffusion_sde_type", "sde"),
-                "rollout_noise_level": float(getattr(args, "diffusion_noise_level", 0.7)),
-                "rollout_log_prob_no_const": bool(getattr(args, "diffusion_log_prob_no_const", False)),
-                "rollout_debug_mode": bool(getattr(args, "diffusion_debug_mode", False)),
+                "rollout_sde_type": args.diffusion_sde_type,
+                "rollout_noise_level": args.diffusion_noise_level,
+                "rollout_log_prob_no_const": args.diffusion_log_prob_no_const,
+                "rollout_debug_mode": args.diffusion_debug_mode,
                 "rollout_return_denoising_env": True,
                 "rollout_return_dit_trajectory": True,
             }
@@ -97,10 +97,10 @@ class GenerateState(metaclass=SingletonMeta):
         self.sampling_params = build_rollout_sampling_params(args)
         self.step_strategy_fn = (
             load_function(args.diffusion_step_strategy_path)
-            if getattr(args, "diffusion_step_strategy_path", None)
+            if args.diffusion_step_strategy_path
             else None
         )
-        self.dp_counts = [0] * (args.sglang_dp_size or 1)
+        self.dp_counts = [0] * args.sglang_dp_size
         self.dp_rank = 0
         self.node_id = ray.get_runtime_context().get_node_id()
         self.response_parser_actor = RolloutImageResponseParserActor.options(
@@ -232,9 +232,9 @@ async def generate_and_rm_group(
 
     # N-spaced base so sgl-d's seed→[seed+0..seed+N-1] expansion stays disjoint
     # per (rollout, prompt-group); group_index is monotonic across the run.
-    n_per_prompt = int(args.n_samples_per_prompt)
+    n_per_prompt = args.n_samples_per_prompt
     group_index = int(getattr(group[0], "group_index", 0) or 0)
-    seed_base = (int(args.rollout_seed) + group_index * n_per_prompt) % (2**31)
+    seed_base = (args.rollout_seed + group_index * n_per_prompt) % (2**31)
 
     tasks = []
     for idx in range(0, len(group), args.diffusion_microgroup_size):
@@ -362,7 +362,7 @@ async def eval_rollout(args: Namespace, rollout_id: int) -> tuple[dict[str, dict
     assert not args.group_rm, "Group RM is not supported for eval rollout"
 
     coros = []
-    for dataset_config in getattr(args, "eval_datasets", []) or []:
+    for dataset_config in args.eval_datasets:
         coros.append(eval_rollout_single_dataset(args, rollout_id, dataset_config))
     results_list = await asyncio.gather(*coros)
     results = {}
@@ -440,7 +440,7 @@ async def eval_rollout_single_dataset(
 
     data.sort(key=lambda sample: sample.index)
 
-    reward_key = args.eval_reward_key or args.reward_key
+    reward_key = args.eval_reward_key
     return {
         dataset_config.name: {
             "rewards": [sample.reward if not reward_key else sample.reward[reward_key] for sample in data],
