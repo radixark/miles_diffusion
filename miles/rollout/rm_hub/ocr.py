@@ -90,7 +90,7 @@ class AsyncOcrPool(metaclass=SingletonMeta):
     def __init__(self, args) -> None:
         if not ray.is_initialized():
             raise RuntimeError("Ray is not initialized. OCR RM requires Ray for OcrRewardActor.")
-        num_workers = int(getattr(args, "ocr_num_workers", 4) or 4)
+        num_workers = args.ocr_num_workers
         if num_workers <= 0:
             raise ValueError(f"ocr_num_workers must be > 0, got {num_workers}")
         self._actors = [OcrRewardActor.options(num_cpus=1).remote(use_gpu=False) for _ in range(num_workers)]

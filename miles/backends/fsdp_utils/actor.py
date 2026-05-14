@@ -120,10 +120,11 @@ class FSDPTrainRayActor(TrainRayActor):
         checkpoint_payload = checkpoint.load(self)
 
         # sglang-d now supports /update_weights_from_tensor (PR #20464).
+        update_weight_target_module = self.train_pipeline_config.update_weight_target_module
         self.weight_updater = (
-            DiffusionUpdateWeightFromTensorLoRA(self.args, self.model)
+            DiffusionUpdateWeightFromTensorLoRA(self.args, self.model, update_weight_target_module)
             if self.args.use_lora
-            else DiffusionUpdateWeightFromTensor(self.args, self.model)
+            else DiffusionUpdateWeightFromTensor(self.args, self.model, update_weight_target_module)
         )
 
         checkpoint.finalize_load(self, checkpoint_payload)
