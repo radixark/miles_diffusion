@@ -58,10 +58,7 @@ class RolloutManager:
         self.data_source = data_source_cls(args)
         logger.info("RolloutManager: data source loaded, loading rollout functions...")
 
-        import sys
-        print("[DEBUG] RolloutManager: loading generate_rollout...", flush=True)
         self.generate_rollout = load_function(self.args.rollout_function_path)
-        print("[DEBUG] RolloutManager: loading eval_generate_rollout...", flush=True)
         self.eval_generate_rollout = load_function(self.args.eval_function_path)
         self.custom_reward_post_process_func = (
             load_function(self.args.custom_reward_post_process_path)
@@ -73,11 +70,9 @@ class RolloutManager:
             if self.args.custom_convert_samples_to_train_data_path is not None
             else None
         )
-        print(f"[DEBUG] RolloutManager: import {self.args.rollout_function_path} done", flush=True)
         logger.info(f"import {self.args.rollout_function_path} as generate_rollout function.")
         logger.info(f"import {self.args.eval_function_path} as eval_generate_rollout function.")
 
-        print(f"[DEBUG] RolloutManager rollout_num_gpus={self.args.rollout_num_gpus}", flush=True)
         logger.info("RolloutManager rollout_num_gpus=%s", self.args.rollout_num_gpus)
 
         if self.args.debug_train_only:
@@ -88,11 +83,8 @@ class RolloutManager:
             num_gpu_per_engine = min(args.rollout_num_gpus_per_engine, args.num_gpus_per_node)
             num_engines = args.rollout_num_gpus // num_gpu_per_engine
             self.all_rollout_engines = [None] * num_engines
-            print(f"[DEBUG] RolloutManager: calling init_rollout_engines with {num_engines} engines...", flush=True)
             self.num_new_engines = init_rollout_engines(args, pg, self.all_rollout_engines)
-            print(f"[DEBUG] RolloutManager: init_rollout_engines returned, started {len(self.all_rollout_engines)}", flush=True)
             logger.info("RolloutManager started %s rollout engines", len(self.all_rollout_engines))
-        print("[DEBUG] RolloutManager: creating lock...", flush=True)
         logger.info("RolloutManager: creating lock...")
         self.nodes_per_engine = max(1, args.rollout_num_gpus_per_engine // args.num_gpus_per_node)
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
@@ -355,12 +347,6 @@ class RolloutManager:
             if groups_raw.shape[-1] > 1:
                 reward_stats["rollout/reward/group_std_avg"] = float(groups_raw.std(dim=-1, unbiased=False).mean())
 
-        print(
-            f"[reward stats] raw mean={raw_t.mean():.4f} std={raw_t.std():.4f} min={raw_t.min():.4f} max={raw_t.max():.4f} | "
-            f"normalized mean={norm_t.mean():.4f} std={norm_t.std():.4f} min={norm_t.min():.4f} max={norm_t.max():.4f}",
-            flush=True,
-        )
-
         reward_stats["rollout/step"] = compute_rollout_step(self.args, self.rollout_id)
         tracking_utils.log(self.args, reward_stats, step_key="rollout/step")
 
@@ -469,7 +455,6 @@ def init_rollout_engines(args, pg, all_rollout_engines):
     assert len(all_rollout_engines) == num_engines
 
     pg, reordered_bundle_indices, reordered_gpu_ids = pg
-    print(f"[DEBUG] init_rollout_engines: reordered_bundle_indices={reordered_bundle_indices}, reordered_gpu_ids={reordered_gpu_ids}", flush=True)
 
     # use diffusion SGLang rollout engines for miles diffusion
     RolloutRayActor = ray.remote(SGLangDiffusionEngine)
@@ -484,7 +469,6 @@ def init_rollout_engines(args, pg, all_rollout_engines):
 
         # Get the base GPU ID from placement group
         base_gpu_id = int(reordered_gpu_ids[i * num_gpu_per_engine])
-        print(f"[DEBUG] Engine {i}: base_gpu_id={base_gpu_id}, bundle_index={reordered_bundle_indices[i * num_gpu_per_engine]}", flush=True)
 
         scheduling_strategy = PlacementGroupSchedulingStrategy(
             placement_group=pg,
