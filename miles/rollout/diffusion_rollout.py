@@ -271,7 +271,7 @@ def _calculate_zero_std_ratio(prompts: list[str], rewards: list[float]) -> tuple
     zero_std_ratio = zero_std_count / len(prompt_std_devs)
     return float(zero_std_ratio), float(prompt_std_devs.mean())
 
-# NOTE: image logging moved to miles/ray/rollout.py:_log_images
+# NOTE: image logging moved to miles.utils.wandb_utils.log_sample_images
 # under "rollout_media/sample_images" so wandb groups them in a dedicated
 # media section.
 
@@ -357,7 +357,7 @@ def _run_rollout_group(
     reward_dict = {k: np.asarray(v, dtype=np.float64).tolist() for k, v in reward_dict.items()}
     rewards_avg = reward_dict.get("avg", reward_dict.get("ocr", []))
 
-    # NOTE: image logging is handled by RolloutManager._log_images
+    # NOTE: image logging is handled by miles.utils.wandb_utils.log_sample_images
     # (key "rollout_media/sample_images"), not here.
 
     for idx, sample in enumerate(group):

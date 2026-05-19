@@ -1,14 +1,13 @@
 """Training-side pipeline config for diffusion models.
 
-Mirrors the spirit of sglang-d's PipelineConfig but only contains the
-model-specific logic needed for the GRPO training loop:
-  - How to prepare conditioning kwargs from DenoisingEnv
-  - How to unpack trajectories
-  - How to apply CFG (with or without rescale)
-  - How to expand conditioning for timestep batching
+Model-specific logic for the GRPO training forward (after rollout has built
+train-pair dicts):
+  - prepare_cond_kwargs / collate / expand for DenoisingEnv
+  - CFG combine
+  - FSDP preprocess hooks
 
-Each model (QwenImage, SD3, Flux, ...) subclasses TrainPipelineConfig
-and overrides the relevant methods.
+Trajectory unpacking for train-pair construction lives in
+``miles.utils.train_data_utils.RolloutTrainDataConverter``.
 """
 
 from __future__ import annotations
@@ -16,7 +15,7 @@ from __future__ import annotations
 import abc
 
 import torch
-from miles.utils.types import CondKwargs, DiTTrajectory
+from miles.utils.types import CondKwargs
 
 
 _REGISTRY: dict[str, type["TrainPipelineConfig"]] = {}
@@ -49,22 +48,6 @@ class TrainPipelineConfig(abc.ABC):
     lora_target_modules: list[str] = ["to_q", "to_k", "to_v", "to_out.0"]
     optimizer_state_allowed_missing: list[str] = []
     update_weight_target_module: str = "transformer"
-
-    def prepare_trajectory(
-        self,
-        traj: DiTTrajectory,
-        device: torch.device,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Unpack trajectory into (latents, next_latents, timesteps).
-
-        Default handles the common (T+1, ...) layout. Override for models
-        with different trajectory formats.
-        """
-        all_latents = traj.latents.to(device, dtype=torch.float32)
-        latents = all_latents[:-1]
-        next_latents = all_latents[1:]
-        timesteps = traj.timesteps.to(device, dtype=torch.float32)
-        return latents, next_latents, timesteps
 
     @abc.abstractmethod
     def prepare_cond_kwargs(
@@ -102,7 +85,7 @@ class TrainPipelineConfig(abc.ABC):
         Default: naive concat along batch dim, only valid when shapes match.
         """
         raise NotImplementedError(
-            f"Must implement collate_cond_for_sample_batch to enable --micro-batch-size-sample in fsdp training"
+            "Must implement collate_cond_for_sample_batch to enable micro-batch-size > 1 in fsdp training"
         )
 
     @abc.abstractmethod

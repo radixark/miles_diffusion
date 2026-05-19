@@ -6,7 +6,7 @@
 #   rollout_batch_size=16 prompts × n_samples=16 = 256 items/rollout
 #   num_steps_per_rollout=2 → 128 items/optim step (global)
 #   ÷ 2 train gpus = 64 items/rank/optim step
-#   tile = (sample=4, tstep=2) = 8 cells, 8 tiles/rank/optim step.
+#   --micro-batch-size 8 → 8 train pairs/forward, 8 forwards/rank/optim step.
 #
 # Other knobs (matching flow_grpo `pickscore_qwenimage`):
 #   lr=3e-4, adam_beta2=0.999, weight_decay=1e-4, max_grad_norm=1.0,
@@ -56,9 +56,7 @@ hf download --repo-type dataset rockdu/miles-diffusion-datasets \
   --n-samples-per-prompt 16 \
   --num-rollout 100000 \
   --diffusion-microgroup-size 16 \
-  --micro-batch-size-sample 4 \
-  --micro-batch-size-tstep 2 \
-  --diffusion-train-iter-order sample_major \
+  --micro-batch-size 8 \
   --gradient-checkpointing \
   --actor-num-gpus-per-node 2 \
   --rollout-num-gpus 2 \

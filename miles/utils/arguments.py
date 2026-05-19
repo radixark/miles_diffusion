@@ -109,48 +109,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default="fsdp",
                 help="The backend for training.",
             )
-            # Diffusion GRPO training knobs (used by DiffusionFSDPTrainRayActor).
+            # Diffusion GRPO training (DiffusionFSDPTrainRayActor).
             #
-            # Per-optim-step the train loop sees an (M, T_sde) grid — M samples
-            # in this optim window × T_sde SDE timesteps per sample. The grid is
-            # processed as tiles of size (sample_microbatch, tstep_microbatch),
-            # gradients accumulating across tiles, optimizer steps once at the
-            # end of the window. Two extreme presets:
+            # Rollout produces ``train_data``: a flat list of train-pair dicts (one
+            # dict = one sample × one SDE step), sample-major order before DP split.
+            # DP ranks receive contiguous pair ranges; each optimizer window covers
+            # a contiguous slice of pairs.
             #
-            #   sample_microbatch = M, tstep_microbatch = 1, iter_order = sample_major
-            #     → outer loop over T_sde, inner forward = (M, 1, ...)
-            #     → memory peak ∝ M (the current default).
-            #
-            #   sample_microbatch = 1, tstep_microbatch = T_sde, iter_order = timestep_major
-            #     → outer loop over samples, inner forward = (1, T_sde, ...)
-            #     → memory peak ∝ T_sde (lower when M is the limit on 2-GPU runs).
-            #
-            # Loss scaling is uniform across plans: each tile's mean PPO loss is
-            # divided by total tile count, so net gradient = mean over (M, T_sde).
-            parser.add_argument(
-                "--micro-batch-size-sample",
-                type=int,
-                default=None,
-                help="Samples per DiT forward in train (sample-axis tile size). None = full window (= num_samples_in_window).",
-            )
-            parser.add_argument(
-                "--micro-batch-size-tstep",
-                type=int,
-                default=1,
-                help="SDE timesteps per DiT forward in train (tstep-axis tile size). Default 1.",
-            )
-            parser.add_argument(
-                "--diffusion-train-iter-order",
-                type=str,
-                choices=["sample_major", "timestep_major"],
-                default="sample_major",
-                help=(
-                    "Outer-loop axis when iterating tiles. sample_major: outer "
-                    "loop over timestep tiles (low memory when sample_microbatch "
-                    "is large). timestep_major: outer loop over sample tiles "
-                    "(low memory when tstep_microbatch is large)."
-                ),
-            )
+            # ``--micro-batch-size`` is the number of train-pair dicts per DiT
+            # forward/backward (contiguous within the window). Gradients match
+            # mean loss over all train pairs in the window.
             parser.add_argument(
                 "--diffusion-clip-range",
                 type=float,
@@ -512,7 +480,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help=(
                     "Replace `RolloutManager._convert_samples_to_train_data`. Signature: "
-                    "`def convert_samples_to_train_data(args, samples) -> dict`."
+                    "`def convert_samples_to_train_data(args, samples) -> dict`. "
                 ),
             )
             parser.add_argument(
@@ -660,7 +628,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "`rollout_batch_size * n_samples_per_prompt // num_steps_per_rollout`."
                 ),
             )
-            reset_arg(parser, "--micro-batch-size", type=int, default=1)
+            reset_arg(
+                parser,
+                "--micro-batch-size",
+                type=int,
+                default=1,
+                help=(
+                    "Diffusion FSDP: number of train-pair dicts per DiT forward "
+                    "(contiguous within each optimizer window). LLM/Megatron paths "
+                    "use this knob differently."
+                ),
+            )
             return parser
 
         def add_eval_arguments(parser):

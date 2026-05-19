@@ -21,6 +21,8 @@ def tensor_to_base64(tensor: torch.Tensor) -> str:
 
 @dataclass
 class RolloutDebugTensors:
+    """Rollout debug tensors on ``Sample``; each tensor has a leading timestep dimension."""
+
     rollout_variance_noises: torch.Tensor | None = None
     rollout_prev_sample_means: torch.Tensor | None = None
     rollout_noise_std_devs: torch.Tensor | None = None

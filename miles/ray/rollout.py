@@ -6,7 +6,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import ray
 import torch
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
@@ -25,7 +24,9 @@ from miles.utils.misc import load_function
 from miles.utils.ray_utils import Box
 from miles.utils.tracking_utils import init_tracking
 from miles.utils.types import Sample
+from miles.utils.wandb_utils import log_sample_images
 
+from miles.utils.train_data_utils import RolloutTrainDataConverter, TrainDataDPSplitter
 from .utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST, Lock
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -69,6 +70,8 @@ class RolloutManager:
             if self.args.custom_convert_samples_to_train_data_path is not None
             else None
         )
+        self.train_data_converter = RolloutTrainDataConverter()
+        self.train_data_dp_splitter = TrainDataDPSplitter()
         logger.info(f"import {self.args.rollout_function_path} as generate_rollout function.")
         logger.info(f"import {self.args.eval_function_path} as eval_generate_rollout function.")
 
@@ -150,7 +153,8 @@ class RolloutManager:
         _log_rollout_data(rollout_id, self.args, data, metrics, time.time() - start_time)
         data = self._convert_samples_to_train_data(data)
         logger.info("RolloutManager generate done: rollout_id=%s", rollout_id)
-        return self._split_train_data_by_dp(data, self.train_parallel_config["dp_size"])
+        shards = self.train_data_dp_splitter.split_by_dp(data, self.train_parallel_config["dp_size"])
+        return [Box(ray.put(shard)) for shard in shards]
 
     def eval(self, rollout_id):
         if self.args.debug_train_only:
@@ -164,7 +168,8 @@ class RolloutManager:
         metrics = _log_eval_rollout_data(rollout_id, self.args, data, result.metrics)
         max_images = self.args.diffusion_log_images
         if max_images > 0:
-            self._log_images(
+            log_sample_images(
+                self.args,
                 {
                     f"eval_media/{name}_images": payload["samples"]
                     for name, payload in data.items()
@@ -288,10 +293,17 @@ class RolloutManager:
 
             torch.save(dict(rollout_id=rollout_id, **dump_data), path)
 
-    def _post_process_rewards(self, samples: list[Sample] | list[list[Sample]]):
+    def _post_process_rewards(self, samples: list[Sample] | list[list[Sample]], *, include_stats: bool = False):
         # list[list[Sample]] is for custom reward post process function
         if self.custom_reward_post_process_func is not None:
-            return self.custom_reward_post_process_func(self.args, samples)
+            raw_rewards, rewards = self.custom_reward_post_process_func(self.args, samples)
+            if include_stats:
+                return raw_rewards, rewards, _compute_reward_stats(
+                    self.args,
+                    torch.tensor(raw_rewards, dtype=torch.float),
+                    torch.tensor(rewards, dtype=torch.float),
+                )
+            return raw_rewards, rewards
 
         raw_rewards = [sample.get_reward_value(self.args) for sample in samples]
 
@@ -315,7 +327,10 @@ class RolloutManager:
             # matches flow_grpo's `+ 1e-4` in both stat_tracking branches
             rewards = rewards / (std + 1e-4)
 
-        return raw_rewards, rewards.flatten().tolist()
+        rewards = rewards.flatten()
+        if include_stats:
+            return raw_rewards, rewards.tolist(), _compute_reward_stats(self.args, rewards_flat, rewards)
+        return raw_rewards, rewards.tolist()
 
     def _convert_samples_to_train_data(self, samples: list[Sample] | list[list[Sample]]):
         """
@@ -324,25 +339,10 @@ class RolloutManager:
         if self.custom_convert_samples_to_train_data_func is not None:
             return self.custom_convert_samples_to_train_data_func(self.args, samples)
 
-        raw_rewards, rewards = self._post_process_rewards(samples)
+        raw_rewards, rewards, reward_stats = self._post_process_rewards(samples, include_stats=True)
 
         assert len(raw_rewards) == len(samples)
         assert len(rewards) == len(samples)
-
-        raw_t = torch.tensor(raw_rewards, dtype=torch.float)
-        norm_t = torch.tensor(rewards, dtype=torch.float)
-
-        # Emit reward distribution stats (raw + normalized) to stdout + wandb.
-        reward_stats = {
-            **_reward_stats_dict(raw_t, "rollout/reward/raw_"),
-            **_reward_stats_dict(norm_t, "rollout/reward/norm_"),
-        }
-        # Per-prompt (group) stats — meaningful for GRPO-style algorithms.
-        if self.args.advantage_estimator == "grpo" and self.args.n_samples_per_prompt > 1:
-            groups_raw = raw_t.view(-1, self.args.n_samples_per_prompt)
-            reward_stats["rollout/reward/group_mean_avg"] = float(groups_raw.mean(dim=-1).mean())
-            if groups_raw.shape[-1] > 1:
-                reward_stats["rollout/reward/group_std_avg"] = float(groups_raw.std(dim=-1, unbiased=False).mean())
 
         reward_stats["rollout/step"] = compute_rollout_step(self.args, self.rollout_id)
         tracking_utils.log(self.args, reward_stats, step_key="rollout/step")
@@ -350,7 +350,8 @@ class RolloutManager:
         max_images = self.args.diffusion_log_images
         interval = self.args.diffusion_log_image_interval
         if max_images > 0 and self.rollout_id % interval == 0:
-            self._log_images(
+            log_sample_images(
+                self.args,
                 {"rollout_media/sample_images": samples},
                 max_images=max_images,
                 step_key="rollout/step",
@@ -358,90 +359,10 @@ class RolloutManager:
                 reward_key=self.args.reward_key,
             )
 
-        train_data = {
-            # RL
-            "rewards": rewards,
-            "raw_reward": raw_rewards,
-            "rollout_log_probs": [sample.rollout_log_probs for sample in samples],
-            # Rollout outputs — training side maps these to model-specific forward() args
-            "denoising_env": [sample.denoising_env for sample in samples],
-            "dit_trajectory": [sample.dit_trajectory for sample in samples],
-            # Optional per-step rollout debug tensors (when rollout_debug_mode=True):
-            # rollout_variance_noises / rollout_prev_sample_means / rollout_noise_std_devs /
-            # rollout_model_outputs — shape [T, ...], used for train/rollout alignment checks.
-            "rollout_debug_tensors": [sample.rollout_debug_tensors for sample in samples],
-            # Bookkeeping
-            "sample_indices": [sample.index for sample in samples],
-            "prompt": [sample.prompt for sample in samples],
-            # Per-sample training step indices (flow_grpo sde-window). None = train every step.
-            "sde_step_indices": [
-                (sample.train_metadata or {}).get("sde_step_indices") for sample in samples
-            ],
-        }
-
-        return train_data
-
-    def _log_images(
-        self,
-        media_key_to_samples: dict[str, list[Sample]],
-        *,
-        max_images: int,
-        step_key: str,
-        step_value: int,
-        reward_key: str | None,
-    ) -> None:
-        """Log per-key sample image grids under their own media namespace.
-
-        Caller decides whether to invoke (gating like ``--diffusion-log-images``
-        > 0 or rollout-side interval lives at the call site, not here). wandb
-        media panels do not honor ``step_metric`` (they slide on the internal
-        commit step), so panels pile up over a run — keeping them in their
-        own namespace at least groups them in one UI section.
-        """
-        import wandb
-        log_dict: dict = {}
-        for media_key, samples in media_key_to_samples.items():
-            images = []
-            for s in samples[:max_images]:
-                t = s.generated_output
-                if t is None or t.ndim != 4:
-                    continue
-                frame = t[:, 0, :, :].float().cpu().numpy().transpose(1, 2, 0)
-                if frame.max() <= 1.0 + 1e-3:
-                    frame = frame * 255.0
-                frame = np.clip(frame, 0, 255).astype(np.uint8)
-                reward = s.reward if not reward_key else (s.reward or {}).get(reward_key)
-                images.append(wandb.Image(frame, caption=f"{str(s.prompt)[:160]} | reward={reward}"))
-            if images:
-                log_dict[media_key] = images
-        if not log_dict:
-            return
-        log_dict[step_key] = step_value
-        tracking_utils.log(self.args, log_dict, step_key=step_key)
+        return self.train_data_converter.convert_samples(samples, rewards, raw_rewards)
 
     def set_train_parallel_config(self, config: dict):
         self.train_parallel_config = config
-
-    def _split_train_data_by_dp(self, data, dp_size):
-        """Split the train data by data parallel size."""
-        num_samples = len(data["sample_indices"])
-        partitions = [range(i, num_samples, dp_size) for i in range(dp_size)]
-
-        # Keys to partition (per-sample lists)
-        partition_keys = [k for k in data if isinstance(data[k], list) and len(data[k]) == num_samples]
-        # Keys to broadcast (global, not per-sample)
-        broadcast_keys = [k for k in data if k not in partition_keys]
-
-        rollout_data_refs = []
-        for i in range(dp_size):
-            rollout_data = {}
-            partition = partitions[i]
-            for key in partition_keys:
-                rollout_data[key] = [data[key][j] for j in partition]
-            for key in broadcast_keys:
-                rollout_data[key] = data[key]
-            rollout_data_refs.append(Box(ray.put(rollout_data)))
-        return rollout_data_refs
 
 def init_rollout_engines(args, pg, all_rollout_engines):
     if args.debug_train_only:
@@ -668,6 +589,22 @@ def _reward_stats_dict(tensor: torch.Tensor, prefix: str) -> dict:
         f"{prefix}median": float(tensor.median()),
         f"{prefix}num_samples": float(tensor.numel()),
     }
+
+
+def _compute_reward_stats(args, raw_rewards: torch.Tensor, normalized_rewards: torch.Tensor) -> dict:
+    """Build rollout reward metrics for logging."""
+    stats = {
+        **_reward_stats_dict(raw_rewards, "rollout/reward/raw_"),
+        **_reward_stats_dict(normalized_rewards, "rollout/reward/norm_"),
+    }
+
+    if args.advantage_estimator == "grpo" and args.n_samples_per_prompt > 1:
+        groups_raw = raw_rewards.view(-1, args.n_samples_per_prompt)
+        stats["rollout/reward/group_mean_avg"] = float(groups_raw.mean(dim=-1).mean())
+        if groups_raw.shape[-1] > 1:
+            stats["rollout/reward/group_std_avg"] = float(groups_raw.std(dim=-1, unbiased=False).mean())
+
+    return stats
 
 
 def compute_perf_metrics_from_samples(args, samples, rollout_time):

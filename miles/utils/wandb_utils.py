@@ -1,8 +1,13 @@
 import logging
 import os
+from argparse import Namespace
 from copy import deepcopy
+from typing import Any
 
+import numpy as np
 import wandb
+
+from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +151,38 @@ def init_wandb_secondary(args, router_addr=None):
     wandb.init(**init_kwargs)
 
     _init_wandb_common()
+
+
+def log_sample_images(
+    args: Namespace,
+    media_key_to_samples: dict[str, list[Sample]],
+    *,
+    max_images: int,
+    step_key: str,
+    step_value: int,
+    reward_key: str | None,
+) -> None:
+    """Log per-key sample image grids under their own media namespace."""
+    log_dict: dict[str, Any] = {}
+    for media_key, samples in media_key_to_samples.items():
+        images = []
+        for sample in samples[:max_images]:
+            tensor = sample.generated_output
+            if tensor is None or tensor.ndim != 4:
+                continue
+            frame = tensor[:, 0, :, :].float().cpu().numpy().transpose(1, 2, 0)
+            if frame.max() <= 1.0 + 1e-3:
+                frame = frame * 255.0
+            frame = np.clip(frame, 0, 255).astype(np.uint8)
+            reward = sample.reward if not reward_key else (sample.reward or {}).get(reward_key)
+            images.append(wandb.Image(frame, caption=f"{str(sample.prompt)[:160]} | reward={reward}"))
+        if images:
+            log_dict[media_key] = images
+    if not log_dict:
+        return
+    log_dict[step_key] = step_value
+    if args.use_wandb:
+        wandb.log(log_dict)
 
 
 def _init_wandb_common():
