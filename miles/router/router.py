@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import json
 import logging
+from contextlib import asynccontextmanager
 
 import httpx
 import uvicorn
@@ -30,8 +31,12 @@ class MilesRouter:
         self.args = args
         self.verbose = verbose
 
-        self.app = FastAPI()
-        self.app.add_event_handler("startup", self._start_background_health_check)
+        @asynccontextmanager
+        async def lifespan(app: FastAPI):
+            await self._start_background_health_check()
+            yield
+
+        self.app = FastAPI(lifespan=lifespan)
 
         # URL -> Active Request Count (load state)
         self.worker_request_counts: dict[str, int] = {}

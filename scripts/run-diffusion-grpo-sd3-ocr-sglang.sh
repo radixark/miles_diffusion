@@ -138,7 +138,7 @@ python -u "${ROOT_DIR}/train_diffusion.py" \
   --diffusion-ignore-last 1 \
   --diffusion-height 512 \
   --diffusion-width 512 \
-  --global-batch-size 128 \
+  --global-batch-size 64 \
   --save "${ROLLOUT_WEIGHT_DIR}" \
   "${DEBUG_ARGS[@]}" \
   "${WANDB_ARGS[@]}"

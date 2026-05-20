@@ -967,6 +967,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "samples increased log-prob while negative-advantage samples decreased it."
                 ),
             )
+            parser.add_argument(
+                "--debug-disable-weight-sync",
+                action="store_true",
+                default=False,
+                help=(
+                    "Disable weight sync from actor to sglang-d rollout engine. "
+                    "Used with --debug-skip-optimizer-step to measure pure forward-path "
+                    "divergence without weight drift."
+                ),
+            )
             # LoRA
             parser.add_argument("--diffusion-ignore-last", type=int, default=0,
                 help="Skip last N denoising steps for training (avoids small-sigma numerical issues). FlowGRPO/DanceGRPO use 1.")
@@ -1330,6 +1340,11 @@ def miles_validate_args(args):
         )
     else:
         args.global_batch_size = dp_size
+
+    # Derive num_steps_per_rollout from global_batch_size when not explicitly set.
+    if args.num_steps_per_rollout is None:
+        samples_per_rollout = args.rollout_batch_size * args.n_samples_per_prompt
+        args.num_steps_per_rollout = max(1, samples_per_rollout // args.global_batch_size)
 
     if args.n_samples_per_prompt == 1:
         args.grpo_std_normalization = False
