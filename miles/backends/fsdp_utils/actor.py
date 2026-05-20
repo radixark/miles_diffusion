@@ -134,14 +134,8 @@ class FSDPTrainRayActor(TrainRayActor):
         checkpoint_payload = checkpoint.load(self)
 
         # sglang-d now supports /update_weights_from_tensor (PR #20464).
-        # Allow bypass for alignment debugging: both training and rollout load
-        # from the same HF checkpoint, so in theory no sync is needed until
-        # training actually updates weights.
-        disable_sync = bool(self.args.debug_disable_weight_sync)
-        if self.args.debug_train_only or disable_sync:
+        if self.args.debug_train_only:
             self.weight_updater = None
-            if disable_sync and dist.get_rank() == 0:
-                logger.info("[debug] weight sync disabled via --debug-disable-weight-sync")
         elif self.args.use_lora:
             self.weight_updater = DiffusionUpdateWeightFromTensorLoRA(self.args, self.model)
         else:

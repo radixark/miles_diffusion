@@ -131,7 +131,6 @@ python -u "${ROOT_DIR}/train_diffusion.py" \
   --sglang-vae-slicing \
   --diffusion-num-steps 10 \
   --diffusion-eval-num-steps 40 \
-  --diffusion-gradient-accumulation-steps 64 \
   --update-weight-buffer-size 2147483648 \
   --diffusion-guidance-scale 4.5 \
   --diffusion-noise-level 0.7 \

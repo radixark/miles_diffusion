@@ -364,11 +364,7 @@ def _run_rollout_group(
     seed_offset += rollout_id * 1000
     generators = _make_generators(prompts, getattr(args, "rollout_seed", 0), seed_offset)
     guidance_scale = getattr(args, "diffusion_guidance_scale", 4.5)
-    noise_level = getattr(
-        args,
-        "diffusion_rollout_noise_level",
-        getattr(args, "diffusion_noise_level", 0.7),
-    )
+    noise_level = getattr(args, "diffusion_noise_level", 0.7)
     height = getattr(args, "diffusion_height", 512)
     width = getattr(args, "diffusion_width", 512)
     return_prev_latents_mean = getattr(args, "diffusion_return_prev_latents_mean", False)

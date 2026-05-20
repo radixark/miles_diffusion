@@ -88,7 +88,6 @@ python -u "${ROOT_DIR}/train_diffusion.py" \
   --diffusion-forward-dtype fp16 \
   --diffusion-num-steps 10 \
   --diffusion-eval-num-steps 40 \
-  --diffusion-gradient-accumulation-steps 64 \
   --diffusion-guidance-scale 4.5 \
   --diffusion-noise-level 0.7 \
   --diffusion-ignore-last 1 \
