@@ -112,6 +112,7 @@ python -u "${ROOT_DIR}/train_diffusion.py" \
   --colocate \
   --use-miles-router \
   --sglang-server-concurrency 4 \
+  --sglang-pipeline-class-name StableDiffusion3Pipeline \
   --use-lora \
   --lora-rank 32 \
   --lora-alpha 64 \
