@@ -155,28 +155,33 @@ def create_training_models(args, pgs, rollout_manager):
 
 def create_rollout_manager(args, pg):
     use_diffusion_rollout = "diffusion_rollout" in args.rollout_function_path
+    use_sglang = "sglang" in args.rollout_function_path
+    rollout_mgr_needs_gpu = use_diffusion_rollout and not use_sglang
     logger.info(
         "Creating rollout manager (diffusion=%s, num_gpus=%s)",
         use_diffusion_rollout,
-        0 if (use_diffusion_rollout and getattr(args, "rollout_num_gpus", 1) > 1) else (1 if use_diffusion_rollout else 0),
+        1 if rollout_mgr_needs_gpu else 0,
     )
     scheduling_strategy = None
     if use_diffusion_rollout:
         pg_tuple = pg
-        # If rollout uses multiple GPUs, do NOT bind RolloutManager to the rollout PG.
-        # Otherwise it consumes a GPU bundle and starves rollout workers.
-        if getattr(args, "rollout_num_gpus", 1) <= 1:
-            pg, reordered_bundle_indices, _ = pg_tuple
+        if use_sglang:
+            # SGLang rollout: RolloutManager doesn't need GPU (calls sglang via HTTP).
+            # Do NOT bind to PG — avoids CPU quota exhaustion that blocks engine scheduling.
+            pass
+        else:
+            # Local diffusion rollout: RolloutManager runs pipeline inline, needs GPU.
+            pg_ref, reordered_bundle_indices, _ = pg_tuple
             bundle_index = reordered_bundle_indices[0] if reordered_bundle_indices else 0
             scheduling_strategy = PlacementGroupSchedulingStrategy(
-                placement_group=pg,
+                placement_group=pg_ref,
                 placement_group_capture_child_tasks=True,
                 placement_group_bundle_index=bundle_index,
             )
 
     rollout_manager = RolloutManager.options(
         num_cpus=1,
-        num_gpus=0 if (use_diffusion_rollout and getattr(args, "rollout_num_gpus", 1) > 1) else (1 if use_diffusion_rollout else 0),
+        num_gpus=1 if rollout_mgr_needs_gpu else 0,
         scheduling_strategy=scheduling_strategy,
     ).remote(args, pg_tuple if use_diffusion_rollout else pg)
 

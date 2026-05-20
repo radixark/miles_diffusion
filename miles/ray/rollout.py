@@ -45,13 +45,24 @@ class RolloutManager:
         logger.info("RolloutManager init start")
         self.args = args
         self.pg = pg
-        logger.info("RolloutManager: starting router...")
-        _start_router(args)
-        logger.info("RolloutManager: router started, init tracking...")
+        self._uses_local_diffusion_rollout = (
+            "diffusion_rollout" in getattr(self.args, "rollout_function_path", "")
+            and "sglang" not in getattr(self.args, "rollout_function_path", "")
+        )
+        if self._uses_local_diffusion_rollout:
+            logger.info("RolloutManager: local diffusion rollout, skipping sglang router.")
+        else:
+            logger.info("RolloutManager: starting router...")
+            _start_router(args)
+            logger.info("RolloutManager: router started, init tracking...")
         # TODO make args immutable
-        init_tracking(args, primary=False, router_addr=f"http://{args.sglang_router_ip}:{args.sglang_router_port}")
-        logger.info("RolloutManager: init http client...")
-        init_http_client(args)
+        router_addr = None
+        if not self._uses_local_diffusion_rollout:
+            router_addr = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
+        init_tracking(args, primary=False, router_addr=router_addr)
+        if not self._uses_local_diffusion_rollout:
+            logger.info("RolloutManager: init http client...")
+            init_http_client(args)
         logger.info("RolloutManager: loading data source...")
 
         data_source_cls = load_function(self.args.data_source_path)
@@ -80,10 +91,10 @@ class RolloutManager:
         print(f"[DEBUG] RolloutManager rollout_num_gpus={getattr(self.args, 'rollout_num_gpus', None)}", flush=True)
         logger.info("RolloutManager rollout_num_gpus=%s", getattr(self.args, "rollout_num_gpus", None))
 
-        if self.args.debug_train_only:
+        if self.args.debug_train_only or self._uses_local_diffusion_rollout:
             self.all_rollout_engines = []
             self.num_new_engines = 0
-            logger.info("RolloutManager using local diffusion rollout (no sglang engines).")
+            logger.info("RolloutManager using no sglang engines.")
         else:
             num_gpu_per_engine = min(args.rollout_num_gpus_per_engine, args.num_gpus_per_node)
             num_engines = args.rollout_num_gpus // num_gpu_per_engine

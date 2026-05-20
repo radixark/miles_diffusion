@@ -20,7 +20,9 @@ from miles.rollout.base_types import RolloutFnEvalOutput, RolloutFnTrainOutput
 from miles.utils.metric_utils import compute_rollout_step
 from miles.utils.diffusion_protocol import validate_rollout_metadata
 from miles.utils import tracking_utils
-from miles.utils.types import Sample
+from miles.utils.types import CondKwargs, DenoisingEnv, DiTTrajectory, Sample
+from miles.backends.fsdp_utils.configs.train_pipeline_config import get_train_pipeline_config
+import miles.backends.fsdp_utils.configs.sd3  # noqa: F401 — register SD3 train config
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 from ray.util.placement_group import PlacementGroup
 
@@ -40,9 +42,30 @@ _LAST_ROLLOUT_WEIGHT_VERSION = -1
 
 def _get_rollout_weight_paths(args: Namespace) -> tuple[str, str]:
     base_dir = getattr(args, "save", None) or os.path.join("/tmp", "miles_rollout_weights")
-    weights_path = os.path.join(base_dir, "diffusion_transformer.pt")
+    adapter_path = os.path.join(base_dir, "diffusion_lora_adapter.pt")
+    full_path = os.path.join(base_dir, "diffusion_transformer.pt")
+    weights_path = adapter_path if getattr(args, "use_lora", False) or os.path.exists(adapter_path) else full_path
     meta_path = os.path.join(base_dir, "diffusion_transformer.meta.json")
     return weights_path, meta_path
+
+
+def _ensure_rollout_lora(args: Namespace, pipeline: StableDiffusion3Pipeline) -> None:
+    if hasattr(pipeline.transformer, "peft_config"):
+        return
+
+    from peft import LoraConfig, get_peft_model
+
+    train_pipeline_config = get_train_pipeline_config(args.diffusion_model)
+    targets = getattr(args, "lora_target_modules", None) or train_pipeline_config.lora_target_modules
+    pipeline.transformer = get_peft_model(
+        pipeline.transformer,
+        LoraConfig(
+            r=getattr(args, "lora_rank", 64),
+            lora_alpha=getattr(args, "lora_alpha", 64),
+            target_modules=targets,
+            init_lora_weights=True,
+        ),
+    )
 
 
 def _maybe_load_rollout_weights(args: Namespace, pipeline: StableDiffusion3Pipeline) -> None:
@@ -56,12 +79,15 @@ def _maybe_load_rollout_weights(args: Namespace, pipeline: StableDiffusion3Pipel
         with open(meta_path, "r", encoding="utf-8") as f:
             meta = json.load(f)
         version = int(meta.get("version", -1))
+        weight_type = str(meta.get("weight_type", "full_transformer"))
     except Exception:
         return
 
     if version <= _LAST_ROLLOUT_WEIGHT_VERSION:
         return
 
+    if weight_type == "peft_lora":
+        _ensure_rollout_lora(args, pipeline)
     state = torch.load(weights_path, map_location="cpu")
     try:
         dtype = next(pipeline.transformer.parameters()).dtype
@@ -70,9 +96,20 @@ def _maybe_load_rollout_weights(args: Namespace, pipeline: StableDiffusion3Pipel
     if dtype is not None:
         state = {k: v.to(dtype=dtype) if isinstance(v, torch.Tensor) else v for k, v in state.items()}
 
-    pipeline.transformer.load_state_dict(state, strict=True)
+    if weight_type == "peft_lora":
+        missing, unexpected = pipeline.transformer.load_state_dict(state, strict=False)
+        unexpected_lora = [key for key in unexpected if "lora_" in key]
+        missing_lora = [key for key in missing if "lora_" in key]
+        if unexpected_lora or missing_lora:
+            raise RuntimeError(
+                f"LoRA adapter state mismatch: missing={missing_lora[:5]} unexpected={unexpected_lora[:5]}"
+            )
+    else:
+        pipeline.transformer.load_state_dict(state, strict=True)
     _LAST_ROLLOUT_WEIGHT_VERSION = version
-    logger.info("[rollout] loaded transformer weights version=%s from %s", version, weights_path)
+    logger.info("[rollout] loaded %s weights version=%s from %s", weight_type, version, weights_path)
+    if getattr(args, "diffusion_debug_mode", False):
+        print(f"[rollout] loaded {weight_type} weights version={version} from {weights_path}", flush=True)
 
 
 def set_rollout_pg(pg) -> None:
@@ -137,7 +174,7 @@ def _get_device(args: Namespace) -> torch.device:
 
 
 def _get_dtype(args: Namespace) -> torch.dtype:
-    name = getattr(args, "diffusion_forward_dtype", "bf16")
+    name = getattr(args, "diffusion_forward_dtype", None) or getattr(args, "diffusion_dtype", "bf16")
     return {"fp32": torch.float32, "bf16": torch.bfloat16, "fp16": torch.float16}[name]
 
 
@@ -222,6 +259,10 @@ def _fill_sample_metadata(
     next_latents: torch.Tensor,
     log_prob_old: torch.Tensor,
     prev_latents_mean: torch.Tensor | None,
+    prompt_embeds_pos: torch.Tensor | None = None,
+    pooled_embeds_pos: torch.Tensor | None = None,
+    prompt_embeds_neg: torch.Tensor | None = None,
+    pooled_embeds_neg: torch.Tensor | None = None,
 ) -> None:
     # Move large rollout tensors to CPU and store per-sample slices in metadata.
     timesteps_cpu = timesteps.cpu()
@@ -243,6 +284,33 @@ def _fill_sample_metadata(
             metadata["prev_latents_mean"] = prev_latents_mean_cpu[i].clone()
         sample.metadata.update(metadata)
         sample.train_metadata = metadata
+
+        all_latents = torch.cat([latents_cpu[i], next_latents_cpu[i, -1:]], dim=0)
+        sample.dit_trajectory = DiTTrajectory(
+            latents=all_latents,
+            timesteps=timesteps_cpu.clone(),
+        )
+        sample.rollout_log_probs = log_prob_old_cpu[i].clone()
+
+        if prompt_embeds_pos is not None:
+            pos_cond = CondKwargs(
+                encoder_hidden_states=[prompt_embeds_pos[i].detach().cpu()],
+                pooled_projections=[pooled_embeds_pos[i].detach().cpu()]
+                if pooled_embeds_pos is not None
+                else None,
+            )
+            neg_cond = None
+            if prompt_embeds_neg is not None:
+                neg_cond = CondKwargs(
+                    encoder_hidden_states=[prompt_embeds_neg[i].detach().cpu()],
+                    pooled_projections=[pooled_embeds_neg[i].detach().cpu()]
+                    if pooled_embeds_neg is not None
+                    else None,
+                )
+            sample.denoising_env = DenoisingEnv(
+                pos_cond_kwargs=pos_cond,
+                neg_cond_kwargs=neg_cond,
+            )
 
         # Sanity check required keys and shape alignment.
         errors = validate_rollout_metadata(sample.metadata)
@@ -296,15 +364,30 @@ def _run_rollout_group(
     seed_offset += rollout_id * 1000
     generators = _make_generators(prompts, getattr(args, "rollout_seed", 0), seed_offset)
     guidance_scale = getattr(args, "diffusion_guidance_scale", 4.5)
-    noise_level = getattr(args, "diffusion_rollout_noise_level", 0.7)
+    noise_level = getattr(args, "diffusion_noise_level", 0.7)
     height = getattr(args, "diffusion_height", 512)
     width = getattr(args, "diffusion_width", 512)
     return_prev_latents_mean = getattr(args, "diffusion_return_prev_latents_mean", False)
+    do_cfg = guidance_scale > 1.0
+    negative_prompts = [""] * len(prompts) if do_cfg else None
+
+    with torch.no_grad():
+        prompt_embeds_pos, prompt_embeds_neg, pooled_embeds_pos, pooled_embeds_neg = pipeline.encode_prompt(
+            prompt=prompts,
+            prompt_2=None,
+            prompt_3=None,
+            negative_prompt=negative_prompts,
+            do_classifier_free_guidance=do_cfg,
+            device=device,
+        )
 
     # Run patched pipeline to get images + trajectory + per-step log-prob.
     output = pipeline_with_logprob(
         pipeline,
-        prompt=prompts,
+        prompt_embeds=prompt_embeds_pos,
+        pooled_prompt_embeds=pooled_embeds_pos,
+        negative_prompt_embeds=prompt_embeds_neg,
+        negative_pooled_prompt_embeds=pooled_embeds_neg,
         height=height,
         width=width,
         num_inference_steps=num_steps,
@@ -350,11 +433,25 @@ def _run_rollout_group(
         next_latents=next_latents,
         log_prob_old=log_prob_old,
         prev_latents_mean=prev_latents_mean,
+        prompt_embeds_pos=prompt_embeds_pos,
+        pooled_embeds_pos=pooled_embeds_pos,
+        prompt_embeds_neg=prompt_embeds_neg,
+        pooled_embeds_neg=pooled_embeds_neg,
     )
 
     reward_fn = _get_reward_fn(args)
-    reward_dict, _ = reward_fn(images, prompts, [{} for _ in range(len(prompts))])
-    reward_dict = {k: np.asarray(v, dtype=np.float64).tolist() for k, v in reward_dict.items()}
+    raw_reward_dict, _ = reward_fn(images, prompts, [{} for _ in range(len(prompts))])
+    reward_dict = {}
+    for key, value in raw_reward_dict.items():
+        if torch.is_tensor(value):
+            reward_dict[key] = value.detach().cpu().numpy().astype(np.float64).tolist()
+        elif isinstance(value, np.ndarray):
+            reward_dict[key] = value.astype(np.float64).tolist()
+        else:
+            reward_dict[key] = [
+                float(item.item()) if torch.is_tensor(item) else float(item)
+                for item in value
+            ]
     rewards_avg = reward_dict.get("avg", reward_dict.get("ocr", []))
 
     # NOTE: image logging is handled by RolloutManager._log_images

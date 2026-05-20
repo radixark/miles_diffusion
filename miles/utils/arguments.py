@@ -164,6 +164,21 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Max absolute value for advantage clipping in diffusion training.",
             )
             parser.add_argument(
+                "--diffusion-kl-beta",
+                type=float,
+                default=0.0,
+                help=(
+                    "Reference KL coefficient for diffusion GRPO. When > 0 with LoRA, "
+                    "the trainer disables the LoRA adapter to compute the base-model reference."
+                ),
+            )
+            parser.add_argument(
+                "--diffusion-gradient-accumulation-steps",
+                type=int,
+                default=1,
+                help="Legacy alias for the number of trajectories per optimizer step.",
+            )
+            parser.add_argument(
                 "--fsdp-cfg-batching",
                 action=argparse.BooleanOptionalAction,
                 default=False,
@@ -917,10 +932,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=False,
                 help=(
                     "Skip loss.backward() and optimizer.step() so trainer weights "
-                    "never drift. Used with --debug-disable-weight-sync to measure "
-                    "pure forward-path divergence from the rollout engine."
+                    "never drift. Useful for measuring pure forward-path divergence "
+                    "from the rollout engine."
                 ),
             )
+
             # LoRA
             parser.add_argument("--diffusion-ignore-last", type=int, default=0,
                 help="Skip last N denoising steps for training (avoids small-sigma numerical issues). FlowGRPO/DanceGRPO use 1.")
@@ -1285,6 +1301,11 @@ def miles_validate_args(args):
     else:
         args.global_batch_size = dp_size
 
+    # Derive num_steps_per_rollout from global_batch_size when not explicitly set.
+    if args.num_steps_per_rollout is None:
+        samples_per_rollout = args.rollout_batch_size * args.n_samples_per_prompt
+        args.num_steps_per_rollout = max(1, samples_per_rollout // args.global_batch_size)
+
     if args.n_samples_per_prompt == 1:
         args.grpo_std_normalization = False
         logger.info("n_samples_per_prompt is set to 1, grpo_std_normalization will be set to False.")
@@ -1318,6 +1339,7 @@ def miles_validate_args(args):
             if hasattr(args, k):
                 logger.info(f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}.")
             setattr(args, k, v)
+
 
 def hf_validate_args(args, hf_config):
     def equal(x, y):

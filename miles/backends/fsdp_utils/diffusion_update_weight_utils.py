@@ -131,15 +131,17 @@ class DiffusionUpdateWeightFromTensor(DiffusionUpdateWeight):
             flattened_tensor_bucket = FlattenedTensorBucket(named_tensors=named_tensors)
             metadata = flattened_tensor_bucket.get_metadata()
             # sglang-d WeightsUpdater expects per-module keyed dicts when
-            # load_format="flattened_bucket"; wrap each bucket under the
-            # target module name (default "transformer").
+            # load_format="flattened_bucket".
+            # Uses CUDA IPC (zero-copy) — requires --colocate (shared GPU).
             flattened_tensor_data = {
                 target_module: {
                     "flattened_tensor": flattened_tensor_bucket.get_flattened_tensor(),
                     "metadata": metadata,
                 }
             }
-            serialized_tensors.append(MultiprocessingSerializer.serialize(flattened_tensor_data, output_str=True))
+            serialized_tensors.append(
+                MultiprocessingSerializer.serialize(flattened_tensor_data, output_str=True)
+            )
 
         if self._ipc_gather_src == dist.get_rank():
             gathered_serialized_batches = [None for _ in range(dist.get_world_size(self._ipc_gather_group))]

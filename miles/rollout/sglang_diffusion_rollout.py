@@ -126,7 +126,7 @@ class GenerateState(metaclass=SingletonMeta):
         self.pendings = set()
         self.aborted = False
 
-    def submit_generate_tasks(self, samples: list[list[Sample]]) -> None:
+    def submit_generate_tasks(self, samples: list[list[Sample]], rollout_id: int) -> None:
         for group in samples:
             self.pendings.add(
                 asyncio.create_task(
@@ -225,6 +225,7 @@ async def generate_and_rm_microgroup(
         sample.reward = reward
     return microgroup
 
+
 async def generate_and_rm_group(
     args: Namespace, group: list[Sample], sampling_params: dict[str, Any], evaluation: bool = False
 ) -> list[Sample]:
@@ -302,7 +303,7 @@ async def generate_rollout_async(
         while state.remaining_batch_size < target_data_size:
             # get samples from the buffer and submit the generation requests.
             samples = data_source(args.over_sampling_batch_size)
-            state.submit_generate_tasks(samples)
+            state.submit_generate_tasks(samples, rollout_id)
 
         # wait for the generation to finish
         done, state.pendings = await asyncio.wait(state.pendings, return_when=asyncio.FIRST_COMPLETED)
