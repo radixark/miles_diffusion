@@ -958,16 +958,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
-                "--debug-check-update-direction",
-                action="store_true",
-                default=False,
-                help=(
-                    "After each diffusion optimizer step, recompute log-probs on "
-                    "the same rollout batch and report whether positive-advantage "
-                    "samples increased log-prob while negative-advantage samples decreased it."
-                ),
-            )
-            parser.add_argument(
                 "--debug-disable-weight-sync",
                 action="store_true",
                 default=False,

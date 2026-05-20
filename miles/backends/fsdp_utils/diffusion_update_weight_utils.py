@@ -131,18 +131,8 @@ class DiffusionUpdateWeightFromTensor(DiffusionUpdateWeight):
             flattened_tensor_bucket = FlattenedTensorBucket(named_tensors=named_tensors)
             metadata = flattened_tensor_bucket.get_metadata()
             # sglang-d WeightsUpdater expects per-module keyed dicts when
-            # load_format="flattened_bucket"; wrap each bucket under the
-            # target module name (default "transformer").
-            #
-            # Use CUDA IPC (zero-copy via MultiprocessingSerializer / ForkingPickler)
-            # instead of CPU pickle+base64. This requires actor and sglang
-            # engine to share the same physical GPU (i.e. --colocate so both
-            # ray actors are scheduled on the same placement-group bundle and
-            # see the same CUDA_VISIBLE_DEVICES). Without --colocate the two
-            # processes get disjoint visible devices and sglang's
-            # monkey_patch_torch_reductions raises "Invalid device_uuid=..."
-            # when trying to map the sender's GPU UUID — fix that by adding
-            # --colocate, not by going through CPU.
+            # load_format="flattened_bucket".
+            # Uses CUDA IPC (zero-copy) — requires --colocate (shared GPU).
             flattened_tensor_data = {
                 target_module: {
                     "flattened_tensor": flattened_tensor_bucket.get_flattened_tensor(),

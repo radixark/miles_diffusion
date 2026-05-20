@@ -410,12 +410,7 @@ class FSDPTrainRayActor(TrainRayActor):
         advantages = torch.clamp(advantages, -adv_clip_max, adv_clip_max)
 
         # ------------- scheduler -------------
-        # Use rollout's exact timesteps AND sigmas. Reconstructing sigmas from
-        # timesteps via timesteps/num_train_timesteps can drift from the
-        # rollout's actual sigmas (Qwen-Image flow-match with
-        # `use_dynamic_shifting=True` makes timesteps post-shift, so the
-        # reconstruction can mismatch). Prefer the snapshot the rollout sent;
-        # fall back to reconstruction only if it isn't available.
+        # Use rollout's exact sigmas snapshot; fall back to reconstruction if unavailable.
         timesteps_ref = dit_trajectories[0].timesteps.to(device).float()
         sigmas_snapshot = getattr(dit_trajectories[0], "sigmas", None)
         if sigmas_snapshot is not None:
