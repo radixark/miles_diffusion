@@ -50,8 +50,9 @@ MASTER_SGLANG_PYTHON="/sgl-workspace/master_sglang/sglang/python"
 export PYTHONPATH="${MASTER_SGLANG_PYTHON}${PYTHONPATH:+:${PYTHONPATH}}"
 
 # ── Model path ────────────────────────────────────────────────────────────────
-# HF ID works fine: if the model is already in the local cache
-# (~/.cache/huggingface/hub) sglang resolves it locally without network access.
+# SD3.5 is a gated model; HF_TOKEN is required for sglang to download
+# model_index.json from the hub (even if weights are already cached locally).
+export HF_TOKEN="${HF_TOKEN:-}"
 SD3_MODEL="${SD3_MODEL:-stabilityai/stable-diffusion-3.5-medium}"
 
 # ── Run name / weight dir ─────────────────────────────────────────────────────
@@ -112,7 +113,6 @@ python -u "${ROOT_DIR}/train_diffusion.py" \
   --colocate \
   --use-miles-router \
   --sglang-server-concurrency 4 \
-  --sglang-pipeline-class-name StableDiffusion3Pipeline \
   --use-lora \
   --lora-rank 32 \
   --lora-alpha 64 \
