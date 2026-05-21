@@ -7,7 +7,7 @@
 #   PY_VER          python version (default: 3.11)
 #   SGLANG_DIR      where to clone sglang (default: ../sglang)
 #   SGLANG_REPO     sglang git URL (default: https://github.com/Rockdu/sglang.git)
-#   SGLANG_BRANCH   sglang branch to check out (default: sglang-diffusion-rollout-test)
+#   SGLANG_BRANCH   sglang branch to check out (default: feat/wan-rollout-optimization)
 #   SGLANG_COMMIT   sglang commit SHA to pin (default: pinned working SHA below)
 #   CUDA_VER        torch cuda tag (default: 12.9 -> cu129)
 #   TORCH_VER       torch version (default: 2.9.1)
@@ -17,7 +17,7 @@
 # Override only if you know what you're doing.
 #
 # sglang source of truth: the sglang-diffusion fork lives at
-#   Rockdu/sglang @ sglang-diffusion-rollout-test
+#   Rockdu/sglang @ feat/wan-rollout-optimization
 # miles-diffusion depends on that branch (multimodal_gen +
 # update_weights_from_tensor for RL weight sync). The branch tip moves; we pin
 # to a specific commit SHA via SGLANG_COMMIT for bit-reproducibility.
@@ -29,8 +29,8 @@ PY_VER="${PY_VER:-3.11}"
 CUDA_VER="${CUDA_VER:-12.9}"
 TORCH_VER="${TORCH_VER:-2.9.1}"
 SGLANG_REPO="${SGLANG_REPO:-https://github.com/Rockdu/sglang.git}"
-SGLANG_BRANCH="${SGLANG_BRANCH:-sglang-diffusion-rollout-test}"
-SGLANG_COMMIT="${SGLANG_COMMIT:-0372158dd66bc7cb0740c733bd60047db790ec7d}"
+SGLANG_BRANCH="${SGLANG_BRANCH:-feat/wan-rollout-optimization}"
+SGLANG_COMMIT="${SGLANG_COMMIT:-553cacca96fbfa9af55cf0b07ab3b9d2595d35cd}"
 
 # Tooling pins (pip resolver behaviour depends on these).
 PIP_VER="${PIP_VER:-26.0.1}"
@@ -107,7 +107,7 @@ else
 fi
 
 # ---------------------------------------------------------------- sglang-diffusion
-# Depends on Rockdu/sglang @ sglang-diffusion-rollout-test (sglang-diffusion
+# Depends on Rockdu/sglang @ feat/wan-rollout-optimization (sglang-diffusion
 # fork with update_weights_from_tensor for multimodal_gen). Pinned to a
 # specific commit so bit-exact rollout behaviour is reproducible.
 if [[ ! -d "$SGLANG_DIR" ]]; then
