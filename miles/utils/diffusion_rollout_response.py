@@ -42,7 +42,8 @@ def _deserialize_rollout_log_probs(
     if value is None:
         return None
     assert isinstance(value, dict) and value.get("__tensor__") is not None
-    return deserialize_func(value["data"]).detach().cpu()
+    tensor = deserialize_func(value)
+    return None if tensor is None else tensor.detach().cpu()
 
 
 def _parse_cond_kwargs(
