@@ -55,10 +55,10 @@ export PYTHONPATH="${MASTER_SGLANG_PYTHON}${PYTHONPATH:+:${PYTHONPATH}}"
 export HF_TOKEN="${HF_TOKEN:-}"
 SD3_MODEL="${SD3_MODEL:-stabilityai/stable-diffusion-3.5-medium}"
 
-# ── Run name / weight dir ─────────────────────────────────────────────────────
+# ── Run name / checkpoint dir ─────────────────────────────────────────────────
 RUN_NAME="diffusion_grpo_sd3_ocr_sglang_$(date +%Y%m%d_%H%M%S)"
-ROLLOUT_WEIGHT_DIR="/tmp/miles_sd3_rollout_weights_${RUN_NAME}"
-rm -rf "${ROLLOUT_WEIGHT_DIR}"
+SAVE_DIR="${ROOT_DIR}/logs/${RUN_NAME}/ckpt"
+mkdir -p "${SAVE_DIR}"
 NUM_ROLLOUT="${NUM_ROLLOUT:-100000}"
 
 DEBUG_ARGS=()
@@ -85,19 +85,17 @@ if [[ -n "${WANDB_API_KEY:-}" ]]; then
 fi
 
 # ── Prepare prompt data ────────────────────────────────────────────────────────
-python "${ROOT_DIR}/tools/prepare_ocr_jsonl.py"
+DATASETS_DIR="${DATASETS_DIR:-/root/datasets/miles-diffusion-datasets}"
+hf download --repo-type dataset rockdu/miles-diffusion-datasets \
+  --include "flowgrpo_ocr/**" \
+  --local-dir "${DATASETS_DIR}"
 
 # ── Training ───────────────────────────────────────────────────────────────────
-# Key differences vs local-rollout OCR script:
-#   - rollout-function-path → sglang_diffusion_rollout  (uses /rollout/generate)
-#   - use-miles-router      → Miles spawns & owns the sglang server
-#   - no-offload-rollout    → rollout lives in sglang, not in actor process
-#   - no --debug-rollout-only / --custom-generate-function-path
 python -u "${ROOT_DIR}/train_diffusion.py" \
   --train-backend fsdp \
   --rollout-function-path miles.rollout.sglang_diffusion_rollout.generate_rollout \
   --hf-checkpoint "${SD3_MODEL}" \
-  --prompt-data "${ROOT_DIR}/data/ocr/train.jsonl" \
+  --prompt-data "${DATASETS_DIR}/flowgrpo_ocr/train.jsonl" \
   --input-key input \
   --rollout-batch-size 8 \
   --n-samples-per-prompt 16 \
@@ -139,6 +137,6 @@ python -u "${ROOT_DIR}/train_diffusion.py" \
   --diffusion-height 512 \
   --diffusion-width 512 \
   --global-batch-size 64 \
-  --save "${ROLLOUT_WEIGHT_DIR}" \
+  --save "${SAVE_DIR}" \
   "${DEBUG_ARGS[@]}" \
   "${WANDB_ARGS[@]}"
