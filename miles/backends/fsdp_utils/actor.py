@@ -1,5 +1,4 @@
 import logging
-import json
 import os
 from argparse import Namespace
 from collections import defaultdict
@@ -192,12 +191,6 @@ class FSDPTrainRayActor(TrainRayActor):
         rollout_engines, rollout_engine_lock, num_new_engines = ray.get(
             self.rollout_manager.get_rollout_engines_and_lock.remote()
         )
-        if not rollout_engines:
-            self._save_weights_to_disk()
-            dist.barrier(group=get_gloo_group())
-            clear_memory()
-            return
-
         if num_new_engines > 0:
             self.weight_updater.connect_rollout_engines(rollout_engines, rollout_engine_lock)
             dist.barrier(group=get_gloo_group())
@@ -220,81 +213,6 @@ class FSDPTrainRayActor(TrainRayActor):
         if dist.get_rank() != 0:
             return init_empty_weights()
         return torch.device("cpu")
-
-    def _save_weights_to_disk(self) -> None:
-        """Save trainer weights for local diffusers rollout.
-
-        gather_full() uses DTensor.redistribute(Replicate()), which is a
-        collective and requires every DP rank to participate in lockstep.
-        Previously we returned early on rank != 0 and rank 0 hung on the
-        all_gather. Now every rank walks the state_dict together, but only
-        rank 0 actually writes the gathered tensor to disk.
-        """
-        from torch.distributed.tensor import DTensor, Replicate
-
-        is_writer = dist.get_rank() == 0
-
-        base_dir = self.args.save or os.path.join("/tmp", "miles_rollout_weights")
-        if is_writer:
-            os.makedirs(base_dir, exist_ok=True)
-        meta_path = os.path.join(base_dir, "diffusion_transformer.meta.json")
-
-        version = getattr(self, "_disk_weight_version", 0) + 1
-        self._disk_weight_version = version
-
-        lora_index = getattr(self.weight_updater, "_lora_index", {})
-
-        def gather_full(tensor: torch.Tensor) -> torch.Tensor:
-            tensor = tensor.cuda()
-            if isinstance(tensor, DTensor):
-                tensor = tensor.redistribute(placements=[Replicate()] * tensor.device_mesh.ndim).to_local()
-            return tensor
-
-        if self.args.use_lora:
-            adapter_path = os.path.join(base_dir, "diffusion_lora_adapter.pt")
-            adapter_state = {}
-            for name, param in self.model.state_dict().items():
-                if "lora_" not in name:
-                    continue
-                gathered = gather_full(param)
-                if is_writer:
-                    adapter_state[name] = gathered.detach().cpu()
-                del gathered
-
-            if is_writer:
-                torch.save(adapter_state, adapter_path)
-                with open(meta_path, "w", encoding="utf-8") as f:
-                    json.dump({"version": version, "weight_type": "peft_lora"}, f)
-                logger.info("[weight_sync] saved local rollout LoRA adapter v%s to %s", version, adapter_path)
-            return
-
-        weights_path = os.path.join(base_dir, "diffusion_transformer.pt")
-        merged = {}
-        for name, param in self.model.state_dict().items():
-            if "lora_" in name:
-                continue
-
-            full_param = gather_full(param)
-            if name in lora_index:
-                lora_a, lora_b, scale = lora_index[name]
-                delta = (gather_full(lora_b.weight) @ gather_full(lora_a.weight)) * scale
-                full_param = full_param + delta.to(full_param.device, full_param.dtype)
-                del delta
-
-            clean_name = name.replace(".base_layer", "")
-            if clean_name.startswith("base_model.model."):
-                clean_name = clean_name[len("base_model.model."):]
-            elif clean_name.startswith("base_model."):
-                clean_name = clean_name[len("base_model."):]
-
-            if is_writer:
-                merged[clean_name] = full_param.detach().cpu()
-
-        if is_writer:
-            torch.save(merged, weights_path)
-            with open(meta_path, "w", encoding="utf-8") as f:
-                json.dump({"version": version, "weight_type": "full_transformer"}, f)
-            logger.info("[weight_sync] saved local rollout transformer weights v%s to %s", version, weights_path)
 
     def _gather_and_log_metrics(self, rollout_id: int, log_dict: dict[str, float], step: int) -> None:
         """Reduce per-rank scalars and log."""
