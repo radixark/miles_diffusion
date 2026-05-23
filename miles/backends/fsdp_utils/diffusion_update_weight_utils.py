@@ -132,7 +132,9 @@ class DiffusionUpdateWeightFromTensor(DiffusionUpdateWeight):
             metadata = flattened_tensor_bucket.get_metadata()
             # sglang-d WeightsUpdater expects per-module keyed dicts when
             # load_format="flattened_bucket".
-            # Uses CUDA IPC (zero-copy) — requires --colocate (shared GPU).
+            # Uses CUDA IPC for cross-process transfer; actor all-gathers FSDP
+            # shards into buckets before the inference engine copies them in.
+            # Requires --colocate (shared GPU visibility).
             flattened_tensor_data = {
                 target_module: {
                     "flattened_tensor": flattened_tensor_bucket.get_flattened_tensor(),

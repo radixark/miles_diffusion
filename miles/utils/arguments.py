@@ -173,12 +173,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
-                "--diffusion-gradient-accumulation-steps",
-                type=int,
-                default=1,
-                help="Legacy alias for the number of trajectories per optimizer step.",
-            )
-            parser.add_argument(
                 "--fsdp-cfg-batching",
                 action=argparse.BooleanOptionalAction,
                 default=False,

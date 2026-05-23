@@ -96,7 +96,7 @@ python "${ROOT_DIR}/tools/prepare_ocr_jsonl.py"
 python -u "${ROOT_DIR}/train_diffusion.py" \
   --train-backend fsdp \
   --rollout-function-path miles.rollout.sglang_diffusion_rollout.generate_rollout \
-  --hf-checkpoint gpt2 \
+  --hf-checkpoint "${SD3_MODEL}" \
   --prompt-data "${ROOT_DIR}/data/ocr/train.jsonl" \
   --input-key input \
   --rollout-batch-size 8 \

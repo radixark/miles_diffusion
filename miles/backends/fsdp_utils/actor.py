@@ -67,11 +67,10 @@ class FSDPTrainRayActor(TrainRayActor):
 
         self._master_dtype = _resolve_dtype(args.fsdp_master_dtype)
         self._forward_dtype = _resolve_dtype(args.diffusion_forward_dtype)
-        diffusion_model_id = args.diffusion_model or args.hf_checkpoint
 
         with self._get_init_weight_context_manager():
             pipeline = DiffusionPipeline.from_pretrained(
-                diffusion_model_id,
+                self.args.hf_checkpoint,
                 torch_dtype=self._master_dtype,
                 trust_remote_code=True,
                 text_encoder=None,
@@ -405,12 +404,12 @@ class FSDPTrainRayActor(TrainRayActor):
 
         # ------------- scheduler -------------
         # Use rollout's exact sigmas snapshot; fall back to reconstruction if unavailable.
+        num_train_timesteps = self.scheduler.config.num_train_timesteps
         timesteps_ref = dit_trajectories[0].timesteps.to(device).float()
         sigmas_snapshot = getattr(dit_trajectories[0], "sigmas", None)
         if sigmas_snapshot is not None:
             sigmas_ref = sigmas_snapshot.to(device).float()
         else:
-            num_train_timesteps = self.scheduler.config.num_train_timesteps
             sigmas_ref = timesteps_ref / float(num_train_timesteps)
             sigmas_ref = torch.cat([sigmas_ref, sigmas_ref.new_zeros(1)])
 
@@ -807,6 +806,7 @@ class FSDPTrainRayActor(TrainRayActor):
         if kl_beta > 0:
             with torch.no_grad():
                 ref_noise_pred_flat = _compute_noise_pred(disable_adapter=True)
+                # TODO: unify sde_step_with_logprob with rollout and trainer forward paths.
                 _, _, prev_sample_mean_ref, _ = sde_step_with_logprob(
                     self.scheduler,
                     ref_noise_pred_flat.float(),
