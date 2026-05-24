@@ -17,16 +17,16 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-1,2,3,7}"
-export HF_HOME="${HF_HOME:-/data/andyye/.cache/huggingface}"
-export FLASHINFER_WORKSPACE_BASE="${FLASHINFER_WORKSPACE_BASE:-/data/andyye/.cache/flashinfer}"
-export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3,4}"
+export HF_HOME="${HF_HOME:-/cluster-storage/models}"
+export FLASHINFER_WORKSPACE_BASE="${FLASHINFER_WORKSPACE_BASE:-/cluster-storage/personal/809a2940-8360-4812-81c2-c7383f3f43e7/.cache/flashinfer}"
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:False}"
 
-PYTHON_BIN="${PYTHON_BIN:-/data/andyye/miniforge3/envs/miles-diffusion/bin/python}"
+PYTHON_BIN="${PYTHON_BIN:-/cluster-storage/personal/809a2940-8360-4812-81c2-c7383f3f43e7/miniforge3/envs/miles-diffusion/bin/python}"
 HF_BIN="${HF_BIN:-$(dirname "${PYTHON_BIN}")/hf}"
 RUN_NAME="${RUN_NAME:-wan22_pickscore_4gpu_$(date +%Y%m%d_%H%M%S)}"
 SAVE_DIR="${SAVE_DIR:-${ROOT_DIR}/logs/${RUN_NAME}/ckpt}"
-DATASETS_DIR="${DATASETS_DIR:-/data/andyye/datasets/miles-diffusion-datasets}"
+DATASETS_DIR="${DATASETS_DIR:-/cluster-storage/personal/809a2940-8360-4812-81c2-c7383f3f43e7/datasets/miles-diffusion-datasets}"
 
 "${HF_BIN}" download --repo-type dataset rockdu/miles-diffusion-datasets \
   --include "flowgrpo_pickscore/**" \
@@ -90,15 +90,15 @@ fi
 "${PYTHON_BIN}" -u "${ROOT_DIR}/train_diffusion.py" \
   --train-backend fsdp \
   --rollout-function-path miles.rollout.sglang_diffusion_rollout.generate_rollout \
-  --hf-checkpoint Wan-AI/Wan2.2-T2V-A14B-Diffusers \
-  --diffusion-model Wan-AI/Wan2.2-T2V-A14B-Diffusers \
+  --hf-checkpoint /cluster-storage/models/Wan-AI/Wan2.2-T2V-A14B-Diffusers \
+  --diffusion-model /cluster-storage/models/Wan-AI/Wan2.2-T2V-A14B-Diffusers \
   --prompt-data "${DATASETS_DIR}/flowgrpo_pickscore/train.jsonl" \
   --input-key input \
-  --rollout-batch-size "${ROLLOUT_BATCH_SIZE:-8}" \
+  --rollout-batch-size "${ROLLOUT_BATCH_SIZE:-48}" \
   --n-samples-per-prompt "${N_SAMPLES_PER_PROMPT:-16}" \
-  --num-rollout "${NUM_ROLLOUT:-1000}" \
+  --num-rollout "${NUM_ROLLOUT:-10000}" \
   --num-steps-per-rollout "${NUM_STEPS_PER_ROLLOUT:-2}" \
-  --diffusion-microgroup-size "${DIFFUSION_MICROGROUP_SIZE:-1}" \
+  --diffusion-microgroup-size "${DIFFUSION_MICROGROUP_SIZE:-8}" \
   --micro-batch-size-sample "${MICRO_BATCH_SIZE_SAMPLE:-1}" \
   --micro-batch-size-tstep "${MICRO_BATCH_SIZE_TSTEP:-1}" \
   --diffusion-train-iter-order sample_major \
@@ -114,16 +114,16 @@ fi
   --diffusion-init-lora-weight gaussian \
   --lr "${LR:-1e-4}" \
   --adam-beta2 0.999 \
-  --diffusion-clip-range 1e-4 \
+  --diffusion-clip-range "${DIFFUSION_CLIP_RANGE:-1e-4}" \
   --weight-decay 1e-4 \
   --use-miles-router \
-  --sglang-server-concurrency "${SGLANG_SERVER_CONCURRENCY:-1}" \
+  --sglang-server-concurrency "${SGLANG_SERVER_CONCURRENCY:-8}" \
   --update-weight-buffer-size 2147483648 \
   --diffusion-reward pickscore:1.0 \
   --advantage-estimator grpo \
   --rm-type pickscore \
   --pickscore-num-workers "${PICKSCORE_NUM_WORKERS:-1}" \
-  --pickscore-num-gpus-per-worker "${PICKSCORE_NUM_GPUS_PER_WORKER:-0}" \
+  --pickscore-num-gpus-per-worker "${PICKSCORE_NUM_GPUS_PER_WORKER:-1}" \
   --pickscore-batch-size "${PICKSCORE_BATCH_SIZE:-8}" \
   --pickscore-processor-path "${PICKSCORE_PROCESSOR_PATH:-laion/CLIP-ViT-H-14-laion2B-s32B-b79K}" \
   --pickscore-model-path "${PICKSCORE_MODEL_PATH:-yuvalkirstain/PickScore_v1}" \
@@ -140,6 +140,7 @@ fi
   --diffusion-step-strategy-path "${DIFFUSION_STEP_STRATEGY_PATH:-miles.rollout.step_strategy_hub.wan_high_window}" \
   --diffusion-sde-window-size "${DIFFUSION_SDE_WINDOW_SIZE:-1}" \
   --diffusion-sde-window-range "${DIFFUSION_SDE_WINDOW_RANGE:-1,4}" \
+  --diffusion-debug-mode \
   --save "${SAVE_DIR}" \
   --save-interval "${SAVE_INTERVAL:-10}" \
   "${REWARD_NORM_ARGS[@]}" \
