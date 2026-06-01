@@ -57,9 +57,12 @@
 | `miles/utils/arguments.py` | 解除 `assert context_parallel_size==1`，改为 CP→SP 向后兼容 | 解锁 SP | AC-2 |
 | `miles/backends/fsdp_utils/sp_mesh.py`（新建） | 纯函数 `resolve_sp_degrees`/`validate_sp_config`/`sp_subgroups`/`locate_rank`，对齐 sglang ulysses 连续/ring 跨步划分 | rank 映射/子组划分，不假定卡数（2~1000+），可独立单测 | AC-2 |
 | `tests/test_sp_mesh.py`（新建） | 覆盖 2~1024 卡、各 ulysses×ring 组合的布局不变量 + sglang 对齐例 + 非法配置拒绝 + heads%ulysses 守卫 | AC-2 验证 | AC-2 |
+| `training_utils/parallel.py` | `ParallelState` 加 sp_rank/sp_size/sp_group/ulysses_degree/ring_degree/ulysses_group/ring_group | 承载 SP 状态；cp_* 作兼容别名 | AC-2 |
+| `fsdp_utils/parallel.py` | `create_fsdp_parallel_state` 改写：建 (dp,sp) mesh、FSDP 仍只 wrap dp（Option B）、SP>1 时复用 sglang `set_seq_parallel_pg_by_sp_groups` 建 ulysses/ring 组；移除从未执行过的 ring_flash_attn 调用（USP 取代，阶段2） | Option B 接线 | AC-2 |
+| `tests/sp_init_smoke.py`（新建） | torchrun 多卡 smoke：真实 NCCL 下校验 dp/sp/ulysses/ring 组成员与纯函数一致 | AC-2 多卡验证 | AC-2 |
 
-验证：`pytest tests/` → **22 passed**。**待续**：`ParallelState` 扩 sp 字段 + `create_fsdp_parallel_state` 接真实 dist 组（复用 sglang `set_seq_parallel_pg_by_sp_groups`），需多 GPU 跑通验证。
-关键确认：sglang.multimodal_gen 在训练环境**可直接 import**，为阶段2 复用 USPAttention 与本阶段复用 SP 组构建奠定基础。
+验证：单测 `pytest tests/` → **22 passed**；多卡 smoke（8×B200）**5 配置全通过**：4卡{sp2, sp4(u4), sp4(u2r2)}、8卡{sp4, sp2}。
+关键确认：sglang.multimodal_gen 训练环境**可直接 import**，已实际复用其 `set_seq_parallel_pg_by_sp_groups` 建组。**阶段1（AC-2）完成。**
 
 ---
 
@@ -68,6 +71,7 @@
 - **死代码已 import-broken**（Round 0 发现）：`log_utils.py` 有 `from miles.utils.flops_utils import calculate_fwd_flops`，但 `miles.utils.flops_utils` 在 diffusion fork 里**不存在** → `ModuleNotFoundError`。
   - 根因：这套 LLM 死代码从上游 miles 继承，依赖的 `flops_utils` 在 diffusion fork 被删，但死代码未清理。
   - 影响/处理：(1) 这是比"无 import 引用"更强的死代码证据——连 import 都失败，diffusion 绝不可能用；(2) `__deprecated__` 标记的检查改用 **AST 静态解析**而非 `importlib.import_module`（不 import broken 模块）。
+- **create_fsdp_parallel_state 依赖 gloo group 预初始化**（Round 0，多卡 smoke 发现）：`get_gloo_group()` 要求先 `init_gloo_group()`（正常训练在 `train_actor.py:84` 做）。非 bug，是既有依赖；smoke test 补调 `init_gloo_group()` 后通过。
 
 ---
 
