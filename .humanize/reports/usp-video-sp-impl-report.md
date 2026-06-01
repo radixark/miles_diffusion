@@ -126,6 +126,16 @@
   - 影响/处理：(1) 这是比"无 import 引用"更强的死代码证据——连 import 都失败，diffusion 绝不可能用；(2) `__deprecated__` 标记的检查改用 **AST 静态解析**而非 `importlib.import_module`（不 import broken 模块）。
 - **create_fsdp_parallel_state 依赖 gloo group 预初始化**（Round 0，多卡 smoke 发现）：`get_gloo_group()` 要求先 `init_gloo_group()`（正常训练在 `train_actor.py:84` 做）。非 bug，是既有依赖；smoke test 补调 `init_gloo_group()` 后通过。
 
+### 阶段2/3/4 Codex 独立 review（2026-06-01，gpt-5.5:high，首次对全 SP 实现做 review）
+
+> 背景：RLCR loop 此前一直 active 但休眠（round-0-summary 空模板、Codex hooks 未装），stage 0~4 从未被 review。本次用 `ask-codex`（loop 规定的中途审查机制）对 stage 2/3/4 做首次独立审查。Codex **确认** stage 3 SUM 正确性、stage 4 Option B 复制前提（有效拓扑下成立）。3 条发现处理如下：
+
+- **[P1-A] 证伪（误报）**：Codex 称 `usp.py` 的 `_templated_ring_attention_backward` 在 torch 2.11.0+cu130 已移到 `_context_parallel._attention`、ring 反向会崩。实测本 env 是 **torch 2.9.1+cu129**，该符号在 `_attention` 路径**可用**（fwd/bwd 都 resolve），与"ring u2r2 backward parity 已过"一致。结论：Codex 基于错误版本假设的误报，无需改。⚠️**前瞻性记录**：若未来升级 torch ≥2.11，需把 `_attention` 的 ring 模板 import 改到 `_context_parallel._attention`（不加 try/except 兜底，升级时显式改）。
+- **[P1-B] 已修（真，pre-existing 启动校验缺口）**：`connect_rollout_engines` 按 `rollout_num_gpus_per_engine` 连续分组，但 rollout 实际按 `min(per_engine, num_gpus_per_node)` 建 engine；且 `world % per_engine != 0` 时尾部 rank 漏分组 → 后续 cryptic AttributeError。修：分组步长改用与 rollout 一致的 `min(...)`，并加**一行启动期断言** `world == n_engines × per_engine`（sanctioned 合法性校验，把晚到的 AttributeError 前移成清晰报错）。默认 `per_engine=1` 单节点不触发；多节点/TP rollout 下才生效。
+- **[P2] 已修（真，我提升 verify 到 Wan 基类后变可触发）**：rollout DiT 用 `Column/RowParallelLinear`，`tp>1` 时 `iter_materialized_weights`/`get_weights_checksum` 是**逐分片**，而 train 侧哈希全量 → `MILES_VERIFY_WEIGHT_SYNC=1` 在 TP 分片 rollout 下假性不匹配。修：`_verify_weight_sync` 的 train↔engine 全量比对**仅在 tp==1 执行**（本期 rollout 非 SP/数据并行 tp=1），tp>1 时打清晰日志跳过；跨 engine 一致性比对（探测 replica 发散）保留不变。属 opt-in 验证层，不进热路径。
+
+验证：dp2×sp2 weight-sync parity 重跑仍全过；`args.num_gpus_per_node` 在 train actor 同进程已被 `train_actor.py:98` 使用，引用安全。
+
 ### 阶段2（Round 1）
 
 - **坑1 — 难点#3 实证：`set_seq_parallel_pg_by_sp_groups` 只设 PG、不建 `_SP`**。USPAttention.forward 经 `get_sp_group()`/`get_*_parallel_world_size()` 读模块全局 `_SP`（`SequenceParallelGroupCoordinator`），而 `set_seq_parallel_pg_by_sp_groups` 仅设 `PROCESS_GROUP.ULYSSES_PG/RING_PG`。`_SP` 只在 `initialize_model_parallel` 内建。处理：`parallel.py` 用 `init_parallel_group_coordinator(..., parallel_mode="sequence", ulysses_group=, ring_group=)` 单独建 `_SP` 并赋给 `parallel_state._SP`（与 rollout 同一组件）。

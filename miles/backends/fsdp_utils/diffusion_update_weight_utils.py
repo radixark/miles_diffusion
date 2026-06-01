@@ -112,10 +112,20 @@ class DiffusionUpdateWeightFromTensor(DiffusionUpdateWeight):
     ) -> None:
         self.rollout_engines = rollout_engines
 
+        # An engine spans the same per-engine span as rollout.init_rollout_engines
+        # (min(per_engine_tp, gpus_per_node)). Assert the train world is fully
+        # covered so a topology misconfig fails loudly here instead of as a
+        # cryptic AttributeError when an orphaned rank reaches update_bucket_weights.
+        num_gpu_per_engine = min(self.args.rollout_num_gpus_per_engine, self.args.num_gpus_per_node)
+        assert dist.get_world_size() == len(rollout_engines) * num_gpu_per_engine, (
+            f"train world {dist.get_world_size()} != {len(rollout_engines)} engines × "
+            f"{num_gpu_per_engine} per-engine — rollout grouping would orphan ranks"
+        )
+
         # Here we assume the gpu id of rollout engines and train actors are the same.
         for i, engine in enumerate(self.rollout_engines):
-            start_rank = i * self.args.rollout_num_gpus_per_engine
-            end_rank = (i + 1) * self.args.rollout_num_gpus_per_engine
+            start_rank = i * num_gpu_per_engine
+            end_rank = (i + 1) * num_gpu_per_engine
             group_ranks = list(range(start_rank, end_rank))
             new_group = dist.new_group(
                 ranks=group_ranks,
@@ -194,24 +204,37 @@ class DiffusionUpdateWeightFromTensor(DiffusionUpdateWeight):
         if dist.get_rank() != self._ipc_gather_src:
             return
 
-        expected = self._sha256_named_tensors(pairs)
+        # `pairs` are full reconstructed tensors. The rollout DiT is TP-sharded
+        # (Column/RowParallelLinear) when an engine spans >1 GPU, so its
+        # materialized weights — and thus get_weights_checksum — are per-shard.
+        # A full-vs-shard comparison would report a stable mismatch even on a
+        # correct sync, so the paired check is only meaningful at tp=1 (rollout
+        # is non-SP / data-parallel this phase). The cross-engine check below
+        # still detects replica divergence regardless of TP.
+        tp_size = min(self.args.rollout_num_gpus_per_engine, self.args.num_gpus_per_node)
+        if tp_size == 1:
+            expected = self._sha256_named_tensors(pairs)
+            try:
+                remote = ray.get(
+                    self._ipc_engine.get_weights_checksum.remote([self.target_module])
+                )
+            except Exception as e:
+                logger.error(f"[weight_sync verify] failed to fetch remote checksum: {e}")
+                return
 
-        try:
-            remote = ray.get(
-                self._ipc_engine.get_weights_checksum.remote([self.target_module])
+            actual = (remote or {}).get(self.target_module)
+            match = expected == actual
+            logger.warning(
+                f"[weight_sync verify v{self.weight_version}] rank={dist.get_rank()} "
+                f"paired_engine_match={match} "
+                f"expected={expected[:16] if expected else None} "
+                f"actual={(actual or '')[:16] if isinstance(actual, str) else actual}"
             )
-        except Exception as e:
-            logger.error(f"[weight_sync verify] failed to fetch remote checksum: {e}")
-            return
-
-        actual = (remote or {}).get(self.target_module)
-        match = expected == actual
-        logger.warning(
-            f"[weight_sync verify v{self.weight_version}] rank={dist.get_rank()} "
-            f"paired_engine_match={match} "
-            f"expected={expected[:16] if expected else None} "
-            f"actual={(actual or '')[:16] if isinstance(actual, str) else actual}"
-        )
+        else:
+            logger.warning(
+                f"[weight_sync verify v{self.weight_version}] paired checksum skipped: "
+                f"rollout tp={tp_size} materializes per-shard weights, not comparable to full tensors"
+            )
 
         # Cross-engine comparison: only rank 0 does this so we don't spam.
         # Queries ALL engines' checksums and prints them side by side, pinning
