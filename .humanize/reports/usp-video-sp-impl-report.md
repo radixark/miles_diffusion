@@ -2,7 +2,7 @@
 
 > **状态：进行中（活文档）。** 本报告从设计阶段开始维护，实现过程中随每次系统设计/代码改动/遇到的明显 bug 持续更新，收尾时补齐 parity 与 perf 结论。
 > 配套：计划 `.humanize/plans/usp-video-sp-plan.md`，草稿 `.humanize/ideas/usp-video-sp-20260601-080512.md`。
-> 分支：`feat/usp`。最近更新：2026-06-01（设计定稿，实现未开始）。
+> 分支：`feat/usp`。最近更新：2026-06-01（阶段2：Ulysses 算子 parity 全过，Ring 反向待修）。
 
 ---
 
@@ -64,17 +64,30 @@
 验证：单测 `pytest tests/` → **22 passed**；多卡 smoke（8×B200）**5 配置全通过**：4卡{sp2, sp4(u4), sp4(u2r2)}、8卡{sp4, sp2}。
 关键确认：sglang.multimodal_gen 训练环境**可直接 import**，已实际复用其 `set_seq_parallel_pg_by_sp_groups` 建组。**阶段1（AC-2）完成。**
 
-### 阶段2 — USPAttention 接入 diffusers Wan2.2（里程碑 C，接口调研完成 / 实现待续）
-**接口调研：**
+### 阶段2 — USPAttention 接入 diffusers Wan2.2（里程碑 C，**Ulysses 全通过 / Ring 反向待修**）
+| 文件 | 改动 | 理由 | AC |
+|---|---|---|---|
+| `fsdp_utils/parallel.py` | SP>1 时除 `set_seq_parallel_pg_by_sp_groups`（设 ULYSSES_PG/RING_PG）外，补建并注册 sglang `parallel_state._SP` coordinator | 解决难点#3：USPAttention 经 `get_sp_group()` 读 `_SP`，仅设 PG 不够 | AC-3 |
+| `fsdp_utils/sp_attention.py`（新建） | `WanUSPAttnProcessor`（self-attn→USPAttention、cross-attn→SDPA）；`shard_sequence`/`gather_sequence`（可微 all-gather）；`apply_sequence_parallel`（rope 切 + block 切/聚 hook + 后端/精度/forward_context 初始化）；`init_sp_backend` | task5/task7 主体 | AC-3,4 |
+| `fsdp_utils/actor.py` | load+FSDP 后 `sp_size>1` 调 `apply_sequence_parallel(..., compute_dtype=_forward_dtype)` | 生产接线 | AC-3,4 |
+| `sglang .../layers/usp.py` | `_usp_all_to_all_single` 包成可微 autograd Function（`_AllToAllSingle`，even-split all-to-all 是对合、反向=同一 all-to-all） | **修 sglang 侧 bug**：原 `ft_c.all_to_all_single` 无 autograd kernel，训练反向静默断梯度 | AC-3 |
+| `tests/sp_attention_parity.py`（新建） | 真实 Wan DiT 小配置 SP-vs-全序列FA 参考；forward/输入梯度/各 block self-attn 权重梯度；ckpt 开关；ulysses/ring | task6 | AC-3,4 |
+| `tests/sp_init_smoke.py` | 补校验 6 个 sglang SP getter 经 `_SP` 返回正确 | 难点#3 回归 | AC-2 |
+
+**parity 结果（4×B200，bf16，S=64 H=8 D=128，与全序列 FA 参考比）：**
+- `dp1×sp2(u2)`、`dp1×sp4(u4)`，ckpt 开/关四档：forward **逐位一致**（rel=0）、输入梯度逐位一致、各 block `to_q/k/v/to_out` 权重梯度 rel 5e-3~8e-3、cos(1-) ~6e-6。**全过。**
+- `dp1×sp4(u2×r2)` Ring：forward rel 3.6e-3、输入梯度 rel 8.9e-3 通过；但 **训练反向 `to_k/to_v` 权重梯度 rel≈0.59 错**（见 §5 坑4）。Ring 当前仅 forward/推理可用，训练反向待修。
+
+**接口调研（实现前）：**
 - diffusers `WanTransformer3DModel`（`models/transformers/transformer_wan.py`）：`WanAttnProcessor.__call__(attn, hidden_states, encoder_hidden_states, attention_mask, rotary_emb)`。流程 QKV→`norm_q/k`(RMSNorm)→reshape `[B,S,H,D]`→`apply_rotary_emb`（仅 self-attn）→`dispatch_attention_fn`。self-attn（`encoder_hidden_states is None`）走 RoPE、需 SP 切；cross-attn（对 512 text token）不切。layout `[B,S,H,D]` 与 USPAttention 期望一致。`set_attn_processor` 可注入自定义 processor。
 - sglang `USPAttention.forward(q,k,v=[B,S_local,H,D], attn_mask, num_replicated_prefix/suffix, skip_sequence_parallel_override)`。
 - 注入方案（DEC-1 AttnProcessor）：写 `WanUSPAttnProcessor` 复用 Wan 的 QKV/norm/RoPE，self-attn 调 USPAttention、cross-attn 走原 dispatch。
 
-**关键难点（实现时必须处理，否则数值错或不省显存）：**
-1. **序列切分点（AC-4 核心，仅换 processor 不够）**：每 SP rank 跑完整模型 forward 但只应持有 `S_local`。须在 **patchify 后、进 transformer blocks 前**把序列切成 `S_local`（每 rank 1/ulysses 段）、**输出前 gather 回 `S_full`**；norm/MLP 在 `S_local` 上跑（省显存），attention 内部 all-to-all 临时聚到 `S_full`。
-2. **RoPE 全局 offset（AC-4）**：每 rank 的 RoPE 须对应其全局 position 段，不能用 local `[0,S_local)`。
-3. **USPAttention 全局状态依赖**：除阶段1 建的 `ULYSSES_PG/RING_PG`，USPAttention 可能还需 sglang `_SP` coordinator（`get_sp_group()`）；实现前需确认 `initialize_model_parallel` 的哪些状态是 forward 必需、阶段1 建的够不够。
-4. cross-attn / I2V `add_k_proj` 不走 SP。
+**关键难点（实现时必须处理）——均已落地：**
+1. **序列切分点（AC-4 核心，仅换 processor 不够）** ✅：在 rope 产出处把 `(cos,sin)` 切到 `S_local`（每 block 复用同一份）；用 `blocks[0]` forward_pre_hook 切 `hidden_states` 到 `S_local`、`blocks[-1]` forward_hook 可微 all-gather 回 `S_full`。norm/MLP 在 `S_local` 跑，attention 内部 all-to-all 临时聚到 `S_full`。比重写 diffusers forward 更鲁棒（不随版本漂移）。
+2. **RoPE 全局 offset（AC-4）** ✅：切 `hidden_states` 与切 rope 用同一 `shard_sequence`（连续 `[sp_rank*S_local:+S_local]`），与 USPAttention all-to-all 的重建序一致 → 全局 position 自然对齐。parity 逐位一致即证明 offset 正确。
+3. **USPAttention 全局状态依赖** ✅（见难点#3 / §5 坑）：确认仅设 `ULYSSES_PG/RING_PG` 不够，须建 `_SP`；另需 `set_forward_context`（持久化以兼容 ckpt recompute）、强制 FA 后端、设 compute dtype=bf16（否则 FA 被降级 SDPA）。
+4. cross-attn / I2V `add_k_proj` 不走 SP ✅：cross-attn（text KV 各 rank 复制）走本地 SDPA，无 SP 通信。
 
 ---
 
@@ -85,16 +98,27 @@
   - 影响/处理：(1) 这是比"无 import 引用"更强的死代码证据——连 import 都失败，diffusion 绝不可能用；(2) `__deprecated__` 标记的检查改用 **AST 静态解析**而非 `importlib.import_module`（不 import broken 模块）。
 - **create_fsdp_parallel_state 依赖 gloo group 预初始化**（Round 0，多卡 smoke 发现）：`get_gloo_group()` 要求先 `init_gloo_group()`（正常训练在 `train_actor.py:84` 做）。非 bug，是既有依赖；smoke test 补调 `init_gloo_group()` 后通过。
 
+### 阶段2（Round 1）
+
+- **坑1 — 难点#3 实证：`set_seq_parallel_pg_by_sp_groups` 只设 PG、不建 `_SP`**。USPAttention.forward 经 `get_sp_group()`/`get_*_parallel_world_size()` 读模块全局 `_SP`（`SequenceParallelGroupCoordinator`），而 `set_seq_parallel_pg_by_sp_groups` 仅设 `PROCESS_GROUP.ULYSSES_PG/RING_PG`。`_SP` 只在 `initialize_model_parallel` 内建。处理：`parallel.py` 用 `init_parallel_group_coordinator(..., parallel_mode="sequence", ulysses_group=, ring_group=)` 单独建 `_SP` 并赋给 `parallel_state._SP`（与 rollout 同一组件）。
+- **坑2 — sglang USP all-to-all 无 autograd kernel（训练反向静默断梯度）** ⚠️核心：`usp.py:_usp_all_to_all_single` 用 `torch.distributed._functional_collectives.all_to_all_single`，PyTorch 未给 `_c10d_functional::all_to_all_single`/`wait_tensor` 注册 autograd → 反向不过该算子。现象：`to_q/k/v.weight.grad` 全为 None（`to_out` 有 grad 因在 all-to-all 之后），输入梯度因残差/cross-attn 路径"看似对"实则缺 self-attn 贡献。根因：sglang 这套从 FastVideo "copied & adapted" 时为推理（no_grad）服务，丢了 FastVideo 原有的可微 `SeqAllToAll4D`。处理：在 sglang `usp.py` 加 `_AllToAllSingle` autograd Function（even-split all-to-all 是对合，反向=同一 all-to-all）。推理 no_grad 不调反向，对 rollout 透明。修后 ulysses 输入梯度逐位一致、权重梯度 rel<1e-2。
+- **坑3 — compute dtype 默认 fp32 使 FA 被降级 SDPA**：`USPAttention.__init__` 用 `get_compute_dtype()` 选后端；训练进程没设 sglang mixed-precision state → 返回 `torch.get_default_dtype()`=fp32 → cuda 平台 `get_attn_backend_cls_str` 因 `dtype not in (fp16,bf16)` 把 FA 降级成 TORCH_SDPA。后果：ulysses 仍跑通（参考也 SDPA，故 parity 假性通过）、但 **Ring 启动即报错**（Ring 仅支持 FA/SAGE）。处理：`init_sp_backend` 调 `set_mixed_precision_policy(param_dtype=bf16,...)` + `global_force_attn_backend(FA)`；`apply_sequence_parallel` 传 `_forward_dtype`（非 FSDP master 的 fp32）。注：B200(sm100/Blackwell) 只支持 fa_ver=4（fa_ver=3 报 "only supported on sm90+"）。
+- **坑4 — gradient checkpointing 下 `forward_context` 丢失**：原用 `with set_forward_context(...)` 包 forward，但 ckpt recompute 在 backward 阶段、`with` 已退出 → USPAttention `get_forward_context()` assert 失败。处理：`init_sp_backend` 改为持久化设 module-global `forward_context._forward_context`（一次设定、不退出），recompute 仍可读。
+- **坑5 — Ring 训练反向 `dK/dV` 不正确（未解，已隔离）** ⚠️：`dp1×sp4(u2×r2)` 下 forward parity 好（rel 3.6e-3）、`dQ`/`to_q.grad` 对（rel 8.8e-3），但 `to_k/to_v.weight.grad` rel≈0.59。定位：sglang `ring_attn` 用 torch 实验 API `torch.distributed.tensor.experimental._attention._templated_ring_attention` + fa_ver=4 自定义 op 适配器，其反向对环上 KV 梯度累积有误。Ulysses 路径（不走 ring）反向逐位正确，故问题独立于 all-to-all。**当前 Ring 仅 forward/推理可用**；训练用 Ring 需后续修（候选：换用带正确反向的 zigzag ring-flash-attn，或修适配器 KV 反向累积）。当前 4 卡验证点（dp2×sp2 等）走纯 ulysses，不受影响。
+
 ---
 
 ## 6. 算子 parity 与 perf 结论（实现中/收尾填充）
 
-- USP↔sglang-d parity（forward/backward/checkpoint/混精）：_待填_
-- 10 步 perf 三档（DDP / 纯FSDP / FSDP+SP，dp2×sp2 与 dp1×sp4）+ 通信分解：_待填_
+- USP↔sglang-d parity（forward/backward/checkpoint/混精）：**Ulysses 已验证**——`sp2(u2)`/`sp4(u4)` × ckpt{on,off} 四档，forward+输入梯度逐位一致、self-attn 权重梯度 rel 5e-3~8e-3（bf16+FA）。**Ring 反向待修**（坑5）。
+- 10 步 perf 三档（DDP / 纯FSDP / FSDP+SP，dp2×sp2 与 dp1×sp4）+ 通信分解：_待填（阶段F）_
 - go/no-go 判定与 Mooncake 是否触发：_待填_
 
 ---
 
 ## 7. 遗留问题与后续
 
-_（实现未开始）_
+- **Ring 训练反向修复**（坑5）：阶段2 收口前最高优先；不影响当前 ulysses-only 4 卡验证，但 DEC-3 要求 ring 为跨节点必备能力。
+- **阶段3（AC-5/6/7）**：SP 梯度同步协议（block 参数跨 sp all-reduce、与 FSDP reduce-scatter 次序）、diffusion loss/log_prob/advantage 的 SP 归约、RNG 三级一致。本阶段 parity 测试中权重梯度已用"跨 sp sum"还原全量验证，正是阶段3 协议的雏形。
+- **per-token timestep（ti2v）**：当前切分契约假定 `timestep_proj` 非逐 token（Wan2.2-T2V-A14B 成立，temb=[B,6,inner]）；若用逐 token timestep 需一并切 `timestep_proj`。
+- **序列 padding**：`shard_sequence` 要求 `S % sp == 0`，否则报错；如遇不整除分辨率需在 patchify 前 padding（AC-4 已列）。

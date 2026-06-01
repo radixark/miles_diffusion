@@ -57,6 +57,21 @@ def main():
         assert _members(ps.ulysses_group) == my_u, f"rank{rank} ulysses {_members(ps.ulysses_group)} != {my_u}"
         assert _members(ps.ring_group) == my_r, f"rank{rank} ring {_members(ps.ring_group)} != {my_r}"
 
+        # USPAttention 经这些 getter 读 _SP coordinator —— 必须由 create_fsdp_parallel_state 注册好。
+        from sglang.multimodal_gen.runtime.distributed.parallel_state import (
+            get_ring_parallel_world_size,
+            get_sequence_parallel_world_size,
+            get_sp_parallel_rank,
+            get_sp_world_size,
+            get_ulysses_parallel_world_size,
+        )
+
+        assert get_sp_world_size() == sp_size
+        assert get_sequence_parallel_world_size() == sp_size
+        assert get_sp_parallel_rank() == ps.sp_rank
+        assert get_ulysses_parallel_world_size() == ps.ulysses_degree
+        assert get_ring_parallel_world_size() == ps.ring_degree
+
     dist.barrier()
     if rank == 0:
         print(f"[SP-INIT-SMOKE OK] world={world} dp={dp_size} sp={sp_size} "

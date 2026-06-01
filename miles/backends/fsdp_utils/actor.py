@@ -26,6 +26,7 @@ import miles.backends.fsdp_utils.configs.wan2_2  # noqa: F401 — register pipel
 from . import checkpoint
 from .lr_scheduler import get_lr_scheduler
 from .parallel import create_fsdp_parallel_state
+from .sp_attention import apply_sequence_parallel
 from .diffusion_update_weight_utils import DiffusionUpdateWeightFromTensor, DiffusionUpdateWeightFromTensorLoRA
 
 logger = logging.getLogger(__name__)
@@ -102,6 +103,10 @@ class FSDPTrainRayActor(TrainRayActor):
         torch.cuda.synchronize()
         clear_memory()
         self.model = model
+
+        # 序列并行：把 self-attn 导向 USPAttention 并装序列切分契约（patchify 后切、norm_out 前 gather）。
+        if self.parallel_state.sp_size > 1:
+            apply_sequence_parallel(self.model, self.parallel_state, compute_dtype=self._forward_dtype)
 
         if args.optimizer == "adam":
             self.optimizer = torch.optim.AdamW(

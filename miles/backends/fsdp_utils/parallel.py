@@ -1,6 +1,7 @@
 import logging
 from argparse import Namespace
 
+import torch
 import torch.distributed as dist
 from torch.distributed.device_mesh import init_device_mesh
 
@@ -35,9 +36,12 @@ def create_fsdp_parallel_state(args: Namespace) -> ParallelState:
         f"dp_rank={dp_rank} sp_rank={sp_rank}"
     )
 
-    # SP>1 时建 Ulysses/Ring 子组（复用 sglang，与 USPAttention 所需全局组一致）。
+    # SP>1 时建 Ulysses/Ring 子组并注册 sglang 的 _SP coordinator。
+    # USPAttention.forward 经 get_sp_group()/get_*_parallel_world_size() 读 _SP；
+    # set_seq_parallel_pg_by_sp_groups 只设了 ULYSSES_PG/RING_PG，_SP 仍须单独建（与 rollout 同一份组件）。
     ulysses_group = ring_group = None
     if sp_size > 1:
+        from sglang.multimodal_gen.runtime.distributed import parallel_state as sgl_sp
         from sglang.multimodal_gen.runtime.distributed.parallel_groups import (
             PROCESS_GROUP,
             set_seq_parallel_pg_by_sp_groups,
@@ -47,6 +51,14 @@ def create_fsdp_parallel_state(args: Namespace) -> ParallelState:
         set_seq_parallel_pg_by_sp_groups(ulysses_degree, ring_degree, rank, sp_groups)
         ulysses_group = PROCESS_GROUP.ULYSSES_PG
         ring_group = PROCESS_GROUP.RING_PG
+        sgl_sp._SP = sgl_sp.init_parallel_group_coordinator(
+            group_ranks=sp_groups,
+            local_rank=torch.cuda.current_device(),
+            backend=dist.get_backend(),
+            parallel_mode="sequence",
+            ulysses_group=ulysses_group,
+            ring_group=ring_group,
+        )
 
     parallel_state = ParallelState(
         dp_rank=dp_rank,
