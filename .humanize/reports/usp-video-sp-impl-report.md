@@ -64,6 +64,18 @@
 验证：单测 `pytest tests/` → **22 passed**；多卡 smoke（8×B200）**5 配置全通过**：4卡{sp2, sp4(u4), sp4(u2r2)}、8卡{sp4, sp2}。
 关键确认：sglang.multimodal_gen 训练环境**可直接 import**，已实际复用其 `set_seq_parallel_pg_by_sp_groups` 建组。**阶段1（AC-2）完成。**
 
+### 阶段2 — USPAttention 接入 diffusers Wan2.2（里程碑 C，接口调研完成 / 实现待续）
+**接口调研：**
+- diffusers `WanTransformer3DModel`（`models/transformers/transformer_wan.py`）：`WanAttnProcessor.__call__(attn, hidden_states, encoder_hidden_states, attention_mask, rotary_emb)`。流程 QKV→`norm_q/k`(RMSNorm)→reshape `[B,S,H,D]`→`apply_rotary_emb`（仅 self-attn）→`dispatch_attention_fn`。self-attn（`encoder_hidden_states is None`）走 RoPE、需 SP 切；cross-attn（对 512 text token）不切。layout `[B,S,H,D]` 与 USPAttention 期望一致。`set_attn_processor` 可注入自定义 processor。
+- sglang `USPAttention.forward(q,k,v=[B,S_local,H,D], attn_mask, num_replicated_prefix/suffix, skip_sequence_parallel_override)`。
+- 注入方案（DEC-1 AttnProcessor）：写 `WanUSPAttnProcessor` 复用 Wan 的 QKV/norm/RoPE，self-attn 调 USPAttention、cross-attn 走原 dispatch。
+
+**关键难点（实现时必须处理，否则数值错或不省显存）：**
+1. **序列切分点（AC-4 核心，仅换 processor 不够）**：每 SP rank 跑完整模型 forward 但只应持有 `S_local`。须在 **patchify 后、进 transformer blocks 前**把序列切成 `S_local`（每 rank 1/ulysses 段）、**输出前 gather 回 `S_full`**；norm/MLP 在 `S_local` 上跑（省显存），attention 内部 all-to-all 临时聚到 `S_full`。
+2. **RoPE 全局 offset（AC-4）**：每 rank 的 RoPE 须对应其全局 position 段，不能用 local `[0,S_local)`。
+3. **USPAttention 全局状态依赖**：除阶段1 建的 `ULYSSES_PG/RING_PG`，USPAttention 可能还需 sglang `_SP` coordinator（`get_sp_group()`）；实现前需确认 `initialize_model_parallel` 的哪些状态是 forward 必需、阶段1 建的够不够。
+4. cross-attn / I2V `add_k_proj` 不走 SP。
+
 ---
 
 ## 5. 遇到的明显 bug / 坑
