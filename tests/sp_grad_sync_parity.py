@@ -85,6 +85,17 @@ def main():
     apply_sequence_parallel(model, ps, compute_dtype=DTYPE)
 
     out = model(hidden_states=hidden, timestep=ts, encoder_hidden_states=enc, return_dict=False)[0]
+
+    # AC-6：模型输出经 proj_out 后 gather 回全序列 → 各 sp rank 输出应逐位一致（loss/log_prob 在全序列上算、
+    # 无 per-shard local-mean 问题）。与本 sp 组 rank0 的输出比对，最大绝对差应为 0。
+    o32 = out.detach().float()
+    ref0 = o32.clone()
+    dist.broadcast(ref0, src=ps.dp_rank * ps.sp_size, group=ps.sp_group)
+    diff = (o32 - ref0).abs().max()
+    if rank == 0:
+        print(f"[AC-6] 跨 sp 输出最大绝对差 = {diff.item():.2e}（应=0）")
+    assert diff.item() == 0.0, "SP 各 rank 模型输出不一致 → loss 会发散"
+
     out.backward(out_grad)
 
     # 复刻 actor._all_reduce_sp_grads：FSDP reduce-scatter 后跨 sp all-reduce(SUM, fp32)

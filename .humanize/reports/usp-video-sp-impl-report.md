@@ -2,7 +2,7 @@
 
 > **状态：进行中（活文档）。** 本报告从设计阶段开始维护，实现过程中随每次系统设计/代码改动/遇到的明显 bug 持续更新，收尾时补齐 parity 与 perf 结论。
 > 配套：计划 `.humanize/plans/usp-video-sp-plan.md`，草稿 `.humanize/ideas/usp-video-sp-20260601-080512.md`。
-> 分支：`feat/usp`。最近更新：2026-06-01（阶段2：Ulysses+Ring 算子 parity 全过（含 backward/ckpt））。
+> 分支：`feat/usp`。最近更新：2026-06-01（阶段2 完成 + 阶段3 AC-5/6/7 完成）。
 
 ---
 
@@ -84,10 +84,24 @@
 - 注入方案（DEC-1 AttnProcessor）：写 `WanUSPAttnProcessor` 复用 Wan 的 QKV/norm/RoPE，self-attn 调 USPAttention、cross-attn 走原 dispatch。
 
 **关键难点（实现时必须处理）——均已落地：**
-1. **序列切分点（AC-4 核心，仅换 processor 不够）** ✅：在 rope 产出处把 `(cos,sin)` 切到 `S_local`（每 block 复用同一份）；用 `blocks[0]` forward_pre_hook 切 `hidden_states` 到 `S_local`、`blocks[-1]` forward_hook 可微 all-gather 回 `S_full`。norm/MLP 在 `S_local` 跑，attention 内部 all-to-all 临时聚到 `S_full`。比重写 diffusers forward 更鲁棒（不随版本漂移）。
+1. **序列切分点（AC-4 核心，仅换 processor 不够）** ✅：在 rope 产出处把 `(cos,sin)` 切到 `S_local`（每 block 复用同一份）；用 `blocks[0]` forward_pre_hook 切 `hidden_states` 到 `S_local`、**`proj_out` forward_hook 可微 all-gather 回 `S_full`**（阶段3 从 blocks[-1] 后移，详见 §4 阶段3）。norm/MLP 在 `S_local` 跑，attention 内部 all-to-all 临时聚到 `S_full`。比重写 diffusers forward 更鲁棒（不随版本漂移）。
 2. **RoPE 全局 offset（AC-4）** ✅：切 `hidden_states` 与切 rope 用同一 `shard_sequence`（连续 `[sp_rank*S_local:+S_local]`），与 USPAttention all-to-all 的重建序一致 → 全局 position 自然对齐。parity 逐位一致即证明 offset 正确。
 3. **USPAttention 全局状态依赖** ✅（见难点#3 / §5 坑）：确认仅设 `ULYSSES_PG/RING_PG` 不够，须建 `_SP`；另需 `set_forward_context`（持久化以兼容 ckpt recompute）、强制 FA 后端、设 compute dtype=bf16（否则 FA 被降级 SDPA）。
 4. cross-attn / I2V `add_k_proj` 不走 SP ✅：cross-attn（text KV 各 rank 复制）走本地 SDPA，无 SP 通信。
+
+### 阶段3 — 训练逻辑 SP-aware（里程碑 D，AC-5/6/7 完成）
+| 文件 | 改动 | 理由 | AC |
+|---|---|---|---|
+| `fsdp_utils/sp_attention.py` | gather hook 从 `blocks[-1]` 后移到 **`proj_out` 后**（unpatchify 前） | norm_out/proj_out 也在 S_local 跑（token-wise 等价）→ 整模型参数一律偏梯度 → 统一 SP 梯度规则 | AC-5 |
+| `fsdp_utils/actor.py` | 新增 `_all_reduce_sp_grads`：FSDP reduce-scatter 后对 DTensor local shard 跨 sp all-reduce(SUM,fp32)；clip_grad/step 前调 | Option B SP 梯度同步（DEC-2） | AC-5 |
+| `tests/sp_grad_sync_parity.py`（新建） | dp1×sp4 真实 FSDP2(fully_shard)+SP；69 参数全量梯度==全序列单进程参考；跨 sp 输出逐位一致 | AC-5/6 验证 | AC-5,6 |
+| `tests/sp_attention_parity.py` | 权重梯度校验加 `proj_out.weight`（验证后移 gather 后它也是偏梯度） | AC-5 | AC-5 |
+
+**AC-5（SP 梯度同步）✅**：协议 = FSDP reduce-scatter（dp 维平均）后跨 sp all-reduce(SUM, fp32)；SUM 而非 mean（各 sp rank 偏梯度仅含其 token 贡献，求和=全量；与 dp 平均正交：`(1/dp)ΣΣ偏梯度`）。gather 后移使所有参数偏梯度 → 单一规则、无需逐参数分类。验证：dp1×sp4 FSDP+SP，全部 69 参数全量梯度 == 全序列单进程参考（bf16 求和级 tol）。
+
+**AC-6（loss/log_prob SP 归约）✅——由 gather-to-full 设计满足，无需 per-shard 归约**：unpatchify reshape 必须全序列，故 `proj_out` 后 gather → 模型输出 `noise_pred` 是**全序列、各 sp rank 逐位一致**（实测跨 sp 最大绝对差=0）。于是 `sde_step_with_logprob`（对全部非 batch 维 mean）、`log_prob`/`ratio`/`advantage`/`clip`/`per_cell_loss.mean()` 全在全序列上算，等于真实全量、各 rank 相同 → **不存在"local-mean 再平均"问题**，AC-6 退化为 forward-output parity（已逐位一致）。代价：loss/sde_step 在每个 sp rank 冗余全量计算（显存瓶颈在 40 个 block 的 S_local 激活，proj/loss 一层全量可忽略）。样本级 DP round-robin 分区不变（SP 不改样本分区）。
+
+**AC-7（RNG 三级一致）✅——训练前向确定性 + 采样在 rollout（非 SP）**：训练前向无采样（`sde_step` 对录得的 `next_latents` 打分、不抽噪声；Wan attention/FFN dropout_p=0、无 RNG draw）。rollout 噪声 `_make_generators(prompts, base_seed, seed_offset)` 是**样本级**（按 prompt），属 DP 分区、SP 不改；同一 sp 组内各 rank 共享同批 DP 样本 → 录得 latents/噪声一致。故 token 级无 RNG、样本级 SP 不变、dropout 无 RNG —— 三级一致天然成立。
 
 ---
 
@@ -119,11 +133,6 @@
 
 ## 7. 遗留问题与后续
 
-- **阶段3（AC-5/6/7）—— backward 的正式处理方案**：
-  - **核心不变量**：序列分片区内的参数（transformer blocks、patch_embedding、condition_embedder）每个 sp rank 只见 S_local token → 偏梯度，须跨 sp `all_reduce(SUM)` 还原全量（参考已用此还原验证，rel 与全序列一致）。
-  - **DEC-2 次序**：在 FSDP reduce-scatter **之后**对 sharded grad（DTensor local shard）做 sp all-reduce(SUM)，与 FSDP 通信对象一致、避免重复 all-gather；reduce 用 fp32。
-  - **关键修正——让分片"均匀"以避免逐参数分类**：当前 gather 在 `blocks[-1]` 输出，导致 `norm_out`/`proj_out` 在**全序列**上复算（其梯度是全量、各 rank 相同，**不可再 SUM**，否则 ×sp）。阶段3 拟把 **gather 移到 `proj_out` 之后、unpatchify 之前**（norm_out/proj_out 是 token-wise，在 S_local 上跑等价）→ 整个 transformer 参数**一律偏梯度** → 单一均匀 `all_reduce(SUM)` 规则，无需区分。
-  - **loss 归约（AC-6）**：现 PPO loss `per_cell_loss.mean()` 在 SP 下须改 `局部 sum + 跨 sp 全局 token 数`（不可 local-mean 再平均），与权重梯度 SUM 规则自洽。
-  - parity 测试中"跨 sp sum 还原权重梯度"正是该协议的雏形与验证手段。
+- **阶段3（AC-5/6/7）已完成**（详见 §4 阶段3）：SP 梯度同步（FSDP reduce-scatter 后跨 sp SUM，gather 后移使分片均匀）已实现并验证（dp1×sp4 全 69 参数全量梯度==全序列参考）；AC-6/7 经"gather-to-full + 训练前向确定性 + 样本级 DP 分区"论证为天然满足。
 - **per-token timestep（ti2v）**：当前切分契约假定 `timestep_proj` 非逐 token（Wan2.2-T2V-A14B 成立，temb=[B,6,inner]）；若用逐 token timestep 需一并切 `timestep_proj`。
 - **序列 padding**：`shard_sequence` 要求 `S % sp == 0`，否则报错；如遇不整除分辨率需在 patchify 前 padding（AC-4 已列）。
