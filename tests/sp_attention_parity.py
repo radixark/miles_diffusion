@@ -23,7 +23,7 @@ from miles.backends.fsdp_utils.parallel import create_fsdp_parallel_state
 from miles.backends.fsdp_utils.sp_attention import WanUSPAttnProcessor, apply_sequence_parallel
 from miles.utils.distributed_utils import init_gloo_group
 
-DTYPE = torch.bfloat16
+DTYPE = torch.bfloat16  # 由 --fp32 覆盖
 
 
 def build_model(device):
@@ -63,7 +63,7 @@ def _set_ref_processor(model):
     """全序列参考：USPAttention 走 skip_sequence_parallel（=本地 FA），不切序列。"""
     from sglang.multimodal_gen.runtime.layers.attention.layer import USPAttention
 
-    proc = WanUSPAttnProcessor(model.config.num_attention_heads, model.config.attention_head_dim)
+    proc = WanUSPAttnProcessor(model.config.num_attention_heads, model.config.attention_head_dim, DTYPE)
     proc.usp_attn = USPAttention(
         num_heads=model.config.num_attention_heads,
         head_size=model.config.attention_head_dim,
@@ -102,7 +102,11 @@ def main():
     p.add_argument("--ckpt", action="store_true")
     p.add_argument("--fwd-only", action="store_true",
                    help="只校验 forward + 输入梯度（Ring 训练反向 dK/dV 在 torch _templated_ring_attention + fa4 下尚不正确，见报告）")
+    p.add_argument("--fp32", action="store_true", help="fp32 跑（证明权重梯度差异纯属 bf16 求和顺序，非 Ulysses 损失）")
     cli = p.parse_args()
+    if cli.fp32:
+        global DTYPE
+        DTYPE = torch.float32
 
     dist.init_process_group("nccl")
     rank = dist.get_rank()

@@ -111,6 +111,7 @@
 ## 6. 算子 parity 与 perf 结论（实现中/收尾填充）
 
 - USP↔sglang-d parity（forward/backward/checkpoint/混精）：**Ulysses 已验证**——`sp2(u2)`/`sp4(u4)` × ckpt{on,off} 四档，forward+输入梯度逐位一致、self-attn 权重梯度 rel 5e-3~8e-3（bf16+FA）。**Ring 反向待修**（坑5）。
+  - **权重梯度 5e-3 是 bf16 求和舍入、非 Ulysses 损失**：Ulysses all-to-all 只搬数据、无算术，故 forward / 输入梯度逐位一致（输入梯度各 rank 贡献不相交，跨 rank 求和=拼接、无舍入）。权重梯度则每 token 都贡献到同一矩阵：参考单进程对全 S 一次累加，SP 是每 rank 对 S/sp 个 token 算 bf16 偏导再 all-reduce(SUM)——分组求和的浮点非结合性，性质同 DDP/FSDP 梯度 all-reduce vs 单卡。**fp32 端到端复跑（`--fp32`，强制 SDPA）权重梯度 rel 降到 ~1e-6、forward 2.4e-7**，证实无损。生产中 SP 梯度 all-reduce 用 fp32（reduce_dtype）可进一步压低。
 - 10 步 perf 三档（DDP / 纯FSDP / FSDP+SP，dp2×sp2 与 dp1×sp4）+ 通信分解：_待填（阶段F）_
 - go/no-go 判定与 Mooncake 是否触发：_待填_
 
@@ -119,6 +120,11 @@
 ## 7. 遗留问题与后续
 
 - **Ring 训练反向修复**（坑5）：阶段2 收口前最高优先；不影响当前 ulysses-only 4 卡验证，但 DEC-3 要求 ring 为跨节点必备能力。
-- **阶段3（AC-5/6/7）**：SP 梯度同步协议（block 参数跨 sp all-reduce、与 FSDP reduce-scatter 次序）、diffusion loss/log_prob/advantage 的 SP 归约、RNG 三级一致。本阶段 parity 测试中权重梯度已用"跨 sp sum"还原全量验证，正是阶段3 协议的雏形。
+- **阶段3（AC-5/6/7）—— backward 的正式处理方案**：
+  - **核心不变量**：序列分片区内的参数（transformer blocks、patch_embedding、condition_embedder）每个 sp rank 只见 S_local token → 偏梯度，须跨 sp `all_reduce(SUM)` 还原全量（参考已用此还原验证，rel 与全序列一致）。
+  - **DEC-2 次序**：在 FSDP reduce-scatter **之后**对 sharded grad（DTensor local shard）做 sp all-reduce(SUM)，与 FSDP 通信对象一致、避免重复 all-gather；reduce 用 fp32。
+  - **关键修正——让分片"均匀"以避免逐参数分类**：当前 gather 在 `blocks[-1]` 输出，导致 `norm_out`/`proj_out` 在**全序列**上复算（其梯度是全量、各 rank 相同，**不可再 SUM**，否则 ×sp）。阶段3 拟把 **gather 移到 `proj_out` 之后、unpatchify 之前**（norm_out/proj_out 是 token-wise，在 S_local 上跑等价）→ 整个 transformer 参数**一律偏梯度** → 单一均匀 `all_reduce(SUM)` 规则，无需区分。
+  - **loss 归约（AC-6）**：现 PPO loss `per_cell_loss.mean()` 在 SP 下须改 `局部 sum + 跨 sp 全局 token 数`（不可 local-mean 再平均），与权重梯度 SUM 规则自洽。
+  - parity 测试中"跨 sp sum 还原权重梯度"正是该协议的雏形与验证手段。
 - **per-token timestep（ti2v）**：当前切分契约假定 `timestep_proj` 非逐 token（Wan2.2-T2V-A14B 成立，temb=[B,6,inner]）；若用逐 token timestep 需一并切 `timestep_proj`。
 - **序列 padding**：`shard_sequence` 要求 `S % sp == 0`，否则报错；如遇不整除分辨率需在 patchify 前 padding（AC-4 已列）。

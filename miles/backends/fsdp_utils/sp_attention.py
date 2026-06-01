@@ -127,7 +127,9 @@ def init_sp_backend(compute_dtype):
     from sglang.multimodal_gen.runtime.platforms import AttentionBackendEnum
     from sglang.multimodal_gen.utils import set_mixed_precision_policy
 
-    global_force_attn_backend(AttentionBackendEnum.FA)
+    # FA 仅支持 fp16/bf16；fp32 强制 SDPA（仅 ulysses 可用，用于精度对照）。两者都显式强制以绕开缺失的 server-args。
+    half = compute_dtype in (torch.float16, torch.bfloat16)
+    global_force_attn_backend(AttentionBackendEnum.FA if half else AttentionBackendEnum.TORCH_SDPA)
     set_mixed_precision_policy(param_dtype=compute_dtype, reduce_dtype=torch.float32)
 
     from sglang.multimodal_gen.runtime.managers import forward_context as fc
