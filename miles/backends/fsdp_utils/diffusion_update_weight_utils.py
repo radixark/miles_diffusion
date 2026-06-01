@@ -56,6 +56,10 @@ class DiffusionUpdateWeight(abc.ABC):
                 f"first5={keys[:5]}, last3={keys[-3:]}",
                 flush=True,
             )
+
+        verify = os.environ.get("MILES_VERIFY_WEIGHT_SYNC", "").lower() in ("1", "true", "yes")
+        verify_pairs: list[tuple[str, torch.Tensor]] | None = [] if verify else None
+
         bucket = []
         bucket_size = 0
         for name, param in state_dict.items():
@@ -68,17 +72,26 @@ class DiffusionUpdateWeight(abc.ABC):
 
             param = param.cuda()
             if isinstance(param, DTensor):
-                # async version of param.full_tensor
+                # async version of param.full_tensor. Under Option B (FSDP shards
+                # only the dp dim, SP replicates) device_mesh is 1D, so this
+                # all-gathers across dp into the full tensor; every rank — dp and
+                # sp alike — ends up holding identical full params.
                 param = param.redistribute(
                     placements=[Replicate()] * param.device_mesh.ndim,
                     async_op=True,
                 ).to_local()
             bucket.append((name, param))
             bucket_size += param_size
+            if verify_pairs is not None:
+                t = param.wait() if hasattr(param, "wait") else param
+                verify_pairs.append((name, t.detach().cpu().contiguous()))
 
         if bucket:
             self.wait_and_update_bucket_weights(bucket)
             del bucket
+
+        if verify_pairs is not None:
+            self._verify_weight_sync(verify_pairs)
 
     def wait_and_update_bucket_weights(self, bucket):
         bucket = [(name, param.wait()) if hasattr(param, "wait") else (name, param) for name, param in bucket]
@@ -166,6 +179,88 @@ class DiffusionUpdateWeightFromTensor(DiffusionUpdateWeight):
                 }
                 ref = self._ipc_engine.update_weights_from_tensor.remote(**kwargs)
                 ray.get(ref)
+
+    def _verify_weight_sync(self, pairs: list[tuple[str, torch.Tensor]]) -> None:
+        """Compare our expected transformer SHA-256 against the live rollout
+        engine's checksum. Must match exactly — same algorithm as sglang-d's
+        ``compute_weights_checksum`` (sorted by name, name+dtype+shape+bytes).
+
+        Under SP every train rank holds identical full params after the dp-dim
+        redistribute, so each gather group's representative rank
+        (``_ipc_gather_src``) is a sound source — there is no per-replica
+        divergence to reconcile. The cross-engine pass below is what would
+        surface any silent divergence between rollout replicas.
+        """
+        if dist.get_rank() != self._ipc_gather_src:
+            return
+
+        expected = self._sha256_named_tensors(pairs)
+
+        try:
+            remote = ray.get(
+                self._ipc_engine.get_weights_checksum.remote([self.target_module])
+            )
+        except Exception as e:
+            logger.error(f"[weight_sync verify] failed to fetch remote checksum: {e}")
+            return
+
+        actual = (remote or {}).get(self.target_module)
+        match = expected == actual
+        logger.warning(
+            f"[weight_sync verify v{self.weight_version}] rank={dist.get_rank()} "
+            f"paired_engine_match={match} "
+            f"expected={expected[:16] if expected else None} "
+            f"actual={(actual or '')[:16] if isinstance(actual, str) else actual}"
+        )
+
+        # Cross-engine comparison: only rank 0 does this so we don't spam.
+        # Queries ALL engines' checksums and prints them side by side, pinning
+        # down any silent divergence between rollout replicas.
+        if dist.get_rank() != 0:
+            return
+        try:
+            per_engine = ray.get([
+                e.get_weights_checksum.remote([self.target_module])
+                for e in self.rollout_engines
+            ])
+        except Exception as e:
+            logger.error(f"[weight_sync verify cross-engine] failed: {e}")
+            return
+        engine_sums = [
+            (idx, (r or {}).get(self.target_module))
+            for idx, r in enumerate(per_engine)
+        ]
+        first_sum = engine_sums[0][1]
+        all_equal = all(s == first_sum for _, s in engine_sums)
+        pretty = "  ".join(
+            f"eng{idx}={s[:16] if isinstance(s, str) else s}"
+            for idx, s in engine_sums
+        )
+        logger.warning(
+            f"[weight_sync verify v{self.weight_version} cross-engine] "
+            f"all_equal={all_equal}  {pretty}"
+        )
+
+    @staticmethod
+    def _sha256_named_tensors(pairs: list[tuple[str, torch.Tensor]]) -> str:
+        """Mirror ``sglang.multimodal_gen.runtime.loader.weight_utils.compute_weights_checksum``.
+
+        Hashes name + dtype + shape + raw bytes so a transpose/reshape that
+        keeps the same bytes still changes the checksum (covers shard/replica
+        semantics, not only bytes). Must stay byte-for-byte in sync with the
+        sglang-d side or verification always reports a mismatch.
+        """
+        hasher = hashlib.sha256()
+        for name, tensor in sorted(pairs, key=lambda x: x[0]):
+            hasher.update(name.encode())
+            t = tensor.detach()
+            if isinstance(t, DTensor):
+                t = t._local_tensor
+            hasher.update(str(t.dtype).encode())
+            hasher.update(str(tuple(t.shape)).encode())
+            hasher.update(t.cpu().contiguous().reshape(-1).view(torch.uint8).numpy().data)
+        return hasher.hexdigest()
+
 
 # TODO: update weights only for sgl-d LoRA params
 class DiffusionUpdateWeightFromTensorLoRA(DiffusionUpdateWeightFromTensor):
@@ -256,71 +351,3 @@ class DiffusionUpdateWeightFromTensorLoRA(DiffusionUpdateWeightFromTensor):
 
         if verify_pairs is not None:
             self._verify_weight_sync(verify_pairs)
-
-    def _verify_weight_sync(self, pairs: list[tuple[str, torch.Tensor]]) -> None:
-        """Compare our expected merged-transformer SHA-256 against the live
-        rollout engine's checksum. Must match exactly — same algorithm as
-        sglang-d's ``compute_weights_checksum`` (sorted by name, raw byte hash).
-        """
-        if dist.get_rank() != self._ipc_gather_src:
-            return
-
-        expected = self._sha256_named_tensors(pairs)
-
-        try:
-            remote = ray.get(
-                self._ipc_engine.get_weights_checksum.remote([self.target_module])
-            )
-        except Exception as e:
-            logger.error(f"[weight_sync verify] failed to fetch remote checksum: {e}")
-            return
-
-        actual = (remote or {}).get(self.target_module)
-        match = expected == actual
-        logger.warning(
-            f"[weight_sync verify v{self.weight_version}] rank={dist.get_rank()} "
-            f"paired_engine_match={match} "
-            f"expected={expected[:16] if expected else None} "
-            f"actual={(actual or '')[:16] if isinstance(actual, str) else actual}"
-        )
-
-        # Cross-engine comparison: only rank 0 does this so we don't spam.
-        # Queries ALL engines' checksums and prints them side by side — the
-        # rank-specific noise_pred drift we've seen is consistent with
-        # engines diverging silently, so this pins it down.
-        if dist.get_rank() != 0:
-            return
-        try:
-            per_engine = ray.get([
-                e.get_weights_checksum.remote([self.target_module])
-                for e in self.rollout_engines
-            ])
-        except Exception as e:
-            logger.error(f"[weight_sync verify cross-engine] failed: {e}")
-            return
-        engine_sums = [
-            (idx, (r or {}).get(self.target_module))
-            for idx, r in enumerate(per_engine)
-        ]
-        first_sum = engine_sums[0][1]
-        all_equal = all(s == first_sum for _, s in engine_sums)
-        pretty = "  ".join(
-            f"eng{idx}={s[:16] if isinstance(s, str) else s}"
-            for idx, s in engine_sums
-        )
-        logger.warning(
-            f"[weight_sync verify v{self.weight_version} cross-engine] "
-            f"all_equal={all_equal}  {pretty}"
-        )
-
-    @staticmethod
-    def _sha256_named_tensors(pairs: list[tuple[str, torch.Tensor]]) -> str:
-        """Mirror ``sglang.multimodal_gen.runtime.loader.weight_utils.compute_weights_checksum``."""
-        hasher = hashlib.sha256()
-        for name, tensor in sorted(pairs, key=lambda x: x[0]):
-            hasher.update(name.encode())
-            t = tensor.detach()
-            if isinstance(t, DTensor):
-                t = t._local_tensor
-            hasher.update(t.cpu().contiguous().reshape(-1).view(torch.uint8).numpy().data)
-        return hasher.hexdigest()

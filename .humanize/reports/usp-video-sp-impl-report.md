@@ -2,7 +2,7 @@
 
 > **状态：进行中（活文档）。** 本报告从设计阶段开始维护，实现过程中随每次系统设计/代码改动/遇到的明显 bug 持续更新，收尾时补齐 parity 与 perf 结论。
 > 配套：计划 `.humanize/plans/usp-video-sp-plan.md`，草稿 `.humanize/ideas/usp-video-sp-20260601-080512.md`。
-> 分支：`feat/usp`。最近更新：2026-06-01（阶段2 完成 + 阶段3 AC-5/6/7 完成）。
+> 分支：`feat/usp`。最近更新：2026-06-01（阶段4 权重同步 AC-8 完成）。
 
 ---
 
@@ -103,6 +103,20 @@
 
 **AC-7（RNG 三级一致）✅——训练前向确定性 + 采样在 rollout（非 SP）**：训练前向无采样（`sde_step` 对录得的 `next_latents` 打分、不抽噪声；Wan attention/FFN dropout_p=0、无 RNG draw）。rollout 噪声 `_make_generators(prompts, base_seed, seed_offset)` 是**样本级**（按 prompt），属 DP 分区、SP 不改；同一 sp 组内各 rank 共享同批 DP 样本 → 录得 latents/噪声一致。故 token 级无 RNG、样本级 SP 不变、dropout 无 RNG —— 三级一致天然成立。
 
+### 阶段4 — 权重同步（里程碑 E，AC-8 完成）
+| 文件 | 改动 | 理由 | AC |
+|---|---|---|---|
+| `fsdp_utils/diffusion_update_weight_utils.py` | `_verify_weight_sync`/`_sha256_named_tensors` 从 LoRA 子类**提升到基类** `DiffusionUpdateWeightFromTensor`；基类 `update_weights` 接 `MILES_VERIFY_WEIGHT_SYNC` 快照+验证 | Wan2.2 走非-LoRA 基类，此前**零验证**；提升后两路径共用、去重复 | AC-8 |
+| `diffusion_update_weight_utils.py` + `sglang .../loader/weight_utils.py` | checksum 从 `name+bytes` 扩展为 `name+dtype+shape+bytes`（**两侧对称**改） | 纯 bytes 哈希对同 dtype 同总字节、不同 shape（转置/reshape）不敏感——AC-8 negative test 要拒绝的"忽略 shape 语义" | AC-8 |
+| `tests/sp_weight_sync_parity.py`（新建） | dp2×sp2 / dp1×sp4(u4) / dp1×sp4(u2r2) 三档：FSDP+SP 全量重建 checksum 跨 rank 逐位一致 == 单进程参考 + shape/dtype 敏感性 | AC-8 验证 | AC-8 |
+
+**AC-8（权重同步）✅——结构性正确，无需新增去重机制**：经分析与多卡验证确认，Option B + colocate 下现有 weight-sync 路径对 SP **本就正确**：
+- **代表 rank/去重天然满足**：所有 train rank 经 dp 维 `redistribute([Replicate()])` 后持有**完全相同的全量参数**（FSDP 只 shard dp、sp 维复制）；`connect_rollout_engines` 仅按全局 rank + `rollout_num_gpus_per_engine` 连续分组，与 SP 逻辑划分无关；gather 给每个 rollout worker **恰好一个**同卡 train rank 的张量（IPC 同卡），不存在跨卡冗余 IPC。计划风险节点"多 SP rank 冗余发送/rank 映射失配"在 colocate 下不成立——故**不加去重代码**（符合极简/禁防御性编程）。
+- **checksum 覆盖语义**：name + dtype + shape + bytes，覆盖 dtype/shape/replica；运行期 `MILES_VERIFY_WEIGHT_SYNC=1` 时单代表 rank（`_ipc_gather_src`）与配对 engine 比对、rank0 跨 engine 比对。
+- **多卡验证（4×B200）**：三档拓扑全量重建权重 checksum **跨全部 dp×sp rank 逐位一致**（`3bfadf9c…`）且 == 单进程全模型参考；参考值三档相同 → SP/DP 拓扑不改变还原的全量权重。shape 敏感（转置 checksum 必变）、dtype 敏感均验证通过。rollout 接收端 checksum 一致性留待 perf 闸 smoke 跑里以 `MILES_VERIFY_WEIGHT_SYNC=1` 在线校验。
+
+**task14（rollout SP 铺垫，分析）✅**：sglang `maybe_init_distributed_environment_and_model_parallel` → `initialize_model_parallel(..., ulysses_degree, ring_degree, sequence_parallel_degree=sp_size)`（`parallel_state.py:508-515`）**确实建真实 SP NCCL 组**（含 ulysses/ring 子组）。即未来 rollout 开 `sp_degree>1` 在分布式组层面可行。本期 `sglang_sp_degree` 默认 `None`（`sglang_diffusion_engine.py:319`，注释 "None = disabled"），rollout 保持非 SP。
+
 ---
 
 ## 5. 遇到的明显 bug / 坑
@@ -126,7 +140,8 @@
 
 - USP↔sglang-d parity（forward/backward/checkpoint/混精）：**Ulysses 已验证**——`sp2(u2)`/`sp4(u4)` × ckpt{on,off} 四档，forward+输入梯度逐位一致、self-attn 权重梯度 rel 5e-3~8e-3（bf16+FA）。**Ring（u2×r2，含 ckpt）full backward 亦通过**（坑5 已修）。
   - **权重梯度 5e-3 是 bf16 求和舍入、非 Ulysses 损失**：Ulysses all-to-all 只搬数据、无算术，故 forward / 输入梯度逐位一致（输入梯度各 rank 贡献不相交，跨 rank 求和=拼接、无舍入）。权重梯度则每 token 都贡献到同一矩阵：参考单进程对全 S 一次累加，SP 是每 rank 对 S/sp 个 token 算 bf16 偏导再 all-reduce(SUM)——分组求和的浮点非结合性，性质同 DDP/FSDP 梯度 all-reduce vs 单卡。**fp32 端到端复跑（`--fp32`，强制 SDPA）权重梯度 rel 降到 ~1e-6、forward 2.4e-7**，证实无损。生产中 SP 梯度 all-reduce 用 fp32（reduce_dtype）可进一步压低。
-- 10 步 perf 三档（DDP / 纯FSDP / FSDP+SP，dp2×sp2 与 dp1×sp4）+ 通信分解：_待填（阶段F）_
+- **权重同步（AC-8）✅**：三档拓扑（dp2×sp2 / dp1×sp4-u4 / dp1×sp4-u2r2）全量重建权重 checksum 跨全部 dp×sp rank 逐位一致 == 单进程参考；checksum 覆盖 name+dtype+shape+bytes（shape/dtype 敏感性验证通过）。结论：Option B + colocate 下权重同步结构性正确，无冗余 IPC、无需去重机制。
+- 10 步 perf 三档（DDP / 纯FSDP / FSDP+SP，dp2×sp2 与 dp1×sp4）+ 通信分解：_待填（阶段F / AC-9）_
 - go/no-go 判定与 Mooncake 是否触发：_待填_
 
 ---
@@ -134,5 +149,7 @@
 ## 7. 遗留问题与后续
 
 - **阶段3（AC-5/6/7）已完成**（详见 §4 阶段3）：SP 梯度同步（FSDP reduce-scatter 后跨 sp SUM，gather 后移使分片均匀）已实现并验证（dp1×sp4 全 69 参数全量梯度==全序列参考）；AC-6/7 经"gather-to-full + 训练前向确定性 + 样本级 DP 分区"论证为天然满足。
+- **阶段4（AC-8）已完成**（详见 §4 阶段4）：权重同步在 Option B + colocate 下结构性正确（去重天然满足、无冗余 IPC），checksum 验证已提升到非-LoRA 基类并扩展覆盖 dtype/shape，三档拓扑离线 parity 全过；rollout 接收端在线 checksum 待 perf 闸 smoke 跑校验。task14 确认 sglang 真建 SP NCCL 组（未来 rollout SP 可行），本期 rollout 保持 `sp_degree=None`。
+- **下一步：阶段F / AC-9 perf 闸**——三档（DDP / 纯FSDP dp4 / FSDP+SP dp2×sp2 与 dp1×sp4）各 10 步，护栏/容量/效率指标 + 通信分解 + go/no-go；smoke 跑同时开 `MILES_VERIFY_WEIGHT_SYNC=1` 验证 rollout 接收端 checksum。AC-2~8 全绿后物理删除 LLM 死代码（阶段0 推迟项）单独合入。
 - **per-token timestep（ti2v）**：当前切分契约假定 `timestep_proj` 非逐 token（Wan2.2-T2V-A14B 成立，temb=[B,6,inner]）；若用逐 token timestep 需一并切 `timestep_proj`。
 - **序列 padding**：`shard_sequence` 要求 `S % sp == 0`，否则报错；如遇不整除分辨率需在 patchify 前 padding（AC-4 已列）。

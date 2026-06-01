@@ -30,10 +30,11 @@
 | 0 | Initial plan | - | - |
 
 #### Active Tasks
-<!-- 本轮 mainline 聚焦阶段0（AC-1）：纯代码 + 单元测试，不依赖多 GPU 环境 -->
+<!-- 阶段0~4（AC-1~8）已落地+多卡验证；剩 AC-9 perf 闸为 plan 完成的最后一项 -->
 | Task | Target AC | Status | Tag | Owner | Notes |
 |------|-----------|--------|-----|-------|-------|
-| （本轮 mainline 阶段0+1 已完成，见 Completed；阶段2+ 待后续 round） | - | - | - | - | - |
+| task12: 10 步 perf 闸三档（DDP/纯FSDP dp4/FSDP+SP dp2×sp2 与 dp1×sp4）+ 通信分解 + go/no-go | AC-9 | pending | coding | claude | plan 收尾项；依赖 task6/9/11 全已就位 |
+| task13: 若 perf 不达标→Mooncake 瓶颈归因 | AC-9 | pending | analyze | codex | 依赖 task12 |
 
 ### Blocking Side Issues
 | Issue | Discovered Round | Blocking AC | Resolution Path |
@@ -52,6 +53,12 @@
 | AC-2 | task3: 解锁 `context_parallel_size==1` 断言 + 加 SP args（CP→SP 兼容） | 0 | pending | arguments 已改 |
 | AC-2 | sp_mesh 纯函数 + test_sp_mesh（rank 映射/子组划分，对齐 sglang，不假定卡数） | 0 | pending | `pytest` 22 passed |
 | AC-2 | task4: ParallelState sp 字段 + create_fsdp_parallel_state Option B 接线（复用 sglang 建 ulysses/ring 组） | 0 | pending | 多卡 smoke 8×B200 5 配置通过 |
+| AC-3 | task5/6: WanUSPAttnProcessor 接入 diffusers + 单层/小block parity（fwd/bwd/ckpt/混精） | 0 | pending | 4×B200 parity 全过；修 2 个 sglang bug（all-to-all 不可微、ring dK/dV 不可微） |
+| AC-4 | task7: 序列 patchify 后切分契约 + RoPE 全局 offset | 0 | pending | parity 逐位一致即证 offset 正确 |
+| AC-5 | task8: SP 梯度同步（reduce-scatter 后跨 sp SUM,fp32）+ gather 后移到 proj_out | 0 | pending | dp1×sp4 全 69 参数全量梯度==全序列参考 |
+| AC-6 | task9: loss/log_prob SP 归约——经 gather-to-full 天然满足（noise_pred 全序列、各 sp rank 逐位一致） | 0 | pending | 跨 sp 输出最大绝对差=0 |
+| AC-7 | task10: RNG 三级一致——训练前向确定性+采样在 rollout（非SP）天然满足 | 0 | pending | 论证+前向无 RNG draw |
+| AC-8 | task11: 权重同步——结构性正确(去重天然满足)+ checksum 验证提升到非-LoRA 基类 + 覆盖 dtype/shape | 0 | pending | 3 档拓扑 sp_weight_sync_parity 全过；task14 确认 sglang 真建 SP NCCL 组 |
 
 ### Explicitly Deferred
 | Task | Original AC | Deferred Since | Justification | When to Reconsider |
