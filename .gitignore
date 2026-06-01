@@ -192,3 +192,7 @@ glm/
 _examples_synced/
 .env
 .DS_Store
+
+# Training run artifacts (checkpoints, core dumps)
+logs/
+core.*

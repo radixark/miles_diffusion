@@ -77,7 +77,9 @@ else
 fi
 
 # ---------------------------------------------------------------- conda env
-source "$($CONDA_BIN info --base)/etc/profile.d/conda.sh"
+# `mamba info --base` prints decorated multi-line output; use conda for the
+# base path (always present alongside mamba in miniforge) so `source` works.
+source "$(conda info --base)/etc/profile.d/conda.sh"
 
 if conda env list | awk '{print $1}' | grep -qx "$ENV_NAME"; then
   log "conda env '$ENV_NAME' exists; reusing"
