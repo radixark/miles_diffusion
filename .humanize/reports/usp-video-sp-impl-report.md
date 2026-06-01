@@ -50,6 +50,17 @@
 
 验证：`pytest tests/test_cp_deadcode_isolation.py` → **5 passed**。物理删除按 AC-1.1 推迟到 AC-2~6 全绿后。
 
+### 阶段1 — 解锁 SP 维 + Option B 复合并行（里程碑 B，Round 0，进行中）
+| 文件 | 改动 | 理由 | AC |
+|---|---|---|---|
+| `miles/backends/fsdp_utils/arguments.py` | 加 `sequence_parallel_size`/`ulysses_degree`/`ring_degree`；`context_parallel_size` 留作 SP 别名 | 暴露 SP 配置，不假定卡数 | AC-2 |
+| `miles/utils/arguments.py` | 解除 `assert context_parallel_size==1`，改为 CP→SP 向后兼容 | 解锁 SP | AC-2 |
+| `miles/backends/fsdp_utils/sp_mesh.py`（新建） | 纯函数 `resolve_sp_degrees`/`validate_sp_config`/`sp_subgroups`/`locate_rank`，对齐 sglang ulysses 连续/ring 跨步划分 | rank 映射/子组划分，不假定卡数（2~1000+），可独立单测 | AC-2 |
+| `tests/test_sp_mesh.py`（新建） | 覆盖 2~1024 卡、各 ulysses×ring 组合的布局不变量 + sglang 对齐例 + 非法配置拒绝 + heads%ulysses 守卫 | AC-2 验证 | AC-2 |
+
+验证：`pytest tests/` → **22 passed**。**待续**：`ParallelState` 扩 sp 字段 + `create_fsdp_parallel_state` 接真实 dist 组（复用 sglang `set_seq_parallel_pg_by_sp_groups`），需多 GPU 跑通验证。
+关键确认：sglang.multimodal_gen 在训练环境**可直接 import**，为阶段2 复用 USPAttention 与本阶段复用 SP 组构建奠定基础。
+
 ---
 
 ## 5. 遇到的明显 bug / 坑

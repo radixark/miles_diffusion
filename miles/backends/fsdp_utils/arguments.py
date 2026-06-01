@@ -51,8 +51,12 @@ class FSDPArgs:
 
     deterministic_mode: bool = False  # This name must be the same as Megatron's
 
-    # Context Parallelism
-    context_parallel_size: int = 1  # Context Parallelism size
+    # Sequence Parallelism (USP = Ulysses × Ring)，不假定卡数。
+    # context_parallel_size 保留为 sequence_parallel_size 的向后兼容别名（CP≡SP）。
+    context_parallel_size: int = 1
+    sequence_parallel_size: int = 1
+    ulysses_degree: int = 0  # 0=auto: ulysses 吃满 sp、ring=1
+    ring_degree: int = 0  # 0=auto: sp // ulysses
 
     # YAML bookkeeping
     config: str | None = None

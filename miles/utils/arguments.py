@@ -1146,7 +1146,10 @@ def parse_args(add_custom_arguments=None):
     args = load_fsdp_args(extra_args_provider=add_miles_arguments)
     args.rank = 0  # Primary process rank for wandb initialization
     args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
-    assert args.context_parallel_size == 1, "Context parallelism is not supported for FSDP backend."
+    # SP（序列并行）解锁旧的 CP 禁用断言；CP≡SP，旧配置 context_parallel_size 作为 sequence_parallel_size 别名。
+    # 拓扑合法性（dp×sp==world、ulysses×ring==sp、num_heads%ulysses）在 create_fsdp_parallel_state 校验。
+    if args.context_parallel_size > 1 and args.sequence_parallel_size == 1:
+        args.sequence_parallel_size = args.context_parallel_size
 
     miles_validate_args(args)
     sglang_validate_args(args)

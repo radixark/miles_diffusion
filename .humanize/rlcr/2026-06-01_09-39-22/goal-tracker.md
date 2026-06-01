@@ -33,8 +33,7 @@
 <!-- 本轮 mainline 聚焦阶段0（AC-1）：纯代码 + 单元测试，不依赖多 GPU 环境 -->
 | Task | Target AC | Status | Tag | Owner | Notes |
 |------|-----------|--------|-----|-------|-------|
-| task3: 解除 arguments.py 的 context_parallel_size==1 断言，正名 sequence_parallel_size | AC-2 | pending | coding | claude | [mainline] 阶段1 |
-| task4: Option B 复合并行（sp_group/ulysses/ring 子组 + ParallelState sp 字段 + 两档 rank 映射 + 启动校验，不假定卡数） | AC-2 | pending | coding | claude | [mainline] 阶段1 |
+| task4: Option B 接线——ParallelState 扩 sp 字段 + create_fsdp_parallel_state 建真实 dist 组（复用 sglang set_seq_parallel_pg），需多 GPU 验证 | AC-2 | in_progress | coding | claude | 纯函数 sp_mesh 已完成，剩真实 dist 接线 |
 
 ### Blocking Side Issues
 | Issue | Discovered Round | Blocking AC | Resolution Path |
@@ -50,6 +49,8 @@
 |----|------|-----------------|----------------|----------|
 | AC-1 | task1: 4 个死代码模块加 `__deprecated__` 标记 | 0 | pending | docstring + 标记已加 |
 | AC-1 | task2: 防引用守卫测试 `tests/test_cp_deadcode_isolation.py` | 0 | pending | `pytest` 5 passed；并发现死代码已 import-broken（缺 flops_utils） |
+| AC-2 | task3: 解锁 `context_parallel_size==1` 断言 + 加 SP args（CP→SP 兼容） | 0 | pending | arguments 已改 |
+| AC-2 | sp_mesh 纯函数 + test_sp_mesh（rank 映射/子组划分，对齐 sglang，不假定卡数） | 0 | pending | `pytest` 22 passed |
 
 ### Explicitly Deferred
 | Task | Original AC | Deferred Since | Justification | When to Reconsider |
