@@ -1,5 +1,14 @@
 #!/usr/bin/env bash
-# Wan2.2-T2V-A14B 1-frame PickScore GRPO recipe for a 4-GPU colocated run.
+# Wan2.2-T2V-A14B 1-frame PickScore GRPO recipe.
+#
+# GPU layout on this 8-GPU box (7+1): the colocated train+rollout placement
+# group takes 7 GPUs (--actor-num-gpus-per-node / --rollout-num-gpus /
+# --num-gpus-per-node = 7); the PickScore reward actor is scheduled OUTSIDE the
+# placement group (scheduling_strategy="DEFAULT", 1 GPU) so it needs its own
+# dedicated card -> the 8th GPU. CUDA_VISIBLE_DEVICES exposes all 8.
+# Constraint: global_batch_size = rollout_batch*n_samples/num_steps_per_rollout
+# must be divisible by dp_size(=7); default rollout_batch_size=49 (=7*7) keeps it
+# clean (49*16/2=392, 392%7=0).
 #
 # Data handling follows the existing Miles PickScore scripts:
 #   rockdu/miles-diffusion-datasets/flowgrpo_pickscore/{train,test}.jsonl
@@ -17,16 +26,16 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3,4}"
-export HF_HOME="${HF_HOME:-/cluster-storage/models}"
-export FLASHINFER_WORKSPACE_BASE="${FLASHINFER_WORKSPACE_BASE:-/cluster-storage/personal/809a2940-8360-4812-81c2-c7383f3f43e7/.cache/flashinfer}"
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}"
+export HF_HOME="${HF_HOME:-/workspace/809a2940-8360-4812-81c2-c7383f3f43e7/models}"
+export FLASHINFER_WORKSPACE_BASE="${FLASHINFER_WORKSPACE_BASE:-/workspace/809a2940-8360-4812-81c2-c7383f3f43e7/.cache/flashinfer}"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:False}"
 
-PYTHON_BIN="${PYTHON_BIN:-/cluster-storage/personal/809a2940-8360-4812-81c2-c7383f3f43e7/miniforge3/envs/miles-diffusion/bin/python}"
+PYTHON_BIN="${PYTHON_BIN:-/workspace/809a2940-8360-4812-81c2-c7383f3f43e7/miniforge3/envs/miles-diffusion/bin/python}"
 HF_BIN="${HF_BIN:-$(dirname "${PYTHON_BIN}")/hf}"
-RUN_NAME="${RUN_NAME:-wan22_pickscore_4gpu_$(date +%Y%m%d_%H%M%S)}"
+RUN_NAME="${RUN_NAME:-wan22_pickscore_8gpu_$(date +%Y%m%d_%H%M%S)}"
 SAVE_DIR="${SAVE_DIR:-${ROOT_DIR}/logs/${RUN_NAME}/ckpt}"
-DATASETS_DIR="${DATASETS_DIR:-/cluster-storage/personal/809a2940-8360-4812-81c2-c7383f3f43e7/datasets/miles-diffusion-datasets}"
+DATASETS_DIR="${DATASETS_DIR:-/workspace/809a2940-8360-4812-81c2-c7383f3f43e7/datasets/miles-diffusion-datasets}"
 
 "${HF_BIN}" download --repo-type dataset rockdu/miles-diffusion-datasets \
   --include "flowgrpo_pickscore/**" \
@@ -90,11 +99,11 @@ fi
 "${PYTHON_BIN}" -u "${ROOT_DIR}/train_diffusion.py" \
   --train-backend fsdp \
   --rollout-function-path miles.rollout.sglang_diffusion_rollout.generate_rollout \
-  --hf-checkpoint /cluster-storage/models/Wan-AI/Wan2.2-T2V-A14B-Diffusers \
-  --diffusion-model /cluster-storage/models/Wan-AI/Wan2.2-T2V-A14B-Diffusers \
+  --hf-checkpoint /workspace/809a2940-8360-4812-81c2-c7383f3f43e7/models/Wan-AI/Wan2.2-T2V-A14B-Diffusers \
+  --diffusion-model /workspace/809a2940-8360-4812-81c2-c7383f3f43e7/models/Wan-AI/Wan2.2-T2V-A14B-Diffusers \
   --prompt-data "${DATASETS_DIR}/flowgrpo_pickscore/train.jsonl" \
   --input-key input \
-  --rollout-batch-size "${ROLLOUT_BATCH_SIZE:-48}" \
+  --rollout-batch-size "${ROLLOUT_BATCH_SIZE:-49}" \
   --n-samples-per-prompt "${N_SAMPLES_PER_PROMPT:-16}" \
   --num-rollout "${NUM_ROLLOUT:-10000}" \
   --num-steps-per-rollout "${NUM_STEPS_PER_ROLLOUT:-2}" \
@@ -102,10 +111,10 @@ fi
   --micro-batch-size-sample "${MICRO_BATCH_SIZE_SAMPLE:-1}" \
   --micro-batch-size-tstep "${MICRO_BATCH_SIZE_TSTEP:-1}" \
   --diffusion-train-iter-order sample_major \
-  --actor-num-gpus-per-node 4 \
-  --rollout-num-gpus 4 \
+  --actor-num-gpus-per-node 7 \
+  --rollout-num-gpus 7 \
   --rollout-num-gpus-per-engine 1 \
-  --num-gpus-per-node "${NUM_GPUS_PER_NODE:-4}" \
+  --num-gpus-per-node "${NUM_GPUS_PER_NODE:-7}" \
   --colocate \
   --use-lora \
   --lora-rank "${LORA_RANK:-64}" \
