@@ -1,3 +1,7 @@
+"""DEPRECATED: LLM-RL legacy, unused by diffusion training. Pending removal after SP lands (AC-1)."""
+
+__deprecated__ = True
+
 import logging
 from argparse import Namespace
 from math import isclose

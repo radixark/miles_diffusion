@@ -1,3 +1,7 @@
+"""DEPRECATED: LLM-RL legacy (causal zigzag CP), unused by diffusion training. Pending removal after SP lands (AC-1)."""
+
+__deprecated__ = True
+
 from collections.abc import Callable
 
 import torch

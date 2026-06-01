@@ -39,19 +39,24 @@
 
 ---
 
-## 4. 代码改动日志（按阶段/文件，实现中填充）
+## 4. 代码改动日志（按阶段/文件）
 
-> 每次改动追加一条：`文件 — 改了什么 — 为什么 — 对应 AC/task`。
+### 阶段0 — 隔离 LLM CP 死代码（里程碑 A，Round 0）
+| 文件 | 改动 | 理由 | AC |
+|---|---|---|---|
+| `training_utils/{loss,data,cp_utils,log_utils}.py` | 顶部加模块 docstring + `__deprecated__ = True` | 标记为 LLM-RL 死代码，diffusion 训练不调用 | AC-1 |
+| `tests/test_cp_deadcode_isolation.py`（新建） | 防引用守卫：AST 静态验证 4 模块有 `__deprecated__` + 全 `miles/`+`flow_grpo/` 无活引用 | AC-1 的 import-level 守卫；用 AST 而非 import（死代码已 import-broken，见 §5） | AC-1 |
+| `tests/`（新建目录） | 仓库此前无测试目录 | 承载守卫测试 | AC-1 |
 
-_（实现未开始）_
+验证：`pytest tests/test_cp_deadcode_isolation.py` → **5 passed**。物理删除按 AC-1.1 推迟到 AC-2~6 全绿后。
 
 ---
 
-## 5. 遇到的明显 bug / 坑（实现中填充）
+## 5. 遇到的明显 bug / 坑
 
-> 每条记录：现象 — 根因 — 修复 — 影响范围。
-
-_（实现未开始）_
+- **死代码已 import-broken**（Round 0 发现）：`log_utils.py` 有 `from miles.utils.flops_utils import calculate_fwd_flops`，但 `miles.utils.flops_utils` 在 diffusion fork 里**不存在** → `ModuleNotFoundError`。
+  - 根因：这套 LLM 死代码从上游 miles 继承，依赖的 `flops_utils` 在 diffusion fork 被删，但死代码未清理。
+  - 影响/处理：(1) 这是比"无 import 引用"更强的死代码证据——连 import 都失败，diffusion 绝不可能用；(2) `__deprecated__` 标记的检查改用 **AST 静态解析**而非 `importlib.import_module`（不 import broken 模块）。
 
 ---
 
