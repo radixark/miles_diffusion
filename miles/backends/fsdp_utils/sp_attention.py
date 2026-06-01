@@ -153,7 +153,9 @@ def apply_sequence_parallel(transformer, parallel_state, compute_dtype=None):
 
     切分契约：
     - rope 输出按全局 offset 切到 S_local（每 block 复用同一份，故包在 rope 产出处）。
-    - hidden_states 在第一个 block 前切到 S_local、最后一个 block 后 all-gather 回全序列。
+    - hidden_states 在第一个 block 前切到 S_local；**proj_out 输出后**（unpatchify 前）才 all-gather 回全序列。
+      gather 放在 proj_out 后（而非 blocks 后），使 norm_out/proj_out 也在 S_local 上跑（token-wise，等价），
+      从而整模型参数一律"偏梯度"→ 阶段3 SP 梯度同步用统一的跨 sp all-reduce(SUM)，无需逐参数区分。
     - forward_context 由 init_sp_backend 持久化（USPAttention 依赖，含 checkpointing recompute）。
     """
     heads = transformer.config.num_attention_heads
@@ -175,14 +177,12 @@ def apply_sequence_parallel(transformer, parallel_state, compute_dtype=None):
 
     rope.forward = sp_rope_forward
 
-    blocks = transformer.blocks
-
     def slice_block_input(module, args):
         hs, *rest = args
         return (shard_sequence(hs, parallel_state), *rest)
 
-    def gather_block_output(module, args, output):
+    def gather_proj_output(module, args, output):
         return gather_sequence(output, parallel_state)
 
-    blocks[0].register_forward_pre_hook(slice_block_input)
-    blocks[-1].register_forward_hook(gather_block_output)
+    transformer.blocks[0].register_forward_pre_hook(slice_block_input)
+    transformer.proj_out.register_forward_hook(gather_proj_output)

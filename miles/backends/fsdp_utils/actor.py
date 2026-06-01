@@ -374,6 +374,8 @@ class FSDPTrainRayActor(TrainRayActor):
 
                 self.prof.step(rollout_id=rollout_id)
                 if not self.args.debug_skip_optimizer_step:
+                    if self.parallel_state.sp_size > 1:
+                        self._all_reduce_sp_grads()
                     grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip_grad)
                     log_stats["grad_norm"].append(grad_norm.detach())
                     self.optimizer.step()
@@ -512,6 +514,29 @@ class FSDPTrainRayActor(TrainRayActor):
             "sde_window_size": int(sde_window_size or 0),
             "rollout_model_outputs": rollout_model_outputs_window,
         }
+
+    def _all_reduce_sp_grads(self) -> None:
+        """Option B 的 SP 梯度同步：序列分片区每个 sp_rank 只见 1/sp 的 token → 偏梯度，
+        跨 sp_group all-reduce(SUM) 还原全量。在 FSDP reduce-scatter 之后、optimizer.step 之前对
+        sharded grad 做（DEC-2，与 FSDP 通信对象一致）。reduce 用 fp32 压低舍入。
+
+        gather 已移到 proj_out 后 → 整模型参数一律偏梯度，故此处对全部参数统一处理、无需区分。
+        SUM（非 mean）：loss 在全序列 noise_pred 上算、各 sp rank 相同，单 rank 偏梯度仅含其 token 贡献，
+        求和即全量；与 FSDP 的 dp 维平均正交（先 dp 平均后 sp 求和 = (1/dp)ΣΣ偏梯度）。
+        """
+        from torch.distributed.tensor import DTensor
+
+        group = self.parallel_state.sp_group
+        for p in self.model.parameters():
+            if p.grad is None:
+                continue
+            local = p.grad.to_local() if isinstance(p.grad, DTensor) else p.grad
+            if local.dtype == torch.float32:
+                dist.all_reduce(local, group=group)
+            else:
+                f = local.float()
+                dist.all_reduce(f, group=group)
+                local.copy_(f)
 
     def _run_optim_window(
         self,

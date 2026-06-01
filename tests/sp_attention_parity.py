@@ -122,6 +122,8 @@ def main():
     attn_weight_names = [
         f"blocks.{i}.attn1.{proj}.weight" for i in range(2) for proj in ("to_q", "to_k", "to_v", "to_out.0")
     ]
+    # proj_out 在序列分片区内（gather 移到 proj_out 后）→ 其权重梯度也应是偏梯度、跨 sp sum 等价于全序列。
+    attn_weight_names.append("proj_out.weight")
 
     # ---- 参考：全序列 FA ----
     model = build_model(device)
