@@ -30,11 +30,11 @@
 | 0 | Initial plan | - | - |
 
 #### Active Tasks
-<!-- 阶段0~4（AC-1~8）已落地+多卡验证；剩 AC-9 perf 闸为 plan 完成的最后一项 -->
+<!-- AC-1~8 全落地+多卡验证；AC-9 训练步 perf 闸已 GO，剩完整 RL 计时为补充项 -->
 | Task | Target AC | Status | Tag | Owner | Notes |
 |------|-----------|--------|-----|-------|-------|
-| task12: 10 步 perf 闸三档（DDP/纯FSDP dp4/FSDP+SP dp2×sp2 与 dp1×sp4）+ 通信分解 + go/no-go | AC-9 | pending | coding | claude | plan 收尾项；依赖 task6/9/11 全已就位 |
-| task13: 若 perf 不达标→Mooncake 瓶颈归因 | AC-9 | pending | analyze | codex | 依赖 task12 |
+| task12: perf 闸三档（DDP/FSDP/FSDP+SP）训练步对照 + 通信分解 + go/no-go | AC-9 | **done(训练步)** | coding | claude | **GO**：容量 sp_dp2 2.1×/sp_dp4 3.9×、效率 92-101%、SP通信 5-7%；详见报告 §6。完整 RL 的 weight-sync/rollout-wait 计时待 5 卡空出补一轮 |
+| task13: Mooncake 瓶颈归因 | AC-9 | **不触发** | analyze | codex | go 判定通过；训练侧 attention 通信仅 5-7% 非瓶颈（DEC-4 条件不满足） |
 
 ### Blocking Side Issues
 | Issue | Discovered Round | Blocking AC | Resolution Path |

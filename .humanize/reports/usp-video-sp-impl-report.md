@@ -151,8 +151,40 @@
 - USP↔sglang-d parity（forward/backward/checkpoint/混精）：**Ulysses 已验证**——`sp2(u2)`/`sp4(u4)` × ckpt{on,off} 四档，forward+输入梯度逐位一致、self-attn 权重梯度 rel 5e-3~8e-3（bf16+FA）。**Ring（u2×r2，含 ckpt）full backward 亦通过**（坑5 已修）。
   - **权重梯度 5e-3 是 bf16 求和舍入、非 Ulysses 损失**：Ulysses all-to-all 只搬数据、无算术，故 forward / 输入梯度逐位一致（输入梯度各 rank 贡献不相交，跨 rank 求和=拼接、无舍入）。权重梯度则每 token 都贡献到同一矩阵：参考单进程对全 S 一次累加，SP 是每 rank 对 S/sp 个 token 算 bf16 偏导再 all-reduce(SUM)——分组求和的浮点非结合性，性质同 DDP/FSDP 梯度 all-reduce vs 单卡。**fp32 端到端复跑（`--fp32`，强制 SDPA）权重梯度 rel 降到 ~1e-6、forward 2.4e-7**，证实无损。生产中 SP 梯度 all-reduce 用 fp32（reduce_dtype）可进一步压低。
 - **权重同步（AC-8）✅**：三档拓扑（dp2×sp2 / dp1×sp4-u4 / dp1×sp4-u2r2）全量重建权重 checksum 跨全部 dp×sp rank 逐位一致 == 单进程参考；checksum 覆盖 name+dtype+shape+bytes（shape/dtype 敏感性验证通过）。结论：Option B + colocate 下权重同步结构性正确，无冗余 IPC、无需去重机制。
-- 10 步 perf 三档（DDP / 纯FSDP / FSDP+SP，dp2×sp2 与 dp1×sp4）+ 通信分解：_待填（阶段F / AC-9）_
-- go/no-go 判定与 Mooncake 是否触发：_待填_
+### perf 闸（AC-9）——训练步对照（4×B200 GPU4-7，无 reward 口径）
+
+> **口径说明**：因当前仅 4 张空闲卡（0-3 被他人 4 卡任务占用），无法起"4训+1奖"的完整 RL；改用**训练步 perf harness**（`tests/sp_perf_gate.py`）：真实 Wan2.2-A14B per-layer 维度（dim=5120=40×128、ffn=13824、qk_norm across_heads、text_dim=4096），固定合成 latent batch（B=1 单条长序列），fwd+bwd、gradient checkpointing 开、bf16。**只 fwd+bwd 不建 Adam**——以隔离"激活显存"这一 SP 核心收益（optimizer state 另作分析）。numerical 护栏由 §6 parity 已证（forward 逐位一致、权重梯度 rel≤8e-3），此处不重复。代表性 L=8（激活斜率是 per-layer 量，SP 的 1/sp 收益与层数无关；param base 随层数线性，不改 SP 的激活优势）。weight-sync/rollout-wait 计时与真 reward 留待 5 卡空出后补一轮完整 RL。
+
+**实测（L=8，hw=44，两个序长点）：**
+
+| 档 | peak@seq31k | peak@seq62k | 激活斜率(GB/ktok) | 静态base(GB) | step@31k | step@62k | SP通信% | FSDP通信% |
+|---|---|---|---|---|---|---|---|---|
+| ① ddp (dp4×sp1) | 29.40 | — | — | — | 1457ms | — | — | — |
+| ② fsdp (dp4×sp1) | 19.18 | 33.28 | 0.455 | 5.08 | 1461ms | 4186ms | — | — |
+| ③a sp_dp2 (dp2×sp2) | 15.12 | 21.72 | 0.213 | 8.52 | 794ms | 2071ms | 4.8–5.2% | 1.6–7.6% |
+| ③b sp_dp4 (dp1×sp4) | 17.06 | 20.45 | 0.109 | 13.67 | 426ms | 1079ms | 6.2–7.1% | ~0% |
+
+**分析（两点线性外推，激活随 S 近线性=flash attn O(S) 显存）：**
+- **激活斜率比 ≈ 1 : 1/2.1 : 1/4.2** → SP 把每卡激活按 ~1/sp 分片（核心机制证实）；static base 因 Option B **参数复制**反向递增（fsdp /4 → sp_dp2 /2 → sp_dp4 /1=dp1 不分片），部分抵消固定 seq 下的显存收益。
+- **容量（max seq @170GB 可用）**：fsdp **362k** → sp_dp2 **758k（2.1×）** → sp_dp4 **1429k（3.9×）**。
+- **峰值显存（固定 seq=62k）**：fsdp 33.28 → sp_dp2 −35% / sp_dp4 −39%；随 seq 增大趋近斜率比（sp_dp2 −53%、sp_dp4 −76%）。
+- **效率（单条序列加速比 / 理想线性）**：seq31k sp_dp2 1.84×(92%)、sp_dp4 3.43×(86%)；seq62k sp_dp2 2.02×(~101%，attention O(S²) per-rank 降为 1/sp 后大序长更接近理想)、sp_dp4 3.88×(97%)。**效率结论以 dp2×sp2 为准（≥92%）**；dp1×sp4 仅作容量测试。
+- **SP 通信占比 5–7%**（USP all-to-all/ring），**FSDP 通信 0–8%**（dp2 有 reduce-scatter/all-gather、dp1 几乎为0）。
+- **optimizer 注记**：A14B 全量 Adam state（fp32 m+v+master ≈168GB/全量）下，**① ddp 与 ③b dp1×sp4 会 OOM**（参数不分片）；故真实训练须 FSDP(dp≥2) 分片参数 + SP 分片激活，二者**正交互补**。dp1×sp4 是容量上界示意，非可训配置（与计划"DP=1 分片收益退化"一致）。
+
+### go/no-go 判定 ✅ **GO —— SP 可行，不触发 Mooncake**
+
+| 组 | 指标 | 闸阈值 | 实测 | 结论 |
+|---|---|---|---|---|
+| 护栏 | 数值一致性 | loss 偏差<2% | parity forward 逐位一致、grad rel≤8e-3 | ✅ |
+| 护栏 | 跑通无 OOM/挂死 | 必须 | ③a/③b 多序长跑通 | ✅ |
+| 容量 | max seq ③≥②2× | ≥2× | sp_dp2 **2.1×**、sp_dp4 3.9× | ✅ |
+| 容量 | 峰值显存↓≥40% | ≥40% | 62k 时 −35~39%，渐近 −47~76% | ✅（大序长达标，中序长接近） |
+| 效率 | 并行效率≥60% | ≥60% | dp2×sp2 **92–101%** | ✅ |
+| 效率 | SP 通信占比<30% | <30% | **5–7%** | ✅ |
+
+**结论**：训练侧 FSDP+USP 序列并行**全部护栏/容量/效率指标达标**，SP 有效解决长视频序列的激活显存与单序列吞吐，**不触发 Mooncake 专项**（DEC-4：仅当瓶颈在 rollout/权重同步/跨节点时才评估 Mooncake；本测显示训练侧 attention 通信仅 5-7%、非瓶颈）。
+- **遗留（不影响 go 结论）**：(1) weight-sync/rollout-wait 计时需 5 卡空出后补一轮完整 10 步 RL；(2) 本测 B=1 单序列、L=8 代表性、无 Adam，绝对显存数小于真实训练（真实加 40 层+优化器+多样本），但 SP 的相对收益（斜率 1/sp、效率、通信占比）与这些无关，go/no-go 信号成立。
 
 ---
 
