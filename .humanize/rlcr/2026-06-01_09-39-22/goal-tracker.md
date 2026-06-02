@@ -59,7 +59,12 @@
 | AC-6 | task9: loss/log_prob SP 归约——经 gather-to-full 天然满足（noise_pred 全序列、各 sp rank 逐位一致） | 0 | pending | 跨 sp 输出最大绝对差=0 |
 | AC-7 | task10: RNG 三级一致——训练前向确定性+采样在 rollout（非SP）天然满足 | 0 | pending | 论证+前向无 RNG draw |
 | AC-8 | task11: 权重同步——结构性正确(去重天然满足)+ checksum 验证提升到非-LoRA 基类 + 覆盖 dtype/shape | 0 | pending | 3 档拓扑 sp_weight_sync_parity 全过；task14 确认 sglang 真建 SP NCCL 组 |
+| AC-8 | Codex review 修复：connect_rollout_engines 拓扑契约启动断言 + verify TP 感知(tp==1) | 0 | pending | commit 5835316；ask-codex P1-B/P2 已修，P1-A 证伪 |
+| AC-9 | task12: perf 闸三档训练步对照 + 通信分解 + go/no-go = **GO** | 0 | pending | 容量 sp_dp2 2.1×/sp_dp4 3.9×、效率 92-101%、SP通信 5-7%；报告 §6；commit 90becb4 |
 
 ### Explicitly Deferred
 | Task | Original AC | Deferred Since | Justification | When to Reconsider |
 |------|-------------|----------------|---------------|-------------------|
+| 完整 10 步 RL 的 weight-sync/rollout-wait 计时 + 真 reward（含 MILES_VERIFY_WEIGHT_SYNC=1 在线校验 rollout 接收端 checksum） | AC-9 | 0 | 需 4训+1奖=5 卡，当前仅 4 空闲（GPU0-3 被他人占）。SP 的容量/效率/通信 go/no-go 信号已由训练步对照成立（不依赖完整 RL）；本项仅补端到端计时，不改结论 | GPU 0-3 空出、可起 5 卡 colocate 时 |
+| 物理删除 LLM CP 死代码（training_utils/{loss,data,cp_utils,log_utils}.py） | AC-1 | 0 | 计划 AC-1.1 明确：物理删除门控在 AC-2~6 全绿后单独合入，降低早期回归风险 | 本轮 review-phase 通过、AC 全绿后单独 PR |
+| 装 Codex/Claude 持续 gate hook（自动无人值守循环） | — | 0 | 当前 humanize 1.16.0 codex 安装器与 codex 0.135 feature 命名不兼容（codex_hooks→hooks）；插件已声明 Claude 侧 Stop hook 但本 session 未实际 gate。本项目剩余多为 GPU-gated，自主循环收益有限 | 开启新的大任务、或 humanize 更新后 |
