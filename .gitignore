@@ -196,3 +196,5 @@ _examples_synced/
 # Training run artifacts (checkpoints, core dumps)
 logs/
 core.*
+# Humanize RLCR loop 本地状态（不进版本控制）
+.humanize/
