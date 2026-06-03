@@ -160,6 +160,14 @@ def apply_sequence_parallel(transformer, parallel_state, compute_dtype=None):
     """
     heads = transformer.config.num_attention_heads
     head_dim = transformer.config.attention_head_dim
+    # 启动期合法性校验（生产路径唯一可靠的 head 数来源——args 不带 num_attention_heads，
+    # create_fsdp_parallel_state 的同名校验在生产被跳过；这里用真实模型 config 兜底）。
+    # Ulysses 按头切，须整除；不满足说明配错（如 GQA/MQA 或非法 ulysses_degree），应启动即拒。
+    if heads % parallel_state.ulysses_degree != 0:
+        raise ValueError(
+            f"num_attention_heads({heads}) 不能被 ulysses_degree({parallel_state.ulysses_degree}) 整除"
+            "（Ulysses 按头切分，不适合 GQA/MQA）"
+        )
     # compute dtype 决定 USPAttention 选 FA 还是被降级成 SDPA：须传 forward dtype（bf16），
     # 而非 FSDP master 参数 dtype（可能是 fp32）。
     if compute_dtype is None:
