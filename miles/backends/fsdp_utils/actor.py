@@ -104,6 +104,17 @@ class FSDPTrainRayActor(TrainRayActor):
         clear_memory()
         self.model = model
 
+        # Gradient checkpointing 下必须把 RoPE freq buffer 钉到 forward dtype：
+        # WanRotaryPosEmbed 把 freqs_cos/sin 注册为 float64，而 FSDP 的混精只转 params、
+        # 不转 buffer，叠加 forward-input cast 使 ckpt recompute 与 forward 的 freqs dtype
+        # 分叉（forward bf16 / recompute fp32 → CheckpointError）。统一成 bf16 后两遍一致
+        # （与训练步 harness 的 model.to(bf16) 行为对齐；rope 结果本就 type_as→bf16）。
+        if args.gradient_checkpointing:
+            for m in self.model.modules():
+                if hasattr(m, "freqs_cos") and hasattr(m, "freqs_sin"):
+                    m.register_buffer("freqs_cos", m.freqs_cos.to(self._forward_dtype), persistent=False)
+                    m.register_buffer("freqs_sin", m.freqs_sin.to(self._forward_dtype), persistent=False)
+
         # 序列并行：把 self-attn 导向 USPAttention 并装序列切分契约（patchify 后切、norm_out 前 gather）。
         if self.parallel_state.sp_size > 1:
             apply_sequence_parallel(self.model, self.parallel_state, compute_dtype=self._forward_dtype)
