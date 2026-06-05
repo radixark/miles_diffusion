@@ -90,6 +90,28 @@ def build_rollout_sampling_params(
                 "rollout_return_dit_trajectory": True,
             }
         )
+        if model_type == "ltx":
+            from miles.utils.sde_log_prob import normalize_dynamics_type
+
+            # Canonical names match sglang-d rollout_sde_type, so pass through
+            # with no translation table (keeps train/rollout on one vocabulary).
+            dynamics = normalize_dynamics_type(getattr(args, "ltx_dynamics_type", "cps"))
+            if dynamics == "dance_sde":
+                raise NotImplementedError(
+                    "dance_sde rollout is not implemented in sglang-d "
+                    "flow_sde_sampling yet (train recompute supports it). "
+                    "Add the sglang-d sampling branch before using it for rollout."
+                )
+            sampling_params["rollout_sde_type"] = dynamics
+            if dynamics in ("cps", "ode"):
+                sampling_params["rollout_log_prob_no_const"] = True
+            elif dynamics == "flow_sde":
+                ltx_sigma_min = getattr(args, "ltx_sigma_min", None)
+                if ltx_sigma_min is not None:
+                    sampling_params["rollout_sigma_min"] = float(ltx_sigma_min)
+            # Disable flag is propagated via MILES_LTX_DISABLE_AV_CROSS on rollout engines
+            # (see miles/ray/rollout.py). Do not pass via extra_sampling_params — master
+            # sglang SamplingParams does not accept ltx2_disable_av_cross_attn.
 
     if extra_sampling_params:
         sampling_params["extra_sampling_params"] = extra_sampling_params
@@ -132,6 +154,7 @@ class GenerateState(metaclass=SingletonMeta):
             scheduling_strategy=NodeAffinitySchedulingStrategy(node_id=self.node_id, soft=False)
         ).remote()
 
+        self.rollout_id = 0
         self.reset()
 
     @contextmanager
@@ -150,6 +173,7 @@ class GenerateState(metaclass=SingletonMeta):
         self.remaining_batch_size = 0
         self.pendings = set()
         self.aborted = False
+        self.rollout_id = 0
 
     def submit_generate_tasks(self, samples: list[list[Sample]]) -> None:
         for group in samples:
@@ -166,6 +190,23 @@ class GenerateState(metaclass=SingletonMeta):
         self.remaining_batch_size += len(samples)
 
 
+def _call_step_strategy(
+    step_strategy_fn: Callable,
+    args: Namespace,
+    sample: Sample,
+    num_steps: int,
+    seed: int,
+    rollout_id: int,
+) -> tuple[list[int] | None, list[int] | None]:
+    """Invoke a step-strategy hub function; pass ``rollout_id`` when supported."""
+    params = inspect.signature(step_strategy_fn).parameters
+    if "rollout_id" in params:
+        return step_strategy_fn(
+            args, sample, num_steps, seed, rollout_id=rollout_id
+        )
+    return step_strategy_fn(args, sample, num_steps, seed)
+
+
 async def generate_microgroup(
     args: Namespace, microgroup: list[Sample], sampling_params: dict[str, Any], *, evaluation: bool = False
 ) -> list[Sample]:
@@ -178,11 +219,13 @@ async def generate_microgroup(
     # SGL-D TODO: support seed list for multiple samples in one request
     # currently only support assigning the first seed, SGL-D generates samples with seed, seed+1, seed+2, ...
     if not evaluation and state.step_strategy_fn is not None:
-        sde_indices, return_indices = state.step_strategy_fn(
+        sde_indices, return_indices = _call_step_strategy(
+            state.step_strategy_fn,
             args,
             microgroup[0],
             int(sampling_params["num_inference_steps"]),
             int(sampling_params["seed"]),
+            int(getattr(state, "rollout_id", 0) or 0),
         )
         sampling_params["rollout_sde_step_indices"] = sde_indices
         sampling_params["rollout_return_step_indices"] = return_indices
@@ -306,6 +349,7 @@ async def generate_rollout_async(
     assert args.rollout_global_dataset
 
     state = GenerateState(args)
+    state.rollout_id = int(rollout_id)
 
     # instantiate data filters
     dynamic_filter = (

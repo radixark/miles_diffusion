@@ -78,11 +78,15 @@ def _parse_cond_kwargs(
         freqs_cis=[deserialize_func(x) for x in data.get("freqs_cis", [])],
         img_shapes=data.get("img_shapes"),
         encoder_hidden_states=_parse_tensor_or_list(
-            data.get("encoder_hidden_states"), deserialize_func=deserialize_func
+            data.get("encoder_hidden_states") or data.get("context"),
+            deserialize_func=deserialize_func,
         ),
         pooled_projections=_parse_tensor_or_list(
             data.get("pooled_projections"), deserialize_func=deserialize_func
         ),
+        ltx_positions=deserialize_func(data.get("ltx_positions") or data.get("positions")),
+        ltx_denoise_mask=deserialize_func(data.get("ltx_denoise_mask") or data.get("denoise_mask")),
+        ltx_clean_latent=deserialize_func(data.get("ltx_clean_latent") or data.get("clean_latent")),
     )
 
 
@@ -112,6 +116,7 @@ def _parse_dit_trajectory(
         latents=deserialize_func(data.get("latents")),
         timesteps=deserialize_func(data.get("timesteps")),
         sigmas=deserialize_func(data.get("sigmas")),
+        sde_step_indices=deserialize_func(data.get("sde_step_indices")),
     )
 
 
