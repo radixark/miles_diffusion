@@ -444,7 +444,9 @@ async def eval_rollout_single_dataset(
     reward_key = args.eval_reward_key or args.reward_key
     return {
         dataset_config.name: {
-            "rewards": [sample.reward if not reward_key else sample.reward[reward_key] for sample in data],
+            "rewards": [
+                sample.get_reward_value(args, reward_key=reward_key) for sample in data
+            ],
             "samples": data,
         }
     }

@@ -45,13 +45,19 @@ class RolloutManager:
         logger.info("RolloutManager init start")
         self.args = args
         self.pg = pg
-        logger.info("RolloutManager: starting router...")
-        _start_router(args)
-        logger.info("RolloutManager: router started, init tracking...")
+        if self.args.debug_train_only:
+            logger.info("RolloutManager: debug_train_only, skipping sglang router.")
+            router_addr = None
+        else:
+            logger.info("RolloutManager: starting router...")
+            _start_router(args)
+            logger.info("RolloutManager: router started, init tracking...")
+            router_addr = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
         # TODO make args immutable
-        init_tracking(args, primary=False, router_addr=f"http://{args.sglang_router_ip}:{args.sglang_router_port}")
-        logger.info("RolloutManager: init http client...")
-        init_http_client(args)
+        init_tracking(args, primary=False, router_addr=router_addr)
+        if not self.args.debug_train_only:
+            logger.info("RolloutManager: init http client...")
+            init_http_client(args)
         logger.info("RolloutManager: loading data source...")
 
         data_source_cls = load_function(self.args.data_source_path)
@@ -165,7 +171,6 @@ class RolloutManager:
 
     def eval(self, rollout_id):
         if self.args.debug_train_only:
-            # if debug train only, we don't generate evaluation data
             return
         self.health_monitoring_resume()
 

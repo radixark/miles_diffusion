@@ -82,7 +82,9 @@ class Sample:
     inference_time_s: float | None = None
     peak_memory_mb: float | None = None
 
-    reward: dict[str, Any] | None = None
+    # Scalar from single RM (e.g. pickscore) or dict when combining multiple RMs
+    # (--reward-key selects the scalar used for GRPO / logging).
+    reward: float | dict[str, Any] | None = None
     weight_versions: list[str] = field(default_factory=list)
 
     class Status(Enum):
@@ -121,5 +123,12 @@ class Sample:
 
         return sample
 
-    def get_reward_value(self, args) -> float:
-        return self.reward if not args.reward_key else self.reward[args.reward_key]
+    def get_reward_value(self, args, *, reward_key: str | None = None) -> float:
+        key = reward_key if reward_key is not None else getattr(args, "reward_key", None)
+        if isinstance(self.reward, dict):
+            if not key:
+                raise ValueError("sample.reward is a dict but no reward_key configured")
+            return float(self.reward[key])
+        if self.reward is None:
+            raise ValueError("sample.reward is None")
+        return float(self.reward)
