@@ -29,6 +29,16 @@ __all__ = ["generate_rollout"]
 logger = logging.getLogger(__name__)
 
 
+def _resolve_diffusion_model_type(args: Namespace) -> str:
+    model_type = (getattr(args, "diffusion_model_type", "auto") or "auto").lower()
+    if model_type != "auto":
+        return model_type
+    diff_model = (getattr(args, "diffusion_model", None) or "").lower()
+    if "ltx" in diff_model or diff_model.endswith(".safetensors"):
+        return "ltx"
+    return "sd3"
+
+
 def build_rollout_sampling_params(
     args: Namespace, 
     *, 
@@ -50,6 +60,21 @@ def build_rollout_sampling_params(
         "guidance_scale": getattr(args, "diffusion_guidance_scale", None),
         "true_cfg_scale": getattr(args, "diffusion_true_cfg_scale", None),
     }
+
+    model_type = _resolve_diffusion_model_type(args)
+    if model_type == "ltx":
+        if getattr(args, "ltx_frames", None) is not None:
+            sampling_params["num_frames"] = int(args.ltx_frames)
+        if getattr(args, "ltx_fps", None) is not None:
+            sampling_params["fps"] = int(args.ltx_fps)
+        sampling_params["guidance_scale"] = 1.0
+        sampling_params["negative_prompt"] = " "
+        # LTX23 one-stage rollout uses a stage1 guider (CFG/STG/modality/rescale)
+        # whose params cannot be overridden via HTTP — sglang routes unknown
+        # SamplingParams kwargs through the base class. Train ``forward_velocity``
+        # is video-only with no guidance, so the rollout engine forces an identity
+        # guider via the ``patch_ltx2_identity_guider`` monkey patch
+        # (MILES_LTX_IDENTITY_GUIDER, propagated in miles/ray/rollout.py).
 
     if evaluation:
         sampling_params["rollout"] = False

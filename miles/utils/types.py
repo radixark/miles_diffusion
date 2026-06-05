@@ -34,6 +34,9 @@ class CondKwargs:
     img_shapes: list[list[tuple[int, int, int]]] | None = None
     encoder_hidden_states: list[torch.Tensor] | None = None
     pooled_projections: list[torch.Tensor] | None = None
+    ltx_positions: torch.Tensor | None = None
+    ltx_denoise_mask: torch.Tensor | None = None
+    ltx_clean_latent: torch.Tensor | None = None
 
 
 @dataclass
@@ -54,6 +57,7 @@ class DiTTrajectory:
     # σ * 1000 / 1000 in fp32 and drifts 1-2 ULPs, amplifying to ~3e-5
     # log_prob diff.
     sigmas: torch.Tensor | None = None
+    sde_step_indices: torch.Tensor | None = None
 
 
 @dataclass

@@ -396,10 +396,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=False,
                 help=(
                     "Apply miles.backends.sglang_diffusion_utils.monkey_patches at "
-                    "sglang-d startup so its DiT forward is bit-exact with diffusers' "
-                    "implementation. Makes rollout (sglang-d path) and training-side "
-                    "log-prob agree on noise_pred down to bf16 ULPs. Small perf hit on "
-                    "the rollout engine."
+                    "sglang-d startup. For SD3: diffusers bf16 parity. For LTX-2: also "
+                    "applies ltx_core AdaLN/RoPE/attention parity patches "
+                    "(disable via MILES_APPLY_LTX2_LTXCORE_PARITY=0). Small perf hit."
                 ),
             )
             parser.add_argument(
@@ -436,6 +435,71 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=int,
                 default=1,
                 help="Log diffusion images every N rollouts. Only used when diffusion-log-images > 0.",
+            )
+            parser.add_argument(
+                "--diffusion-model-type",
+                type=str,
+                default="auto",
+                choices=["auto", "sd3", "ltx"],
+                help=(
+                    "Override the diffusion model family. ``auto`` infers from --diffusion-model "
+                    "(diffusers repo → sd3, single-file safetensors → ltx)."
+                ),
+            )
+            parser.add_argument(
+                "--ltx-gemma-path",
+                type=str,
+                default=None,
+                help="Path to the Gemma-3 12B directory used as LTX's text encoder (rollout side).",
+            )
+            parser.add_argument(
+                "--ltx-frames",
+                type=int,
+                default=25,
+                help="LTX video frame count (e.g. 57 for verl-omni default).",
+            )
+            parser.add_argument(
+                "--ltx-fps",
+                type=float,
+                default=24.0,
+                help="LTX video fps for rollout VAE rescale.",
+            )
+            parser.add_argument(
+                "--ltx-num-sde-steps",
+                type=int,
+                default=3,
+                help="Number of denoising steps with SDE noise + log_prob during LTX rollout.",
+            )
+            parser.add_argument(
+                "--ltx-sde-step-candidates",
+                type=str,
+                default=None,
+                help="Comma-separated SDE step indices for LTX rollout (e.g. 0,1,...,9).",
+            )
+            parser.add_argument(
+                "--ltx-dynamics-type",
+                type=str,
+                default="CPS",
+                choices=["Flow-SDE", "CPS", "ODE", "Dance-SDE"],
+                help="Stochastic dynamics for LTX SDE step during training.",
+            )
+            parser.add_argument(
+                "--ltx-sigma-min",
+                type=float,
+                default=None,
+                help="Override σ_min for LTX SDE step.",
+            )
+            parser.add_argument(
+                "--ltx-disable-av-cross-attn",
+                action="store_true",
+                default=False,
+                help="Disable LTX A2V/V2A cross-attn in sglang rollout (align with ltx_core video-only train).",
+            )
+            parser.add_argument(
+                "--pickscore-num-frames",
+                type=int,
+                default=3,
+                help="Number of evenly spaced frames to score per video (LTX PickScore reward).",
             )
             parser.add_argument(
                 "--rollout-seed",
@@ -917,7 +981,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=False,
                 help=(
                     "Whether to only run the training without sglang servers. "
-                    "This is useful for debugging the rollout generation function."
+                    "Typically used with --load-debug-rollout-data to replay saved rollouts."
                 ),
             )
             parser.add_argument(
@@ -1252,8 +1316,31 @@ def miles_validate_args(args):
             args.train_memory_margin_bytes = 0
 
     assert not (args.debug_rollout_only and args.debug_train_only), (
-        "debug_rollout_only and debug_train_only cannot be set at the same time, " "please set only one of them."
+        "debug_rollout_only and debug_train_only cannot be set at the same time, "
+        "please set only one of them."
     )
+
+    model_type_arg = (getattr(args, "diffusion_model_type", "auto") or "auto").lower()
+    if model_type_arg == "auto":
+        diff_model = (args.diffusion_model or "").lower()
+        if "ltx" in diff_model or diff_model.endswith(".safetensors"):
+            args.diffusion_model_type = "ltx"
+        else:
+            args.diffusion_model_type = "sd3"
+    if args.diffusion_model_type == "ltx":
+        if float(getattr(args, "diffusion_guidance_scale", 1.0)) != 1.0:
+            raise ValueError(
+                "LTX requires --diffusion-guidance-scale 1.0 (no CFG)."
+            )
+        if not args.debug_train_only and not getattr(args, "ltx_gemma_path", None):
+            logger.warning(
+                "--ltx-gemma-path is not set; sglang LTX rollout will need it once Phase 1 lands."
+            )
+        if getattr(args, "fsdp_master_dtype", "fp32") == "fp32":
+            logger.warning(
+                "diffusion_model_type=ltx with fsdp_master_dtype=fp32 is unlikely to fit "
+                "on small GPU counts; consider --fsdp-master-dtype bf16."
+            )
 
     # always true on offload for colocate at the moment.
     if args.colocate:
