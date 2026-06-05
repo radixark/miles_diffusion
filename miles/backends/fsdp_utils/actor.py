@@ -15,7 +15,6 @@ from miles.utils import train_metric_utils
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.metric_utils import compute_rollout_step
-from miles.utils.sde_log_prob import sde_step_with_logprob
 from miles.utils.timer import Timer, inverse_timer, timer
 from miles.utils.tracking_utils import init_tracking
 from miles.utils import tracking_utils
@@ -24,6 +23,7 @@ from miles.utils.profile_utils import TrainProfiler
 from .configs.train_pipeline_config import get_train_pipeline_config
 import miles.backends.fsdp_utils.configs.qwen_image  # noqa: F401 — register pipeline config
 import miles.backends.fsdp_utils.configs.sd3  # noqa: F401 — register pipeline config
+import miles.backends.fsdp_utils.configs.ltx  # noqa: F401 — register pipeline config
 
 from . import checkpoint
 from .lr_scheduler import get_lr_scheduler
@@ -66,21 +66,27 @@ class FSDPTrainRayActor(TrainRayActor):
 
         self._master_dtype = _resolve_dtype(args.fsdp_master_dtype)
         self._forward_dtype = _resolve_dtype(args.diffusion_forward_dtype)
+        diffusion_model_id = args.diffusion_model or args.hf_checkpoint
 
-        with self._get_init_weight_context_manager():
-            pipeline = DiffusionPipeline.from_pretrained(
-                self.args.hf_checkpoint,
-                torch_dtype=self._master_dtype,
-                trust_remote_code=True,
-                text_encoder=None,
-                vae=None,
-                tokenizer=None,
+        self.train_pipeline_config = get_train_pipeline_config(diffusion_model_id)
+
+        if self.train_pipeline_config.is_diffusers_pipeline:
+            with self._get_init_weight_context_manager():
+                pipeline = DiffusionPipeline.from_pretrained(
+                    diffusion_model_id,
+                    torch_dtype=self._master_dtype,
+                    trust_remote_code=True,
+                    text_encoder=None,
+                    vae=None,
+                    tokenizer=None,
+                )
+                model = pipeline.transformer
+                self.scheduler = pipeline.scheduler
+                del pipeline
+        else:
+            model, self.scheduler = self.train_pipeline_config.load_model_and_scheduler(
+                self.args, init_context_factory=self._get_init_weight_context_manager,
             )
-            model = pipeline.transformer
-            self.scheduler = pipeline.scheduler
-            del pipeline
-
-        self.train_pipeline_config = get_train_pipeline_config(args.diffusion_model)
 
         if args.use_lora:
             model = apply_lora(model, args, self.train_pipeline_config)
@@ -88,7 +94,17 @@ class FSDPTrainRayActor(TrainRayActor):
         model.train()
 
         if args.gradient_checkpointing:
-            model.enable_gradient_checkpointing()
+            if hasattr(model, "enable_gradient_checkpointing"):
+                model.enable_gradient_checkpointing()
+            elif hasattr(model, "set_gradient_checkpointing"):
+                model.set_gradient_checkpointing(True)
+            else:
+                logger.warning(
+                    "gradient_checkpointing requested but model %s exposes neither "
+                    "enable_gradient_checkpointing() nor set_gradient_checkpointing(); "
+                    "skipping.",
+                    type(model).__name__,
+                )
 
         model.to(torch.cuda.current_device())
 
@@ -99,6 +115,7 @@ class FSDPTrainRayActor(TrainRayActor):
             mesh=self.parallel_state.dp_mesh,
             cpu_offload=self.args.fsdp_cpu_offload,
             args=self.args,
+            train_pipeline_config=self.train_pipeline_config,
         )
         # Force a sync to ensure sharding is complete and old memory is freed.
         torch.cuda.synchronize()
@@ -158,6 +175,8 @@ class FSDPTrainRayActor(TrainRayActor):
 
         print_memory("before offload DiT")
 
+        self.optimizer.zero_grad(set_to_none=True)
+        _reshard_fsdp2_model(self.model)
         self.model.cpu()
         move_torch_optimizer(self.optimizer, "cpu")
         clear_memory()
@@ -198,6 +217,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 ray.get(self.rollout_manager.clear_num_new_engines.remote())
 
         self.weight_updater.update_weights()
+        dist.barrier(group=get_gloo_group())
         clear_memory()
 
     def _get_init_weight_context_manager(self):
@@ -298,6 +318,8 @@ class FSDPTrainRayActor(TrainRayActor):
         true_cfg_scale = self.args.diffusion_true_cfg_scale
         cfg_scale = true_cfg_scale if true_cfg_scale is not None else guidance_scale
         use_cfg = cfg_scale > 0
+        if not getattr(self.train_pipeline_config, "supports_cfg", True):
+            use_cfg = False
 
         # ------------- KL loss -------------
         kl_beta = float(self.args.diffusion_kl_beta)
@@ -322,9 +344,12 @@ class FSDPTrainRayActor(TrainRayActor):
 
         # ------------- scheduler -------------
         # Use rollout's exact sigmas snapshot; fall back to reconstruction if unavailable.
-        num_train_timesteps = self.scheduler.config.num_train_timesteps
         timesteps_ref = dit_trajectories[0].timesteps.to(device).float()
         sigmas_snapshot = getattr(dit_trajectories[0], "sigmas", None)
+        sched_config = getattr(self.scheduler, "config", None)
+        num_train_timesteps = (
+            int(sched_config.num_train_timesteps) if sched_config is not None else 1000
+        )
         if sigmas_snapshot is not None:
             sigmas_ref = sigmas_snapshot.to(device).float()
         else:
@@ -430,6 +455,7 @@ class FSDPTrainRayActor(TrainRayActor):
         log_prob_old_list, advantage_list = [], []
         positive_cond_kwargs_list, negative_cond_kwargs_list = [], []
         rollout_model_outputs_list: list[torch.Tensor] = []
+        sde_indices_per_sample_list: list[torch.Tensor] = []
         sde_window_size: int | None = None
 
         for traj_idx in range(traj_start, traj_end):
@@ -461,6 +487,7 @@ class FSDPTrainRayActor(TrainRayActor):
             )
 
             sde_step_indices = sde_step_indices_list[traj_idx]
+            sde_indices_per_sample: torch.Tensor | None = None
             if sde_step_indices is not None:
                 sde_indices_tensor = torch.as_tensor(sde_step_indices, device=device, dtype=torch.long)
                 latents = latents[sde_indices_tensor]
@@ -469,8 +496,14 @@ class FSDPTrainRayActor(TrainRayActor):
                 log_prob_old = log_prob_old[sde_indices_tensor]
                 advantage = advantage[: sde_indices_tensor.numel()]
                 if rollout_model_output is not None:
-                    rollout_model_output = rollout_model_output[sde_indices_tensor]
+                    n_mo = int(rollout_model_output.shape[0])
+                    n_win = int(sde_indices_tensor.numel())
+                    if n_mo != n_win:
+                        # Full-length debug tensors (legacy): index by global step.
+                        rollout_model_output = rollout_model_output[sde_indices_tensor]
+                    # else: sglang packs debug outputs in SDE-window order (0..W-1).
                 current_window_size = int(sde_indices_tensor.numel())
+                sde_indices_per_sample = sde_indices_tensor
             else:
                 current_window_size = default_window_size
 
@@ -488,6 +521,8 @@ class FSDPTrainRayActor(TrainRayActor):
             advantage_list.append(advantage)
             if rollout_model_output is not None:
                 rollout_model_outputs_list.append(rollout_model_output)
+            if sde_indices_per_sample is not None:
+                sde_indices_per_sample_list.append(sde_indices_per_sample)
 
         latents_window = torch.stack(latents_list, dim=0)
         next_latents_window = torch.stack(next_latents_list, dim=0)
@@ -532,6 +567,31 @@ class FSDPTrainRayActor(TrainRayActor):
             "num_samples_in_window": num_samples_in_window,
             "sde_window_size": int(sde_window_size or 0),
             "rollout_model_outputs": rollout_model_outputs_window,
+            "sde_step_indices_window": (
+                torch.stack(sde_indices_per_sample_list, dim=0)
+                if sde_indices_per_sample_list
+                and len(sde_indices_per_sample_list) == (traj_end - traj_start)
+                else None
+            ),
+        }
+
+    def _build_sde_extra(
+        self,
+        grids: dict,
+        sample_indices: torch.Tensor,
+        tstep_indices: torch.Tensor,
+    ) -> dict | None:
+        if grids.get("sde_step_indices_window") is None:
+            return None
+
+        idx = grids["sde_step_indices_window"][sample_indices][:, tstep_indices]
+        idx = idx.reshape(-1).long()
+
+        return {
+            "sigmas": self.scheduler.sigmas,
+            "sde_step_indices": idx,
+            "dynamics_type": getattr(self.args, "ltx_dynamics_type", "cps"),
+            "sigma_min_override": getattr(self.args, "ltx_sigma_min", None),
         }
 
     def _run_optim_window(
@@ -670,12 +730,9 @@ class FSDPTrainRayActor(TrainRayActor):
         timesteps_input = timesteps_for_model.to(forward_dtype)
 
         def _forward(cond: dict) -> torch.Tensor:
-            return self.model(
-                hidden_states=latents_input,
-                timestep=timesteps_input,
-                return_dict=False,
-                **cond,
-            )[0]
+            return train_pipeline_config.forward_velocity(
+                self.model, latents_input, timesteps_input, cond,
+            )
 
         cfg_batching = bool(self.args.fsdp_cfg_batching)
 
@@ -686,12 +743,9 @@ class FSDPTrainRayActor(TrainRayActor):
                     return _forward(pos_cond_tile)
                 if cfg_batching:
                     joint_cond = _pack_cond_for_joint_cfg(pos_cond_tile, neg_cond_tile)
-                    joint_out = self.model(
-                        hidden_states=torch.cat([latents_input, latents_input], dim=0),
-                        timestep=torch.cat([timesteps_input, timesteps_input], dim=0),
-                        return_dict=False,
-                        **joint_cond,
-                    )[0]
+                    joint_out = train_pipeline_config.forward_velocity_cfg_joint(
+                        self.model, latents_input, timesteps_input, joint_cond,
+                    )
                     noise_pred_pos, noise_pred_neg = joint_out.chunk(2, dim=0)
                 else:
                     noise_pred_pos = _forward(pos_cond_tile)
@@ -702,16 +756,20 @@ class FSDPTrainRayActor(TrainRayActor):
 
         noise_pred_flat = _compute_noise_pred()
 
-        _, log_prob_new_flat, prev_sample_mean, std_dev_t = sde_step_with_logprob(
+        sde_extra = self._build_sde_extra(grids, sample_indices, tstep_indices)
+
+        prev_sample_dummy, log_prob_new_flat, prev_sample_mean, std_dev_t = train_pipeline_config.sde_step(
             self.scheduler,
-            noise_pred_flat.float(),
+            noise_pred_flat,
             timesteps_flat,
-            latents_flat.float(),
+            latents_flat,
             prev_sample=next_latents_tile.reshape(
                 tile_sample_count * tile_tstep_count, *next_latents_tile.shape[2:]
-            ).float(),
+            ),
             noise_level=noise_level,
+            extra=sde_extra,
         )
+        del prev_sample_dummy
 
         # TODO: revamp and gather all loss logics
         log_prob_new = log_prob_new_flat.reshape(tile_sample_count, tile_tstep_count)
@@ -724,16 +782,16 @@ class FSDPTrainRayActor(TrainRayActor):
         if kl_beta > 0:
             with torch.no_grad():
                 ref_noise_pred_flat = _compute_noise_pred(disable_adapter=True)
-                # TODO: unify sde_step_with_logprob with rollout and trainer forward paths.
-                _, _, prev_sample_mean_ref, _ = sde_step_with_logprob(
+                _, _, prev_sample_mean_ref, _ = train_pipeline_config.sde_step(
                     self.scheduler,
-                    ref_noise_pred_flat.float(),
+                    ref_noise_pred_flat,
                     timesteps_flat,
-                    latents_flat.float(),
+                    latents_flat,
                     prev_sample=next_latents_tile.reshape(
                         tile_sample_count * tile_tstep_count, *next_latents_tile.shape[2:]
-                    ).float(),
+                    ),
                     noise_level=noise_level,
+                    extra=sde_extra,
                 )
             kl_loss = ((prev_sample_mean - prev_sample_mean_ref) ** 2).mean(
                 dim=tuple(range(1, prev_sample_mean.ndim)),
@@ -772,6 +830,13 @@ class FSDPTrainRayActor(TrainRayActor):
                 log_stats["model_output_max_abs_diff"].append(diff.max().detach())
                 log_stats["model_output_mean_abs_diff"].append(diff.mean().detach())
                 log_stats["model_output_rel_max"].append((diff.max() / ref_max).detach())
+                flat_train = noise_pred_flat.float().reshape(noise_pred_flat.shape[0], -1)
+                flat_rollout = rollout_mo_flat.float().reshape(rollout_mo_flat.shape[0], -1)
+                log_stats["model_output_cosine_sim"].append(
+                    torch.nn.functional.cosine_similarity(flat_train, flat_rollout, dim=1)
+                    .mean()
+                    .detach()
+                )
 
         return loss
 
@@ -846,6 +911,17 @@ def _cast_cond_to_dtype(cond: dict, dtype: torch.dtype) -> dict:
     return out
 
 
+def _reshard_fsdp2_model(model: torch.nn.Module) -> None:
+    """Drop FSDP2 unsharded views so model.cpu() can release GPU memory."""
+    if hasattr(model, "reshard"):
+        model.reshard()
+        return
+    for module in model.modules():
+        reshard = getattr(module, "reshard", None)
+        if callable(reshard):
+            reshard()
+
+
 @torch.no_grad()
 def move_torch_optimizer(optimizer, device):
     """ref: https://github.com/volcengine/verl/blob/main/verl/utils/fsdp_utils.py"""
@@ -890,13 +966,20 @@ def apply_lora(model: torch.nn.Module, args: Namespace, train_pipeline_config) -
         model.print_trainable_parameters()
     return model
 
-def apply_fsdp2(model, mesh=None, cpu_offload=False, args=None):
+def apply_fsdp2(model, mesh=None, cpu_offload=False, args=None, train_pipeline_config=None):
     from torch.distributed.fsdp import CPUOffloadPolicy, MixedPrecisionPolicy, fully_shard
 
     offload_policy = CPUOffloadPolicy() if cpu_offload else None
 
-    layer_cls_to_wrap = model._no_split_modules
-    assert len(layer_cls_to_wrap) > 0 and layer_cls_to_wrap[0] is not None
+    layer_cls_to_wrap = getattr(model, "_no_split_modules", None)
+    if not layer_cls_to_wrap:
+        layer_cls_to_wrap = (
+            getattr(train_pipeline_config, "fsdp_wrap_classes", None) if train_pipeline_config else None
+        )
+    assert layer_cls_to_wrap and layer_cls_to_wrap[0] is not None, (
+        "apply_fsdp2 needs either model._no_split_modules or "
+        "train_pipeline_config.fsdp_wrap_classes to know which submodules to shard."
+    )
 
     modules = [
         module

@@ -14,6 +14,7 @@ and overrides the relevant methods.
 from __future__ import annotations
 
 import abc
+from typing import Any
 
 import torch
 from miles.utils.types import CondKwargs, DiTTrajectory
@@ -46,6 +47,9 @@ def get_train_pipeline_config(model_name: str) -> "TrainPipelineConfig":
 class TrainPipelineConfig(abc.ABC):
     """Base class. Subclass per model family."""
 
+    is_diffusers_pipeline: bool = True
+    supports_cfg: bool = True
+    fsdp_wrap_classes: list[str] | None = None
     lora_target_modules: list[str] = ["to_q", "to_k", "to_v", "to_out.0"]
     needs_timestep_scaling: bool = True
     optimizer_state_allowed_missing: list[str] = []
@@ -119,3 +123,54 @@ class TrainPipelineConfig(abc.ABC):
     def preprocess_model_before_fsdp(self, model: torch.nn.Module) -> None:
         """Preprocess the model before FSDP."""
         pass
+
+    def forward_velocity(
+        self,
+        model: torch.nn.Module,
+        latents_input: torch.Tensor,
+        timesteps_input: torch.Tensor,
+        cond: dict,
+    ) -> torch.Tensor:
+        return model(
+            hidden_states=latents_input,
+            timestep=timesteps_input,
+            return_dict=False,
+            **cond,
+        )[0]
+
+    def forward_velocity_cfg_joint(
+        self,
+        model: torch.nn.Module,
+        latents_input: torch.Tensor,
+        timesteps_input: torch.Tensor,
+        joint_cond: dict,
+    ) -> torch.Tensor:
+        return model(
+            hidden_states=torch.cat([latents_input, latents_input], dim=0),
+            timestep=torch.cat([timesteps_input, timesteps_input], dim=0),
+            return_dict=False,
+            **joint_cond,
+        )[0]
+
+    def sde_step(
+        self,
+        scheduler: Any,
+        noise_pred: torch.Tensor,
+        timesteps: torch.Tensor,
+        sample: torch.Tensor,
+        prev_sample: torch.Tensor,
+        *,
+        noise_level: float,
+        extra: dict | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        from miles.utils.sde_log_prob import sde_step_with_logprob
+
+        prev, log_prob, prev_mean, std_dev_t = sde_step_with_logprob(
+            scheduler,
+            noise_pred.float(),
+            timesteps,
+            sample.float(),
+            prev_sample=prev_sample.float(),
+            noise_level=noise_level,
+        )
+        return prev, log_prob, prev_mean, std_dev_t
