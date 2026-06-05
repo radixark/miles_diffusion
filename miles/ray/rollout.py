@@ -2,6 +2,7 @@ from ast import Raise
 import itertools
 import logging
 import multiprocessing
+import os
 import random
 import time
 from pathlib import Path
@@ -397,7 +398,14 @@ class RolloutManager:
             "prompt": [sample.prompt for sample in samples],
             # Per-sample training step indices (flow_grpo sde-window). None = train every step.
             "sde_step_indices": [
-                (sample.train_metadata or {}).get("sde_step_indices") for sample in samples
+                (sample.train_metadata or {}).get("sde_step_indices")
+                if (sample.train_metadata or {}).get("sde_step_indices") is not None
+                else (
+                    sample.dit_trajectory.sde_step_indices.tolist()
+                    if sample.dit_trajectory is not None and sample.dit_trajectory.sde_step_indices is not None
+                    else None
+                )
+                for sample in samples
             ],
         }
 
@@ -465,10 +473,58 @@ class RolloutManager:
             rollout_data_refs.append(Box(ray.put(rollout_data)))
         return rollout_data_refs
 
+
+def _base_rollout_engine_env_vars() -> dict[str, str]:
+    return {name: "1" for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST} | {
+        "SGL_JIT_DEEPGEMM_PRECOMPILE": "false",
+        "SGLANG_JIT_DEEPGEMM_PRECOMPILE": "false",
+        "SGL_DISABLE_TP_MEMORY_INBALANCE_CHECK": "true",
+        "SGLANG_DISABLE_TP_MEMORY_INBALANCE_CHECK": "true",
+        "SGLANG_MEMORY_SAVER_CUDA_GRAPH": "true",
+        "SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT": "true",
+        "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION": "false",
+        "SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE": "false",
+    }
+
+
+def _ltx_alignment_env_vars(args) -> dict[str, str]:
+    """Propagate LTX train/rollout alignment flags into sglang Ray workers.
+
+    Ray ``runtime_env`` does not inherit the parent shell env; monkey patches in
+    ``sglang_diffusion_engine`` read these variables at scheduler startup.
+
+    TODO(PR4): replace env bridging with explicit sglang ``ServerArgs`` fields
+    (or upstream train-mode guider / video-only flags) so miles does not depend
+    on opaque env + runtime monkey patches.
+    """
+    env: dict[str, str] = {}
+    if getattr(args, "ltx_disable_av_cross_attn", False):
+        env["MILES_LTX_DISABLE_AV_CROSS"] = "1"
+    from miles.backends.sglang_diffusion_utils.monkey_patches import LTX_ROLLOUT_PATCHES_ENV
+
+    for name in (LTX_ROLLOUT_PATCHES_ENV, "MILES_LTX_DISABLE_AV_CROSS"):
+        if os.environ.get(name):
+            env[name] = os.environ[name]
+    return env
+
+
+def _build_rollout_engine_env_vars(args) -> dict[str, str]:
+    env_vars = _base_rollout_engine_env_vars()
+    for cache_var in ("SGLANG_DIFFUSION_CACHE_ROOT", "HF_HOME", "TMPDIR"):
+        if os.environ.get(cache_var):
+            env_vars[cache_var] = os.environ[cache_var]
+    env_vars.update(_ltx_alignment_env_vars(args))
+    return env_vars
+
+
 def init_rollout_engines(args, pg, all_rollout_engines):
     if args.debug_train_only:
         return 0
-    
+
+    from miles.backends.sglang_diffusion_utils.sglang_diffusion_engine import (
+        SGLangDiffusionEngine,
+    )
+
     num_gpu_per_engine = min(args.rollout_num_gpus_per_engine, args.num_gpus_per_node)
     num_engines = args.rollout_num_gpus // num_gpu_per_engine
     assert len(all_rollout_engines) == num_engines
