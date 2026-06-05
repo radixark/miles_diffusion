@@ -14,7 +14,6 @@ import torch
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 
-from miles.backends.sglang_diffusion_utils.sglang_diffusion_engine import SGLangDiffusionEngine
 from miles.rollout.base_types import call_rollout_fn
 from miles.utils import tracking_utils
 from miles.utils.health_monitor import RolloutHealthMonitor
@@ -434,13 +433,23 @@ class RolloutManager:
             images = []
             for s in samples[:max_images]:
                 t = s.generated_output
-                if t is None or t.ndim != 4:
+                if t is None:
                     continue
-                frame = t[:, 0, :, :].float().cpu().numpy().transpose(1, 2, 0)
+                try:
+                    from miles.rollout.rm_hub.video_pickscore import (
+                        fchw_frame_to_hwc_uint8,
+                        generated_output_to_fchw,
+                    )
+
+                    frame = fchw_frame_to_hwc_uint8(generated_output_to_fchw(t)[0])
+                except (ValueError, TypeError):
+                    if t.ndim != 4:
+                        continue
+                    frame = t[:, 0, :, :].float().cpu().numpy().transpose(1, 2, 0)
                 if frame.max() <= 1.0 + 1e-3:
                     frame = frame * 255.0
                 frame = np.clip(frame, 0, 255).astype(np.uint8)
-                reward = s.reward if not reward_key else (s.reward or {}).get(reward_key)
+                reward = s.get_reward_value(self.args, reward_key=reward_key)
                 images.append(wandb.Image(frame, caption=f"{str(s.prompt)[:160]} | reward={reward}"))
             if images:
                 log_dict[media_key] = images
@@ -553,16 +562,7 @@ def init_rollout_engines(args, pg, all_rollout_engines):
             placement_group_bundle_index=reordered_bundle_indices[i * num_gpu_per_engine],
         )
 
-        env_vars = {name: "1" for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST} | {
-            "SGL_JIT_DEEPGEMM_PRECOMPILE": "false",
-            "SGLANG_JIT_DEEPGEMM_PRECOMPILE": "false",
-            "SGL_DISABLE_TP_MEMORY_INBALANCE_CHECK": "true",
-            "SGLANG_DISABLE_TP_MEMORY_INBALANCE_CHECK": "true",
-            "SGLANG_MEMORY_SAVER_CUDA_GRAPH": "true",
-            "SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT": "true",
-            "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION": "false",
-            "SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE": "false",
-        }
+        env_vars = _build_rollout_engine_env_vars(args)
 
         rollout_engine = RolloutRayActor.options(
             num_cpus=num_cpus,
