@@ -193,3 +193,13 @@ glm/
 _examples_synced/
 .env
 .DS_Store
+
+# crash dumps / runtime artifacts
+core
+core.*
+
+logs/
+wandb/
+
+# local debug scripts / alignment tools (not shipped with the library)
+dist/
