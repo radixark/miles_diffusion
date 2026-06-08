@@ -213,7 +213,23 @@ class DiffusionUpdateWeightFromTensor(DiffusionUpdateWeight):
         # still detects replica divergence regardless of TP.
         tp_size = min(self.args.rollout_num_gpus_per_engine, self.args.num_gpus_per_node)
         if tp_size == 1:
-            expected = self._sha256_named_tensors(pairs)
+            # Hash `expected` at the rollout storage dtype (bf16): train-side state_dict
+            # is at the FSDP master dtype (fp32 under --fsdp-master-dtype fp32) while the
+            # rollout DiT stores bf16, so a dtype-aware checksum would otherwise always
+            # mismatch. NOTE (known limitation): in the LoRA path `paired_engine_match`
+            # may still be False even on a correct sync — the train-side enumerates the
+            # merged+renamed state_dict it sends, while the rollout hashes its own
+            # `iter_materialized_weights` set; the two collections are not guaranteed to
+            # be name/scope-identical. Sync correctness is authoritatively established by
+            # `cross-engine all_equal` (below) + offline tests/sp_weight_sync_parity
+            # (bit-exact vs single-process reference) + functional training, not by this
+            # paired check. Kept as a coarse drift detector.
+            _DT = {"bf16": torch.bfloat16, "bfloat16": torch.bfloat16, "fp16": torch.float16,
+                   "float16": torch.float16, "fp32": torch.float32, "float32": torch.float32}
+            roll_dtype = _DT.get(str(getattr(self.args, "diffusion_forward_dtype", "bf16")).lower(), torch.bfloat16)
+            from collections import Counter
+            pre_cast = dict(Counter(str(t.dtype) for _, t in pairs))
+            expected = self._sha256_named_tensors([(n, t.to(roll_dtype)) for n, t in pairs])
             try:
                 remote = ray.get(
                     self._ipc_engine.get_weights_checksum.remote([self.target_module])
@@ -226,7 +242,7 @@ class DiffusionUpdateWeightFromTensor(DiffusionUpdateWeight):
             match = expected == actual
             logger.warning(
                 f"[weight_sync verify v{self.weight_version}] rank={dist.get_rank()} "
-                f"paired_engine_match={match} "
+                f"paired_engine_match={match} pair_dtypes(pre-cast)={pre_cast} cast_to={roll_dtype} "
                 f"expected={expected[:16] if expected else None} "
                 f"actual={(actual or '')[:16] if isinstance(actual, str) else actual}"
             )
