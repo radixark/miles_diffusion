@@ -81,9 +81,18 @@ def _parse_cond_kwargs(
             data.get("encoder_hidden_states") or data.get("context"),
             deserialize_func=deserialize_func,
         ),
+        audio_encoder_hidden_states=_parse_tensor_or_list(
+            data.get("audio_encoder_hidden_states"),
+            deserialize_func=deserialize_func,
+        ),
+        encoder_attention_mask=deserialize_func(data.get("encoder_attention_mask")),
+        audio_encoder_attention_mask=deserialize_func(
+            data.get("audio_encoder_attention_mask")
+        ),
         pooled_projections=_parse_tensor_or_list(
             data.get("pooled_projections"), deserialize_func=deserialize_func
         ),
+        # Legacy rollout fields; miles train rebuilds geometry locally for LTX.
         ltx_positions=deserialize_func(data.get("ltx_positions") or data.get("positions")),
         ltx_denoise_mask=deserialize_func(data.get("ltx_denoise_mask") or data.get("denoise_mask")),
         ltx_clean_latent=deserialize_func(data.get("ltx_clean_latent") or data.get("clean_latent")),

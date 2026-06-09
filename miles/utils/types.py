@@ -33,6 +33,9 @@ class CondKwargs:
     freqs_cis: list[torch.Tensor] | None = None
     img_shapes: list[list[tuple[int, int, int]]] | None = None
     encoder_hidden_states: list[torch.Tensor] | None = None
+    audio_encoder_hidden_states: list[torch.Tensor] | None = None
+    encoder_attention_mask: torch.Tensor | None = None
+    audio_encoder_attention_mask: torch.Tensor | None = None
     pooled_projections: list[torch.Tensor] | None = None
     ltx_positions: torch.Tensor | None = None
     ltx_denoise_mask: torch.Tensor | None = None
