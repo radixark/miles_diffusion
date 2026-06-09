@@ -1,14 +1,6 @@
 release-primary:
     ARG_TAG_POSTFIX="" ARG_BUILD_EXTRA_ARGS="" just _release-raw
 
-# Should be executed on ARM machines
-release-cu129-arm64:
-    ARG_TAG_POSTFIX="-cu129-arm64" ARG_BUILD_EXTRA_ARGS='--build-arg SGLANG_IMAGE_TAG=v0.5.5.post3-cu129-arm64 --build-arg ENABLE_SGLANG_PATCH=0' just _release-raw
-
-# Should be executed on ARM machines
-release-cu13-arm64:
-    ARG_TAG_POSTFIX="-cu13-arm64" ARG_BUILD_EXTRA_ARGS='--build-arg SGLANG_IMAGE_TAG=dev-arm64-cu13-20251122 --build-arg ENABLE_CUDA_13=1 --build-arg ENABLE_SGLANG_PATCH=0' just _release-raw
-
 _release-raw:
     #!/bin/bash
     set -euxo pipefail
@@ -17,12 +9,12 @@ _release-raw:
     VERSION="$(cat docker/version.txt | tr -d '\n')"
     IMAGE_TAG=${VERSION}${ARG_TAG_POSTFIX}
 
-    docker build -f docker/Dockerfile . --build-arg HTTP_PROXY="$http_proxy" --build-arg HTTPS_PROXY="$https_proxy" --build-arg NO_PROXY="localhost,127.0.0.1" $ARG_BUILD_EXTRA_ARGS -t radixark/miles:$IMAGE_TAG
-    docker push radixark/miles:$IMAGE_TAG
+    docker build -f docker/Dockerfile . --build-arg HTTP_PROXY="$http_proxy" --build-arg HTTPS_PROXY="$https_proxy" --build-arg NO_PROXY="localhost,127.0.0.1" $ARG_BUILD_EXTRA_ARGS -t radixark/miles-diffusion:$IMAGE_TAG
+    docker push radixark/miles-diffusion:$IMAGE_TAG
 
     if [ -z "${ARG_TAG_POSTFIX}" ]; then
-        docker tag radixark/miles:$IMAGE_TAG radixark/miles:latest
-        docker push radixark/miles:latest
+        docker tag radixark/miles-diffusion:$IMAGE_TAG radixark/miles-diffusion:latest
+        docker push radixark/miles-diffusion:latest
     fi
 
 debug:
@@ -33,8 +25,20 @@ debug:
     VERSION="$(cat docker/version.txt | tr -d '\n')"
     IMAGE_TAG=${VERSION}
 
-    docker build -f docker/Dockerfile . --build-arg HTTP_PROXY="$http_proxy" --build-arg HTTPS_PROXY="$https_proxy" --build-arg NO_PROXY="localhost,127.0.0.1" -t radixark/miles-test:$IMAGE_TAG
-    docker push radixark/miles-test:$IMAGE_TAG
+    docker build -f docker/Dockerfile . --build-arg HTTP_PROXY="$http_proxy" --build-arg HTTPS_PROXY="$https_proxy" --build-arg NO_PROXY="localhost,127.0.0.1" -t radixark/miles-diffusion-test:$IMAGE_TAG
+    docker push radixark/miles-diffusion-test:$IMAGE_TAG
 
-    docker tag radixark/miles-test:$IMAGE_TAG radixark/miles-test:latest
-    docker push radixark/miles-test:latest
+    docker tag radixark/miles-diffusion-test:$IMAGE_TAG radixark/miles-diffusion-test:latest
+    docker push radixark/miles-diffusion-test:latest
+
+# Local build only (no push), tag suffixed with -local. Not present in the
+# radixark/miles justfile; kept for diffusion local iteration.
+build-local:
+    #!/bin/bash
+    set -euxo pipefail
+    cd ..
+
+    VERSION="$(cat docker/version.txt | tr -d '\n')"
+    IMAGE_TAG="${VERSION}-local"
+
+    docker build -f docker/Dockerfile . --build-arg HTTP_PROXY="$http_proxy" --build-arg HTTPS_PROXY="$https_proxy" --build-arg NO_PROXY="localhost,127.0.0.1" -t radixark/miles-diffusion:$IMAGE_TAG

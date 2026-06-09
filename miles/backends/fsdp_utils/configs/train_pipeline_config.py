@@ -47,8 +47,8 @@ class TrainPipelineConfig(abc.ABC):
     """Base class. Subclass per model family."""
 
     lora_target_modules: list[str] = ["to_q", "to_k", "to_v", "to_out.0"]
+    needs_timestep_scaling: bool = True
     optimizer_state_allowed_missing: list[str] = []
-    update_weight_target_module: str = "transformer"
 
     def prepare_trajectory(
         self,
@@ -114,7 +114,7 @@ class TrainPipelineConfig(abc.ABC):
         true_cfg_scale: float | None = None,
     ) -> torch.Tensor:
         """Apply classifier-free guidance. Model-specific (e.g. rescale or not)."""
-    
+
     @abc.abstractmethod
     def preprocess_model_before_fsdp(self, model: torch.nn.Module) -> None:
         """Preprocess the model before FSDP."""

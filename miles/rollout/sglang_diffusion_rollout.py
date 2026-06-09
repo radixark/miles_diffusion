@@ -225,6 +225,7 @@ async def generate_and_rm_microgroup(
         sample.reward = reward
     return microgroup
 
+
 async def generate_and_rm_group(
     args: Namespace, group: list[Sample], sampling_params: dict[str, Any], evaluation: bool = False
 ) -> list[Sample]:

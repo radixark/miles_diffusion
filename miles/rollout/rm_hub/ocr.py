@@ -108,7 +108,10 @@ class AsyncOcrPool(metaclass=SingletonMeta):
         return float(await loop.run_in_executor(None, ray.get, ref))
 
 def _rgb_hwc_from_generated(sample: Sample) -> np.ndarray:
-    """``generated_output``: ``[C, F, H, W]``; use time index 0 (``F==1`` for still images).
+    """``generated_output``: ``[C, F, H, W]`` or ``[C, H, W]``; use frame index 0.
+
+    Accepts both the local-rollout format ``[C, F, H, W]`` (video frames) and
+    the sglang-diffusion SD3 format ``[C, H, W]`` (static image, no frame dim).
 
     Feeds PaddleOCR the exact same ``(RGB, uint8 HWC)`` array that flow_grpo's
     ``ocr_score`` wrapper does — `(images * 255).round().clamp(0,255).to(uint8)`
@@ -119,8 +122,12 @@ def _rgb_hwc_from_generated(sample: Sample) -> np.ndarray:
     t = sample.generated_output
     if t is None:
         raise ValueError("generated_output is None")
+    if t.ndim == 3:
+        t = t.unsqueeze(1)
     if t.ndim != 4:
-        raise ValueError(f"generated_output must be 4D [C, F, H, W], got {tuple(t.shape)}")
+        raise ValueError(f"generated_output must be 3D [C, H, W] or 4D [C, F, H, W], got {tuple(t.shape)}")
+    if t.shape[1] != 1:
+        raise ValueError(f"generated_output frame dim F must be 1 for image models, got F={t.shape[1]}")
     frame_chw = t[:, 0, :, :]
     hwc = frame_chw.numpy().transpose(1, 2, 0)
     if float(hwc.max()) <= 1.0 + 1e-3:

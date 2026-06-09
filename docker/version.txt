@@ -1,1 +1,1 @@
-nightly-dev-20260113a
+dev-cu129-sglang-v0.5.12-20260529

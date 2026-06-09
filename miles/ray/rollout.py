@@ -77,7 +77,7 @@ class RolloutManager:
         if self.args.debug_train_only:
             self.all_rollout_engines = []
             self.num_new_engines = 0
-            logger.info("RolloutManager using local diffusion rollout (no sglang engines).")
+            logger.info("RolloutManager using no sglang engines (debug_train_only).")
         else:
             num_gpu_per_engine = min(args.rollout_num_gpus_per_engine, args.num_gpus_per_node)
             num_engines = args.rollout_num_gpus // num_gpu_per_engine

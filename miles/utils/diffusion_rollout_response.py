@@ -41,8 +41,29 @@ def _deserialize_rollout_log_probs(
     # Eval-mode rollout (rollout=False) sends no log_probs; train-mode always does.
     if value is None:
         return None
-    assert isinstance(value, dict) and value.get("__tensor__") is not None
-    return deserialize_func(value["data"]).detach().cpu()
+    return deserialize_func(value)
+
+
+def _parse_tensor_or_list(
+    value: Any,
+    *,
+    deserialize_func: Callable[[Any], torch.Tensor | None],
+) -> list[torch.Tensor] | None:
+    """Deserialize a field that may be a single serialized tensor or a list of them.
+
+    sglang-diffusion models differ in what they put in cond_kwargs:
+    - Qwen-Image etc.: ``encoder_hidden_states`` is a **list** of serialized tensors.
+    - SD3: ``encoder_hidden_states`` / ``pooled_projections`` is a **single** serialized
+      tensor (dict with ``__tensor__`` key), not a list.
+    Both cases are normalised to ``list[Tensor]`` to match ``CondKwargs`` field types.
+    """
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        # Single serialized tensor (SD3 and similar)
+        return [deserialize_func(value)]
+    # List of serialized tensors (Qwen-Image etc.)
+    return [deserialize_func(x) for x in value]
 
 
 def _parse_cond_kwargs(
@@ -56,9 +77,12 @@ def _parse_cond_kwargs(
         txt_seq_lens=data.get("txt_seq_lens"),
         freqs_cis=[deserialize_func(x) for x in data.get("freqs_cis", [])],
         img_shapes=data.get("img_shapes"),
-        encoder_hidden_states=[
-            deserialize_func(x) for x in data.get("encoder_hidden_states", [])
-        ],
+        encoder_hidden_states=_parse_tensor_or_list(
+            data.get("encoder_hidden_states"), deserialize_func=deserialize_func
+        ),
+        pooled_projections=_parse_tensor_or_list(
+            data.get("pooled_projections"), deserialize_func=deserialize_func
+        ),
     )
 
 

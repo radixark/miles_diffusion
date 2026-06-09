@@ -1,6 +1,8 @@
 import logging
+import os
 from argparse import Namespace
 from collections import defaultdict
+from contextlib import nullcontext
 
 import ray
 import torch
@@ -21,6 +23,7 @@ from miles.utils.profile_utils import TrainProfiler
 
 from .configs.train_pipeline_config import get_train_pipeline_config
 import miles.backends.fsdp_utils.configs.qwen_image  # noqa: F401 — register pipeline config
+import miles.backends.fsdp_utils.configs.sd3  # noqa: F401 — register pipeline config
 
 from . import checkpoint
 from .lr_scheduler import get_lr_scheduler
@@ -113,6 +116,15 @@ class FSDPTrainRayActor(TrainRayActor):
         else:
             raise ValueError(f"Unsupported optimizer: {args.optimizer}")
 
+        # fp16 policy gradients are small enough to underflow without scaling.
+        # ShardedGradScaler keeps the found_inf decision synchronized across
+        # FSDP ranks; it is a no-op for bf16/fp32.
+        from torch.distributed.fsdp.sharded_grad_scaler import ShardedGradScaler
+
+        self.scaler = ShardedGradScaler(
+            enabled=(self._forward_dtype == torch.float16),
+        )
+
         self.lr_scheduler = get_lr_scheduler(args, self.optimizer)
         self.global_step = 0
         self.micro_step = 0
@@ -120,12 +132,12 @@ class FSDPTrainRayActor(TrainRayActor):
         checkpoint_payload = checkpoint.load(self)
 
         # sglang-d now supports /update_weights_from_tensor (PR #20464).
-        update_weight_target_module = self.train_pipeline_config.update_weight_target_module
-        self.weight_updater = (
-            DiffusionUpdateWeightFromTensorLoRA(self.args, self.model, update_weight_target_module)
-            if self.args.use_lora
-            else DiffusionUpdateWeightFromTensor(self.args, self.model, update_weight_target_module)
-        )
+        if self.args.debug_train_only:
+            self.weight_updater = None
+        elif self.args.use_lora:
+            self.weight_updater = DiffusionUpdateWeightFromTensorLoRA(self.args, self.model)
+        else:
+            self.weight_updater = DiffusionUpdateWeightFromTensor(self.args, self.model)
 
         checkpoint.finalize_load(self, checkpoint_payload)
 
@@ -187,7 +199,7 @@ class FSDPTrainRayActor(TrainRayActor):
 
         self.weight_updater.update_weights()
         clear_memory()
-    
+
     def _get_init_weight_context_manager(self):
         """Return a context manager for model initialization.
 
@@ -245,7 +257,7 @@ class FSDPTrainRayActor(TrainRayActor):
             if self.args.debug_rollout_only:
                 return
             self._train_core(rollout_id=rollout_id, rollout_data=rollout_data)
-        
+
         train_metric_utils.log_perf_data_raw(
             rollout_id=rollout_id,
             args=self.args,
@@ -287,6 +299,13 @@ class FSDPTrainRayActor(TrainRayActor):
         cfg_scale = true_cfg_scale if true_cfg_scale is not None else guidance_scale
         use_cfg = cfg_scale > 0
 
+        # ------------- KL loss -------------
+        kl_beta = float(self.args.diffusion_kl_beta)
+        if kl_beta > 0 and not self.args.use_lora:
+            raise ValueError("--diffusion-kl-beta currently requires --use-lora so the base model can be used as reference.")
+        if kl_beta > 0 and not hasattr(self.model, "disable_adapter"):
+            raise RuntimeError("Diffusion KL requires a PEFT model exposing disable_adapter() after FSDP wrapping.")
+
         # ------------- training parameters -------------
         # See docs/developer_guide/terminology.md for batch-size naming convention.
         num_rollout_samples = len(denoising_envs)
@@ -302,11 +321,15 @@ class FSDPTrainRayActor(TrainRayActor):
         advantages = torch.clamp(advantages, -adv_clip_max, adv_clip_max)
 
         # ------------- scheduler -------------
-        # Use rollout's exact timesteps AND derive matching sigmas.
-        timesteps_ref = dit_trajectories[0].timesteps.to(device).float()
+        # Use rollout's exact sigmas snapshot; fall back to reconstruction if unavailable.
         num_train_timesteps = self.scheduler.config.num_train_timesteps
-        sigmas_ref = timesteps_ref / float(num_train_timesteps)
-        sigmas_ref = torch.cat([sigmas_ref, sigmas_ref.new_zeros(1)])
+        timesteps_ref = dit_trajectories[0].timesteps.to(device).float()
+        sigmas_snapshot = getattr(dit_trajectories[0], "sigmas", None)
+        if sigmas_snapshot is not None:
+            sigmas_ref = sigmas_snapshot.to(device).float()
+        else:
+            sigmas_ref = timesteps_ref / float(num_train_timesteps)
+            sigmas_ref = torch.cat([sigmas_ref, sigmas_ref.new_zeros(1)])
 
         self.scheduler.timesteps = timesteps_ref
         self.scheduler.sigmas = sigmas_ref
@@ -363,15 +386,18 @@ class FSDPTrainRayActor(TrainRayActor):
                     guidance_scale=guidance_scale,
                     true_cfg_scale=true_cfg_scale,
                     clip_range=clip_range,
+                    kl_beta=kl_beta,
                     noise_level=noise_level,
                     num_train_timesteps=num_train_timesteps,
                 )
 
                 self.prof.step(rollout_id=rollout_id)
                 if not self.args.debug_skip_optimizer_step:
+                    self.scaler.unscale_(self.optimizer)
                     grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip_grad)
                     log_stats["grad_norm"].append(grad_norm.detach())
-                    self.optimizer.step()
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
                     self.lr_scheduler.step()
                 else:
                     self.optimizer.zero_grad(set_to_none=True)
@@ -519,6 +545,7 @@ class FSDPTrainRayActor(TrainRayActor):
         guidance_scale: float,
         true_cfg_scale: float | None,
         clip_range: float,
+        kl_beta: float,
         noise_level: float,
         num_train_timesteps: int,
     ) -> dict[str, list[torch.Tensor]]:
@@ -553,12 +580,13 @@ class FSDPTrainRayActor(TrainRayActor):
                     guidance_scale=guidance_scale,
                     true_cfg_scale=true_cfg_scale,
                     clip_range=clip_range,
+                    kl_beta=kl_beta,
                     noise_level=noise_level,
                     num_train_timesteps=num_train_timesteps,
                     log_stats=log_stats,
                 )
                 if not self.args.debug_skip_optimizer_step:
-                    (loss / num_tiles).backward()
+                    self.scaler.scale(loss / num_tiles).backward()
 
         return log_stats
 
@@ -572,6 +600,7 @@ class FSDPTrainRayActor(TrainRayActor):
         guidance_scale: float,
         true_cfg_scale: float | None,
         clip_range: float,
+        kl_beta: float,
         noise_level: float,
         num_train_timesteps: int,
         log_stats: dict[str, list[torch.Tensor]],
@@ -596,8 +625,11 @@ class FSDPTrainRayActor(TrainRayActor):
         timesteps_flat = timesteps_tile.reshape(tile_sample_count * tile_tstep_count)
 
         # sgl-d's Qwen DiT divides timestep by num_train_timesteps inside
-        # forward; diffusers' does not — pre-scale to match.
-        timesteps_normalized = timesteps_flat / float(num_train_timesteps)
+        # forward; diffusers' does not. SD3 already expects raw timesteps.
+        if train_pipeline_config.needs_timestep_scaling:
+            timesteps_for_model = timesteps_flat / float(num_train_timesteps)
+        else:
+            timesteps_for_model = timesteps_flat
 
         # tile_sample==1: skip window-collated cond and use the per-sample
         # un-padded cond + expand along tstep.
@@ -635,7 +667,7 @@ class FSDPTrainRayActor(TrainRayActor):
         # leaves fp32 inputs, which would run first matmul at higher precision
         # than rollout → systematic noise_pred drift.
         latents_input = latents_flat.to(forward_dtype)
-        timesteps_input = timesteps_normalized.to(forward_dtype)
+        timesteps_input = timesteps_for_model.to(forward_dtype)
 
         def _forward(cond: dict) -> torch.Tensor:
             return self.model(
@@ -645,31 +677,32 @@ class FSDPTrainRayActor(TrainRayActor):
                 **cond,
             )[0]
 
-        if not use_cfg:
-            noise_pred_flat = _forward(pos_cond_tile)
-        elif self.args.fsdp_cfg_batching:
-            joint_cond = _pack_cond_for_joint_cfg(pos_cond_tile, neg_cond_tile)
-            # forward as a batch to align with some implementations in sglang-d
-            joint_out = self.model(
-                hidden_states=torch.cat([latents_input, latents_input], dim=0),
-                timestep=torch.cat([timesteps_input, timesteps_input], dim=0),
-                return_dict=False,
-                **joint_cond,
-            )[0]
-            noise_pred_pos, noise_pred_neg = joint_out.chunk(2, dim=0)
-            noise_pred_flat = train_pipeline_config.cfg_combine(
-                noise_pred_pos, noise_pred_neg, guidance_scale, true_cfg_scale=true_cfg_scale,
-            )
-        else:
-            noise_pred_pos = _forward(pos_cond_tile)
-            noise_pred_neg = _forward(neg_cond_tile)
-            noise_pred_flat = train_pipeline_config.cfg_combine(
-                noise_pred_pos, noise_pred_neg, guidance_scale, true_cfg_scale=true_cfg_scale,
-            )
+        cfg_batching = bool(self.args.fsdp_cfg_batching)
 
-        # TODO: revamp and gather step logics and align with sglang-d's flow_sde_step
-        # TODO: support CPS
-        _, log_prob_new_flat, _, _ = sde_step_with_logprob(
+        def _compute_noise_pred(disable_adapter: bool = False) -> torch.Tensor:
+            adapter_ctx = self.model.disable_adapter() if disable_adapter else nullcontext()
+            with adapter_ctx:
+                if not use_cfg:
+                    return _forward(pos_cond_tile)
+                if cfg_batching:
+                    joint_cond = _pack_cond_for_joint_cfg(pos_cond_tile, neg_cond_tile)
+                    joint_out = self.model(
+                        hidden_states=torch.cat([latents_input, latents_input], dim=0),
+                        timestep=torch.cat([timesteps_input, timesteps_input], dim=0),
+                        return_dict=False,
+                        **joint_cond,
+                    )[0]
+                    noise_pred_pos, noise_pred_neg = joint_out.chunk(2, dim=0)
+                else:
+                    noise_pred_pos = _forward(pos_cond_tile)
+                    noise_pred_neg = _forward(neg_cond_tile)
+                return train_pipeline_config.cfg_combine(
+                    noise_pred_pos, noise_pred_neg, guidance_scale, true_cfg_scale=true_cfg_scale,
+                )
+
+        noise_pred_flat = _compute_noise_pred()
+
+        _, log_prob_new_flat, prev_sample_mean, std_dev_t = sde_step_with_logprob(
             self.scheduler,
             noise_pred_flat.float(),
             timesteps_flat,
@@ -686,10 +719,33 @@ class FSDPTrainRayActor(TrainRayActor):
         unclipped = -advantage_tile * ratio
         clipped = -advantage_tile * torch.clamp(ratio, 1.0 - clip_range, 1.0 + clip_range)
         per_cell_loss = torch.maximum(unclipped, clipped)
-        loss = per_cell_loss.mean()
+        policy_loss = per_cell_loss.mean()
+        kl_loss = log_prob_new.new_zeros(())
+        if kl_beta > 0:
+            with torch.no_grad():
+                ref_noise_pred_flat = _compute_noise_pred(disable_adapter=True)
+                # TODO: unify sde_step_with_logprob with rollout and trainer forward paths.
+                _, _, prev_sample_mean_ref, _ = sde_step_with_logprob(
+                    self.scheduler,
+                    ref_noise_pred_flat.float(),
+                    timesteps_flat,
+                    latents_flat.float(),
+                    prev_sample=next_latents_tile.reshape(
+                        tile_sample_count * tile_tstep_count, *next_latents_tile.shape[2:]
+                    ).float(),
+                    noise_level=noise_level,
+                )
+            kl_loss = ((prev_sample_mean - prev_sample_mean_ref) ** 2).mean(
+                dim=tuple(range(1, prev_sample_mean.ndim)),
+                keepdim=True,
+            ) / (2 * std_dev_t**2)
+            kl_loss = kl_loss.mean()
+        loss = policy_loss + kl_beta * kl_loss
 
         with torch.no_grad():
             log_stats["loss"].append(loss.detach())
+            log_stats["policy_loss"].append(policy_loss.detach())
+            log_stats["kl_loss"].append(kl_loss.detach())
             log_stats["loss_abs_mean"].append(per_cell_loss.abs().mean().detach())
             log_stats["adv_abs_mean"].append(advantage_tile.abs().mean().detach())
             log_stats["ratio_abs_minus_1"].append((ratio - 1.0).abs().mean().detach())

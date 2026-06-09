@@ -154,31 +154,11 @@ def create_training_models(args, pgs, rollout_manager):
 
 
 def create_rollout_manager(args, pg):
-    use_diffusion_rollout = "diffusion_rollout" in args.rollout_function_path
-    logger.info(
-        "Creating rollout manager (diffusion=%s, num_gpus=%s)",
-        use_diffusion_rollout,
-        0 if (use_diffusion_rollout and args.rollout_num_gpus > 1) else (1 if use_diffusion_rollout else 0),
-    )
-    scheduling_strategy = None
-    if use_diffusion_rollout:
-        pg_tuple = pg
-        # If rollout uses multiple GPUs, do NOT bind RolloutManager to the rollout PG.
-        # Otherwise it consumes a GPU bundle and starves rollout workers.
-        if args.rollout_num_gpus <= 1:
-            pg, reordered_bundle_indices, _ = pg_tuple
-            bundle_index = reordered_bundle_indices[0] if reordered_bundle_indices else 0
-            scheduling_strategy = PlacementGroupSchedulingStrategy(
-                placement_group=pg,
-                placement_group_capture_child_tasks=True,
-                placement_group_bundle_index=bundle_index,
-            )
-
+    logger.info("Creating rollout manager (num_gpus=%s)", 0)
     rollout_manager = RolloutManager.options(
         num_cpus=1,
-        num_gpus=0 if (use_diffusion_rollout and args.rollout_num_gpus > 1) else (1 if use_diffusion_rollout else 0),
-        scheduling_strategy=scheduling_strategy,
-    ).remote(args, pg_tuple if use_diffusion_rollout else pg)
+        num_gpus=0,
+    ).remote(args, pg)
 
     # calculate num_rollout from num_epoch
     num_rollout_per_epoch = None
