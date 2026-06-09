@@ -1,4 +1,4 @@
-"""Ensure LTX rollout denoising_env carries text context for miles train replay."""
+"""Ensure LTX rollout denoising_env carries text/audio embeds for miles train replay."""
 
 from __future__ import annotations
 
@@ -10,11 +10,11 @@ logger = logging.getLogger(__name__)
 _APPLIED = False
 
 
-def _prompt_embeds_tensor(batch: Any) -> Any | None:
-    pe = getattr(batch, "prompt_embeds", None)
-    if pe is None:
+def _first_batch_tensor(batch: Any, attr: str) -> Any | None:
+    value = getattr(batch, attr, None)
+    if value is None:
         return None
-    return pe[0] if isinstance(pe, list) else pe
+    return value[0] if isinstance(value, list) else value
 
 
 def apply() -> None:
@@ -26,25 +26,36 @@ def apply() -> None:
         LTX2DenoisingStage,
     )
 
-    if not hasattr(LTX2DenoisingStage, "_attach_ltx_rollout_cond_kwargs"):
+    if not hasattr(LTX2DenoisingStage, "_prepare_denoising_loop"):
         logger.warning(
-            "LTX2DenoisingStage._attach_ltx_rollout_cond_kwargs is missing; "
-            "rollout denoising_env may lack encoder_hidden_states. "
-            "Upgrade sglang-diffusion or check the installed version."
+            "LTX2DenoisingStage._prepare_denoising_loop is missing; "
+            "rollout denoising_env may lack text/audio cond kwargs."
         )
         _APPLIED = True
         return
 
-    orig_attach = LTX2DenoisingStage._attach_ltx_rollout_cond_kwargs
+    orig_prepare = LTX2DenoisingStage._prepare_denoising_loop
 
-    def _attach_ltx_rollout_cond_kwargs(self, ctx, batch):
-        orig_attach(self, ctx, batch)
+    def _prepare_denoising_loop(self, batch, server_args):
+        ctx = orig_prepare(self, batch, server_args)
         if not (batch.rollout and batch.rollout_return_denoising_env):
-            return
+            return ctx
+        ctx.pos_cond_kwargs = dict(ctx.pos_cond_kwargs)
         if ctx.pos_cond_kwargs.get("encoder_hidden_states") is None:
-            embeds = _prompt_embeds_tensor(batch)
+            embeds = _first_batch_tensor(batch, "prompt_embeds")
             if embeds is not None:
                 ctx.pos_cond_kwargs["encoder_hidden_states"] = embeds
+        if ctx.pos_cond_kwargs.get("audio_encoder_hidden_states") is None:
+            audio_embeds = _first_batch_tensor(batch, "audio_prompt_embeds")
+            if audio_embeds is not None:
+                ctx.pos_cond_kwargs["audio_encoder_hidden_states"] = audio_embeds
+        attn_mask = getattr(batch, "prompt_attention_mask", None)
+        if attn_mask is not None:
+            if ctx.pos_cond_kwargs.get("encoder_attention_mask") is None:
+                ctx.pos_cond_kwargs["encoder_attention_mask"] = attn_mask
+            if ctx.pos_cond_kwargs.get("audio_encoder_attention_mask") is None:
+                ctx.pos_cond_kwargs["audio_encoder_attention_mask"] = attn_mask
+        return ctx
 
-    LTX2DenoisingStage._attach_ltx_rollout_cond_kwargs = _attach_ltx_rollout_cond_kwargs
+    LTX2DenoisingStage._prepare_denoising_loop = _prepare_denoising_loop
     _APPLIED = True

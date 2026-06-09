@@ -67,14 +67,9 @@ def build_rollout_sampling_params(
             sampling_params["num_frames"] = int(args.ltx_frames)
         if getattr(args, "ltx_fps", None) is not None:
             sampling_params["fps"] = int(args.ltx_fps)
+        # Handoff: gs=1.0 + no negative prompt → single forward, aligned with train.
         sampling_params["guidance_scale"] = 1.0
-        sampling_params["negative_prompt"] = " "
-        # LTX23 one-stage rollout uses a stage1 guider (CFG/STG/modality/rescale)
-        # whose params cannot be overridden via HTTP — sglang routes unknown
-        # SamplingParams kwargs through the base class. Train ``forward_velocity``
-        # is video-only with no guidance, so the rollout engine forces an identity
-        # guider via the ``patch_ltx2_identity_guider`` monkey patch
-        # (MILES_LTX_IDENTITY_GUIDER, propagated in miles/ray/rollout.py).
+        sampling_params["negative_prompt"] = None
 
     if evaluation:
         sampling_params["rollout"] = False
@@ -127,8 +122,11 @@ def build_rollout_generate_payload(
     """Build full JSON payload for ``POST /rollout/generate`` (``RolloutImageRequest``).
     """
     sampling_params["prompt"] = prompt
-    if sampling_params["negative_prompt"] is None:
-        sampling_params["negative_prompt"] = " "  # FlowGRPO default
+    if (
+        sampling_params.get("negative_prompt") is None
+        and float(sampling_params.get("guidance_scale", 1.0)) != 1.0
+    ):
+        sampling_params["negative_prompt"] = " "  # FlowGRPO default when CFG is on
     sampling_params["num_outputs_per_prompt"] = num_outputs_per_prompt
     return sampling_params
 

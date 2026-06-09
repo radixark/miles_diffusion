@@ -12,23 +12,25 @@
 #   colocate if 512x768x57f OOMs on one card.
 #
 # Usage:
-#   CUDA_VISIBLE_DEVICES=1 USE_LORA=1 NUM_ROLLOUT=8 \
-#     MILES_DIFFUSION_DEBUG=1 LTX_DISABLE_AV_CROSS_ATTN=1 \
-#     MILES_LTX_IDENTITY_GUIDER=1 \
+#   CUDA_VISIBLE_DEVICES=1 USE_LORA=1 NUM_ROLLOUT=200 \
+#     LTX_DISABLE_AV_CROSS_ATTN=1 \
 #     nohup bash scripts/run-diffusion-grpo-ltx23-sglang.sh \
 #     > logs/ltx23_dev_cps_$(date +%Y%m%d_%H%M%S).log 2>&1 &
 #
 # Key overridable env:
-#   LTX_MODEL_PATH          — dev 22B safetensors
+#   LTX_MODEL_PATH          — dev 22B safetensors (train + rollout DiT via transformer_weights_path)
+#   MILES_LTX_ROLLOUT_MODEL_PATH — optional; default Lightricks/LTX-2.3 (sglang overlay)
+#   MILES_LTX_MODEL_ID      — optional; default LTX-2.3
 #   HEIGHT WIDTH FRAMES     — 512 768 57
 #   NUM_STEPS               — 24
 #   LTX_NUM_SDE_STEPS       — 3
 #   LTX_SDE_STEP_CANDIDATES — 0,1,2,3,4,5,6,7,8,9
 #   CLIP_RANGE              — 1e-4
-#   ROLLOUT_BATCH_SIZE      — unique prompts per rollout (default: 16)
-#   N_SAMPLES_PER_PROMPT    — GRPO group size, aligned with verl (default: 8)
-#   NUM_STEPS_PER_ROLLOUT   — optimizer steps per rollout (default: 2 → gbs=64)
-#   NUM_GPUS                — 1
+#   ROLLOUT_BATCH_SIZE      — unique prompts per rollout (default: 8)
+#   N_SAMPLES_PER_PROMPT    — GRPO group size (default: 8)
+#   NUM_STEPS_PER_ROLLOUT   — optimizer steps per rollout (default: 2 → gbs=32)
+#   NUM_ROLLOUT             — 200
+#   SAVE_INTERVAL           — 50
 
 MILES_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 echo "[kill] hunting for stale miles processes under cwd=${MILES_ROOT}"
@@ -97,8 +99,8 @@ GEMMA_ROOT="${GEMMA_ROOT:-${LTX_MATERIALIZED_ROOT}/text_encoder}"
 MILES_DATA_ROOT="${MILES_DATA_ROOT:-/sgl-workspace/miles}"
 PROMPT_DATA="${PROMPT_DATA:-${MILES_DATA_ROOT}/data/vidgen/train.jsonl}"
 
-NUM_ROLLOUT="${NUM_ROLLOUT:-8}"
-ROLLOUT_BATCH_SIZE="${ROLLOUT_BATCH_SIZE:-16}"
+NUM_ROLLOUT="${NUM_ROLLOUT:-200}"
+ROLLOUT_BATCH_SIZE="${ROLLOUT_BATCH_SIZE:-8}"
 N_SAMPLES_PER_PROMPT="${N_SAMPLES_PER_PROMPT:-8}"
 NUM_STEPS_PER_ROLLOUT="${NUM_STEPS_PER_ROLLOUT:-2}"
 SAMPLES_PER_ROLLOUT=$((ROLLOUT_BATCH_SIZE * N_SAMPLES_PER_PROMPT))
@@ -123,7 +125,7 @@ NUM_GPUS="${NUM_GPUS:-1}"
 ROLLOUT_NUM_GPUS_PER_ENGINE="${ROLLOUT_NUM_GPUS_PER_ENGINE:-1}"
 # Periodic checkpoint (LoRA adapter) so the run is resumable via LOAD_CKPT.
 # (The earlier run had no --save-interval, so nothing was ever saved.)
-SAVE_INTERVAL="${SAVE_INTERVAL:-5}"
+SAVE_INTERVAL="${SAVE_INTERVAL:-50}"
 
 if [[ ! -f "${PROMPT_DATA}" ]]; then
   python "${MILES_DATA_ROOT}/tools/prepare_vidgen_jsonl.py"
@@ -140,7 +142,7 @@ echo "[run] log=${LOG_DIR}"
 echo "[run] wandb=${WANDB_DIR}"
 echo "[run] save=${SAVE_DIR}"
 echo "[run] ${HEIGHT}x${WIDTH}x${FRAMES}f steps=${NUM_STEPS} sde_steps=${LTX_NUM_SDE_STEPS} candidates=${LTX_SDE_STEP_CANDIDATES} clip=${CLIP_RANGE}"
-echo "[run] batch: rollout=${ROLLOUT_BATCH_SIZE} n_samples=${N_SAMPLES_PER_PROMPT} samples/rollout=${SAMPLES_PER_ROLLOUT} optim_steps/rollout=${NUM_STEPS_PER_ROLLOUT} gbs=${DERIVED_GLOBAL_BATCH_SIZE}"
+echo "[run] batch: rollout=${ROLLOUT_BATCH_SIZE} n_samples=${N_SAMPLES_PER_PROMPT} samples/rollout=${SAMPLES_PER_ROLLOUT} optim_steps/rollout=${NUM_STEPS_PER_ROLLOUT} gbs=${DERIVED_GLOBAL_BATCH_SIZE} save_interval=${SAVE_INTERVAL}"
 
 DEBUG_ARGS=()
 if [[ "${MILES_DIFFUSION_DEBUG:-0}" == "1" ]]; then
@@ -251,8 +253,8 @@ python -u "${ROOT_DIR}/train_diffusion.py" \
   --rm-type pickscore \
   --diffusion-reward "pickscore:1.0" \
   --reward-key avg \
-  --pickscore-processor-path "${PICKSCORE_PROCESSOR:-yuvalkirstain/PickScore_v1}" \
-  --pickscore-model-path "${PICKSCORE_MODEL:-yuvalkirstain/PickScore_v1}" \
+  --pickscore-processor-path "${PICKSCORE_PROCESSOR:-/data/wenhao/hf_home/pickscore}" \
+  --pickscore-model-path "${PICKSCORE_MODEL:-/data/wenhao/hf_home/pickscore}" \
   --pickscore-num-frames 3 \
   --pickscore-batch-size 8 \
   --pickscore-num-gpus-per-worker 0 \

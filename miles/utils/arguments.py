@@ -1328,9 +1328,12 @@ def miles_validate_args(args):
         else:
             args.diffusion_model_type = "sd3"
     if args.diffusion_model_type == "ltx":
-        if float(getattr(args, "diffusion_guidance_scale", 1.0)) != 1.0:
-            raise ValueError(
-                "LTX requires --diffusion-guidance-scale 1.0 (no CFG)."
+        ltx_gs = float(getattr(args, "diffusion_guidance_scale", 1.0))
+        if ltx_gs != 1.0:
+            logger.warning(
+                "LTX rollout/train alignment expects --diffusion-guidance-scale 1.0 "
+                "(no CFG); using %s may break log_prob parity.",
+                ltx_gs,
             )
         if not args.debug_train_only and not getattr(args, "ltx_gemma_path", None):
             logger.warning(

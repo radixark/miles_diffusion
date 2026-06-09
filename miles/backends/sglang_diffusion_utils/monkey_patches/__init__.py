@@ -5,7 +5,7 @@ the scheduler child reads ``MILES_ROLLOUT_PATCH_GROUP`` and calls
 ``apply_rollout_patch_group``.
 
 - ``sgld``: diffusers / SD3 op parity (RMSNorm, RoPE, attention, …).
-- ``ltx``:  LTX-2 ltx_core parity + RL alignment (identity guider, AV-off, cond kwargs).
+- ``ltx``:  LTX-2 ltx_core parity + AV-off (rollout uses official gs=1 path).
 
 Patch modules are imported inside ``apply_*`` only so ``RolloutManager`` (a
 CPU-only Ray actor) can import this package without pulling sglang triton kernels.
@@ -71,10 +71,9 @@ def apply_sgld_monkey_patches(*, include_ltx2_ltxcore: bool | None = None) -> No
 
 
 def apply_ltx2_rollout_patches() -> None:
-    """LTX-2 ltx_core parity + RL train/rollout alignment patches."""
+    """LTX-2 ltx_core parity + video-only train alignment."""
     from miles.backends.sglang_diffusion_utils.monkey_patches import (
         patch_ltx2_disable_av_cross,
-        patch_ltx2_identity_guider,
         patch_ltx2_ltxcore_parity,
         patch_ltx2_rollout_cond_kwargs,
     )
@@ -82,4 +81,3 @@ def apply_ltx2_rollout_patches() -> None:
     patch_ltx2_ltxcore_parity.apply()
     patch_ltx2_disable_av_cross.apply()
     patch_ltx2_rollout_cond_kwargs.apply()
-    patch_ltx2_identity_guider.apply()
