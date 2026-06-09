@@ -352,6 +352,10 @@ class FSDPTrainRayActor(TrainRayActor):
         )
         if sigmas_snapshot is not None:
             sigmas_ref = sigmas_snapshot.to(device).float()
+        elif not self.train_pipeline_config.needs_timestep_scaling:
+            # Trajectory timesteps may be AdaLN-scale (LTX: σ×1000). CPS expects σ∈[0,1].
+            sigmas_ref = self.train_pipeline_config.scale_timesteps_for_sde(timesteps_ref)
+            sigmas_ref = torch.cat([sigmas_ref, sigmas_ref.new_zeros(1)])
         else:
             sigmas_ref = timesteps_ref / float(num_train_timesteps)
             sigmas_ref = torch.cat([sigmas_ref, sigmas_ref.new_zeros(1)])
@@ -464,11 +468,23 @@ class FSDPTrainRayActor(TrainRayActor):
                 dit_trajectories[traj_idx], device
             )
 
-            # prepare cond kwargs (denoising_env)
+            # prepare cond kwargs (denoising_env text embeds + local geometry for LTX)
             denoising_env = denoising_envs[traj_idx]
-            positive_cond_kwargs_list.append(
-                train_pipeline_config.prepare_cond_kwargs(denoising_env.pos_cond_kwargs, device)
-            )
+            if hasattr(train_pipeline_config, "build_train_cond_kwargs"):
+                positive_cond_kwargs_list.append(
+                    train_pipeline_config.build_train_cond_kwargs(
+                        denoising_env.pos_cond_kwargs,
+                        video_latents=latents,
+                        args=self.args,
+                        device=device,
+                    )
+                )
+            else:
+                positive_cond_kwargs_list.append(
+                    train_pipeline_config.prepare_cond_kwargs(
+                        denoising_env.pos_cond_kwargs, device
+                    )
+                )
             if use_cfg:
                 negative_cond_kwargs_list.append(
                     train_pipeline_config.prepare_cond_kwargs(denoising_env.neg_cond_kwargs, device)
@@ -683,6 +699,7 @@ class FSDPTrainRayActor(TrainRayActor):
             tile_sample_count * tile_tstep_count, *latents_tile.shape[2:]
         )
         timesteps_flat = timesteps_tile.reshape(tile_sample_count * tile_tstep_count)
+        timesteps_for_sde = train_pipeline_config.scale_timesteps_for_sde(timesteps_flat)
 
         # sgl-d's Qwen DiT divides timestep by num_train_timesteps inside
         # forward; diffusers' does not. SD3 already expects raw timesteps.
@@ -761,7 +778,7 @@ class FSDPTrainRayActor(TrainRayActor):
         prev_sample_dummy, log_prob_new_flat, prev_sample_mean, std_dev_t = train_pipeline_config.sde_step(
             self.scheduler,
             noise_pred_flat,
-            timesteps_flat,
+            timesteps_for_sde,
             latents_flat,
             prev_sample=next_latents_tile.reshape(
                 tile_sample_count * tile_tstep_count, *next_latents_tile.shape[2:]
@@ -785,7 +802,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 _, _, prev_sample_mean_ref, _ = train_pipeline_config.sde_step(
                     self.scheduler,
                     ref_noise_pred_flat,
-                    timesteps_flat,
+                    timesteps_for_sde,
                     latents_flat,
                     prev_sample=next_latents_tile.reshape(
                         tile_sample_count * tile_tstep_count, *next_latents_tile.shape[2:]

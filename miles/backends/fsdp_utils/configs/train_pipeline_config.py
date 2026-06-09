@@ -52,7 +52,15 @@ class TrainPipelineConfig(abc.ABC):
     fsdp_wrap_classes: list[str] | None = None
     lora_target_modules: list[str] = ["to_q", "to_k", "to_v", "to_out.0"]
     needs_timestep_scaling: bool = True
+    # When set, ``dit_trajectory.timesteps`` are on an AdaLN scale (e.g. σ×1000)
+    # but CPS/SDE log_prob expects σ in 0..1. Divide by this for sde_step only.
+    sde_timestep_divisor: float | None = None
     optimizer_state_allowed_missing: list[str] = []
+
+    def scale_timesteps_for_sde(self, timesteps: torch.Tensor) -> torch.Tensor:
+        if self.sde_timestep_divisor is not None:
+            return timesteps / float(self.sde_timestep_divisor)
+        return timesteps
 
     def prepare_trajectory(
         self,

@@ -20,6 +20,8 @@ class LTXTrainPipelineConfig(TrainPipelineConfig):
 
     is_diffusers_pipeline = False
     needs_timestep_scaling = False
+    # Rollout stores σ×1000 in dit_trajectory.timesteps; CPS uses scheduler σ∈[0,1].
+    sde_timestep_divisor = 1000.0
     supports_cfg = False
 
     fsdp_wrap_classes = ["BasicAVTransformerBlock"]
@@ -70,25 +72,58 @@ class LTXTrainPipelineConfig(TrainPipelineConfig):
             if ctx.ndim == 2:
                 ctx = ctx.unsqueeze(0)
             kwargs["context"] = ctx
-        if cond.ltx_positions is not None:
-            pos = cond.ltx_positions.to(device)
-            if pos.ndim == 2:
-                pos = pos.unsqueeze(0)
-            elif pos.ndim == 3:
-                pos = pos.unsqueeze(0)
-            kwargs["positions"] = pos
-        if cond.ltx_denoise_mask is not None:
-            mask = cond.ltx_denoise_mask.to(device)
-            if mask.ndim == 2 and mask.shape[-1] == 1:
-                mask = mask.squeeze(-1)
+        if cond.audio_encoder_hidden_states:
+            audio_ctx = torch.cat(cond.audio_encoder_hidden_states).to(device)
+            if audio_ctx.ndim == 2:
+                audio_ctx = audio_ctx.unsqueeze(0)
+            kwargs["audio_context"] = audio_ctx
+        if cond.encoder_attention_mask is not None:
+            mask = cond.encoder_attention_mask.to(device)
             if mask.ndim == 1:
                 mask = mask.unsqueeze(0)
-            kwargs["denoise_mask"] = mask
-        if cond.ltx_clean_latent is not None:
-            cl = cond.ltx_clean_latent.to(device)
-            if cl.ndim == 2:
-                cl = cl.unsqueeze(0)
-            kwargs["clean_latent"] = cl
+            kwargs["context_mask"] = mask
+        if cond.audio_encoder_attention_mask is not None:
+            audio_mask = cond.audio_encoder_attention_mask.to(device)
+            if audio_mask.ndim == 1:
+                audio_mask = audio_mask.unsqueeze(0)
+            kwargs["audio_context_mask"] = audio_mask
+        return kwargs
+
+    def build_train_cond_kwargs(
+        self,
+        cond: CondKwargs | None,
+        *,
+        video_latents: torch.Tensor,
+        args,
+        device: torch.device,
+    ) -> dict:
+        """Merge rollout text embeds with locally rebuilt T2V geometry."""
+        from miles.backends.fsdp_utils.ltx_geometry import build_ltx_t2v_geometry
+
+        kwargs = self.prepare_cond_kwargs(cond, device)
+        if "context" not in kwargs:
+            raise ValueError(
+                "LTX train requires denoising_env.pos_cond_kwargs.encoder_hidden_states"
+            )
+
+        ref = video_latents[0] if video_latents.ndim >= 2 else video_latents
+        if ref.ndim == 2:
+            batch_size, num_tokens, latent_dim = 1, ref.shape[0], ref.shape[1]
+        else:
+            batch_size, num_tokens, latent_dim = ref.shape[0], ref.shape[1], ref.shape[2]
+
+        geom = build_ltx_t2v_geometry(
+            batch_size=batch_size,
+            num_tokens=num_tokens,
+            latent_dim=latent_dim,
+            height=int(getattr(args, "diffusion_height", 512)),
+            width=int(getattr(args, "diffusion_width", 512)),
+            num_frames=int(getattr(args, "ltx_frames", 25)),
+            fps=float(getattr(args, "ltx_fps", 24.0)),
+            device=device,
+            dtype=ref.dtype,
+        )
+        kwargs.update(geom)
         return kwargs
 
     def expand_cond_for_timestep_batch(self, cond_kwargs: dict, batch_size: int) -> dict:
@@ -161,18 +196,21 @@ class LTXTrainPipelineConfig(TrainPipelineConfig):
         dtype = latents_input.dtype
         B = latents_input.shape[0]
 
-        sigma = timesteps_input.to(latents_input.dtype)
+        # dit_trajectory.timesteps are σ×1000; ltx_core AdaLN expects σ∈[0,1] and
+        # multiplies by timestep_scale_multiplier (1000) internally.
+        sigma_scaled = timesteps_input.to(latents_input.dtype)
+        sigma_unit = sigma_scaled / float(self.sde_timestep_divisor)
         denoise_mask = cond["denoise_mask"].to(device)
         denoise_mask_2d = denoise_mask.squeeze(-1) if denoise_mask.ndim == 3 else denoise_mask
         denoise_mask_float = denoise_mask_2d.float()
 
-        per_token_t = (sigma.view(B, 1) * denoise_mask_2d).to(dtype)
+        per_token_t = (sigma_unit.view(B, 1) * denoise_mask_2d).to(dtype)
         adaln_timesteps = self._modality_timesteps_for_adaln(per_token_t)
 
         video_modality = Modality(
             enabled=True,
             latent=latents_input,
-            sigma=sigma,
+            sigma=sigma_unit.reshape(B),
             timesteps=adaln_timesteps,
             positions=cond["positions"].to(dtype),
             context=cond["context"].to(dtype),
@@ -188,7 +226,7 @@ class LTXTrainPipelineConfig(TrainPipelineConfig):
         denoise_mask_3d = denoise_mask_float.unsqueeze(-1) if denoise_mask_float.ndim == 2 else denoise_mask_float
         x0_pred = x0_pred * denoise_mask_3d + clean_latent * (1.0 - denoise_mask_3d)
 
-        sigma_safe = torch.clamp(sigma, min=1e-8).view(B, 1, 1)
+        sigma_safe = torch.clamp(sigma_unit, min=1e-8).view(B, 1, 1)
         velocity_for_sde = (latents_input.float() - x0_pred) / sigma_safe
         return velocity_for_sde.to(dtype)
 
