@@ -25,7 +25,20 @@ logger = logging.getLogger(__name__)
 def _feature_tensor(features):
     if isinstance(features, torch.Tensor):
         return features
-    return features.pooler_output
+    if hasattr(features, "pooler_output"):
+        pooled = features.pooler_output
+        if isinstance(pooled, torch.Tensor):
+            return pooled
+    for attr in ("image_embeds", "text_embeds"):
+        value = getattr(features, attr, None)
+        if isinstance(value, torch.Tensor):
+            return value
+    if isinstance(features, tuple):
+        for item in reversed(features):
+            if isinstance(item, torch.Tensor) and item.ndim == 2:
+                return item
+        raise TypeError(f"No 2-D tensor in model output tuple (len={len(features)})")
+    raise TypeError(f"Cannot extract embedding tensor from {type(features)!r}")
 
 
 def _sample_to_rgb_hwc_uint8(sample: Sample) -> np.ndarray:
@@ -141,10 +154,10 @@ class VideoPickScoreScorer(torch.nn.Module):
             )
             text_inputs = {k: v.to(self.device) for k, v in text_inputs.items()}
 
-            image_embs = self.model.get_image_features(**image_inputs)
+            image_embs = _feature_tensor(self.model.get_image_features(**image_inputs))
             image_embs = image_embs / image_embs.norm(p=2, dim=-1, keepdim=True).clamp_min(1e-12)
 
-            text_embs = self.model.get_text_features(**text_inputs)
+            text_embs = _feature_tensor(self.model.get_text_features(**text_inputs))
             text_embs = text_embs / text_embs.norm(p=2, dim=-1, keepdim=True).clamp_min(1e-12)
 
             chunk_scores = logit_scale * (text_embs * image_embs).sum(dim=-1)
