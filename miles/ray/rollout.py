@@ -344,6 +344,12 @@ class RolloutManager:
             if groups_raw.shape[-1] > 1:
                 reward_stats["rollout/reward/group_std_avg"] = float(groups_raw.std(dim=-1, unbiased=False).mean())
 
+        print(
+            f"[reward stats] raw mean={raw_t.mean():.4f} std={raw_t.std():.4f} min={raw_t.min():.4f} max={raw_t.max():.4f} | "
+            f"normalized mean={norm_t.mean():.4f} std={norm_t.std():.4f} min={norm_t.min():.4f} max={norm_t.max():.4f}",
+            flush=True,
+        )
+
         reward_stats["rollout/step"] = compute_rollout_step(self.args, self.rollout_id)
         tracking_utils.log(self.args, reward_stats, step_key="rollout/step")
 
