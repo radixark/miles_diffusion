@@ -314,12 +314,21 @@ class DiffusionUpdateWeightFromTensorLoRA(DiffusionUpdateWeightFromTensor):
 
     @staticmethod
     def _sha256_named_tensors(pairs: list[tuple[str, torch.Tensor]]) -> str:
-        """Mirror ``sglang.multimodal_gen.runtime.loader.weight_utils.compute_weights_checksum``."""
+        """Mirror ``sglang.multimodal_gen.runtime.loader.weight_utils.compute_weights_checksum``
+        (sgl-d 929dc3b37+: name + dtype + shape + raw bytes, sorted by name).
+
+        Caveat: when --fsdp-master-dtype differs from the engine's param dtype
+        (e.g. fp32 master vs bf16 engine), expected/actual can never match —
+        the engine hashes its own dtype's bytes. A consistent mismatch with
+        identical values across ranks and engines means the push itself is
+        coherent; rely on log_prob_mean_abs_diff for end-to-end correctness."""
         hasher = hashlib.sha256()
         for name, tensor in sorted(pairs, key=lambda x: x[0]):
             hasher.update(name.encode())
             t = tensor.detach()
             if isinstance(t, DTensor):
                 t = t._local_tensor
+            hasher.update(str(t.dtype).encode())
+            hasher.update(str(tuple(t.shape)).encode())
             hasher.update(t.cpu().contiguous().reshape(-1).view(torch.uint8).numpy().data)
         return hasher.hexdigest()
