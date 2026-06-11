@@ -203,3 +203,5 @@ wandb/
 
 # local debug scripts / alignment tools (not shipped with the library)
 dist/
+scripts/run-ltx23-grpo-local.sh
+.claude/skills/align-ltx-train-rollout/

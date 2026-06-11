@@ -14,11 +14,6 @@ def train(args):
     configure_logger()
     logger = logging.getLogger(__name__)
 
-    if getattr(args, "diffusion_model_type", None) == "ltx":
-        from miles.backends.model_families.ltx import preflight_ltx_models
-
-        preflight_ltx_models(args)
-
     # allocate the GPUs
     logger.info("train: creating placement groups")
     pgs = create_placement_groups(args)

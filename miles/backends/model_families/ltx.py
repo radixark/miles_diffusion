@@ -270,23 +270,6 @@ def resolve_transformer_checkpoint(
     )
 
 
-def preflight_ltx_models(args: Namespace) -> None:
-    """Ensure train + rollout can resolve the same model before Ray starts."""
-    hf_model_id = resolve_hf_model_id(args)
-    checkpoint = resolve_transformer_checkpoint(
-        getattr(args, "diffusion_model", None),
-        explicit_path=getattr(args, "sglang_transformer_weights_path", None),
-    )
-    ckpt_path = Path(checkpoint)
-    if _is_materialized_diffusers_checkpoint(ckpt_path):
-        _read_materialized_transformer_config(ckpt_path)
-    logger.info(
-        "LTX preflight ok: rollout model_path=%s train_checkpoint=%s",
-        hf_model_id,
-        checkpoint,
-    )
-
-
 def server_kwargs_extras(args) -> dict:
     """Extra ``ServerArgs`` kwargs; call only when ``is_ltx_model(args)``."""
     hf_model_id = resolve_hf_model_id(args)

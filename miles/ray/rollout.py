@@ -483,20 +483,6 @@ class RolloutManager:
         return rollout_data_refs
 
 
-def _pythonpath_env_var() -> dict[str, str]:
-    """Ray workers do not inherit shell PYTHONPATH; propagate sglang source root."""
-    sglang_python = os.environ.get("SGLANG_PYTHON")
-    parent_path = os.environ.get("PYTHONPATH", "")
-    if sglang_python:
-        prefix = sglang_python
-        if parent_path and not parent_path.startswith(prefix):
-            prefix = f"{sglang_python}:{parent_path}"
-        return {"PYTHONPATH": prefix}
-    if parent_path:
-        return {"PYTHONPATH": parent_path}
-    return {}
-
-
 def _base_rollout_engine_env_vars() -> dict[str, str]:
     return {name: "1" for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST} | {
         "SGL_JIT_DEEPGEMM_PRECOMPILE": "false",
@@ -528,7 +514,6 @@ def _ltx_alignment_env_vars(args) -> dict[str, str]:
     for name in (
         LTX_ROLLOUT_PATCHES_ENV,
         "MILES_LTX_DISABLE_AV_CROSS",
-        "MILES_LTX_IDENTITY_GUIDER",
     ):
         if os.environ.get(name):
             env[name] = os.environ[name]
@@ -537,7 +522,8 @@ def _ltx_alignment_env_vars(args) -> dict[str, str]:
 
 def _build_rollout_engine_env_vars(args) -> dict[str, str]:
     env_vars = _base_rollout_engine_env_vars()
-    env_vars.update(_pythonpath_env_var())
+    if os.environ.get("PYTHONPATH"):
+        env_vars["PYTHONPATH"] = os.environ["PYTHONPATH"]
     for cache_var in ("SGLANG_DIFFUSION_CACHE_ROOT", "HF_HOME", "TMPDIR"):
         if os.environ.get(cache_var):
             env_vars[cache_var] = os.environ[cache_var]

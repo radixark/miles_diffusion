@@ -5,7 +5,7 @@
 # (/sgl-workspace/miles/scripts/run-diffusion-grpo-ltx23-trainer-rollout.sh):
 #   CPS dynamics, 3 SDE steps from candidates 0–9, clip-range 1e-4.
 # Rollout goes through sglang with weight sync; train/rollout forward alignment
-# fixes stay on (ltxcore parity + AV-off + identity guider).
+# fixes stay on (ltxcore parity + AV-off + gs=1 rollout alignment).
 #
 # GPU layout: single physical GPU colocate (train FSDP world_size=1 and sglang
 #   rollout time-share one GPU via offload). Set NUM_GPUS>1 for multi-GPU
