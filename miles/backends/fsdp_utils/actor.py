@@ -80,34 +80,51 @@ class FSDPTrainRayActor(TrainRayActor):
                 vae=None,
                 tokenizer=None,
             )
-            model = pipeline.transformer
+            raw_models: dict[str, torch.nn.Module] = {}
+            for component in args.update_weight_target_modules:
+                sub_model = getattr(pipeline, component, None)
+                if sub_model is None:
+                    raise ValueError(
+                        f"--update-weight-target-module: pipeline {self.args.hf_checkpoint} "
+                        f"has no component '{component}'"
+                    )
+                raw_models[component] = sub_model
             self.scheduler = pipeline.scheduler
             del pipeline
 
         self.train_pipeline_config = get_train_pipeline_config(args.diffusion_model)
 
-        if args.use_lora:
-            model = apply_lora(model, args, self.train_pipeline_config)
+        self.models: dict[str, torch.nn.Module] = {}
+        for component, model in raw_models.items():
+            if args.use_lora:
+                model = apply_lora(model, args, self.train_pipeline_config)
 
-        model.train()
+            model.train()
 
-        if args.gradient_checkpointing:
-            model.enable_gradient_checkpointing()
+            if args.gradient_checkpointing:
+                model.enable_gradient_checkpointing()
 
-        model.to(torch.cuda.current_device())
+            model.to(torch.cuda.current_device())
 
-        self.train_pipeline_config.preprocess_model_before_fsdp(model)
+            self.train_pipeline_config.preprocess_model_before_fsdp(model)
 
-        model = apply_fsdp2(
-            model,
-            mesh=self.parallel_state.dp_mesh,
-            cpu_offload=self.args.fsdp_cpu_offload,
-            args=self.args,
-        )
+            model = apply_fsdp2(
+                model,
+                mesh=self.parallel_state.dp_mesh,
+                cpu_offload=self.args.fsdp_cpu_offload,
+                args=self.args,
+            )
+            self.models[component] = model
         # Force a sync to ensure sharding is complete and old memory is freed.
         torch.cuda.synchronize()
         clear_memory()
-        self.model = model
+        # Single component keeps the bare model as self.model so optimizer /
+        # checkpoint state-dict keys stay identical to pre-dual-DiT runs;
+        # multi-component wraps in a ModuleDict (keys get a component prefix).
+        if len(self.models) == 1:
+            self.model = next(iter(self.models.values()))
+        else:
+            self.model = torch.nn.ModuleDict(self.models)
 
         if args.optimizer == "adam":
             self.optimizer = torch.optim.AdamW(
@@ -139,9 +156,9 @@ class FSDPTrainRayActor(TrainRayActor):
         if self.args.debug_train_only:
             self.weight_updater = None
         elif self.args.use_lora:
-            self.weight_updater = DiffusionUpdateWeightFromTensorLoRA(self.args, self.model)
+            self.weight_updater = DiffusionUpdateWeightFromTensorLoRA(self.args, self.models)
         else:
-            self.weight_updater = DiffusionUpdateWeightFromTensor(self.args, self.model)
+            self.weight_updater = DiffusionUpdateWeightFromTensor(self.args, self.models)
 
         checkpoint.finalize_load(self, checkpoint_payload)
 
@@ -304,8 +321,8 @@ class FSDPTrainRayActor(TrainRayActor):
             raise ValueError(
                 "--diffusion-kl-beta currently requires --use-lora so the base model can be used as reference."
             )
-        if kl_beta > 0 and not hasattr(self.model, "disable_adapter"):
-            raise RuntimeError("Diffusion KL requires a PEFT model exposing disable_adapter() after FSDP wrapping.")
+        if kl_beta > 0 and not all(hasattr(m, "disable_adapter") for m in self.models.values()):
+            raise RuntimeError("Diffusion KL requires PEFT models exposing disable_adapter() after FSDP wrapping.")
 
         # ------------- Rollout Scheduler Metadata -------------
         scheduler_timesteps, scheduler_sigmas = scheduler_meta_from_rollout(
@@ -435,6 +452,32 @@ class FSDPTrainRayActor(TrainRayActor):
         )
         advantage = torch.clamp(advantage, -self.args.diffusion_adv_clip_max, self.args.diffusion_adv_clip_max)
 
+        # Phase routing (multi-expert models, e.g. Wan2.2 high/low-noise): every
+        # pair in this micro-batch must map to exactly one DiT so a single forward
+        # uses one model and one CFG scale, mirroring sgl-d's per-step model
+        # selection. A single-DiT model always uses its one model (bitwise-identical
+        # to the pre-dual-DiT path).
+        if len(self.models) == 1:
+            component, model = next(iter(self.models.items()))
+        else:
+            components = {
+                train_pipeline_config.component_for_timestep(t, num_train_timesteps)
+                for t in timesteps_microbatch.tolist()
+            }
+            if len(components) > 1:
+                raise ValueError(
+                    f"Micro-batch mixes denoising phases {sorted(components)}; set "
+                    "--micro-batch-size 1 so each forward is phase-pure (one DiT, one CFG scale)."
+                )
+            component = components.pop()
+            model = self.models[component]
+            guidance_scale = train_pipeline_config.select_guidance_scale(
+                float(timesteps_microbatch[0]),
+                num_train_timesteps,
+                guidance_scale,
+                self.args.diffusion_guidance_scale_2,
+            )
+
         # sgl-d's Qwen DiT divides timestep by num_train_timesteps inside
         # forward; diffusers' does not. SD3 already expects raw timesteps.
         if train_pipeline_config.needs_timestep_scaling:
@@ -491,7 +534,7 @@ class FSDPTrainRayActor(TrainRayActor):
         timesteps_input = timesteps_for_model.to(forward_dtype)
 
         def _forward(cond: dict) -> torch.Tensor:
-            return self.model(
+            return model(
                 hidden_states=latents_input,
                 timestep=timesteps_input,
                 return_dict=False,
@@ -499,13 +542,13 @@ class FSDPTrainRayActor(TrainRayActor):
             )[0]
 
         def _compute_noise_pred(disable_adapter: bool = False) -> torch.Tensor:
-            adapter_ctx = self.model.disable_adapter() if disable_adapter else nullcontext()
+            adapter_ctx = model.disable_adapter() if disable_adapter else nullcontext()
             with adapter_ctx:
                 if not use_cfg:
                     return _forward(pos_cond_microbatch)
                 if cfg_batching:
                     # forward pos+neg as one joint batch to align with sglang-d
-                    joint_out = self.model(
+                    joint_out = model(
                         hidden_states=torch.cat([latents_input, latents_input], dim=0),
                         timestep=torch.cat([timesteps_input, timesteps_input], dim=0),
                         return_dict=False,
@@ -573,19 +616,27 @@ class FSDPTrainRayActor(TrainRayActor):
             log_stats["clipfrac"].append(torch.mean((torch.abs(ratio - 1.0) > clip_range).float()).detach())
             log_stats["log_prob_new_idx_0"].append(log_prob_new[0].detach())
             log_stats["log_prob_old_idx_0"].append(log_prob_old[0].detach())
-            log_stats["log_prob_mean_abs_diff"].append(torch.mean(torch.abs(log_prob_new - log_prob_old)).detach())
+            log_prob_mean_abs_diff = torch.mean(torch.abs(log_prob_new - log_prob_old)).detach()
+            log_stats["log_prob_mean_abs_diff"].append(log_prob_mean_abs_diff)
+            if len(self.models) > 1:
+                log_stats[f"log_prob_mean_abs_diff_{component}"].append(log_prob_mean_abs_diff)
 
             # model_output_* checks the train forward reproduces the rollout forward -- the only
             # model-dependent consistency metric (std_dev/prev_sample_mean are deterministic
             # functions of it). Matches the legacy actor metric name.
             rollout_model_output = stack_train_pair_rollout_debug(batch, "rollout_step_model_output")
             if rollout_model_output is not None:
+                rollout_model_output = rollout_model_output.to(device=device, dtype=torch.float32).float()
                 _append_rollout_train_abs_diff_stats(
                     log_stats,
                     "model_output",
                     noise_pred_microbatch.float(),
-                    rollout_model_output.to(device=device, dtype=torch.float32).float(),
+                    rollout_model_output,
                 )
+                if len(self.models) > 1:
+                    log_stats[f"model_output_mean_abs_diff_{component}"].append(
+                        (noise_pred_microbatch.float() - rollout_model_output).abs().mean().detach()
+                    )
 
         return loss_sum
 

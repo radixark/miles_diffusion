@@ -30,13 +30,13 @@ logger = logging.getLogger(__name__)
 class DiffusionUpdateWeight(abc.ABC):
     """Base updater used by diffusion training actors."""
 
-    def __init__(self, args: Namespace, model: torch.nn.Module) -> None:
+    def __init__(self, args: Namespace, models: dict[str, torch.nn.Module]) -> None:
         self.args = args
-        self.model = model
+        # Component name -> trained model. Component names are the sglang-d
+        # pipeline module names the weights get pushed back to ("transformer",
+        # and "transformer_2" for dual-expert models like Wan2.2).
+        self.models = models
         self.weight_version = 0
-        # Name of the sglang-d pipeline module to target. Defaults to "transformer",
-        # which is the DiT component for diffusers-based pipelines.
-        self.target_module = args.update_weight_target_module
 
     @abc.abstractmethod
     def connect_rollout_engines(
@@ -48,11 +48,15 @@ class DiffusionUpdateWeight(abc.ABC):
 
     def update_weights(self) -> None:
         self.weight_version += 1
-        state_dict = self.model.state_dict()
+        for target_module, model in self.models.items():
+            self._update_component_weights(target_module, model)
+
+    def _update_component_weights(self, target_module: str, model: torch.nn.Module) -> None:
+        state_dict = model.state_dict()
         if self.weight_version <= 2 and dist.get_rank() == 0:
             keys = list(state_dict.keys())
             print(
-                f"[weight_sync v{self.weight_version}] total={len(keys)} keys, "
+                f"[weight_sync v{self.weight_version} {target_module}] total={len(keys)} keys, "
                 f"first5={keys[:5]}, last3={keys[-3:]}",
                 flush=True,
             )
@@ -61,7 +65,7 @@ class DiffusionUpdateWeight(abc.ABC):
         for name, param in state_dict.items():
             param_size = param.numel() * param.element_size()
             if bucket and bucket_size + param_size >= self.args.update_weight_buffer_size:
-                self.wait_and_update_bucket_weights(bucket)
+                self.wait_and_update_bucket_weights(bucket, target_module)
                 del bucket
                 bucket = []
                 bucket_size = 0
@@ -77,15 +81,15 @@ class DiffusionUpdateWeight(abc.ABC):
             bucket_size += param_size
 
         if bucket:
-            self.wait_and_update_bucket_weights(bucket)
+            self.wait_and_update_bucket_weights(bucket, target_module)
             del bucket
 
-    def wait_and_update_bucket_weights(self, bucket):
+    def wait_and_update_bucket_weights(self, bucket, target_module: str):
         bucket = [(name, param.wait()) if hasattr(param, "wait") else (name, param) for name, param in bucket]
-        self.update_bucket_weights(bucket, weight_version=self.weight_version)
+        self.update_bucket_weights(bucket, target_module, weight_version=self.weight_version)
 
     @abc.abstractmethod
-    def update_bucket_weights(self, named_tensors, weight_version=None) -> None:
+    def update_bucket_weights(self, named_tensors, target_module: str, weight_version=None) -> None:
         pass
 
 
@@ -115,10 +119,9 @@ class DiffusionUpdateWeightFromTensor(DiffusionUpdateWeight):
                 # Calculate TP rank within this SGLang engine group.
                 self.tp_rank = dist.get_rank() - start_rank
 
-    def update_bucket_weights(self, named_tensors, weight_version=None) -> None:
+    def update_bucket_weights(self, named_tensors, target_module: str, weight_version=None) -> None:
         monkey_patch_torch_reductions()
-        logger.info("Using flattened tensor bucket (diffusion updater)")
-        target_module = self.target_module
+        logger.info("Using flattened tensor bucket (diffusion updater, module=%s)", target_module)
         named_tensors_by_dtypes = {}
         for name, tensor in named_tensors:
             dtype = tensor.dtype
@@ -163,7 +166,7 @@ class DiffusionUpdateWeightFromTensor(DiffusionUpdateWeight):
                 kwargs = {
                     "serialized_named_tensors": [tensors[i] for tensors in gathered_serialized_batches],
                     "load_format": "flattened_bucket",
-                    "target_modules": [self.target_module],
+                    "target_modules": [target_module],
                     "weight_version": str(weight_version),
                 }
                 ref = self._ipc_engine.update_weights_from_tensor.remote(**kwargs)
@@ -179,18 +182,22 @@ class DiffusionUpdateWeightFromTensorLoRA(DiffusionUpdateWeightFromTensor):
     on the fly during sync (no in-place mutation of the FSDP model).
     """
 
-    def __init__(self, args, model):
-        super().__init__(args, model)
-        self._lora_index: dict[str, tuple] = {}
-        for name, module in model.named_modules():
-            if hasattr(module, "lora_A") and hasattr(module, "lora_B"):
-                for adapter in module.lora_A:
-                    self._lora_index[name + ".base_layer.weight"] = (
-                        module.lora_A[adapter],
-                        module.lora_B[adapter],
-                        module.scaling[adapter],
-                    )
-        logger.info(f"LoRA weight sync: {len(self._lora_index)} mergeable layers")
+    def __init__(self, args, models):
+        super().__init__(args, models)
+        # Per-component LoRA index: component -> {param name -> (A, B, scaling)}.
+        self._lora_index: dict[str, dict[str, tuple]] = {}
+        for component, model in self.models.items():
+            index: dict[str, tuple] = {}
+            for name, module in model.named_modules():
+                if hasattr(module, "lora_A") and hasattr(module, "lora_B"):
+                    for adapter in module.lora_A:
+                        index[name + ".base_layer.weight"] = (
+                            module.lora_A[adapter],
+                            module.lora_B[adapter],
+                            module.scaling[adapter],
+                        )
+            self._lora_index[component] = index
+            logger.info(f"LoRA weight sync [{component}]: {len(index)} mergeable layers")
 
     def _gather_full(self, t: torch.Tensor) -> torch.Tensor:
         t = t.cuda()
@@ -200,12 +207,16 @@ class DiffusionUpdateWeightFromTensorLoRA(DiffusionUpdateWeightFromTensor):
 
     def update_weights(self):
         self.weight_version += 1
+        for target_module, model in self.models.items():
+            self._update_component_weights(target_module, model)
 
+    def _update_component_weights(self, target_module: str, model: torch.nn.Module) -> None:
         verify = os.environ.get("MILES_VERIFY_WEIGHT_SYNC", "").lower() in ("1", "true", "yes")
         verify_pairs: list[tuple[str, torch.Tensor]] = [] if verify else None
+        lora_index = self._lora_index[target_module]
 
         bucket, bucket_size = [], 0
-        for name, param in self.model.state_dict().items():
+        for name, param in model.state_dict().items():
             if "lora_" in name:
                 continue
 
@@ -216,11 +227,11 @@ class DiffusionUpdateWeightFromTensorLoRA(DiffusionUpdateWeightFromTensor):
                     async_op=True,
                 ).to_local()
 
-            if name in self._lora_index:
+            if name in lora_index:
                 # Merge LoRA for this layer on the fly instead of pre-computing
                 # all 720 deltas up front: Qwen-Image's MLP + attn deltas total
                 # tens of GB at peak — here only one delta is resident at a time.
-                A, B, s = self._lora_index[name]
+                A, B, s = lora_index[name]
                 delta = (self._gather_full(B.weight) @ self._gather_full(A.weight)) * s
                 param = param.wait() if hasattr(param, "wait") else param
                 param = param + delta.to(param.device, param.dtype)
@@ -243,7 +254,7 @@ class DiffusionUpdateWeightFromTensorLoRA(DiffusionUpdateWeightFromTensor):
 
             sz = param.numel() * param.element_size()
             if bucket and bucket_size + sz >= self.args.update_weight_buffer_size:
-                self.wait_and_update_bucket_weights(bucket)
+                self.wait_and_update_bucket_weights(bucket, target_module)
                 bucket, bucket_size = [], 0
             bucket.append((sglang_d_param_name, param))
             bucket_size += sz
@@ -254,12 +265,12 @@ class DiffusionUpdateWeightFromTensorLoRA(DiffusionUpdateWeightFromTensor):
                 verify_pairs.append((sglang_d_param_name, t.detach().cpu().contiguous()))
 
         if bucket:
-            self.wait_and_update_bucket_weights(bucket)
+            self.wait_and_update_bucket_weights(bucket, target_module)
 
         if verify_pairs is not None:
-            self._verify_weight_sync(verify_pairs)
+            self._verify_weight_sync(verify_pairs, target_module)
 
-    def _verify_weight_sync(self, pairs: list[tuple[str, torch.Tensor]]) -> None:
+    def _verify_weight_sync(self, pairs: list[tuple[str, torch.Tensor]], target_module: str) -> None:
         """Compare our expected merged-transformer SHA-256 against the live
         rollout engine's checksum. Must match exactly — same algorithm as
         sglang-d's ``compute_weights_checksum`` (sorted by name, raw byte hash).
@@ -270,12 +281,12 @@ class DiffusionUpdateWeightFromTensorLoRA(DiffusionUpdateWeightFromTensor):
         expected = self._sha256_named_tensors(pairs)
 
         try:
-            remote = ray.get(self._ipc_engine.get_weights_checksum.remote([self.target_module]))
+            remote = ray.get(self._ipc_engine.get_weights_checksum.remote([target_module]))
         except Exception as e:
             logger.error(f"[weight_sync verify] failed to fetch remote checksum: {e}")
             return
 
-        actual = (remote or {}).get(self.target_module)
+        actual = (remote or {}).get(target_module)
         match = expected == actual
         logger.warning(
             f"[weight_sync verify v{self.weight_version}] rank={dist.get_rank()} "
@@ -291,11 +302,11 @@ class DiffusionUpdateWeightFromTensorLoRA(DiffusionUpdateWeightFromTensor):
         if dist.get_rank() != 0:
             return
         try:
-            per_engine = ray.get([e.get_weights_checksum.remote([self.target_module]) for e in self.rollout_engines])
+            per_engine = ray.get([e.get_weights_checksum.remote([target_module]) for e in self.rollout_engines])
         except Exception as e:
             logger.error(f"[weight_sync verify cross-engine] failed: {e}")
             return
-        engine_sums = [(idx, (r or {}).get(self.target_module)) for idx, r in enumerate(per_engine)]
+        engine_sums = [(idx, (r or {}).get(target_module)) for idx, r in enumerate(per_engine)]
         first_sum = engine_sums[0][1]
         all_equal = all(s == first_sum for _, s in engine_sums)
         pretty = "  ".join(f"eng{idx}={s[:16] if isinstance(s, str) else s}" for idx, s in engine_sums)
