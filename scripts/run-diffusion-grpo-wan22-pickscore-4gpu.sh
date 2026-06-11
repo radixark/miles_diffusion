@@ -119,6 +119,7 @@ fi
   --use-miles-router \
   --sglang-server-concurrency "${SGLANG_SERVER_CONCURRENCY:-8}" \
   --update-weight-buffer-size 2147483648 \
+  --update-weight-target-module "${UPDATE_WEIGHT_TARGET_MODULES:-transformer}" \
   --diffusion-reward pickscore:1.0 \
   --advantage-estimator grpo \
   --rm-type pickscore \
