@@ -343,9 +343,9 @@ def _compute_server_args(args, host, port, nccl_port):
         "warmup": False,
     }
 
-    # LTX rollout: HF model id + overlay wrapper; DiT weights via transformer_weights_path.
+    # LTX rollout: HF model id + overlay wrapper; optional DiT override via safetensors path.
     if ltx_config.is_ltx_model(args):
-        kwargs["model_path"] = ltx_config.resolve_sglang_model_path(args)
+        kwargs["model_path"] = ltx_config.resolve_hf_model_id(args)
         kwargs.update(ltx_config.server_kwargs_extras(args))
 
     # Forward every `args.sglang_<field>` the user set via --sglang-* CLI for

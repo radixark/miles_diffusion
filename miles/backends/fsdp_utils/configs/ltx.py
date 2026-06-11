@@ -35,7 +35,10 @@ class LTXTrainPipelineConfig(TrainPipelineConfig):
         from dataclasses import dataclass, field
 
         from ltx_core.components.schedulers import LTX2Scheduler
-        from ltx_trainer.model_loader import load_transformer
+        from miles.backends.model_families.ltx import (
+            load_ltx_transformer_for_train,
+            resolve_transformer_checkpoint,
+        )
 
         @dataclass
         class _LTXSchedulerHolder:
@@ -53,7 +56,13 @@ class LTXTrainPipelineConfig(TrainPipelineConfig):
         master_dtype_name = getattr(args, "fsdp_master_dtype", "bf16")
         master_dtype = {"fp16": torch.float16, "bf16": torch.bfloat16, "fp32": torch.float32}[master_dtype_name]
 
-        model = load_transformer(args.diffusion_model, device="cpu", dtype=master_dtype)
+        from miles.backends.model_families.ltx import resolve_transformer_checkpoint
+
+        checkpoint = resolve_transformer_checkpoint(
+            args.diffusion_model,
+            explicit_path=getattr(args, "sglang_transformer_weights_path", None),
+        )
+        model = load_ltx_transformer_for_train(checkpoint, device="cpu", dtype=master_dtype)
 
         num_steps = int(getattr(args, "diffusion_num_steps", 24))
         ltx_sched = LTX2Scheduler()
@@ -93,7 +102,7 @@ class LTXTrainPipelineConfig(TrainPipelineConfig):
         self,
         cond: CondKwargs | None,
         *,
-        video_latents: torch.Tensor,
+        latents: torch.Tensor,
         args,
         device: torch.device,
     ) -> dict:
@@ -106,7 +115,7 @@ class LTXTrainPipelineConfig(TrainPipelineConfig):
                 "LTX train requires denoising_env.pos_cond_kwargs.encoder_hidden_states"
             )
 
-        ref = video_latents[0] if video_latents.ndim >= 2 else video_latents
+        ref = latents[0] if latents.ndim >= 2 else latents
         if ref.ndim == 2:
             batch_size, num_tokens, latent_dim = 1, ref.shape[0], ref.shape[1]
         else:
@@ -125,6 +134,27 @@ class LTXTrainPipelineConfig(TrainPipelineConfig):
         )
         kwargs.update(geom)
         return kwargs
+
+    def build_sde_extra(
+        self,
+        scheduler,
+        grids: dict,
+        sample_indices: torch.Tensor,
+        tstep_indices: torch.Tensor,
+        args,
+    ) -> dict | None:
+        if grids.get("sde_step_indices_window") is None:
+            return None
+
+        idx = grids["sde_step_indices_window"][sample_indices][:, tstep_indices]
+        idx = idx.reshape(-1).long()
+
+        return {
+            "sigmas": scheduler.sigmas,
+            "sde_step_indices": idx,
+            "dynamics_type": getattr(args, "ltx_dynamics_type", "cps"),
+            "sigma_min_override": getattr(args, "ltx_sigma_min", None),
+        }
 
     def expand_cond_for_timestep_batch(self, cond_kwargs: dict, batch_size: int) -> dict:
         out: dict = {}

@@ -30,13 +30,12 @@ logger = logging.getLogger(__name__)
 
 
 def _resolve_diffusion_model_type(args: Namespace) -> str:
+    from miles.backends.model_families.ltx import is_ltx_model
+
     model_type = (getattr(args, "diffusion_model_type", "auto") or "auto").lower()
     if model_type != "auto":
         return model_type
-    diff_model = (getattr(args, "diffusion_model", None) or "").lower()
-    if "ltx" in diff_model or diff_model.endswith(".safetensors"):
-        return "ltx"
-    return "sd3"
+    return "ltx" if is_ltx_model(args) else "sd3"
 
 
 def build_rollout_sampling_params(
@@ -62,14 +61,6 @@ def build_rollout_sampling_params(
     }
 
     model_type = _resolve_diffusion_model_type(args)
-    if model_type == "ltx":
-        if getattr(args, "ltx_frames", None) is not None:
-            sampling_params["num_frames"] = int(args.ltx_frames)
-        if getattr(args, "ltx_fps", None) is not None:
-            sampling_params["fps"] = int(args.ltx_fps)
-        # Handoff: gs=1.0 + no negative prompt → single forward, aligned with train.
-        sampling_params["guidance_scale"] = 1.0
-        sampling_params["negative_prompt"] = None
 
     if evaluation:
         sampling_params["rollout"] = False
@@ -85,28 +76,13 @@ def build_rollout_sampling_params(
                 "rollout_return_dit_trajectory": True,
             }
         )
-        if model_type == "ltx":
-            from miles.utils.sde_log_prob import normalize_dynamics_type
 
-            # Canonical names match sglang-d rollout_sde_type, so pass through
-            # with no translation table (keeps train/rollout on one vocabulary).
-            dynamics = normalize_dynamics_type(getattr(args, "ltx_dynamics_type", "cps"))
-            if dynamics == "dance_sde":
-                raise NotImplementedError(
-                    "dance_sde rollout is not implemented in sglang-d "
-                    "flow_sde_sampling yet (train recompute supports it). "
-                    "Add the sglang-d sampling branch before using it for rollout."
-                )
-            sampling_params["rollout_sde_type"] = dynamics
-            if dynamics in ("cps", "ode"):
-                sampling_params["rollout_log_prob_no_const"] = True
-            elif dynamics == "flow_sde":
-                ltx_sigma_min = getattr(args, "ltx_sigma_min", None)
-                if ltx_sigma_min is not None:
-                    sampling_params["rollout_sigma_min"] = float(ltx_sigma_min)
-            # Disable flag is propagated via MILES_LTX_DISABLE_AV_CROSS on rollout engines
-            # (see miles/ray/rollout.py). Do not pass via extra_sampling_params — master
-            # sglang SamplingParams does not accept ltx2_disable_av_cross_attn.
+    # LTX dynamics must run after the generic rollout block so CPS / log_prob_no_const
+    # are not overwritten by SD3 defaults (rollout_sde_type="sde").
+    if model_type == "ltx":
+        from miles.backends.model_families.ltx import patch_rollout_sampling_params
+
+        patch_rollout_sampling_params(sampling_params, args, evaluation=evaluation)
 
     if extra_sampling_params:
         sampling_params["extra_sampling_params"] = extra_sampling_params

@@ -343,22 +343,16 @@ class FSDPTrainRayActor(TrainRayActor):
         advantages = torch.clamp(advantages, -adv_clip_max, adv_clip_max)
 
         # ------------- scheduler -------------
-        # Use rollout's exact sigmas snapshot; fall back to reconstruction if unavailable.
+        # Use rollout's exact sigmas snapshot; fall back to model-specific reconstruction.
         timesteps_ref = dit_trajectories[0].timesteps.to(device).float()
         sigmas_snapshot = getattr(dit_trajectories[0], "sigmas", None)
         sched_config = getattr(self.scheduler, "config", None)
         num_train_timesteps = (
             int(sched_config.num_train_timesteps) if sched_config is not None else 1000
         )
-        if sigmas_snapshot is not None:
-            sigmas_ref = sigmas_snapshot.to(device).float()
-        elif not self.train_pipeline_config.needs_timestep_scaling:
-            # Trajectory timesteps may be AdaLN-scale (LTX: σ×1000). CPS expects σ∈[0,1].
-            sigmas_ref = self.train_pipeline_config.scale_timesteps_for_sde(timesteps_ref)
-            sigmas_ref = torch.cat([sigmas_ref, sigmas_ref.new_zeros(1)])
-        else:
-            sigmas_ref = timesteps_ref / float(num_train_timesteps)
-            sigmas_ref = torch.cat([sigmas_ref, sigmas_ref.new_zeros(1)])
+        sigmas_ref = self.train_pipeline_config.resolve_sigmas_ref(
+            timesteps_ref, sigmas_snapshot, self.scheduler,
+        )
 
         self.scheduler.timesteps = timesteps_ref
         self.scheduler.sigmas = sigmas_ref
@@ -468,23 +462,16 @@ class FSDPTrainRayActor(TrainRayActor):
                 dit_trajectories[traj_idx], device
             )
 
-            # prepare cond kwargs (denoising_env text embeds + local geometry for LTX)
+            # prepare cond kwargs (denoising_env + model-specific geometry when needed)
             denoising_env = denoising_envs[traj_idx]
-            if hasattr(train_pipeline_config, "build_train_cond_kwargs"):
-                positive_cond_kwargs_list.append(
-                    train_pipeline_config.build_train_cond_kwargs(
-                        denoising_env.pos_cond_kwargs,
-                        video_latents=latents,
-                        args=self.args,
-                        device=device,
-                    )
+            positive_cond_kwargs_list.append(
+                train_pipeline_config.build_train_cond_kwargs(
+                    denoising_env.pos_cond_kwargs,
+                    latents=latents,
+                    args=self.args,
+                    device=device,
                 )
-            else:
-                positive_cond_kwargs_list.append(
-                    train_pipeline_config.prepare_cond_kwargs(
-                        denoising_env.pos_cond_kwargs, device
-                    )
-                )
+            )
             if use_cfg:
                 negative_cond_kwargs_list.append(
                     train_pipeline_config.prepare_cond_kwargs(denoising_env.neg_cond_kwargs, device)
@@ -589,25 +576,6 @@ class FSDPTrainRayActor(TrainRayActor):
                 and len(sde_indices_per_sample_list) == (traj_end - traj_start)
                 else None
             ),
-        }
-
-    def _build_sde_extra(
-        self,
-        grids: dict,
-        sample_indices: torch.Tensor,
-        tstep_indices: torch.Tensor,
-    ) -> dict | None:
-        if grids.get("sde_step_indices_window") is None:
-            return None
-
-        idx = grids["sde_step_indices_window"][sample_indices][:, tstep_indices]
-        idx = idx.reshape(-1).long()
-
-        return {
-            "sigmas": self.scheduler.sigmas,
-            "sde_step_indices": idx,
-            "dynamics_type": getattr(self.args, "ltx_dynamics_type", "cps"),
-            "sigma_min_override": getattr(self.args, "ltx_sigma_min", None),
         }
 
     def _run_optim_window(
@@ -773,7 +741,9 @@ class FSDPTrainRayActor(TrainRayActor):
 
         noise_pred_flat = _compute_noise_pred()
 
-        sde_extra = self._build_sde_extra(grids, sample_indices, tstep_indices)
+        sde_extra = train_pipeline_config.build_sde_extra(
+            self.scheduler, grids, sample_indices, tstep_indices, self.args,
+        )
 
         prev_sample_dummy, log_prob_new_flat, prev_sample_mean, std_dev_t = train_pipeline_config.sde_step(
             self.scheduler,

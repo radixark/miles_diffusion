@@ -92,10 +92,6 @@ def _parse_cond_kwargs(
         pooled_projections=_parse_tensor_or_list(
             data.get("pooled_projections"), deserialize_func=deserialize_func
         ),
-        # Legacy rollout fields; miles train rebuilds geometry locally for LTX.
-        ltx_positions=deserialize_func(data.get("ltx_positions") or data.get("positions")),
-        ltx_denoise_mask=deserialize_func(data.get("ltx_denoise_mask") or data.get("denoise_mask")),
-        ltx_clean_latent=deserialize_func(data.get("ltx_clean_latent") or data.get("clean_latent")),
     )
 
 

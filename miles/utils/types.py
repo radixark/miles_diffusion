@@ -37,9 +37,6 @@ class CondKwargs:
     encoder_attention_mask: torch.Tensor | None = None
     audio_encoder_attention_mask: torch.Tensor | None = None
     pooled_projections: list[torch.Tensor] | None = None
-    ltx_positions: torch.Tensor | None = None
-    ltx_denoise_mask: torch.Tensor | None = None
-    ltx_clean_latent: torch.Tensor | None = None
 
 
 @dataclass

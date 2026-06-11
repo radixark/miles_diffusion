@@ -14,6 +14,7 @@ and overrides the relevant methods.
 from __future__ import annotations
 
 import abc
+from argparse import Namespace
 from typing import Any
 
 import torch
@@ -85,6 +86,49 @@ class TrainPipelineConfig(abc.ABC):
         device: torch.device,
     ) -> dict:
         """Convert CondKwargs to model-specific forward() kwargs."""
+
+    def build_train_cond_kwargs(
+        self,
+        cond: CondKwargs | None,
+        *,
+        latents: torch.Tensor,
+        args: Namespace,
+        device: torch.device,
+    ) -> dict:
+        """Build per-sample conditioning for the training forward pass."""
+        return self.prepare_cond_kwargs(cond, device)
+
+    def resolve_sigmas_ref(
+        self,
+        timesteps_ref: torch.Tensor,
+        sigmas_snapshot: torch.Tensor | None,
+        scheduler: Any,
+    ) -> torch.Tensor:
+        """Build ``[T+1]`` sigma reference for the training scheduler."""
+        device = timesteps_ref.device
+        if sigmas_snapshot is not None:
+            return sigmas_snapshot.to(device).float()
+
+        sched_config = getattr(scheduler, "config", None)
+        num_train_timesteps = (
+            int(sched_config.num_train_timesteps) if sched_config is not None else 1000
+        )
+        if not self.needs_timestep_scaling:
+            sigmas_ref = self.scale_timesteps_for_sde(timesteps_ref)
+        else:
+            sigmas_ref = timesteps_ref / float(num_train_timesteps)
+        return torch.cat([sigmas_ref, sigmas_ref.new_zeros(1)])
+
+    def build_sde_extra(
+        self,
+        scheduler: Any,
+        grids: dict,
+        sample_indices: torch.Tensor,
+        tstep_indices: torch.Tensor,
+        args: Namespace,
+    ) -> dict | None:
+        """Optional per-tile metadata for model-specific SDE log_prob."""
+        return None
 
     def expand_cond_for_timestep_batch(
         self,

@@ -18,9 +18,8 @@
 #     > logs/ltx23_dev_cps_$(date +%Y%m%d_%H%M%S).log 2>&1 &
 #
 # Key overridable env:
-#   LTX_MODEL_PATH          — dev 22B safetensors (train + rollout DiT via transformer_weights_path)
-#   MILES_LTX_ROLLOUT_MODEL_PATH — optional; default Lightricks/LTX-2.3 (sglang overlay)
-#   MILES_LTX_MODEL_ID      — optional; default LTX-2.3
+#   LTX_HF_MODEL            — default Lightricks/LTX-2.3 (train + rollout via overlay)
+#   LTX_DEV_SAFETENSORS     — optional dev .safetensors override for train + rollout DiT
 #   HEIGHT WIDTH FRAMES     — 512 768 57
 #   NUM_STEPS               — 24
 #   LTX_NUM_SDE_STEPS       — 3
@@ -90,12 +89,14 @@ export RAY_object_spilling_config="$(python -c "import json,os; print(json.dumps
 ray stop --force 2>/dev/null || true
 sleep 2
 
-# ── dev checkpoint (borrowed from legacy reward run) ─────────────────────
-LTX_MODEL_PATH="${LTX_MODEL_PATH:-/sgl-workspace/rollout_compare/models/LTX-2.3/ltx-2.3-22b-dev.safetensors}"
-# sglang text_encoder: use materialized Lightricks overlay (local gemma_for_ltx23
-# symlinks often point at stale HF cache and break rollout startup).
-LTX_MATERIALIZED_ROOT="${LTX_MATERIALIZED_ROOT:-/data/wenhao/sgl_diffusion_cache/materialized_models/Lightricks__LTX-2.3-10cce1713d7efa14}"
-GEMMA_ROOT="${GEMMA_ROOT:-${LTX_MATERIALIZED_ROOT}/text_encoder}"
+# ── model: HF hub id by default; optional dev safetensors override ─────────
+LTX_HF_MODEL="${LTX_HF_MODEL:-Lightricks/LTX-2.3}"
+LTX_DEV_SAFETENSORS="${LTX_DEV_SAFETENSORS:-}"
+if [[ -n "${LTX_DEV_SAFETENSORS}" ]]; then
+  DIFFUSION_MODEL="${LTX_DEV_SAFETENSORS}"
+else
+  DIFFUSION_MODEL="${LTX_HF_MODEL}"
+fi
 MILES_DATA_ROOT="${MILES_DATA_ROOT:-/sgl-workspace/miles}"
 PROMPT_DATA="${PROMPT_DATA:-${MILES_DATA_ROOT}/data/vidgen/train.jsonl}"
 
@@ -136,8 +137,7 @@ SAVE_DIR="${CKPT_ROOT}/${RUN_NAME}"
 mkdir -p "${SAVE_DIR}"
 
 echo "[run] dev+cps CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} NUM_GPUS=${NUM_GPUS}"
-echo "[run] dit=${LTX_MODEL_PATH}"
-echo "[run] gemma=${GEMMA_ROOT}"
+echo "[run] model=${DIFFUSION_MODEL}"
 echo "[run] log=${LOG_DIR}"
 echo "[run] wandb=${WANDB_DIR}"
 echo "[run] save=${SAVE_DIR}"
@@ -201,9 +201,8 @@ fi
 python -u "${ROOT_DIR}/train_diffusion.py" \
   --train-backend fsdp \
   --rollout-function-path miles.rollout.sglang_diffusion_rollout.generate_rollout \
-  --diffusion-model "${LTX_MODEL_PATH}" \
+  --diffusion-model "${DIFFUSION_MODEL}" \
   --diffusion-model-type ltx \
-  --ltx-gemma-path "${GEMMA_ROOT}" \
   --hf-checkpoint gpt2 \
   --prompt-data "${PROMPT_DATA}" \
   --input-key input \
