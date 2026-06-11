@@ -91,3 +91,43 @@ def wan_high_window(
     rng = np.random.default_rng(seed)
     start = int(rng.integers(0, len(high_indices) - window_size + 1))
     return high_indices[start : start + window_size], None
+
+
+def wan_dual_window(
+    args: Namespace, sample: Sample, num_steps: int, seed: int
+) -> tuple[list[int] | None, list[int] | None]:
+    """One SDE window per Wan2.2 phase (high + low noise), merged into one
+    index list for dual-expert training.
+
+    sgl-d gates SDE per step by list membership (``loop_step_index not in
+    sde_step_indices`` → ODE), so the merged list being non-contiguous is fine.
+    ``--diffusion-sde-window-size`` applies to each phase independently;
+    ``--diffusion-sde-window-range`` (if set) restricts the high-noise phase
+    only, mirroring its meaning in ``wan_high_window``."""
+    window_size = int(args.diffusion_sde_window_size)
+    if window_size <= 0:
+        raise ValueError("wan_dual_window requires --diffusion-sde-window-size > 0")
+
+    boundary = _WAN2_2_T2V_A14B_BOUNDARY_RATIO * _WAN_NUM_TRAIN_TIMESTEPS
+    timesteps = _wan2_2_euler_timesteps(num_steps)
+    high_indices = [int(i) for i, timestep in enumerate(timesteps) if timestep >= boundary]
+    low_indices = [int(i) for i, timestep in enumerate(timesteps) if timestep < boundary]
+
+    range_raw = getattr(args, "diffusion_sde_window_range", None)
+    if range_raw:
+        parts = [int(x) for x in str(range_raw).split(",")]
+        lo, hi = parts[0], parts[1]
+        high_indices = [i for i in high_indices if lo <= i < hi]
+
+    rng = np.random.default_rng(seed)
+    indices: list[int] = []
+    for phase_name, phase_indices in (("high", high_indices), ("low", low_indices)):
+        if len(phase_indices) < window_size:
+            raise ValueError(
+                f"Not enough Wan {phase_name}-noise steps for requested SDE window: "
+                f"available={len(phase_indices)}, requested={window_size}, "
+                f"num_steps={num_steps}, boundary={boundary}"
+            )
+        start = int(rng.integers(0, len(phase_indices) - window_size + 1))
+        indices.extend(phase_indices[start : start + window_size])
+    return sorted(indices), None
