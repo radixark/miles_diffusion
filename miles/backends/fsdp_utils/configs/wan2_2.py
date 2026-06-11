@@ -10,9 +10,34 @@ from .train_pipeline_config import TrainPipelineConfig, register_train_pipeline_
 
 @register_train_pipeline_config("Wan2.2-T2V-A14B", "Wan-AI/Wan2.2-T2V-A14B")
 class Wan2_2TrainPipelineConfig(TrainPipelineConfig):
-    target_components = ["transformer"]
+    # High-noise expert ("transformer") handles t >= boundary, low-noise expert
+    # ("transformer_2") the rest — mirrors sgl-d's _select_and_manage_model.
+    target_components = ["transformer", "transformer_2"]
+    boundary_ratio = 0.875
     # Wan DiT expects raw scheduler timesteps (0..num_train_timesteps), no /1000 scaling.
     needs_timestep_scaling = False
+
+    def component_for_timestep(self, timestep: float, num_train_timesteps: int) -> str:
+        if timestep >= self.boundary_ratio * num_train_timesteps:
+            return "transformer"
+        return "transformer_2"
+
+    def select_guidance_scale(
+        self,
+        timestep: float,
+        num_train_timesteps: int,
+        guidance_scale: float,
+        guidance_scale_2: float | None,
+    ) -> float:
+        if timestep >= self.boundary_ratio * num_train_timesteps:
+            return guidance_scale
+        # sgl-d uses batch.guidance_scale_2 for low-noise steps with NO fallback;
+        # a silent fallback here would desync train/rollout CFG and corrupt ratios.
+        assert guidance_scale_2 is not None, (
+            "Wan2.2 low-noise steps require --diffusion-guidance-scale-2 "
+            "(rollout already denoises them with guidance_scale_2)."
+        )
+        return guidance_scale_2
 
     def prepare_cond_kwargs(self, cond: CondKwargs | None, device: torch.device) -> dict:
         if cond is None or not cond.encoder_hidden_states:

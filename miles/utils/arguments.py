@@ -421,8 +421,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default="transformer",
                 help=(
-                    "Name of the sglang-d pipeline module to push updated weights to. "
-                    "Defaults to 'transformer', the DiT component for diffusers-based pipelines."
+                    "Comma-separated names of the sglang-d pipeline modules to train and push "
+                    "updated weights to. Defaults to 'transformer', the DiT component for "
+                    "diffusers-based pipelines. For dual-expert models (Wan2.2) pass "
+                    "'transformer,transformer_2' to train both the high- and low-noise DiT."
                 ),
             )
             parser.add_argument(
@@ -1287,6 +1289,16 @@ def miles_validate_args(args):
 
     if args.eval_reward_key is None:
         args.eval_reward_key = args.reward_key
+
+    args.update_weight_target_modules = [
+        name.strip() for name in args.update_weight_target_module.split(",") if name.strip()
+    ]
+    if not args.update_weight_target_modules:
+        raise ValueError(
+            f"--update-weight-target-module must name at least one module, got {args.update_weight_target_module!r}"
+        )
+    if len(set(args.update_weight_target_modules)) != len(args.update_weight_target_modules):
+        raise ValueError(f"--update-weight-target-module has duplicates: {args.update_weight_target_module!r}")
 
     if args.diffusion_log_image_interval < 1:
         raise ValueError(f"diffusion_log_image_interval must be >= 1, got {args.diffusion_log_image_interval}")
