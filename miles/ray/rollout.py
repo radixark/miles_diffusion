@@ -14,6 +14,7 @@ import torch
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 
+from miles.backends.sglang_diffusion_utils.sglang_diffusion_engine import SGLangDiffusionEngine
 from miles.rollout.base_types import call_rollout_fn
 from miles.utils import tracking_utils
 from miles.utils.health_monitor import RolloutHealthMonitor
@@ -45,19 +46,13 @@ class RolloutManager:
         logger.info("RolloutManager init start")
         self.args = args
         self.pg = pg
-        if self.args.debug_train_only:
-            logger.info("RolloutManager: debug_train_only, skipping sglang router.")
-            router_addr = None
-        else:
-            logger.info("RolloutManager: starting router...")
-            _start_router(args)
-            logger.info("RolloutManager: router started, init tracking...")
-            router_addr = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
+        logger.info("RolloutManager: starting router...")
+        _start_router(args)
+        logger.info("RolloutManager: router started, init tracking...")
         # TODO make args immutable
-        init_tracking(args, primary=False, router_addr=router_addr)
-        if not self.args.debug_train_only:
-            logger.info("RolloutManager: init http client...")
-            init_http_client(args)
+        init_tracking(args, primary=False, router_addr=f"http://{args.sglang_router_ip}:{args.sglang_router_port}")
+        logger.info("RolloutManager: init http client...")
+        init_http_client(args)
         logger.info("RolloutManager: loading data source...")
 
         data_source_cls = load_function(self.args.data_source_path)
@@ -449,7 +444,7 @@ class RolloutManager:
                 if frame.max() <= 1.0 + 1e-3:
                     frame = frame * 255.0
                 frame = np.clip(frame, 0, 255).astype(np.uint8)
-                reward = s.get_reward_value(self.args, reward_key=reward_key)
+                reward = s.reward if not reward_key else (s.reward or {}).get(reward_key)
                 images.append(wandb.Image(frame, caption=f"{str(s.prompt)[:160]} | reward={reward}"))
             if images:
                 log_dict[media_key] = images
@@ -483,61 +478,9 @@ class RolloutManager:
         return rollout_data_refs
 
 
-def _base_rollout_engine_env_vars() -> dict[str, str]:
-    return {name: "1" for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST} | {
-        "SGL_JIT_DEEPGEMM_PRECOMPILE": "false",
-        "SGLANG_JIT_DEEPGEMM_PRECOMPILE": "false",
-        "SGL_DISABLE_TP_MEMORY_INBALANCE_CHECK": "true",
-        "SGLANG_DISABLE_TP_MEMORY_INBALANCE_CHECK": "true",
-        "SGLANG_MEMORY_SAVER_CUDA_GRAPH": "true",
-        "SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT": "true",
-        "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION": "false",
-        "SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE": "false",
-    }
-
-
-def _ltx_alignment_env_vars(args) -> dict[str, str]:
-    """Propagate LTX train/rollout alignment flags into sglang Ray workers.
-
-    Ray ``runtime_env`` does not inherit the parent shell env; monkey patches in
-    ``sglang_diffusion_engine`` read these variables at scheduler startup.
-
-    TODO(PR4): replace env bridging with explicit sglang ``ServerArgs`` fields
-    (or upstream train-mode guider / video-only flags) so miles does not depend
-    on opaque env + runtime monkey patches.
-    """
-    env: dict[str, str] = {}
-    if getattr(args, "ltx_disable_av_cross_attn", False):
-        env["MILES_LTX_DISABLE_AV_CROSS"] = "1"
-    from miles.backends.sglang_diffusion_utils.monkey_patches import LTX_ROLLOUT_PATCHES_ENV
-
-    for name in (
-        LTX_ROLLOUT_PATCHES_ENV,
-        "MILES_LTX_DISABLE_AV_CROSS",
-    ):
-        if os.environ.get(name):
-            env[name] = os.environ[name]
-    return env
-
-
-def _build_rollout_engine_env_vars(args) -> dict[str, str]:
-    env_vars = _base_rollout_engine_env_vars()
-    if os.environ.get("PYTHONPATH"):
-        env_vars["PYTHONPATH"] = os.environ["PYTHONPATH"]
-    for cache_var in ("SGLANG_DIFFUSION_CACHE_ROOT", "HF_HOME", "TMPDIR"):
-        if os.environ.get(cache_var):
-            env_vars[cache_var] = os.environ[cache_var]
-    env_vars.update(_ltx_alignment_env_vars(args))
-    return env_vars
-
-
 def init_rollout_engines(args, pg, all_rollout_engines):
     if args.debug_train_only:
         return 0
-
-    from miles.backends.sglang_diffusion_utils.sglang_diffusion_engine import (
-        SGLangDiffusionEngine,
-    )
 
     num_gpu_per_engine = min(args.rollout_num_gpus_per_engine, args.num_gpus_per_node)
     num_engines = args.rollout_num_gpus // num_gpu_per_engine
@@ -567,7 +510,30 @@ def init_rollout_engines(args, pg, all_rollout_engines):
             placement_group_bundle_index=reordered_bundle_indices[i * num_gpu_per_engine],
         )
 
-        env_vars = _build_rollout_engine_env_vars(args)
+        env_vars = {name: "1" for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST} | {
+            "SGL_JIT_DEEPGEMM_PRECOMPILE": "false",
+            "SGLANG_JIT_DEEPGEMM_PRECOMPILE": "false",
+            "SGL_DISABLE_TP_MEMORY_INBALANCE_CHECK": "true",
+            "SGLANG_DISABLE_TP_MEMORY_INBALANCE_CHECK": "true",
+            "SGLANG_MEMORY_SAVER_CUDA_GRAPH": "true",
+            "SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT": "true",
+            "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION": "false",
+            "SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE": "false",
+        }
+        if os.environ.get("PYTHONPATH"):
+            env_vars["PYTHONPATH"] = os.environ["PYTHONPATH"]
+        for cache_var in ("SGLANG_DIFFUSION_CACHE_ROOT", "HF_HOME", "TMPDIR"):
+            if os.environ.get(cache_var):
+                env_vars[cache_var] = os.environ[cache_var]
+        from miles.backends.sglang_diffusion_utils.configs.ltx import is_ltx_model
+        from miles.backends.sglang_diffusion_utils.monkey_patches import LTX_ROLLOUT_PATCHES_ENV
+
+        if is_ltx_model(args):
+            if getattr(args, "ltx_disable_av_cross_attn", False):
+                env_vars["MILES_LTX_DISABLE_AV_CROSS"] = "1"
+            for name in (LTX_ROLLOUT_PATCHES_ENV, "MILES_LTX_DISABLE_AV_CROSS"):
+                if os.environ.get(name):
+                    env_vars[name] = os.environ[name]
 
         rollout_engine = RolloutRayActor.options(
             num_cpus=num_cpus,

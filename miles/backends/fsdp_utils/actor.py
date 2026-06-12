@@ -175,8 +175,6 @@ class FSDPTrainRayActor(TrainRayActor):
 
         print_memory("before offload DiT")
 
-        self.optimizer.zero_grad(set_to_none=True)
-        _reshard_fsdp2_model(self.model)
         self.model.cpu()
         move_torch_optimizer(self.optimizer, "cpu")
         clear_memory()
@@ -217,7 +215,6 @@ class FSDPTrainRayActor(TrainRayActor):
                 ray.get(self.rollout_manager.clear_num_new_engines.remote())
 
         self.weight_updater.update_weights()
-        dist.barrier(group=get_gloo_group())
         clear_memory()
 
     def _get_init_weight_context_manager(self):
@@ -896,17 +893,6 @@ def _cast_cond_to_dtype(cond: dict, dtype: torch.dtype) -> dict:
         else:
             out[k] = v
     return out
-
-
-def _reshard_fsdp2_model(model: torch.nn.Module) -> None:
-    """Drop FSDP2 unsharded views so model.cpu() can release GPU memory."""
-    if hasattr(model, "reshard"):
-        model.reshard()
-        return
-    for module in model.modules():
-        reshard = getattr(module, "reshard", None)
-        if callable(reshard):
-            reshard()
 
 
 @torch.no_grad()

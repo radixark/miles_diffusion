@@ -10,11 +10,7 @@ from sglang.multimodal_gen.runtime.server_args import ServerArgs
 from sglang.multimodal_gen.runtime.launch_server import kill_process_tree
 
 from miles.backends.sglang_diffusion_utils.configs import ltx as ltx_config
-from miles.backends.sglang_diffusion_utils.monkey_patches import (
-    ROLLOUT_PATCH_GROUP_ENV,
-    apply_rollout_patch_group,
-    resolve_rollout_patch_group,
-)
+from miles.backends.sglang_diffusion_utils.monkey_patches import LTX_ROLLOUT_PATCHES_ENV
 from miles.ray.ray_actor import RayActor
 from miles.utils.http_utils import get_host_info
 
@@ -45,27 +41,21 @@ def _scheduler_process_with_sgld_monkey_patches(*args, **kwargs):
     # any monkey patches done in the middle child are gone. Apply them HERE,
     # before calling the real run_scheduler_process, so the DiT that's
     # constructed inside the grandchild sees the patched classes.
-    apply_rollout_patch_group(os.environ.get(ROLLOUT_PATCH_GROUP_ENV))
+    from miles.backends.sglang_diffusion_utils.monkey_patches import (
+        apply_ltx2_rollout_patches,
+        apply_sgld_monkey_patches,
+    )
 
-    # Colocate weight sync keeps the full CUDA_VISIBLE_DEVICES (so CUDA IPC works
-    # across GPUs); pin the DiT to its assigned local cuda index instead.
-    local_cuda_rank = os.environ.get("MILES_SGLANG_LOCAL_CUDA_RANK")
-    if local_cuda_rank is not None:
-        from sglang.multimodal_gen.runtime.managers.gpu_worker import GPUWorker
-
-        pinned_rank = int(local_cuda_rank)
-        _orig_init = GPUWorker.__init__
-
-        def _patched_init(self, local_rank, rank, master_port, server_args):
-            return _orig_init(self, pinned_rank, rank, master_port, server_args)
-
-        GPUWorker.__init__ = _patched_init
+    if os.environ.get("MILES_APPLY_SGLD_MONKEY_PATCHES") == "1":
+        apply_sgld_monkey_patches()
+    if os.environ.get(LTX_ROLLOUT_PATCHES_ENV, "0") == "1":
+        apply_ltx2_rollout_patches()
 
     from sglang.multimodal_gen.runtime.managers.gpu_worker import run_scheduler_process
     return run_scheduler_process(*args, **kwargs)
 
 
-def _launch_server_target(server_args, patch_group: str | None = None):
+def _launch_server_target(server_args, apply_rollout_patches: bool = False):
     # addict.Dict used by SGL-D loses its `__frozen` instance attribute across spawn pickle.
     # Reconstruct a fresh one from the unpickled (broken) instance
     import addict
@@ -73,17 +63,15 @@ def _launch_server_target(server_args, patch_group: str | None = None):
     if server_args.attention_backend_config is not None:
         server_args.attention_backend_config = addict.Dict(server_args.attention_backend_config)
 
-    # launch_server spawns its scheduler via mp.Process(target=run_scheduler_process).
-    # Under spawn, target is pickled by qualname and re-imported in the grandchild,
-    # so patching in THIS process doesn't help. Instead, rebind the name inside
-    # launch_server's own module to point at our wrapper — pickle then carries
-    # the miles qualname across to the grandchild, which applies the patches (and
-    # colocate GPU pin) before calling the real scheduler entrypoint.
-    if patch_group is not None or os.environ.get("MILES_SGLANG_LOCAL_CUDA_RANK") is not None:
+    if apply_rollout_patches:
+        # launch_server spawns its scheduler via mp.Process(target=run_scheduler_process).
+        # Under spawn, target is pickled by qualname and re-imported in the grandchild,
+        # so patching in THIS process doesn't help. Instead, rebind the name inside
+        # launch_server's own module to point at our wrapper — pickle then carries
+        # the miles qualname across to the grandchild, which applies the patch before
+        # calling the real scheduler entrypoint.
         import sglang.multimodal_gen.runtime.launch_server as _ls_mod
         _ls_mod.run_scheduler_process = _scheduler_process_with_sgld_monkey_patches
-    if patch_group is not None:
-        os.environ[ROLLOUT_PATCH_GROUP_ENV] = patch_group
 
     from sglang.multimodal_gen.runtime.launch_server import launch_server
     launch_server(server_args)
@@ -91,14 +79,14 @@ def _launch_server_target(server_args, patch_group: str | None = None):
 
 def launch_server_process(
     server_args: ServerArgs,
-    patch_group: str | None = None,
+    apply_rollout_patches: bool = False,
 ) -> multiprocessing.Process:
     # use spawn to avoid potential risks of fork in terms of subthreads or CUDA.
     multiprocessing.set_start_method("spawn", force=True)
     server_args.host = server_args.host.strip("[]")
     p = multiprocessing.Process(
         target=_launch_server_target,
-        args=(server_args, patch_group),
+        args=(server_args, apply_rollout_patches),
     )
     p.start()
 
@@ -174,12 +162,24 @@ class SGLangDiffusionEngine(RayActor):
     def _init_normal(self, server_args_dict):
         logger.info(f"Launch HttpServerEngineAdapter at: {self.server_host}:{self.server_port}")
         self._pin_to_assigned_gpu()
-        patch_group = resolve_rollout_patch_group(self.args)
-        if patch_group is not None:
-            logger.info(f"Launching sglang-d with rollout patch group: {patch_group}")
+        apply_sgld = bool(getattr(self.args, "apply_sgld_monkey_patches", False))
+        apply_ltx = (
+            ltx_config.is_ltx_model(self.args)
+            and os.environ.get(LTX_ROLLOUT_PATCHES_ENV, "1") == "1"
+        )
+        use_rollout_patches = apply_sgld or apply_ltx
+        if apply_sgld:
+            os.environ["MILES_APPLY_SGLD_MONKEY_PATCHES"] = "1"
+            logger.info(
+                "Launching sglang-d with sgl-d → diffusers monkey patches "
+                "(--apply-sgld-monkey-patches)"
+            )
+        if apply_ltx:
+            os.environ[LTX_ROLLOUT_PATCHES_ENV] = "1"
+            logger.info("Launching sglang-d with LTX rollout monkey patches")
         self.process = launch_server_process(
             ServerArgs.from_kwargs(**server_args_dict),
-            patch_group=patch_group,
+            apply_rollout_patches=use_rollout_patches,
         )
 
         if self.node_rank == 0 and self.router_ip and self.router_port:
@@ -198,14 +198,13 @@ class SGLangDiffusionEngine(RayActor):
         cvd = os.environ.get("CUDA_VISIBLE_DEVICES", "")
         if not cvd:
             return
-        local_id = _to_local_gpu_id(self.base_gpu_id)
-        # Keep the full CUDA_VISIBLE_DEVICES so colocated weight sync can CUDA-IPC
-        # buckets from FSDP ranks on other GPUs; pin the DiT to its local cuda
-        # index via MILES_SGLANG_LOCAL_CUDA_RANK (applied in the scheduler child).
-        os.environ["MILES_SGLANG_LOCAL_CUDA_RANK"] = str(local_id)
+        visible = [x.strip() for x in cvd.split(",") if x.strip()]
+        local_idx = _to_local_gpu_id(self.base_gpu_id)
+        pinned = visible[local_idx]
+        os.environ["CUDA_VISIBLE_DEVICES"] = pinned
         logger.info(
-            f"Engine rank={self.rank}: rollout cuda:{local_id} "
-            f"(base_gpu_id={self.base_gpu_id}, CUDA_VISIBLE_DEVICES={cvd})"
+            f"Engine rank={self.rank}: pinned CUDA_VISIBLE_DEVICES={pinned} "
+            f"(base_gpu_id={self.base_gpu_id}, local_idx={local_idx})"
         )
 
     def _make_request(self, endpoint: str, payload: dict | None = None):
