@@ -13,7 +13,6 @@ from miles.utils.tracking_utils import init_tracking
 def train(args):
     configure_logger()
     logger = logging.getLogger(__name__)
-
     # allocate the GPUs
     logger.info("train: creating placement groups")
     pgs = create_placement_groups(args)
