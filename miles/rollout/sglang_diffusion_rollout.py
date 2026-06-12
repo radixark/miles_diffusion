@@ -29,15 +29,6 @@ __all__ = ["generate_rollout"]
 logger = logging.getLogger(__name__)
 
 
-def _resolve_diffusion_model_type(args: Namespace) -> str:
-    from miles.backends.model_families.ltx import is_ltx_model
-
-    model_type = (getattr(args, "diffusion_model_type", "auto") or "auto").lower()
-    if model_type != "auto":
-        return model_type
-    return "ltx" if is_ltx_model(args) else "sd3"
-
-
 def build_rollout_sampling_params(
     args: Namespace, 
     *, 
@@ -60,8 +51,6 @@ def build_rollout_sampling_params(
         "true_cfg_scale": getattr(args, "diffusion_true_cfg_scale", None),
     }
 
-    model_type = _resolve_diffusion_model_type(args)
-
     if evaluation:
         sampling_params["rollout"] = False
     else:
@@ -79,9 +68,9 @@ def build_rollout_sampling_params(
 
     # LTX dynamics must run after the generic rollout block so CPS / log_prob_no_const
     # are not overwritten by SD3 defaults (rollout_sde_type="sde").
-    if model_type == "ltx":
-        from miles.backends.model_families.ltx import patch_rollout_sampling_params
+    from miles.backends.model_families.ltx import is_ltx_model, patch_rollout_sampling_params
 
+    if is_ltx_model(args):
         patch_rollout_sampling_params(sampling_params, args, evaluation=evaluation)
 
     if extra_sampling_params:
@@ -164,23 +153,6 @@ class GenerateState(metaclass=SingletonMeta):
         self.remaining_batch_size += len(samples)
 
 
-def _call_step_strategy(
-    step_strategy_fn: Callable,
-    args: Namespace,
-    sample: Sample,
-    num_steps: int,
-    seed: int,
-    rollout_id: int,
-) -> tuple[list[int] | None, list[int] | None]:
-    """Invoke a step-strategy hub function; pass ``rollout_id`` when supported."""
-    params = inspect.signature(step_strategy_fn).parameters
-    if "rollout_id" in params:
-        return step_strategy_fn(
-            args, sample, num_steps, seed, rollout_id=rollout_id
-        )
-    return step_strategy_fn(args, sample, num_steps, seed)
-
-
 async def generate_microgroup(
     args: Namespace, microgroup: list[Sample], sampling_params: dict[str, Any], *, evaluation: bool = False
 ) -> list[Sample]:
@@ -193,13 +165,12 @@ async def generate_microgroup(
     # SGL-D TODO: support seed list for multiple samples in one request
     # currently only support assigning the first seed, SGL-D generates samples with seed, seed+1, seed+2, ...
     if not evaluation and state.step_strategy_fn is not None:
-        sde_indices, return_indices = _call_step_strategy(
-            state.step_strategy_fn,
+        sde_indices, return_indices = state.step_strategy_fn(
             args,
             microgroup[0],
             int(sampling_params["num_inference_steps"]),
             int(sampling_params["seed"]),
-            int(getattr(state, "rollout_id", 0) or 0),
+            rollout_id=int(getattr(state, "rollout_id", 0) or 0),
         )
         sampling_params["rollout_sde_step_indices"] = sde_indices
         sampling_params["rollout_return_step_indices"] = return_indices

@@ -136,3 +136,14 @@ class Sample:
         if self.reward is None:
             raise ValueError("sample.reward is None")
         return float(self.reward)
+
+    def get_sde_step_indices(self) -> list[int] | None:
+        """Per-sample SDE training step indices from rollout metadata or trajectory."""
+        md = self.train_metadata or {}
+        sde = md.get("sde_step_indices")
+        if sde is not None:
+            return sde
+        traj = self.dit_trajectory
+        if traj is not None and traj.sde_step_indices is not None:
+            return traj.sde_step_indices.tolist()
+        return None

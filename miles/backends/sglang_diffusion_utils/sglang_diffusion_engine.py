@@ -17,6 +17,28 @@ from miles.utils.http_utils import get_host_info
 logger = logging.getLogger(__name__)
 
 
+def build_rollout_engine_env_vars(args) -> dict[str, str]:
+    """Env vars forwarded to Ray-spawned sglang-diffusion rollout engine workers."""
+    from miles.backends.model_families.ltx import patch_rollout_engine_env_vars
+    from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
+
+    env_vars = {name: "1" for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST} | {
+        "SGL_JIT_DEEPGEMM_PRECOMPILE": "false",
+        "SGLANG_JIT_DEEPGEMM_PRECOMPILE": "false",
+        "SGL_DISABLE_TP_MEMORY_INBALANCE_CHECK": "true",
+        "SGLANG_DISABLE_TP_MEMORY_INBALANCE_CHECK": "true",
+        "SGLANG_MEMORY_SAVER_CUDA_GRAPH": "true",
+        "SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT": "true",
+        "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION": "false",
+        "SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE": "false",
+    }
+    for passthrough in ("PYTHONPATH", "SGLANG_DIFFUSION_CACHE_ROOT", "HF_HOME", "TMPDIR"):
+        if os.environ.get(passthrough):
+            env_vars[passthrough] = os.environ[passthrough]
+    patch_rollout_engine_env_vars(env_vars, args)
+    return env_vars
+
+
 def _to_local_gpu_id(physical_gpu_id: int) -> int:
     cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
     if not cvd:

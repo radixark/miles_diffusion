@@ -54,6 +54,19 @@ def fchw_frame_to_hwc_uint8(frame_chw: torch.Tensor) -> np.ndarray:
     return np.ascontiguousarray(hwc.clip(0, 255).astype(np.uint8))
 
 
+def first_frame_for_wandb(t: torch.Tensor) -> np.ndarray | None:
+    """First frame as HWC uint8 for wandb logging; None if layout is unsupported."""
+    try:
+        return fchw_frame_to_hwc_uint8(generated_output_to_fchw(t)[0])
+    except (ValueError, TypeError):
+        if t.ndim != 4:
+            return None
+        frame = t[:, 0, :, :].float().cpu().numpy().transpose(1, 2, 0)
+        if float(frame.max()) <= 1.0 + 1e-3:
+            frame = frame * 255.0
+        return np.clip(frame, 0, 255).astype(np.uint8)
+
+
 def fchw_to_pil_frames(video_fchw: torch.Tensor, frame_indices: Sequence[int]) -> list[Image.Image]:
     return [
         Image.fromarray(fchw_frame_to_hwc_uint8(video_fchw[idx]))

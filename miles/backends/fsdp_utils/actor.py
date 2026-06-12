@@ -7,7 +7,6 @@ from contextlib import nullcontext
 import ray
 import torch
 import torch.distributed as dist
-from diffusers import DiffusionPipeline
 
 from miles.ray.train_actor import TrainRayActor
 from miles.utils.context_utils import with_defer
@@ -70,41 +69,17 @@ class FSDPTrainRayActor(TrainRayActor):
 
         self.train_pipeline_config = get_train_pipeline_config(diffusion_model_id)
 
-        if self.train_pipeline_config.is_diffusers_pipeline:
-            with self._get_init_weight_context_manager():
-                pipeline = DiffusionPipeline.from_pretrained(
-                    diffusion_model_id,
-                    torch_dtype=self._master_dtype,
-                    trust_remote_code=True,
-                    text_encoder=None,
-                    vae=None,
-                    tokenizer=None,
-                )
-                model = pipeline.transformer
-                self.scheduler = pipeline.scheduler
-                del pipeline
-        else:
-            model, self.scheduler = self.train_pipeline_config.load_model_and_scheduler(
-                self.args, init_context_factory=self._get_init_weight_context_manager,
-            )
+        model, self.scheduler = self.train_pipeline_config.load_model_and_scheduler(
+            self.args, init_context_factory=self._get_init_weight_context_manager,
+        )
 
         if args.use_lora:
             model = apply_lora(model, args, self.train_pipeline_config)
 
         model.train()
 
-        if args.gradient_checkpointing:
-            if hasattr(model, "enable_gradient_checkpointing"):
-                model.enable_gradient_checkpointing()
-            elif hasattr(model, "set_gradient_checkpointing"):
-                model.set_gradient_checkpointing(True)
-            else:
-                logger.warning(
-                    "gradient_checkpointing requested but model %s exposes neither "
-                    "enable_gradient_checkpointing() nor set_gradient_checkpointing(); "
-                    "skipping.",
-                    type(model).__name__,
-                )
+        if args.gradient_checkpointing and self.train_pipeline_config.is_diffusers_pipeline:
+            model.enable_gradient_checkpointing()
 
         model.to(torch.cuda.current_device())
 
@@ -487,25 +462,18 @@ class FSDPTrainRayActor(TrainRayActor):
             )
 
             sde_step_indices = sde_step_indices_list[traj_idx]
-            sde_indices_per_sample: torch.Tensor | None = None
-            if sde_step_indices is not None:
-                sde_indices_tensor = torch.as_tensor(sde_step_indices, device=device, dtype=torch.long)
-                latents = latents[sde_indices_tensor]
-                next_latents = next_latents[sde_indices_tensor]
-                timesteps = timesteps[sde_indices_tensor]
-                log_prob_old = log_prob_old[sde_indices_tensor]
-                advantage = advantage[: sde_indices_tensor.numel()]
-                if rollout_model_output is not None:
-                    n_mo = int(rollout_model_output.shape[0])
-                    n_win = int(sde_indices_tensor.numel())
-                    if n_mo != n_win:
-                        # Full-length debug tensors (legacy): index by global step.
-                        rollout_model_output = rollout_model_output[sde_indices_tensor]
-                    # else: sglang packs debug outputs in SDE-window order (0..W-1).
-                current_window_size = int(sde_indices_tensor.numel())
-                sde_indices_per_sample = sde_indices_tensor
-            else:
-                current_window_size = default_window_size
+            window_batch = train_pipeline_config.apply_sde_step_window(
+                latents=latents,
+                next_latents=next_latents,
+                timesteps=timesteps,
+                log_prob_old=log_prob_old,
+                advantage=advantage,
+                rollout_model_output=rollout_model_output,
+                sde_step_indices=sde_step_indices,
+                default_window_size=default_window_size,
+                device=device,
+            )
+            current_window_size = window_batch.window_size
 
             if sde_window_size is None:
                 sde_window_size = current_window_size
@@ -514,15 +482,15 @@ class FSDPTrainRayActor(TrainRayActor):
                     f"for now per-sample SDE window length must match across microbatch "
                     f"(got {sde_window_size} and {current_window_size})"
                 )
-            latents_list.append(latents)
-            next_latents_list.append(next_latents)
-            timesteps_list.append(timesteps)
-            log_prob_old_list.append(log_prob_old)
-            advantage_list.append(advantage)
-            if rollout_model_output is not None:
-                rollout_model_outputs_list.append(rollout_model_output)
-            if sde_indices_per_sample is not None:
-                sde_indices_per_sample_list.append(sde_indices_per_sample)
+            latents_list.append(window_batch.latents)
+            next_latents_list.append(window_batch.next_latents)
+            timesteps_list.append(window_batch.timesteps)
+            log_prob_old_list.append(window_batch.log_prob_old)
+            advantage_list.append(window_batch.advantage)
+            if window_batch.rollout_model_output is not None:
+                rollout_model_outputs_list.append(window_batch.rollout_model_output)
+            if window_batch.step_indices is not None:
+                sde_indices_per_sample_list.append(window_batch.step_indices)
 
         latents_window = torch.stack(latents_list, dim=0)
         next_latents_window = torch.stack(next_latents_list, dim=0)
@@ -803,24 +771,15 @@ class FSDPTrainRayActor(TrainRayActor):
                 torch.mean(torch.abs(log_prob_new - log_prob_old_tile)).detach()
             )
             # To log model output diff, please enable --diffusion-debug-mode
-            rollout_mo_window = grids.get("rollout_model_outputs")
-            if rollout_mo_window is not None:
-                rollout_mo_tile = rollout_mo_window[sample_indices][:, tstep_indices]
-                rollout_mo_flat = rollout_mo_tile.reshape(
-                    tile_sample_count * tile_tstep_count, *rollout_mo_tile.shape[2:]
-                )
-                diff = (noise_pred_flat.float() - rollout_mo_flat.float()).abs()
-                ref_max = rollout_mo_flat.float().abs().max() + 1e-30
-                log_stats["model_output_max_abs_diff"].append(diff.max().detach())
-                log_stats["model_output_mean_abs_diff"].append(diff.mean().detach())
-                log_stats["model_output_rel_max"].append((diff.max() / ref_max).detach())
-                flat_train = noise_pred_flat.float().reshape(noise_pred_flat.shape[0], -1)
-                flat_rollout = rollout_mo_flat.float().reshape(rollout_mo_flat.shape[0], -1)
-                log_stats["model_output_cosine_sim"].append(
-                    torch.nn.functional.cosine_similarity(flat_train, flat_rollout, dim=1)
-                    .mean()
-                    .detach()
-                )
+            train_metric_utils.log_model_output_debug_metrics(
+                log_stats,
+                noise_pred_flat=noise_pred_flat,
+                grids=grids,
+                sample_indices=sample_indices,
+                tstep_indices=tstep_indices,
+                tile_sample_count=tile_sample_count,
+                tile_tstep_count=tile_tstep_count,
+            )
 
         return loss
 

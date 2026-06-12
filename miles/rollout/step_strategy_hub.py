@@ -3,8 +3,9 @@
 
 Each function has signature ``(args, sample, num_steps, seed) -> (sde, ret)``
 where ``sde`` and ``ret`` are ``list[int] | None`` (``None`` = all steps).
-Strategies that must match trainer-rollout (``ltx_sde_candidates``) also
-accept ``rollout_id`` via keyword — see ``miles.rollout.sglang_diffusion_rollout``.
+Strategies that must match trainer-rollout (``ltx_sde_candidates``) accept
+``rollout_id`` as a keyword argument — see ``miles.rollout.sglang_diffusion_rollout``.
+All strategies in this hub should accept ``*, rollout_id=0`` for a uniform call site.
 
 Point ``--diffusion-step-strategy-path`` at any such function.
 """
@@ -67,13 +68,14 @@ def ltx_sde_candidates(
 
 
 def sde_window(
-    args: Namespace, sample: Sample, num_steps: int, seed: int
+    args: Namespace, sample: Sample, num_steps: int, seed: int, *, rollout_id: int = 0
 ) -> tuple[list[int] | None, list[int] | None]:
     """flow_grpo-style random contiguous SDE window. Returns (sde=window, return=None)
     so sglang-d returns the full trajectory and log_probs; the trainer then slices
     to the window for loss / backprop. Keeping the full trajectory avoids the
     sglang-d-side trailing ``x_final`` aliasing issue when the window ends before
     the last denoising step."""
+    del sample, rollout_id
     window_size = int(args.diffusion_sde_window_size)
     range_raw = getattr(args, "diffusion_sde_window_range", None)
     if range_raw:

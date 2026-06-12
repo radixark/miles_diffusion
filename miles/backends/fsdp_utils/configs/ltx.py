@@ -70,6 +70,13 @@ class LTXTrainPipelineConfig(TrainPipelineConfig):
         scheduler = _LTXSchedulerHolder(
             sigmas=sigmas, timesteps=sigmas[:num_steps], num_inference_steps=num_steps,
         )
+
+        if getattr(args, "gradient_checkpointing", False):
+            if hasattr(model, "set_gradient_checkpointing"):
+                model.set_gradient_checkpointing(True)
+            elif hasattr(model, "enable_gradient_checkpointing"):
+                model.enable_gradient_checkpointing()
+
         return model, scheduler
 
     def prepare_cond_kwargs(self, cond: CondKwargs | None, device: torch.device) -> dict:
@@ -143,18 +150,13 @@ class LTXTrainPipelineConfig(TrainPipelineConfig):
         tstep_indices: torch.Tensor,
         args,
     ) -> dict | None:
-        if grids.get("sde_step_indices_window") is None:
+        extra = super().build_sde_extra(scheduler, grids, sample_indices, tstep_indices, args)
+        if extra is None:
             return None
-
-        idx = grids["sde_step_indices_window"][sample_indices][:, tstep_indices]
-        idx = idx.reshape(-1).long()
-
-        return {
-            "sigmas": scheduler.sigmas,
-            "sde_step_indices": idx,
-            "dynamics_type": getattr(args, "ltx_dynamics_type", "cps"),
-            "sigma_min_override": getattr(args, "ltx_sigma_min", None),
-        }
+        extra["sigmas"] = scheduler.sigmas
+        extra["dynamics_type"] = getattr(args, "ltx_dynamics_type", "cps")
+        extra["sigma_min_override"] = getattr(args, "ltx_sigma_min", None)
+        return extra
 
     def expand_cond_for_timestep_batch(self, cond_kwargs: dict, batch_size: int) -> dict:
         out: dict = {}

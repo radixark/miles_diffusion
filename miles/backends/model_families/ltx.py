@@ -343,6 +343,20 @@ def patch_rollout_sampling_params(
             sampling_params["rollout_sigma_min"] = float(ltx_sigma_min)
 
 
+def patch_rollout_engine_env_vars(env_vars: dict[str, str], args) -> None:
+    """Add LTX-specific env vars for Ray rollout engine workers."""
+    if not is_ltx_model(args):
+        return
+
+    from miles.backends.sglang_diffusion_utils.monkey_patches import LTX_ROLLOUT_PATCHES_ENV
+
+    if getattr(args, "ltx_disable_av_cross_attn", False):
+        env_vars["MILES_LTX_DISABLE_AV_CROSS"] = "1"
+    for name in (LTX_ROLLOUT_PATCHES_ENV, "MILES_LTX_DISABLE_AV_CROSS"):
+        if os.environ.get(name):
+            env_vars[name] = os.environ[name]
+
+
 def register_args(parser: ArgumentParser) -> None:
     parser.add_argument(
         "--ltx-frames",
