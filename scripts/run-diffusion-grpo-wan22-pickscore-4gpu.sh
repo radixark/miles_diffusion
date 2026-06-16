@@ -87,6 +87,11 @@ if [[ "${GLOBALIZE_REWARD_STD:-0}" == "1" ]]; then
   REWARD_NORM_ARGS+=(--globalize-reward-std)
 fi
 
+FLOW_SHIFT_ARGS=()
+if [[ -n "${DIFFUSION_FLOW_SHIFT:-}" ]]; then
+  FLOW_SHIFT_ARGS+=(--diffusion-flow-shift "${DIFFUSION_FLOW_SHIFT}")
+fi
+
 "${PYTHON_BIN}" -u "${ROOT_DIR}/train_diffusion.py" \
   --train-backend fsdp \
   --rollout-function-path miles.rollout.sglang_diffusion_rollout.generate_rollout \
@@ -145,6 +150,7 @@ fi
   --save "${SAVE_DIR}" \
   --save-interval "${SAVE_INTERVAL:-10}" \
   "${REWARD_NORM_ARGS[@]}" \
+  "${FLOW_SHIFT_ARGS[@]}" \
   "${CHECKPOINT_ARGS[@]}" \
   "${EVAL_ARGS[@]}" \
   "${WANDB_ARGS[@]}"

@@ -271,6 +271,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Number of diffusion inference steps for rollout.",
             )
             parser.add_argument(
+                "--diffusion-flow-shift",
+                type=float,
+                default=None,
+                help=(
+                    "Effective flow-matching shift for the Wan rollout/training schedule. "
+                    "When set, the client computes the sigma schedule and sends it with each "
+                    "rollout request (composing out the server's configured shift), and the "
+                    "step strategies derive phase boundaries from the same schedule. "
+                    "None = use the sgl-d server default (12.0 for Wan2.2-T2V-A14B)."
+                ),
+            )
+            parser.add_argument(
                 "--diffusion-microgroup-size",
                 type=int,
                 default=1,
@@ -355,6 +367,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help="'lo,hi' bounds for the SDE window start (inclusive, exclusive). "
                 "Defaults to [0, num_inference_steps].",
+            )
+            parser.add_argument(
+                "--diffusion-sde-candidate-steps",
+                type=str,
+                default=None,
+                help="Comma-separated step indices forming the SDE window candidate "
+                "set for step strategies that draw from a list (e.g. '1,2,3' mirrors "
+                "the upstream Flow-Factory wan22 lora recipe). None = strategy default.",
             )
             parser.add_argument(
                 "--diffusion-step-strategy-path",
