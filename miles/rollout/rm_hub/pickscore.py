@@ -21,12 +21,16 @@ def _feature_tensor(features):
     return features.pooler_output
 
 
-def _sample_to_rgb_hwc_uint8(sample: Sample) -> np.ndarray:
-    frame_chw = sample.generated_output.detach().cpu()[:, 0, :, :]
-    hwc = frame_chw.float().numpy().transpose(1, 2, 0)
-    if float(hwc.max()) <= 1.0 + 1e-3:
-        hwc = hwc * 255.0
-    return np.ascontiguousarray(hwc.clip(0, 255).astype(np.uint8))
+def _sample_to_rgb_hwc_uint8_frames(sample: Sample) -> list[np.ndarray]:
+    clip_cfhw = sample.generated_output.detach().cpu()  # [C, F, H, W]
+    needs_rescale = float(clip_cfhw.max()) <= 1.0 + 1e-3
+    frames = []
+    for frame_index in range(clip_cfhw.shape[1]):
+        hwc = clip_cfhw[:, frame_index, :, :].float().numpy().transpose(1, 2, 0)
+        if needs_rescale:
+            hwc = hwc * 255.0
+        frames.append(np.ascontiguousarray(hwc.clip(0, 255).astype(np.uint8)))
+    return frames
 
 
 class PickScoreScorer(torch.nn.Module):
@@ -147,7 +151,22 @@ class AsyncPickScorePool(metaclass=SingletonMeta):
 
 
 async def pickscore_rm(args, samples: Sequence[Sample]) -> list[float]:
+    # Score every frame and mean-pool per sample, mirroring Flow-Factory's
+    # PickScore video handling (rewards/pick_score.py flat-reconstruct).
+    # Single-frame samples reduce to the previous behavior.
     pool = AsyncPickScorePool(args)
-    images = [_sample_to_rgb_hwc_uint8(sample) for sample in samples]
-    prompts = [sample.prompt for sample in samples]
-    return await pool.score(images, prompts)
+    images: list[np.ndarray] = []
+    prompts: list[str] = []
+    frame_counts: list[int] = []
+    for sample in samples:
+        frames = _sample_to_rgb_hwc_uint8_frames(sample)
+        images.extend(frames)
+        prompts.extend([sample.prompt] * len(frames))
+        frame_counts.append(len(frames))
+    flat_scores = await pool.score(images, prompts)
+    scores: list[float] = []
+    offset = 0
+    for count in frame_counts:
+        scores.append(float(sum(flat_scores[offset : offset + count]) / count))
+        offset += count
+    return scores
