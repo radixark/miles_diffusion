@@ -11,7 +11,7 @@ from .train_pipeline_config import TrainPipelineConfig, register_train_pipeline_
 @register_train_pipeline_config("Wan2.2-T2V-A14B", "Wan-AI/Wan2.2-T2V-A14B")
 class Wan2_2TrainPipelineConfig(TrainPipelineConfig):
     # High-noise expert ("transformer") handles t >= boundary, low-noise expert
-    # ("transformer_2") the rest — mirrors sgl-d's _select_and_manage_model.
+    # ("transformer_2") the rest.
     boundary_ratio = 0.875
     # Wan DiT expects raw scheduler timesteps (0..num_train_timesteps), no /1000 scaling.
     needs_timestep_scaling = False
@@ -30,8 +30,9 @@ class Wan2_2TrainPipelineConfig(TrainPipelineConfig):
     ) -> float:
         if timestep >= self.boundary_ratio * num_train_timesteps:
             return guidance_scale
-        # sgl-d uses batch.guidance_scale_2 for low-noise steps with NO fallback;
-        # a silent fallback here would desync train/rollout CFG and corrupt ratios.
+        # Rollout backend (sglang-diffusion) uses batch.guidance_scale_2 for low-noise steps with NO fallback;
+        # While high-noise and low-noise can be different;
+        # A misalignment of guidance_scale_2 between training and rollout would hurt training significantly, so we require it to be set explicitly.
         assert guidance_scale_2 is not None, (
             "Wan2.2 low-noise steps require --diffusion-guidance-scale-2 "
             "(rollout already denoises them with guidance_scale_2)."

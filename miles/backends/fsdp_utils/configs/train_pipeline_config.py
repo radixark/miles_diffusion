@@ -50,10 +50,6 @@ class TrainPipelineConfig(abc.ABC):
     needs_timestep_scaling: bool = True
     optimizer_state_allowed_missing: list[str] = []
 
-    # Phase routing (component_for_timestep / select_guidance_scale) lives only on
-    # multi-expert configs like Wan2.2 — single-DiT models never route, so the base
-    # deliberately omits these hooks. See FSDPTrainRayActor's per-tile routing.
-
     @abc.abstractmethod
     def prepare_cond_kwargs(
         self,
