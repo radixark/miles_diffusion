@@ -1,156 +1,112 @@
 #!/usr/bin/env bash
-# Wan2.2-T2V-A14B 1-frame PickScore GRPO recipe for a 4-GPU colocated run.
+# Wan2.2-T2V-A14B 1-frame PickScore GRPO recipe: 4-GPU train+rollout colocate
+# + 1-GPU pickscore reward.
 #
-# Data handling follows the existing Miles PickScore scripts:
-#   rockdu/miles-diffusion-datasets/flowgrpo_pickscore/{train,test}.jsonl
+# Knobs aligned with Flow-Factory's Wan2.2 LoRA GRPO recipe:
+#   pretrained = Wan-AI/Wan2.2-T2V-A14B-Diffusers, resolution=480, num_steps=10,
+#   guidance=4.0 (high-noise) / 3.0 (low-noise), Flow-SDE noise_level=0.9,
+#   LoRA r=64/alpha=128 (self-attn + cross-attn + FFN),
+#   lr=1e-4, adam_beta2=0.999, weight_decay=1e-4, clip_range=1e-4.
+#   One SDE step drawn from the Wan high-noise indices (wan_high_window,
+#   window_size=1, range 1,4) → only the high-noise expert ("transformer") trains.
 #
-# Training knobs are aligned with Flow-Factory's Wan2.2 LoRA GRPO recipe where
-# practical in Miles:
-#   - LoRA r=64/alpha=128
-#   - lr=1e-4, beta2=0.999, weight_decay=1e-4, clip_range=1e-4
-#   - 10 rollout steps, guidance 4.0 / 3.0
-#   - Flow-SDE noise_level=0.9
-#   - one SDE step sampled from Wan high-noise indices 1,2,3
-#   - Wan LoRA targets include self-attn, cross-attn, and FFN
+# Layout: first 4 GPUs in CUDA_VISIBLE_DEVICES = train+sgld colocate,
+# the 5th GPU = pickscore reward worker. Default GPUs 0-4.
 
 set -euo pipefail
-
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3,4}"
-export HF_HOME="${HF_HOME:-/cluster-storage/models}"
-export FLASHINFER_WORKSPACE_BASE="${FLASHINFER_WORKSPACE_BASE:-/cluster-storage/personal/809a2940-8360-4812-81c2-c7383f3f43e7/.cache/flashinfer}"
-export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:False}"
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:False
+RUN_NAME="diffusion_grpo_wan22_pickscore_4gpu_$(date +%Y%m%d_%H%M%S)"
+SAVE_DIR="${ROOT_DIR}/logs/${RUN_NAME}/ckpt"
 
-PYTHON_BIN="${PYTHON_BIN:-/cluster-storage/personal/809a2940-8360-4812-81c2-c7383f3f43e7/miniforge3/envs/miles-diffusion/bin/python}"
-HF_BIN="${HF_BIN:-$(dirname "${PYTHON_BIN}")/hf}"
-RUN_NAME="${RUN_NAME:-wan22_pickscore_4gpu_$(date +%Y%m%d_%H%M%S)}"
-SAVE_DIR="${SAVE_DIR:-${ROOT_DIR}/logs/${RUN_NAME}/ckpt}"
-DATASETS_DIR="${DATASETS_DIR:-/cluster-storage/personal/809a2940-8360-4812-81c2-c7383f3f43e7/datasets/miles-diffusion-datasets}"
+WANDB_ARGS=()
+if [[ -n "${WANDB_API_KEY:-}" ]]; then
+  WANDB_ARGS+=(
+    --use-wandb
+    --wandb-project miles-diffusion-grpo
+    --wandb-group "${RUN_NAME}"
+    --wandb-key "${WANDB_API_KEY}"
+    --diffusion-log-images 8
+    --diffusion-log-image-interval 10
+    --disable-wandb-random-suffix
+  )
+fi
 
-"${HF_BIN}" download --repo-type dataset rockdu/miles-diffusion-datasets \
+PYTHON_BIN="${PYTHON_BIN:-python}"
+
+DATASETS_DIR="/root/datasets/miles-diffusion-datasets"
+hf download --repo-type dataset rockdu/miles-diffusion-datasets \
   --include "flowgrpo_pickscore/**" \
   --local-dir "${DATASETS_DIR}"
 
+# Wan2.2 DiT LoRA targets: self-attn (attn1), cross-attn (attn2), and FFN.
 WAN_LORA_TARGET_MODULES=(
-  attn1.to_q
-  attn1.to_k
-  attn1.to_v
-  attn1.to_out.0
-  attn2.to_q
-  attn2.to_k
-  attn2.to_v
-  attn2.to_out.0
-  ffn.net.0.proj
-  ffn.net.2
+  attn1.to_q attn1.to_k attn1.to_v attn1.to_out.0
+  attn2.to_q attn2.to_k attn2.to_v attn2.to_out.0
+  ffn.net.0.proj ffn.net.2
 )
-
-WANDB_ARGS=()
-if [[ "${USE_WANDB:-0}" == "1" || -n "${WANDB_API_KEY:-}" ]]; then
-  WANDB_ARGS+=(
-    --use-wandb
-    --wandb-mode "${WANDB_MODE:-online}"
-    --wandb-project "${WANDB_PROJECT:-pickscore}"
-    --wandb-group "${RUN_NAME}"
-    --diffusion-log-images "${DIFFUSION_LOG_IMAGES:-8}"
-    --diffusion-log-image-interval "${DIFFUSION_LOG_IMAGE_INTERVAL:-1}"
-    --disable-wandb-random-suffix
-  )
-  if [[ -n "${WANDB_API_KEY:-}" ]]; then
-    WANDB_ARGS+=(--wandb-key "${WANDB_API_KEY}")
-  fi
-  if [[ -n "${WANDB_TEAM:-}" ]]; then
-    WANDB_ARGS+=(--wandb-team "${WANDB_TEAM}")
-  fi
-  if [[ -n "${WANDB_DIR:-}" ]]; then
-    WANDB_ARGS+=(--wandb-dir "${WANDB_DIR}")
-  fi
-fi
-
-EVAL_ARGS=()
-if [[ "${ENABLE_EVAL:-0}" == "1" ]]; then
-  EVAL_ARGS+=(
-    --diffusion-eval-num-steps "${DIFFUSION_EVAL_NUM_STEPS:-28}"
-    --eval-prompt-data pickscore_test "${DATASETS_DIR}/flowgrpo_pickscore/test.jsonl"
-    --eval-interval "${EVAL_INTERVAL:-20}"
-    --skip-eval-before-train
-  )
-fi
-
-CHECKPOINT_ARGS=()
-if [[ "${GRADIENT_CHECKPOINTING:-0}" == "1" ]]; then
-  CHECKPOINT_ARGS+=(--gradient-checkpointing)
-fi
-
-REWARD_NORM_ARGS=()
-if [[ "${GLOBALIZE_REWARD_STD:-0}" == "1" ]]; then
-  REWARD_NORM_ARGS+=(--globalize-reward-std)
-fi
-
-FLOW_SHIFT_ARGS=()
-if [[ -n "${DIFFUSION_FLOW_SHIFT:-}" ]]; then
-  FLOW_SHIFT_ARGS+=(--diffusion-flow-shift "${DIFFUSION_FLOW_SHIFT}")
-fi
 
 "${PYTHON_BIN}" -u "${ROOT_DIR}/train_diffusion.py" \
   --train-backend fsdp \
   --rollout-function-path miles.rollout.sglang_diffusion_rollout.generate_rollout \
-  --hf-checkpoint /cluster-storage/models/Wan-AI/Wan2.2-T2V-A14B-Diffusers \
-  --diffusion-model /cluster-storage/models/Wan-AI/Wan2.2-T2V-A14B-Diffusers \
+  --hf-checkpoint Wan-AI/Wan2.2-T2V-A14B-Diffusers \
+  --diffusion-model Wan-AI/Wan2.2-T2V-A14B-Diffusers \
   --prompt-data "${DATASETS_DIR}/flowgrpo_pickscore/train.jsonl" \
   --input-key input \
-  --rollout-batch-size "${ROLLOUT_BATCH_SIZE:-48}" \
-  --n-samples-per-prompt "${N_SAMPLES_PER_PROMPT:-16}" \
-  --num-rollout "${NUM_ROLLOUT:-10000}" \
-  --num-steps-per-rollout "${NUM_STEPS_PER_ROLLOUT:-2}" \
-  --diffusion-microgroup-size "${DIFFUSION_MICROGROUP_SIZE:-8}" \
-  --micro-batch-size-sample "${MICRO_BATCH_SIZE_SAMPLE:-1}" \
-  --micro-batch-size-tstep "${MICRO_BATCH_SIZE_TSTEP:-1}" \
+  --rollout-batch-size 48 \
+  --n-samples-per-prompt 16 \
+  --num-rollout 10000 \
+  --num-steps-per-rollout 2 \
+  --diffusion-microgroup-size 8 \
+  --micro-batch-size-sample 1 \
+  --micro-batch-size-tstep 1 \
   --diffusion-train-iter-order sample_major \
+  --gradient-checkpointing \
   --actor-num-gpus-per-node 4 \
   --rollout-num-gpus 4 \
   --rollout-num-gpus-per-engine 1 \
-  --num-gpus-per-node "${NUM_GPUS_PER_NODE:-4}" \
+  --num-gpus-per-node 5 \
   --colocate \
   --use-lora \
-  --lora-rank "${LORA_RANK:-64}" \
-  --lora-alpha "${LORA_ALPHA:-128}" \
+  --lora-rank 64 \
+  --lora-alpha 128 \
   --lora-target-modules "${WAN_LORA_TARGET_MODULES[@]}" \
   --diffusion-init-lora-weight gaussian \
-  --lr "${LR:-1e-4}" \
+  --lr 1e-4 \
   --adam-beta2 0.999 \
-  --diffusion-clip-range "${DIFFUSION_CLIP_RANGE:-1e-4}" \
+  --diffusion-clip-range 1e-4 \
   --weight-decay 1e-4 \
   --use-miles-router \
-  --sglang-server-concurrency "${SGLANG_SERVER_CONCURRENCY:-8}" \
+  --sglang-server-concurrency 8 \
   --update-weight-buffer-size 2147483648 \
-  --update-weight-target-module "${UPDATE_WEIGHT_TARGET_MODULES:-transformer}" \
+  --update-weight-target-module transformer \
   --diffusion-reward pickscore:1.0 \
   --advantage-estimator grpo \
+  --globalize-reward-std \
   --rm-type pickscore \
-  --pickscore-num-workers "${PICKSCORE_NUM_WORKERS:-1}" \
-  --pickscore-num-gpus-per-worker "${PICKSCORE_NUM_GPUS_PER_WORKER:-1}" \
-  --pickscore-batch-size "${PICKSCORE_BATCH_SIZE:-8}" \
-  --pickscore-processor-path "${PICKSCORE_PROCESSOR_PATH:-laion/CLIP-ViT-H-14-laion2B-s32B-b79K}" \
-  --pickscore-model-path "${PICKSCORE_MODEL_PATH:-yuvalkirstain/PickScore_v1}" \
+  --pickscore-num-workers 1 \
+  --pickscore-num-gpus-per-worker 1.0 \
+  --pickscore-batch-size 8 \
+  --pickscore-processor-path laion/CLIP-ViT-H-14-laion2B-s32B-b79K \
+  --pickscore-model-path yuvalkirstain/PickScore_v1 \
   --fsdp-master-dtype fp32 \
   --fsdp-reduce-dtype fp32 \
   --diffusion-forward-dtype bf16 \
-  --diffusion-num-steps "${DIFFUSION_NUM_STEPS:-10}" \
-  --diffusion-output-num-frames "${DIFFUSION_OUTPUT_NUM_FRAMES:-1}" \
-  --diffusion-guidance-scale "${DIFFUSION_GUIDANCE_SCALE:-4.0}" \
-  --diffusion-guidance-scale-2 "${DIFFUSION_GUIDANCE_SCALE_2:-3.0}" \
-  --diffusion-noise-level "${DIFFUSION_NOISE_LEVEL:-0.9}" \
-  --diffusion-height "${DIFFUSION_HEIGHT:-480}" \
-  --diffusion-width "${DIFFUSION_WIDTH:-480}" \
-  --diffusion-step-strategy-path "${DIFFUSION_STEP_STRATEGY_PATH:-miles.rollout.step_strategy_hub.wan_high_window}" \
-  --diffusion-sde-window-size "${DIFFUSION_SDE_WINDOW_SIZE:-1}" \
-  --diffusion-sde-window-range "${DIFFUSION_SDE_WINDOW_RANGE:-1,4}" \
-  --diffusion-debug-mode \
+  --diffusion-num-steps 10 \
+  --diffusion-eval-num-steps 28 \
+  --diffusion-output-num-frames 1 \
+  --diffusion-guidance-scale 4.0 \
+  --diffusion-guidance-scale-2 3.0 \
+  --diffusion-noise-level 0.9 \
+  --diffusion-height 480 \
+  --diffusion-width 480 \
+  --diffusion-step-strategy-path miles.rollout.step_strategy_hub.wan_high_window \
+  --diffusion-sde-window-size 1 \
+  --diffusion-sde-window-range 1,4 \
   --save "${SAVE_DIR}" \
-  --save-interval "${SAVE_INTERVAL:-10}" \
-  "${REWARD_NORM_ARGS[@]}" \
-  "${FLOW_SHIFT_ARGS[@]}" \
-  "${CHECKPOINT_ARGS[@]}" \
-  "${EVAL_ARGS[@]}" \
+  --save-interval 10 \
+  --eval-prompt-data pickscore_test "${DATASETS_DIR}/flowgrpo_pickscore/test.jsonl" \
+  --eval-interval 30 \
+  --skip-eval-before-train \
   "${WANDB_ARGS[@]}"
