@@ -49,18 +49,15 @@ class TrainPipelineConfig(abc.ABC):
     lora_target_modules: list[str] = ["to_q", "to_k", "to_v", "to_out.0"]
     needs_timestep_scaling: bool = True
     optimizer_state_allowed_missing: list[str] = []
-    # Pipeline components (DiT modules) this model family can train. Multi-expert
-    # models (Wan2.2 high/low-noise) list all of them; --update-weight-target-module
-    # selects which subset actually gets trained in a run.
-    target_components: list[str] = ["transformer"]
 
     def component_for_timestep(self, timestep: float, num_train_timesteps: int) -> str:
         """Which pipeline component denoises this (raw, unscaled) timestep.
 
-        Single-DiT models always route to the first target component. Multi-expert
-        models override this to mirror the rollout engine's per-step selection.
+        Only multi-expert models (Wan2.2 high/low-noise) consult this — single-DiT
+        models route to their one model directly — so they must override it to
+        mirror the rollout engine's per-step selection.
         """
-        return self.target_components[0]
+        raise NotImplementedError("multi-expert configs must override component_for_timestep")
 
     def select_guidance_scale(
         self,

@@ -12,7 +12,6 @@ from .train_pipeline_config import TrainPipelineConfig, register_train_pipeline_
 class Wan2_2TrainPipelineConfig(TrainPipelineConfig):
     # High-noise expert ("transformer") handles t >= boundary, low-noise expert
     # ("transformer_2") the rest — mirrors sgl-d's _select_and_manage_model.
-    target_components = ["transformer", "transformer_2"]
     boundary_ratio = 0.875
     # Wan DiT expects raw scheduler timesteps (0..num_train_timesteps), no /1000 scaling.
     needs_timestep_scaling = False
