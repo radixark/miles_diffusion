@@ -50,24 +50,9 @@ class TrainPipelineConfig(abc.ABC):
     needs_timestep_scaling: bool = True
     optimizer_state_allowed_missing: list[str] = []
 
-    def component_for_timestep(self, timestep: float, num_train_timesteps: int) -> str:
-        """Which pipeline component denoises this (raw, unscaled) timestep.
-
-        Only multi-expert models (Wan2.2 high/low-noise) consult this — single-DiT
-        models route to their one model directly — so they must override it to
-        mirror the rollout engine's per-step selection.
-        """
-        raise NotImplementedError("multi-expert configs must override component_for_timestep")
-
-    def select_guidance_scale(
-        self,
-        timestep: float,
-        num_train_timesteps: int,
-        guidance_scale: float,
-        guidance_scale_2: float | None,
-    ) -> float:
-        """CFG scale for this (raw) timestep, mirroring sgl-d's per-step selection."""
-        return guidance_scale
+    # Phase routing (component_for_timestep / select_guidance_scale) lives only on
+    # multi-expert configs like Wan2.2 — single-DiT models never route, so the base
+    # deliberately omits these hooks. See FSDPTrainRayActor's per-tile routing.
 
     @abc.abstractmethod
     def prepare_cond_kwargs(
