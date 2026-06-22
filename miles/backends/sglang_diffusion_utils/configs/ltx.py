@@ -1,8 +1,8 @@
-"""LTX-2 sglang-d rollout engine config (re-exports model family helpers)."""
+"""LTX-2 sglang-d rollout engine config (re-exports train-side model family helpers)."""
 
 from __future__ import annotations
 
-from miles.backends.model_families.ltx import (
+from miles.backends.fsdp_utils.configs.ltx import (
     LTX_DEFAULT_HF_MODEL,
     LTX_DEFAULT_MODEL_ID,
     ensure_materialized_model,

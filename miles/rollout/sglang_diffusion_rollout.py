@@ -64,7 +64,7 @@ def build_rollout_sampling_params(
 
     # LTX dynamics must run after the generic rollout block so CPS / log_prob_no_const
     # are not overwritten by SD3 defaults (rollout_sde_type="sde").
-    from miles.backends.model_families.ltx import is_ltx_model, patch_rollout_sampling_params
+    from miles.backends.fsdp_utils.configs.ltx import is_ltx_model, patch_rollout_sampling_params
 
     if is_ltx_model(args):
         patch_rollout_sampling_params(sampling_params, args, evaluation=evaluation)

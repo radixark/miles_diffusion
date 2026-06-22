@@ -1,4 +1,8 @@
-"""LTX-2 DiT parity patches: align sglang ltx_2.py with miles/ltx_core."""
+"""LTX-2 DiT parity patches: align sglang ltx_2.py with miles/ltx_core.
+
+TODO(upstream): remove once sgl-d LTX rollout matches ltx_core AdaLN / temb /
+velocity-to-x0 paths natively (train/rollout alignment checks pass without patch).
+"""
 
 from __future__ import annotations
 

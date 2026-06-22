@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 def build_rollout_engine_env_vars(args) -> dict[str, str]:
     """Env vars forwarded to Ray-spawned sglang-diffusion rollout engine workers."""
-    from miles.backends.model_families.ltx import patch_rollout_engine_env_vars
+    from miles.backends.fsdp_utils.configs.ltx import patch_rollout_engine_env_vars
     from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 
     env_vars = {name: "1" for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST} | {

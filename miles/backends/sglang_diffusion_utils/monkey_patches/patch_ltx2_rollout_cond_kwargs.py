@@ -1,4 +1,8 @@
-"""Ensure LTX rollout denoising_env carries text/audio embeds for miles train replay."""
+"""Ensure LTX rollout denoising_env carries text/audio embeds for miles train replay.
+
+TODO(upstream): remove once sgl-d LTX rollout returns full cond kwargs in the
+standard denoising_env schema without miles-side postprocessing.
+"""
 
 from __future__ import annotations
 
