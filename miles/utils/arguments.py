@@ -454,7 +454,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "(HF hub id with ``ltx`` → ltx, else sd3)."
                 ),
             )
-            from miles.backends.model_families.ltx import register_args as register_ltx_args
+            from miles.backends.fsdp_utils.configs.ltx import register_args as register_ltx_args
 
             register_ltx_args(parser)
             parser.add_argument(
@@ -1315,7 +1315,7 @@ def miles_validate_args(args):
         else:
             args.diffusion_model_type = "sd3"
     if args.diffusion_model_type == "ltx":
-        from miles.backends.model_families.ltx import validate_args as validate_ltx_args
+        from miles.backends.fsdp_utils.configs.ltx import validate_args as validate_ltx_args
 
         validate_ltx_args(args)
 
