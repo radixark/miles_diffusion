@@ -405,7 +405,7 @@ class RolloutManager:
         own namespace at least groups them in one UI section.
         """
         import wandb
-        from miles.rollout.rm_hub.video_pickscore import first_frame_for_wandb
+        from miles.rollout.rm_hub.pickscore import first_frame_for_wandb
 
         log_dict: dict = {}
         for media_key, samples in media_key_to_samples.items():
