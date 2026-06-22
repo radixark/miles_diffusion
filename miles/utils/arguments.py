@@ -5,7 +5,6 @@ import os
 from typing import Any
 
 import yaml
-from transformers import AutoConfig
 
 from miles.backends.sglang_diffusion_utils.arguments import add_sglang_diffusion_arguments
 from miles.backends.sglang_diffusion_utils.arguments import validate_args as sglang_validate_args
@@ -368,21 +367,21 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=int,
                 default=0,
                 help="flow_grpo-style random SDE window; 0 disables. Steps outside "
-                     "the window run ODE and are not returned for training.",
+                "the window run ODE and are not returned for training.",
             )
             parser.add_argument(
                 "--diffusion-sde-window-range",
                 type=str,
                 default=None,
                 help="'lo,hi' bounds for the SDE window start (inclusive, exclusive). "
-                     "Defaults to [0, num_inference_steps].",
+                "Defaults to [0, num_inference_steps].",
             )
             parser.add_argument(
                 "--diffusion-step-strategy-path",
                 type=str,
                 default=None,
                 help="Dotted path to a factory(args) -> StepStrategy callable. "
-                     "Overrides --diffusion-sde-window-size.",
+                "Overrides --diffusion-sde-window-size.",
             )
             parser.add_argument(
                 "--diffusion-log-prob-no-const",
@@ -435,6 +434,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=int,
                 default=1,
                 help="Log diffusion images every N rollouts. Only used when diffusion-log-images > 0.",
+            )
+            parser.add_argument(
+                "--update-weight-target-module",
+                type=str,
+                default="transformer",
+                help=(
+                    "Name of the sglang-d pipeline module to push updated weights to. "
+                    "Defaults to 'transformer', the DiT component for diffusers-based pipelines."
+                ),
             )
             parser.add_argument(
                 "--diffusion-model-type",
@@ -741,6 +749,24 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             reset_arg(parser, "--save", type=str, default=None)
             reset_arg(parser, "--save-interval", type=int, default=None)
             reset_arg(parser, "--async-save", action="store_true")
+            parser.add_argument(
+                "--ckpt-step",
+                type=int,
+                default=None,
+                help="Checkpoint iteration to load from --load. Defaults to latest_checkpointed_iteration.txt.",
+            )
+            parser.add_argument(
+                "--no-load-optim",
+                action="store_true",
+                default=False,
+                help="Do not load optimizer state when resuming from --load.",
+            )
+            parser.add_argument(
+                "--no-load-rng",
+                action="store_true",
+                default=False,
+                help="Do not restore RNG state when resuming from --load.",
+            )
             reset_arg(
                 parser,
                 "--no-save-optim",
@@ -886,7 +912,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument("--wandb-run-id", type=str, default=None)
             return parser
 
-
         # debug
         def add_debug_arguments(parser):
             parser.add_argument(
@@ -944,14 +969,24 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
 
             # LoRA
-            parser.add_argument("--diffusion-ignore-last", type=int, default=0,
-                help="Skip last N denoising steps for training (avoids small-sigma numerical issues). FlowGRPO/DanceGRPO use 1.")
-            parser.add_argument("--use-lora", action="store_true", default=False,
-                help="Use LoRA adapters instead of full finetune.")
+            parser.add_argument(
+                "--diffusion-ignore-last",
+                type=int,
+                default=0,
+                help="Skip last N denoising steps for training (avoids small-sigma numerical issues). FlowGRPO/DanceGRPO use 1.",
+            )
+            parser.add_argument(
+                "--use-lora", action="store_true", default=False, help="Use LoRA adapters instead of full finetune."
+            )
             parser.add_argument("--lora-rank", type=int, default=64)
             parser.add_argument("--lora-alpha", type=int, default=64)
-            parser.add_argument("--lora-target-modules", type=str, nargs="+", default=None,
-                help="Override LoRA target modules. Default: per-model from TrainPipelineConfig.")
+            parser.add_argument(
+                "--lora-target-modules",
+                type=str,
+                nargs="+",
+                default=None,
+                help="Override LoRA target modules. Default: per-model from TrainPipelineConfig.",
+            )
             parser.add_argument(
                 "--diffusion-init-lora-weight",
                 type=str,
@@ -1151,8 +1186,9 @@ def parse_args(add_custom_arguments=None):
     # TODO: Diffusion FSDP
     add_miles_arguments = get_miles_extra_args_provider(add_custom_arguments)
 
-    backend = parse_args_train_backend()
+    parse_args_train_backend()
     from miles.backends.fsdp_utils.arguments import load_fsdp_args
+
     args = load_fsdp_args(extra_args_provider=add_miles_arguments)
     args.rank = 0  # Primary process rank for wandb initialization
     args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
@@ -1235,6 +1271,9 @@ def miles_validate_args(args):
     if args.eval_reward_key is None:
         args.eval_reward_key = args.reward_key
 
+    if args.diffusion_log_image_interval < 1:
+        raise ValueError(f"diffusion_log_image_interval must be >= 1, got {args.diffusion_log_image_interval}")
+
     if args.dump_details is not None:
         args.save_debug_rollout_data = f"{args.dump_details}/rollout_data/{{rollout_id}}.pt"
         args.save_debug_train_data = f"{args.dump_details}/train_data/{{rollout_id}}_{{rank}}.pt"
@@ -1314,9 +1353,9 @@ def miles_validate_args(args):
 
     dp_size = args.actor_num_gpus_per_node * args.actor_num_nodes
     if args.global_batch_size is not None:
-        assert args.global_batch_size % dp_size == 0, (
-            f"global_batch_size {args.global_batch_size} is not divisible by dp_size {dp_size}"
-        )
+        assert (
+            args.global_batch_size % dp_size == 0
+        ), f"global_batch_size {args.global_batch_size} is not divisible by dp_size {dp_size}"
     else:
         args.global_batch_size = dp_size
 

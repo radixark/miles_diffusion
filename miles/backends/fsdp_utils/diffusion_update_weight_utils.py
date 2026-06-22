@@ -36,7 +36,7 @@ class DiffusionUpdateWeight(abc.ABC):
         self.weight_version = 0
         # Name of the sglang-d pipeline module to target. Defaults to "transformer",
         # which is the DiT component for diffusers-based pipelines.
-        self.target_module = getattr(args, "diffusion_target_module", "transformer")
+        self.target_module = args.update_weight_target_module
 
     @abc.abstractmethod
     def connect_rollout_engines(
@@ -141,9 +141,7 @@ class DiffusionUpdateWeightFromTensor(DiffusionUpdateWeight):
                     "metadata": metadata,
                 }
             }
-            serialized_tensors.append(
-                MultiprocessingSerializer.serialize(flattened_tensor_data, output_str=True)
-            )
+            serialized_tensors.append(MultiprocessingSerializer.serialize(flattened_tensor_data, output_str=True))
 
         if self._ipc_gather_src == dist.get_rank():
             gathered_serialized_batches = [None for _ in range(dist.get_world_size(self._ipc_gather_group))]
@@ -170,6 +168,7 @@ class DiffusionUpdateWeightFromTensor(DiffusionUpdateWeight):
                 }
                 ref = self._ipc_engine.update_weights_from_tensor.remote(**kwargs)
                 ray.get(ref)
+
 
 # TODO: update weights only for sgl-d LoRA params
 class DiffusionUpdateWeightFromTensorLoRA(DiffusionUpdateWeightFromTensor):
@@ -240,8 +239,7 @@ class DiffusionUpdateWeightFromTensorLoRA(DiffusionUpdateWeightFromTensor):
             # ``base_model.model.`` is PeftModel.base_model (=LoraModel) .model.
             sglang_d_param_name = name.replace(".base_layer", "")
             if sglang_d_param_name.startswith("base_model.model."):
-                sglang_d_param_name = sglang_d_param_name[len("base_model.model."):]
-
+                sglang_d_param_name = sglang_d_param_name[len("base_model.model.") :]
 
             sz = param.numel() * param.element_size()
             if bucket and bucket_size + sz >= self.args.update_weight_buffer_size:
@@ -272,9 +270,7 @@ class DiffusionUpdateWeightFromTensorLoRA(DiffusionUpdateWeightFromTensor):
         expected = self._sha256_named_tensors(pairs)
 
         try:
-            remote = ray.get(
-                self._ipc_engine.get_weights_checksum.remote([self.target_module])
-            )
+            remote = ray.get(self._ipc_engine.get_weights_checksum.remote([self.target_module]))
         except Exception as e:
             logger.error(f"[weight_sync verify] failed to fetch remote checksum: {e}")
             return
@@ -295,27 +291,15 @@ class DiffusionUpdateWeightFromTensorLoRA(DiffusionUpdateWeightFromTensor):
         if dist.get_rank() != 0:
             return
         try:
-            per_engine = ray.get([
-                e.get_weights_checksum.remote([self.target_module])
-                for e in self.rollout_engines
-            ])
+            per_engine = ray.get([e.get_weights_checksum.remote([self.target_module]) for e in self.rollout_engines])
         except Exception as e:
             logger.error(f"[weight_sync verify cross-engine] failed: {e}")
             return
-        engine_sums = [
-            (idx, (r or {}).get(self.target_module))
-            for idx, r in enumerate(per_engine)
-        ]
+        engine_sums = [(idx, (r or {}).get(self.target_module)) for idx, r in enumerate(per_engine)]
         first_sum = engine_sums[0][1]
         all_equal = all(s == first_sum for _, s in engine_sums)
-        pretty = "  ".join(
-            f"eng{idx}={s[:16] if isinstance(s, str) else s}"
-            for idx, s in engine_sums
-        )
-        logger.warning(
-            f"[weight_sync verify v{self.weight_version} cross-engine] "
-            f"all_equal={all_equal}  {pretty}"
-        )
+        pretty = "  ".join(f"eng{idx}={s[:16] if isinstance(s, str) else s}" for idx, s in engine_sums)
+        logger.warning(f"[weight_sync verify v{self.weight_version} cross-engine] " f"all_equal={all_equal}  {pretty}")
 
     @staticmethod
     def _sha256_named_tensors(pairs: list[tuple[str, torch.Tensor]]) -> str:

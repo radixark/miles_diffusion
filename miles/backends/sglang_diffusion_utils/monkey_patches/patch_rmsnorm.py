@@ -1,5 +1,3 @@
-from typing import Optional
-
 import torch
 
 from sglang.multimodal_gen.runtime.layers.layernorm import RMSNorm
@@ -8,7 +6,7 @@ from sglang.multimodal_gen.runtime.layers.layernorm import RMSNorm
 def _patched_forward(
     self,
     x: torch.Tensor,
-    residual: Optional[torch.Tensor] = None,
+    residual: torch.Tensor | None = None,
 ):
     # diffusers' RMSNorm rounds to weight dtype BEFORE the weight mul, so the
     # mul runs bf16*bf16. sgl-d's default keeps fp32 through the weight mul.
@@ -22,11 +20,7 @@ def _patched_forward(
         residual = x_fp32.to(orig_dtype)
 
     variance_size_override = getattr(self, "variance_size_override", None)
-    x_var = (
-        x_fp32
-        if variance_size_override is None
-        else x_fp32[..., :variance_size_override]
-    )
+    x_var = x_fp32 if variance_size_override is None else x_fp32[..., :variance_size_override]
     variance = x_var.pow(2).mean(dim=-1, keepdim=True)
     x_fp32 = x_fp32 * torch.rsqrt(variance + self.variance_epsilon)
 

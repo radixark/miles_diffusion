@@ -1,17 +1,19 @@
+import argparse
 import asyncio
 import logging
+
 import numpy as np
 import ray
 import torch
-import argparse
-from paddleocr import PaddleOCR
 from Levenshtein import distance
+from paddleocr import PaddleOCR
 from PIL import Image
-from typing import List, Union
+
 from miles.utils.misc import SingletonMeta
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
+
 
 def _init_paddleocr(use_gpu: bool) -> PaddleOCR:
     def make_ocr() -> PaddleOCR:
@@ -21,7 +23,9 @@ def _init_paddleocr(use_gpu: bool) -> PaddleOCR:
             use_gpu=use_gpu,
             show_log=False,
         )
+
     return make_ocr()
+
 
 class OcrScorer:
     def __init__(self, use_gpu: bool = False):
@@ -32,9 +36,7 @@ class OcrScorer:
         self.ocr = _init_paddleocr(use_gpu)
 
     @torch.no_grad()
-    def __call__(self, 
-                images: Union[List[Image.Image], List[np.ndarray]], 
-                prompts: List[str]) -> List[float]:
+    def __call__(self, images: list[Image.Image] | list[np.ndarray], prompts: list[str]) -> list[float]:
         """
         Calculate OCR reward
         :param images: List of input images (PIL or numpy format)
@@ -44,20 +46,24 @@ class OcrScorer:
         prompts = [prompt.split('"')[1] for prompt in prompts]
         rewards = []
         # Ensure input lengths are consistent
-        assert len(images) == len(prompts), f"Images({len(images)}) and prompts({len(prompts)}) must have the same length"
-        for img, prompt in zip(images, prompts):
+        assert len(images) == len(
+            prompts
+        ), f"Images({len(images)}) and prompts({len(prompts)}) must have the same length"
+        for img, prompt in zip(images, prompts, strict=False):
             # Convert image format
             if isinstance(img, Image.Image):
                 img = np.array(img)
-            
+
             try:
                 # OCR recognition
                 result = self.ocr.ocr(img, cls=False)
                 # Extract recognized text (handle possible multi-line results)
-                recognized_text = ''.join([res[1][0] if res[1][1] > 0 else '' for res in result[0]]) if result[0] else ''
-                
-                recognized_text = recognized_text.replace(' ', '').lower()
-                prompt = prompt.replace(' ', '').lower()
+                recognized_text = (
+                    "".join([res[1][0] if res[1][1] > 0 else "" for res in result[0]]) if result[0] else ""
+                )
+
+                recognized_text = recognized_text.replace(" ", "").lower()
+                prompt = prompt.replace(" ", "").lower()
                 if prompt in recognized_text:
                     dist = 0
                 else:
@@ -65,15 +71,16 @@ class OcrScorer:
                 # Recognized many unrelated characters, only add one character penalty
                 if dist > len(prompt):
                     dist = len(prompt)
-                
+
             except Exception as e:
                 # Error handling (e.g., OCR parsing failure)
                 print(f"OCR processing failed: {str(e)}")
                 dist = len(prompt)  # Maximum penalty
-            reward = 1-dist/(len(prompt))
+            reward = 1 - dist / (len(prompt))
             rewards.append(reward)
 
         return rewards
+
 
 @ray.remote
 class OcrRewardActor:
@@ -90,7 +97,7 @@ class AsyncOcrPool(metaclass=SingletonMeta):
     def __init__(self, args) -> None:
         if not ray.is_initialized():
             raise RuntimeError("Ray is not initialized. OCR RM requires Ray for OcrRewardActor.")
-        num_workers = int(getattr(args, "ocr_num_workers", 4) or 4)
+        num_workers = args.ocr_num_workers
         if num_workers <= 0:
             raise ValueError(f"ocr_num_workers must be > 0, got {num_workers}")
         self._actors = [OcrRewardActor.options(num_cpus=1).remote(use_gpu=False) for _ in range(num_workers)]
@@ -106,6 +113,7 @@ class AsyncOcrPool(metaclass=SingletonMeta):
         ref = self._next_actor().score_single.remote(image, prompt)
         loop = asyncio.get_running_loop()
         return float(await loop.run_in_executor(None, ray.get, ref))
+
 
 def _rgb_hwc_from_generated(sample: Sample) -> np.ndarray:
     """``generated_output``: ``[C, F, H, W]`` or ``[C, H, W]``; use frame index 0.
@@ -136,18 +144,20 @@ def _rgb_hwc_from_generated(sample: Sample) -> np.ndarray:
         out = hwc.clip(0, 255).astype(np.uint8)
     return out
 
+
 async def ocr_rm(args, sample: Sample):
     pool = AsyncOcrPool(args)
     image = _rgb_hwc_from_generated(sample)
     score = await pool.score(image, sample.prompt)
     return score
 
+
 if __name__ == "__main__":
     args = argparse.Namespace(ocr_num_workers=4)
     pil_image = Image.open("imgs/miles_logo.png").convert("RGB")
     image_tensor = torch.from_numpy(np.array(pil_image)).permute(2, 0, 1).unsqueeze(1).float()
     sample = Sample(
-        prompt="A logo of Miles saying \"Miles\"",
+        prompt='A logo of Miles saying "Miles"',
         generated_output=image_tensor,
     )
     img = np.array(pil_image)

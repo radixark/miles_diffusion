@@ -1,5 +1,3 @@
-from typing import Optional
-
 import torch
 
 from sglang.multimodal_gen.runtime.layers.layernorm import LayerNormScaleShift
@@ -10,8 +8,8 @@ from miles.backends.sglang_diffusion_utils.monkey_patches._common import ensure_
 def _patched_forward(
     self,
     x: torch.Tensor,
-    shift: Optional[torch.Tensor] = None,
-    scale: Optional[torch.Tensor] = None,
+    shift: torch.Tensor | None = None,
+    scale: torch.Tensor | None = None,
 ):
     # diffusers sequence: LayerNorm(x) then (1+scale)*x + shift in bf16 eager.
     normed = self.norm(x)

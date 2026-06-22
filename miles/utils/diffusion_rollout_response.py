@@ -89,9 +89,7 @@ def _parse_cond_kwargs(
         audio_encoder_attention_mask=deserialize_func(
             data.get("audio_encoder_attention_mask")
         ),
-        pooled_projections=_parse_tensor_or_list(
-            data.get("pooled_projections"), deserialize_func=deserialize_func
-        ),
+        pooled_projections=_parse_tensor_or_list(data.get("pooled_projections"), deserialize_func=deserialize_func),
     )
 
 
@@ -154,7 +152,9 @@ def apply_rollout_image_response(
         sample.seed = int(body["seed"])
 
     sample.generated_output = deserialize_func(body.get("generated_output"))
-    sample.rollout_log_probs = _deserialize_rollout_log_probs(body.get("rollout_log_probs"), deserialize_func=deserialize_func)
+    sample.rollout_log_probs = _deserialize_rollout_log_probs(
+        body.get("rollout_log_probs"), deserialize_func=deserialize_func
+    )
     sample.rollout_debug_tensors = _parse_rollout_debug_tensors(
         body.get("rollout_debug_tensors"),
         deserialize_func=deserialize_func,

@@ -1,6 +1,7 @@
 import logging
 from argparse import Namespace
 from math import isclose
+from typing import Any
 
 import numpy as np
 import torch
@@ -9,7 +10,6 @@ import torch.distributed as dist
 from miles.utils import train_metric_utils
 from miles.utils.flops_utils import calculate_fwd_flops
 from miles.utils.metric_utils import compute_pass_rate, compute_rollout_step
-from typing import Any
 
 RolloutBatch = dict[str, Any]
 

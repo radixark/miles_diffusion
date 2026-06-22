@@ -1,0 +1,137 @@
+name: CI Job
+
+# Reusable workflow ported from radixark/miles (.github/workflows/_run-ci.yml).
+#
+# CPU-only path: GitHub-hosted ubuntu-latest. Trimmed from miles main:
+#   * GPU `run:` job removed entirely — miles-D has no self-hosted GPU
+#     runners. To re-add: copy the `run:` job block back from miles main,
+#     reintroduce `runs_on / container_image / skip_dependency_install /
+#     cpu_runner` inputs, and add a matching `if: !inputs.cpu_runner` gate.
+#   * Megatron-LM checkout/install removed: miles-D source has zero
+#     `from megatron` imports (verified via grep).
+#   * PR-body magic for `ci-megatron-pr:` removed for the same reason.
+#   * sglang checkout/install preserved (miles-D imports
+#     sglang.multimodal_gen.runtime.* and sglang.srt.*).
+
+on:
+  workflow_call:
+    inputs:
+      execute_command:
+        type: string
+        required: true
+
+# TODO: run gpu
+jobs:
+  run-cpu:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - name: Free disk space
+        shell: bash
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          df -h
+
+      - name: Checkout miles-diffusion
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          # 3.10 matches miles-D's setup.py / pyproject (python_requires=">=3.10").
+          python-version: '3.10'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install system dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+          protoc --version
+
+      # TODO: sglang-diffusion-rollout-test to be switched back to sgl main
+      - name: Resolve dependency refs
+        id: resolve-refs
+        shell: bash
+        env:
+          PR_BODY: ${{ github.event.pull_request.body || '' }}
+          INPUT_SGLANG_PR: ${{ github.event.inputs.ci_sglang_pr || '' }}
+          INPUT_SGLANG_REPO: ${{ github.event.inputs.ci_sglang_repo || '' }}
+        run: |
+          SGLANG_PR="${INPUT_SGLANG_PR}"
+          SGLANG_REPO="${INPUT_SGLANG_REPO}"
+          if [ -n "$PR_BODY" ]; then
+            PR_SGLANG_PR=$(echo "$PR_BODY" | grep -m1 -oP '^ci-sglang-pr:\s+\K\S+' || true)
+            [ -z "$SGLANG_PR" ] && [ -n "$PR_SGLANG_PR" ] && SGLANG_PR="$PR_SGLANG_PR"
+            PR_SGLANG_REPO=$(echo "$PR_BODY" | grep -m1 -oP '^ci-sglang-repo:\s+\K\S+' || true)
+            [ -z "$SGLANG_REPO" ] && [ -n "$PR_SGLANG_REPO" ] && SGLANG_REPO="$PR_SGLANG_REPO"
+          fi
+          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-diffusion-rollout-test"
+          # TODO: default repo Rockdu/sglang to be switched back to sgl-project/sglang
+          [ -z "$SGLANG_REPO" ] && SGLANG_REPO="Rockdu/sglang"
+          resolve_fetch_ref() {
+            local ref="$1"
+            if [[ "$ref" =~ ^#([0-9]+)$ ]]; then
+              echo "refs/pull/${BASH_REMATCH[1]}/head"
+            else
+              echo "$ref"
+            fi
+          }
+          SGLANG_FETCH=$(resolve_fetch_ref "$SGLANG_PR")
+          echo "ci_sglang_pr=$SGLANG_FETCH" >> $GITHUB_OUTPUT
+          echo "sglang_repo=$SGLANG_REPO" >> $GITHUB_OUTPUT
+          echo "Resolved: sglang repo=$SGLANG_REPO ref=$SGLANG_PR -> fetch=$SGLANG_FETCH"
+
+      # TODO: default sglang repo (Rockdu/sglang) to be switched back to sgl main
+      - name: Checkout temporary sglang
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.resolve-refs.outputs.sglang_repo }}
+          ref: ${{ steps.resolve-refs.outputs.ci_sglang_pr }}
+          path: sglang
+      
+      # - name: Checkout sglang
+      #   uses: actions/checkout@v4
+      #   with:
+      #     repository: sgl-project/sglang
+      #     ref: ${{ steps.resolve-refs.outputs.ci_sglang_pr }}
+      #     path: sglang
+
+      - name: Install dependencies
+        shell: bash
+        env:
+          UV_SYSTEM_PYTHON: "1"
+        run: |
+          uv pip install -e sglang/python --no-deps
+          uv pip install -r requirements.txt
+          uv pip install -e . --no-deps
+          # sglang is installed --no-deps above, but miles-D's import chain
+          # loads many sglang modules. Install sglang's pure-python runtime
+          # deps upfront; skip GPU-only ones (cuda-python, flashinfer,
+          # flash-attn-4, sglang-kernel, torchao, torchcodec,
+          # torch_memory_saver, quack-kernels, nvidia-cutlass-dsl,
+          # apache-tvm-ffi, kernels, decord2, av). torch itself comes via
+          # accelerate (in requirements.txt).
+          uv pip install \
+            IPython aiohttp anthropic build compressed-tensors einops fastapi \
+            gguf interegular jsonschema llguidance mistral_common modelscope \
+            msgspec ninja nvidia-ml-py openai openai-harmony orjson outlines \
+            partial_json_parser prometheus-client psutil py-spy pydantic \
+            python-multipart pyzmq scipy sentencepiece setproctitle soundfile \
+            tiktoken timm torchvision uvicorn uvloop watchfiles xgrammar
+          # sglang's memory_pool_host.py unconditionally imports sgl_kernel
+          # on non-NPU/XPU/MPS hardware. sgl_kernel is GPU-only — install a
+          # local stub so imports succeed at module load.
+          uv pip install tests/ci/cpu_stubs
+
+      - name: Resolve suite plan
+        shell: bash
+        run: ${{ inputs.execute_command }} --list-only
+
+      - name: Run tests
+        shell: bash
+        run: ${{ inputs.execute_command }}

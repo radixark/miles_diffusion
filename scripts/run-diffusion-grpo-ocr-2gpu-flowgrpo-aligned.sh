@@ -49,7 +49,7 @@ hf download --repo-type dataset rockdu/miles-diffusion-datasets \
   --hf-checkpoint Qwen/Qwen-Image \
   --prompt-data "${DATASETS_DIR}/flowgrpo_ocr/train.jsonl" \
   --input-key input \
-  --rollout-batch-size 16 \
+  --rollout-batch-size 32 \
   --n-samples-per-prompt 16 \
   --num-rollout 100000 \
   --diffusion-microgroup-size 16 \

@@ -1,0 +1,69 @@
+name: PR Test
+
+# Ported from radixark/miles (.github/workflows/pr-test.yml).
+#
+# Differences vs miles main:
+#   * All GPU stages (stage-b-2-gpu-h200, stage-c-8-gpu-h100,
+#     stage-c-4-gpu-h200, stage-c-2-gpu-h200) removed — miles-D has no
+#     self-hosted GPU runner fleet yet. To re-enable, copy the job blocks
+#     back from miles main and provision matching runners.
+#   * `resolve-ci-image` job removed — only relevant for GPU stages that
+#     pull a `radixark/miles:<tag>` container.
+#   * `ci_megatron_pr` workflow_dispatch input removed — miles-D source has
+#     zero `from megatron` imports.
+
+on:
+  pull_request:
+    types: [synchronize, labeled, opened, reopened]
+  workflow_dispatch:
+    inputs:
+      ci_sglang_pr:
+        description: 'SGLang branch/commit (default: sglang-miles)'
+        required: false
+        type: string
+        default: 'sglang-miles-diffusion'
+      ci_sglang_repo:
+        description: 'SGLang repository owner/name (default: Rockdu/sglang)'
+        required: false
+        type: string
+        default: 'Rockdu/sglang'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+# PR labels are passed through to run_suite.py as raw `run-ci-<X>` strings via
+# `--labels`. run_suite.py strips the `run-ci-` prefix internally and ignores
+# any label that does not start with `run-ci-` (see tests/ci/run_suite.py
+# `strip_run_ci_prefix`). For `workflow_dispatch`, no PR labels exist, so the
+# `--labels` list collapses to empty; `--match-all-labels` is then added
+# unconditionally to bypass the labels predicate inside run_suite.py and run
+# every enabled test in the suite.
+
+jobs:
+  # Stage A: CPU-only fast tests (always runs on PR)
+  stage-a-cpu:
+    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request)
+    uses: ./.github/workflows/_run-ci.yml
+    with:
+      execute_command: >-
+        python tests/ci/run_suite.py --hw cpu --suite stage-a-cpu
+        --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
+        ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
+    secrets: inherit
+
+  # Stage B: CPU-only slower bucket (currently empty; reserved for future
+  # CPU tests that don't fit stage-a-cpu's fast budget). Always runs on PR.
+  # Empty result exits 0 in run_suite.py.
+  stage-b-cpu:
+    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request)
+    uses: ./.github/workflows/_run-ci.yml
+    with:
+      execute_command: >-
+        python tests/ci/run_suite.py --hw cpu --suite stage-b-cpu
+        --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
+        ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
+    secrets: inherit

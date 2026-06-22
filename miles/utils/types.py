@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
+
 import torch
-import base64
 from safetensors.torch import load, save
+
 
 def decode_tensor_base64(b64: str) -> torch.Tensor:
     """Deserialize base64 to CPU tensor (same wire format as inference: safetensors ``[\"t\"]``, else ``torch.load``)."""
     raw = base64.b64decode(b64.encode("ascii") if isinstance(b64, str) else b64)
     return load(raw)["t"]
+
 
 def tensor_to_base64(tensor: torch.Tensor) -> str:
     """Encode a CPU tensor as base64 safetensors (single key ``tensor_key``, default ``t``)."""

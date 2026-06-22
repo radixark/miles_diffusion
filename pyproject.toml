@@ -24,6 +24,9 @@ line_length = 119
 
 [tool.ruff]
 line-length = 320  # TODO
+extend-exclude = ["flow_grpo"]
+
+[tool.ruff.lint]
 select = [
     "E",      # Pycodestyle Errors (Structural/Fundamental Errors like bad indentation)
     "F",      # Pyflakes (Core Errors: Unused imports, undefined names)
@@ -40,6 +43,7 @@ ignore = [
 # -vv will also display tests with duration = 0.00s
 addopts = "--verbose --pyargs --durations=0 --strict-markers"  # always add these arguments to pytest
 testpaths = ["./tests"]  # must be an explicit path to avoid importing another "tests" module
+asyncio_mode = "auto"  # async tests work without @pytest.mark.asyncio
 # directories to ignore when discovering tests
 norecursedirs = [
     "external",

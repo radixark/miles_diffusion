@@ -9,6 +9,7 @@ All strategies in this hub should accept ``*, rollout_id=0`` for a uniform call 
 
 Point ``--diffusion-step-strategy-path`` at any such function.
 """
+
 from __future__ import annotations
 
 from argparse import Namespace

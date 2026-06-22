@@ -60,7 +60,7 @@ def train(args):
         if args.eval_interval is not None and rollout_id == 0 and not args.skip_eval_before_train:
             ray.get(rollout_manager.eval.remote(rollout_id))
 
-        #generating rollout data
+        # generating rollout data
         rollout_data_ref = ray.get(rollout_manager.generate.remote(rollout_id))
         logger.info(f"train: rollout {rollout_id} generate done")
 

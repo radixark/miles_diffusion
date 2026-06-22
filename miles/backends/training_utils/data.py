@@ -1,6 +1,7 @@
 import logging
 from argparse import Namespace
 from collections.abc import Sequence
+from typing import Any
 
 import torch
 import torch.distributed as dist
@@ -8,7 +9,6 @@ import torch.nn.functional as F
 
 from miles.utils.data import get_minimum_num_micro_batch_size
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
-from typing import Any
 
 # Type alias – rollout data is a plain dict of lists/tensors.
 RolloutBatch = dict[str, Any]

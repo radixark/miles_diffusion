@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable
 
 import torch
 
@@ -9,10 +9,10 @@ import torch
 @dataclass(frozen=True)
 class DiffusionRolloutSpec:
     # Required rollout keys to reconstruct per-step log_prob_new and PPO ratio in training.
-    #latents and next latents for log_prob_new in training, log_prob_old used with log_prob_new (in training) to get ratio.
+    # latents and next latents for log_prob_new in training, log_prob_old used with log_prob_new (in training) to get ratio.
     required_keys: tuple[str, ...] = ("timesteps", "sigmas", "latents", "next_latents", "log_prob_old")
     # Optional rollout keys for KL regularization or debugging.
-    #mean of distribution p(x_{t+1} | x_t), for KL
+    # mean of distribution p(x_{t+1} | x_t), for KL
     optional_keys: tuple[str, ...] = ("prev_latents_mean",)
 
 
@@ -119,9 +119,7 @@ def validate_rollout_metadata(metadata: dict) -> list[str]:
     if t_t and t_l and t_t != t_l:
         errors.append(f"timestep mismatch: timesteps steps {t_t} != latents steps {t_l}")
     if t_s and t_t and t_s not in (t_t, t_t + 1):
-        errors.append(
-            f"timestep mismatch: sigmas steps {t_s} not in (timesteps {t_t}, timesteps+1 {t_t + 1})"
-        )
+        errors.append(f"timestep mismatch: sigmas steps {t_s} not in (timesteps {t_t}, timesteps+1 {t_t + 1})")
     if t_l and t_n and t_l != t_n:
         errors.append(f"timestep mismatch: latents steps {t_l} != next_latents steps {t_n}")
     if t_l and t_p and t_l != t_p:

@@ -1,8 +1,5 @@
 import torch
-
-from sglang.multimodal_gen.runtime.layers.layernorm import (
-    ScaleResidualLayerNormScaleShift,
-)
+from sglang.multimodal_gen.runtime.layers.layernorm import ScaleResidualLayerNormScaleShift
 
 from miles.backends.sglang_diffusion_utils.monkey_patches._common import ensure_broadcast
 
@@ -23,9 +20,7 @@ def _patched_forward(
     elif gate.dim() == 4:
         num_frames = gate.shape[1]
         frame_seqlen = x.shape[1] // num_frames
-        residual_out = residual + (
-            x.unflatten(dim=1, sizes=(num_frames, frame_seqlen)) * gate
-        ).flatten(1, 2)
+        residual_out = residual + (x.unflatten(dim=1, sizes=(num_frames, frame_seqlen)) * gate).flatten(1, 2)
     else:
         residual_out = residual + x * gate
 

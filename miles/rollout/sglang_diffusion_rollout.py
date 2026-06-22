@@ -22,7 +22,7 @@ from miles.utils.http_utils import post
 from miles.utils.misc import SingletonMeta, load_function
 from miles.utils.types import Sample
 
-from .rm_hub import async_rm, batched_async_rm
+from .rm_hub import batched_async_rm
 
 __all__ = ["generate_rollout"]
 
@@ -30,25 +30,21 @@ logger = logging.getLogger(__name__)
 
 
 def build_rollout_sampling_params(
-    args: Namespace, 
-    *, 
-    extra_sampling_params: dict[str, Any] | None = None, 
-    evaluation: bool = False
+    args: Namespace, *, extra_sampling_params: dict[str, Any] | None = None, evaluation: bool = False
 ) -> dict[str, Any]:
-    """Build static fields in JSON body for ``POST /rollout/generate`` (``RolloutImageRequest``). 
-    """
-    neg = getattr(args, "diffusion_negative_prompt", None)
-    eval_steps = getattr(args, "diffusion_eval_num_steps", None)
-    num_steps = int(eval_steps) if evaluation and eval_steps is not None else args.diffusion_num_steps
+    """Build static fields in JSON body for ``POST /rollout/generate`` (``RolloutImageRequest``)."""
+    neg = args.diffusion_negative_prompt
+    eval_steps = args.diffusion_eval_num_steps
+    num_steps = eval_steps if evaluation and eval_steps is not None else args.diffusion_num_steps
 
     sampling_params: dict[str, Any] = {
-        "generator_device": getattr(args, "diffusion_generator_device", "cuda"),
+        "generator_device": args.diffusion_generator_device,
         "negative_prompt": neg,
-        "width": getattr(args, "diffusion_width", None),
-        "height": getattr(args, "diffusion_height", None),
+        "width": args.diffusion_width,
+        "height": args.diffusion_height,
         "num_inference_steps": num_steps,
-        "guidance_scale": getattr(args, "diffusion_guidance_scale", None),
-        "true_cfg_scale": getattr(args, "diffusion_true_cfg_scale", None),
+        "guidance_scale": args.diffusion_guidance_scale,
+        "true_cfg_scale": args.diffusion_true_cfg_scale,
     }
 
     if evaluation:
@@ -57,10 +53,10 @@ def build_rollout_sampling_params(
         sampling_params.update(
             {
                 "rollout": True,
-                "rollout_sde_type": getattr(args, "diffusion_sde_type", "sde"),
-                "rollout_noise_level": float(getattr(args, "diffusion_noise_level", 0.7)),
-                "rollout_log_prob_no_const": bool(getattr(args, "diffusion_log_prob_no_const", False)),
-                "rollout_debug_mode": bool(getattr(args, "diffusion_debug_mode", False)),
+                "rollout_sde_type": args.diffusion_sde_type,
+                "rollout_noise_level": args.diffusion_noise_level,
+                "rollout_log_prob_no_const": args.diffusion_log_prob_no_const,
+                "rollout_debug_mode": args.diffusion_debug_mode,
                 "rollout_return_denoising_env": True,
                 "rollout_return_dit_trajectory": True,
             }
@@ -78,14 +74,14 @@ def build_rollout_sampling_params(
 
     return sampling_params
 
+
 def build_rollout_generate_payload(
     sampling_params: dict[str, Any],
     prompt: str,
     *,
     num_outputs_per_prompt: int = 1,
 ) -> dict[str, Any]:
-    """Build full JSON payload for ``POST /rollout/generate`` (``RolloutImageRequest``).
-    """
+    """Build full JSON payload for ``POST /rollout/generate`` (``RolloutImageRequest``)."""
     sampling_params["prompt"] = prompt
     if (
         sampling_params.get("negative_prompt") is None
@@ -94,6 +90,7 @@ def build_rollout_generate_payload(
         sampling_params["negative_prompt"] = " "  # FlowGRPO default when CFG is on
     sampling_params["num_outputs_per_prompt"] = num_outputs_per_prompt
     return sampling_params
+
 
 class GenerateState(metaclass=SingletonMeta):
     """Global state for sglang-diffusion image rollout."""
@@ -106,11 +103,9 @@ class GenerateState(metaclass=SingletonMeta):
         )
         self.sampling_params = build_rollout_sampling_params(args)
         self.step_strategy_fn = (
-            load_function(args.diffusion_step_strategy_path)
-            if getattr(args, "diffusion_step_strategy_path", None)
-            else None
+            load_function(args.diffusion_step_strategy_path) if args.diffusion_step_strategy_path else None
         )
-        self.dp_counts = [0] * (args.sglang_dp_size or 1)
+        self.dp_counts = [0] * args.sglang_dp_size
         self.dp_rank = 0
         self.node_id = ray.get_runtime_context().get_node_id()
         self.response_parser_actor = RolloutImageResponseParserActor.options(
@@ -178,9 +173,7 @@ async def generate_microgroup(
         sde_indices = None
 
     payload = build_rollout_generate_payload(
-        sampling_params,
-        microgroup[0].prompt,
-        num_outputs_per_prompt=len(microgroup)
+        sampling_params, microgroup[0].prompt, num_outputs_per_prompt=len(microgroup)
     )
 
     output = await post(url, payload)
@@ -212,7 +205,6 @@ async def generate_and_rm_microgroup(
     sampling_params: dict[str, Any],
     evaluation: bool = False,
 ) -> list[Sample]:
-    return_microgroup = []
 
     state = GenerateState(args)
 
@@ -242,21 +234,23 @@ async def generate_and_rm_microgroup(
 async def generate_and_rm_group(
     args: Namespace, group: list[Sample], sampling_params: dict[str, Any], evaluation: bool = False
 ) -> list[Sample]:
-    state = GenerateState(args)
+    GenerateState(args)
 
     # N-spaced base so sgl-d's seed→[seed+0..seed+N-1] expansion stays disjoint
     # per (rollout, prompt-group); group_index is monotonic across the run.
-    n_per_prompt = int(args.n_samples_per_prompt)
+    n_per_prompt = args.n_samples_per_prompt
     group_index = int(getattr(group[0], "group_index", 0) or 0)
-    seed_base = (int(args.rollout_seed) + group_index * n_per_prompt) % (2**31)
+    seed_base = (args.rollout_seed + group_index * n_per_prompt) % (2**31)
 
     tasks = []
     for idx in range(0, len(group), args.diffusion_microgroup_size):
-        microgroup = group[idx:min(idx + args.diffusion_microgroup_size, len(group))]
+        microgroup = group[idx : min(idx + args.diffusion_microgroup_size, len(group))]
         current_sampling_params = sampling_params.copy()
         current_sampling_params["seed"] = seed_base + idx
         tasks.append(
-            asyncio.create_task(generate_and_rm_microgroup(args, microgroup, current_sampling_params, evaluation=evaluation))
+            asyncio.create_task(
+                generate_and_rm_microgroup(args, microgroup, current_sampling_params, evaluation=evaluation)
+            )
         )
 
     microgroups = await asyncio.gather(*tasks)
@@ -307,7 +301,9 @@ async def generate_rollout_async(
     target_data_size = args.rollout_batch_size
 
     # TODO: oversampling and abort
-    assert args.over_sampling_batch_size == args.rollout_batch_size, "Now we don't support over sampling, please set --over_sampling_batch_size equal to --rollout_batch_size"
+    assert (
+        args.over_sampling_batch_size == args.rollout_batch_size
+    ), "Now we don't support over sampling, please set --over_sampling_batch_size equal to --rollout_batch_size"
 
     data = []
     all_data = []
@@ -357,9 +353,7 @@ async def generate_rollout_async(
 
     assert len(data) == args.rollout_batch_size, f"Got {len(data)} samples, expected {args.rollout_batch_size}"
     data = sorted(data, key=lambda group: group[0][0].index if isinstance(group[0], list) else group[0].index)
-    all_samples = sorted(
-        all_data, key=lambda group: group[0][0].index if isinstance(group[0], list) else group[0].index
-    )
+    sorted(all_data, key=lambda group: group[0][0].index if isinstance(group[0], list) else group[0].index)
 
     # reset the global state to prevent effects on the next rollout or eval.
     state.reset()
@@ -372,12 +366,13 @@ async def generate_rollout_async(
 
 EVAL_PROMPT_DATASET = {}
 
+
 # eval only
 async def eval_rollout(args: Namespace, rollout_id: int) -> tuple[dict[str, dict[str, list[Any]]], list[list[Sample]]]:
     assert not args.group_rm, "Group RM is not supported for eval rollout"
 
     coros = []
-    for dataset_config in getattr(args, "eval_datasets", []) or []:
+    for dataset_config in args.eval_datasets:
         coros.append(eval_rollout_single_dataset(args, rollout_id, dataset_config))
     results_list = await asyncio.gather(*coros)
     results = {}
@@ -444,9 +439,7 @@ async def eval_rollout_single_dataset(
         if do_print:
             row = rows[0]
             logger.info(
-                "eval_rollout_single_dataset example data, prompt: "
-                f"{[str(row.prompt)]} "
-                f"reward={row.reward}"
+                "eval_rollout_single_dataset example data, prompt: " f"{[str(row.prompt)]} " f"reward={row.reward}"
             )
             do_print = False
         data.extend(rows)
@@ -455,7 +448,7 @@ async def eval_rollout_single_dataset(
 
     data.sort(key=lambda sample: sample.index)
 
-    reward_key = args.eval_reward_key or args.reward_key
+    reward_key = args.eval_reward_key
     return {
         dataset_config.name: {
             "rewards": [

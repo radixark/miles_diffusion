@@ -138,9 +138,7 @@ def create_training_models(args, pgs, rollout_manager):
         num_gpus_per_node=args.actor_num_gpus_per_node,
         pg=pgs["actor"],
     )
-    start_rollout_ids = ray.get(
-        actor_model.async_init(args, role="actor", with_ref=False)
-    )
+    start_rollout_ids = ray.get(actor_model.async_init(args, role="actor", with_ref=False))
     logger.info("Actor model initialized.")
 
     assert len(set(start_rollout_ids)) == 1

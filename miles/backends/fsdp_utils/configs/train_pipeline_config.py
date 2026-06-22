@@ -41,22 +41,23 @@ _REGISTRY: dict[str, type["TrainPipelineConfig"]] = {}
 
 def register_train_pipeline_config(*model_name_patterns: str):
     """Decorator: register a TrainPipelineConfig subclass for one or more model name patterns."""
+
     def wrapper(cls):
         for pat in model_name_patterns:
             _REGISTRY[pat.lower()] = cls
         return cls
+
     return wrapper
 
 
-def get_train_pipeline_config(model_name: str) -> "TrainPipelineConfig":
+def get_train_pipeline_config(model_name: str) -> TrainPipelineConfig:
     """Look up and instantiate a TrainPipelineConfig by matching model_name against registered patterns."""
     name_lower = model_name.lower()
     for pattern, cls in _REGISTRY.items():
         if pattern in name_lower:
             return cls()
     raise ValueError(
-        f"No TrainPipelineConfig registered for model '{model_name}'. "
-        f"Known patterns: {list(_REGISTRY.keys())}"
+        f"No TrainPipelineConfig registered for model '{model_name}'. " f"Known patterns: {list(_REGISTRY.keys())}"
     )
 
 
@@ -262,7 +263,7 @@ class TrainPipelineConfig(abc.ABC):
         Default: naive concat along batch dim, only valid when shapes match.
         """
         raise NotImplementedError(
-            f"Must implement collate_cond_for_sample_batch to enable --micro-batch-size-sample in fsdp training"
+            "Must implement collate_cond_for_sample_batch to enable --micro-batch-size-sample in fsdp training"
         )
 
     @abc.abstractmethod

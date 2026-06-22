@@ -6,8 +6,8 @@ import os
 import time
 
 import requests
-from sglang.multimodal_gen.runtime.server_args import ServerArgs
 from sglang.multimodal_gen.runtime.launch_server import kill_process_tree
+from sglang.multimodal_gen.runtime.server_args import ServerArgs
 
 from miles.backends.sglang_diffusion_utils.configs import ltx as ltx_config
 from miles.backends.sglang_diffusion_utils.monkey_patches import LTX_ROLLOUT_PATCHES_ENV
@@ -68,12 +68,14 @@ def _scheduler_process_with_sgld_monkey_patches(*args, **kwargs):
         apply_sgld_monkey_patches,
     )
 
+
     if os.environ.get("MILES_APPLY_SGLD_MONKEY_PATCHES") == "1":
         apply_sgld_monkey_patches()
     if os.environ.get(LTX_ROLLOUT_PATCHES_ENV, "0") == "1":
         apply_ltx2_rollout_patches()
 
     from sglang.multimodal_gen.runtime.managers.gpu_worker import run_scheduler_process
+
     return run_scheduler_process(*args, **kwargs)
 
 
@@ -93,9 +95,11 @@ def _launch_server_target(server_args, apply_rollout_patches: bool = False):
         # the miles qualname across to the grandchild, which applies the patch before
         # calling the real scheduler entrypoint.
         import sglang.multimodal_gen.runtime.launch_server as _ls_mod
+
         _ls_mod.run_scheduler_process = _scheduler_process_with_sgld_monkey_patches
 
     from sglang.multimodal_gen.runtime.launch_server import launch_server
+
     launch_server(server_args)
 
 
@@ -139,6 +143,7 @@ def _wait_server_healthy(base_url, is_process_alive):
                 raise Exception("Server process terminated unexpectedly.")
 
             time.sleep(2)
+
 
 class SGLangDiffusionEngine(RayActor):
     def __init__(self, args, rank: int, base_gpu_id: int | None = None):
@@ -316,12 +321,10 @@ class SGLangDiffusionEngine(RayActor):
             worker_url = f"http://{self.server_host}:{self.server_port}"
             response = None
             if self.args.use_miles_router:
-                response = requests.post(
-                    f"http://{self.router_ip}:{self.router_port}/remove_worker?url={worker_url}"
-                )
+                response = requests.post(f"http://{self.router_ip}:{self.router_port}/remove_worker?url={worker_url}")
             else:
                 # SGL-D router TODO: shutdown for sglang-diffusion router
-                logger.warning(f"Failed to fetch workers list or remove worker: now only support miles_router")
+                logger.warning("Failed to fetch workers list or remove worker: now only support miles_router")
 
             if response is not None:
                 response.raise_for_status()

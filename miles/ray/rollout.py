@@ -1,4 +1,3 @@
-from ast import Raise
 import itertools
 import logging
 import multiprocessing
@@ -11,7 +10,7 @@ import numpy as np
 import ray
 import torch
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
-from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
+from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 
 from miles.backends.sglang_diffusion_utils.sglang_diffusion_engine import (
     SGLangDiffusionEngine,
@@ -61,10 +60,7 @@ class RolloutManager:
         self.data_source = data_source_cls(args)
         logger.info("RolloutManager: data source loaded, loading rollout functions...")
 
-        import sys
-        print("[DEBUG] RolloutManager: loading generate_rollout...", flush=True)
         self.generate_rollout = load_function(self.args.rollout_function_path)
-        print("[DEBUG] RolloutManager: loading eval_generate_rollout...", flush=True)
         self.eval_generate_rollout = load_function(self.args.eval_function_path)
         self.custom_reward_post_process_func = (
             load_function(self.args.custom_reward_post_process_path)
@@ -76,12 +72,10 @@ class RolloutManager:
             if self.args.custom_convert_samples_to_train_data_path is not None
             else None
         )
-        print(f"[DEBUG] RolloutManager: import {self.args.rollout_function_path} done", flush=True)
         logger.info(f"import {self.args.rollout_function_path} as generate_rollout function.")
         logger.info(f"import {self.args.eval_function_path} as eval_generate_rollout function.")
 
-        print(f"[DEBUG] RolloutManager rollout_num_gpus={getattr(self.args, 'rollout_num_gpus', None)}", flush=True)
-        logger.info("RolloutManager rollout_num_gpus=%s", getattr(self.args, "rollout_num_gpus", None))
+        logger.info("RolloutManager rollout_num_gpus=%s", self.args.rollout_num_gpus)
 
         if self.args.debug_train_only:
             self.all_rollout_engines = []
@@ -91,17 +85,12 @@ class RolloutManager:
             num_gpu_per_engine = min(args.rollout_num_gpus_per_engine, args.num_gpus_per_node)
             num_engines = args.rollout_num_gpus // num_gpu_per_engine
             self.all_rollout_engines = [None] * num_engines
-            print(f"[DEBUG] RolloutManager: calling init_rollout_engines with {num_engines} engines...", flush=True)
             self.num_new_engines = init_rollout_engines(args, pg, self.all_rollout_engines)
-            print(f"[DEBUG] RolloutManager: init_rollout_engines returned, started {len(self.all_rollout_engines)}", flush=True)
             logger.info("RolloutManager started %s rollout engines", len(self.all_rollout_engines))
-        print("[DEBUG] RolloutManager: creating lock...", flush=True)
         logger.info("RolloutManager: creating lock...")
         self.nodes_per_engine = max(1, args.rollout_num_gpus_per_engine // args.num_gpus_per_node)
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
         self.rollout_id = -1
-        self._diffusion_offload_fn = None
-        self._diffusion_onload_fn = None
         self._metric_checker = MetricChecker.maybe_create(args)
         self._health_monitor = None
         if self.args.use_fault_tolerance:
@@ -175,7 +164,7 @@ class RolloutManager:
         data = result.data
         self._save_debug_rollout_data(data, rollout_id=rollout_id, evaluation=True)
         metrics = _log_eval_rollout_data(rollout_id, self.args, data, result.metrics)
-        max_images = int(getattr(self.args, "diffusion_log_images", 0) or 0)
+        max_images = self.args.diffusion_log_images
         if max_images > 0:
             self._log_images(
                 {
@@ -186,7 +175,7 @@ class RolloutManager:
                 max_images=max_images,
                 step_key="eval/step",
                 step_value=compute_rollout_step(self.args, rollout_id),
-                reward_key=self.args.eval_reward_key or self.args.reward_key,
+                reward_key=self.args.eval_reward_key,
             )
         if self._metric_checker is not None:
             self._metric_checker.on_eval(metrics)
@@ -351,7 +340,7 @@ class RolloutManager:
             **_reward_stats_dict(norm_t, "rollout/reward/norm_"),
         }
         # Per-prompt (group) stats — meaningful for GRPO-style algorithms.
-        if getattr(self.args, "advantage_estimator", None) == "grpo" and self.args.n_samples_per_prompt > 1:
+        if self.args.advantage_estimator == "grpo" and self.args.n_samples_per_prompt > 1:
             groups_raw = raw_t.view(-1, self.args.n_samples_per_prompt)
             reward_stats["rollout/reward/group_mean_avg"] = float(groups_raw.mean(dim=-1).mean())
             if groups_raw.shape[-1] > 1:
@@ -366,8 +355,8 @@ class RolloutManager:
         reward_stats["rollout/step"] = compute_rollout_step(self.args, self.rollout_id)
         tracking_utils.log(self.args, reward_stats, step_key="rollout/step")
 
-        max_images = int(getattr(self.args, "diffusion_log_images", 0) or 0)
-        interval = max(1, int(getattr(self.args, "diffusion_log_image_interval", 1) or 1))
+        max_images = self.args.diffusion_log_images
+        interval = self.args.diffusion_log_image_interval
         if max_images > 0 and self.rollout_id % interval == 0:
             self._log_images(
                 {"rollout_media/sample_images": samples},
@@ -471,7 +460,6 @@ def init_rollout_engines(args, pg, all_rollout_engines):
     assert len(all_rollout_engines) == num_engines
 
     pg, reordered_bundle_indices, reordered_gpu_ids = pg
-    print(f"[DEBUG] init_rollout_engines: reordered_bundle_indices={reordered_bundle_indices}, reordered_gpu_ids={reordered_gpu_ids}", flush=True)
 
     # use diffusion SGLang rollout engines for miles diffusion
     RolloutRayActor = ray.remote(SGLangDiffusionEngine)
@@ -486,7 +474,6 @@ def init_rollout_engines(args, pg, all_rollout_engines):
 
         # Get the base GPU ID from placement group
         base_gpu_id = int(reordered_gpu_ids[i * num_gpu_per_engine])
-        print(f"[DEBUG] Engine {i}: base_gpu_id={base_gpu_id}, bundle_index={reordered_bundle_indices[i * num_gpu_per_engine]}", flush=True)
 
         scheduling_strategy = PlacementGroupSchedulingStrategy(
             placement_group=pg,
@@ -608,7 +595,7 @@ def _start_router(args):
         from miles.router.router import run_router
 
         router_args = args
-    else :
+    else:
         raise RuntimeError("Miles-diffusion only supports miles router for now")
 
     process = multiprocessing.Process(
@@ -704,5 +691,3 @@ def _compute_zero_std_metrics(args, all_samples: list[Sample]):
     interesting_rewards = [str(round(g[0].get_reward_value(args), 1)) for g in interesting_sample_groups]
 
     return {f"zero_std/count_{reward}": len(items) for reward, items in group_by(interesting_rewards).items()}
-
-

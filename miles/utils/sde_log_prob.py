@@ -42,7 +42,7 @@ def normalize_dynamics_type(name: str) -> str:
 def sde_step_with_logprob(
     scheduler,
     model_output: torch.FloatTensor,
-    timestep: Union[float, torch.FloatTensor],
+    timestep: float | torch.FloatTensor,
     sample: torch.FloatTensor,
     prev_sample: torch.FloatTensor,
     noise_level: float = 0.7,
