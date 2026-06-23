@@ -1,17 +1,14 @@
 import logging
 from argparse import Namespace
 from collections import defaultdict
-from contextlib import nullcontext
 
 import ray
 import torch
 import torch.distributed as dist
-from diffusers import DiffusionPipeline
 
 import miles.backends.fsdp_utils.configs.qwen_image  # noqa: F401 — register pipeline config
 import miles.backends.fsdp_utils.configs.sd3  # noqa: F401 — register pipeline config
 import miles.backends.fsdp_utils.configs.ltx  # noqa: F401 — register pipeline config
-from miles.backends.fsdp_utils.configs.ltx import is_ltx_model
 from miles.ray.train_actor import TrainRayActor
 from miles.utils import tracking_utils, train_metric_utils
 from miles.utils.context_utils import with_defer
@@ -19,7 +16,6 @@ from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.metric_utils import compute_rollout_step
 from miles.utils.profile_utils import TrainProfiler
-from miles.utils.sde_log_prob import sde_step_with_logprob
 from miles.utils.timer import Timer, inverse_timer, timer
 from miles.utils.tracking_utils import init_tracking
 
@@ -69,39 +65,25 @@ class FSDPTrainRayActor(TrainRayActor):
 
         diffusion_model_id = args.diffusion_model or args.hf_checkpoint
         self.train_pipeline_config = get_train_pipeline_config(diffusion_model_id)
-        self._is_ltx = is_ltx_model(args)
+        self.train_step_backend = self.train_pipeline_config.get_train_step_backend()
 
-        if self._is_ltx:
-            model, self.scheduler = self.train_pipeline_config.load_model_and_scheduler(
-                self.args, init_context_factory=self._get_init_weight_context_manager,
-            )
-        else:
-            with self._get_init_weight_context_manager():
-                pipeline = DiffusionPipeline.from_pretrained(
-                    self.args.hf_checkpoint,
-                    torch_dtype=self._master_dtype,
-                    trust_remote_code=True,
-                    text_encoder=None,
-                    vae=None,
-                    tokenizer=None,
-                )
-                model = pipeline.transformer
-                self.scheduler = pipeline.scheduler
-                del pipeline
+        model, self.scheduler = self.train_step_backend.load_model_and_scheduler(
+            self.args,
+            init_context_factory=self._get_init_weight_context_manager,
+            master_dtype=self._master_dtype,
+        )
 
         if args.use_lora:
             model = apply_lora(model, args, self.train_pipeline_config)
 
         model.train()
-
-        if args.gradient_checkpointing and not self._is_ltx:
-            model.enable_gradient_checkpointing()
+        self.train_step_backend.apply_gradient_checkpointing(model, args)
 
         model.to(torch.cuda.current_device())
 
         self.train_pipeline_config.preprocess_model_before_fsdp(model)
 
-        fsdp_wrap = getattr(self.train_pipeline_config, "fsdp_wrap_classes", None) if self._is_ltx else None
+        fsdp_wrap = self.train_step_backend.get_fsdp_wrap_classes()
         model = apply_fsdp2(
             model,
             mesh=self.parallel_state.dp_mesh,
@@ -309,10 +291,7 @@ class FSDPTrainRayActor(TrainRayActor):
         # ------------- CFG Scale -------------
         guidance_scale = self.args.diffusion_guidance_scale
         true_cfg_scale = self.args.diffusion_true_cfg_scale
-        cfg_scale = true_cfg_scale if true_cfg_scale is not None else guidance_scale
-        use_cfg = cfg_scale > 0
-        if self._is_ltx:
-            use_cfg = False
+        use_cfg = self.train_step_backend.should_use_cfg(self.args)
 
         # ------------- KL loss -------------
         kl_beta = float(self.args.diffusion_kl_beta)
@@ -344,16 +323,12 @@ class FSDPTrainRayActor(TrainRayActor):
         num_train_timesteps = (
             int(sched_config.num_train_timesteps) if sched_config is not None else 1000
         )
-        if self._is_ltx:
-            sigmas_ref = self.train_pipeline_config.resolve_sigmas_ref(
-                timesteps_ref, sigmas_snapshot, self.scheduler,
-            )
-        else:
-            if sigmas_snapshot is not None:
-                sigmas_ref = sigmas_snapshot.to(device).float()
-            else:
-                sigmas_ref = timesteps_ref / float(num_train_timesteps)
-                sigmas_ref = torch.cat([sigmas_ref, sigmas_ref.new_zeros(1)])
+        sigmas_ref = self.train_step_backend.resolve_sigmas_ref(
+            timesteps_ref,
+            sigmas_snapshot,
+            self.scheduler,
+            num_train_timesteps=num_train_timesteps,
+        )
 
         self.scheduler.timesteps = timesteps_ref
         self.scheduler.sigmas = sigmas_ref
@@ -465,19 +440,14 @@ class FSDPTrainRayActor(TrainRayActor):
 
             # prepare cond kwargs (denoising_env)
             denoising_env = denoising_envs[traj_idx]
-            if self._is_ltx:
-                positive_cond_kwargs_list.append(
-                    train_pipeline_config.build_train_cond_kwargs(
-                        denoising_env.pos_cond_kwargs,
-                        latents=latents,
-                        args=self.args,
-                        device=device,
-                    )
+            positive_cond_kwargs_list.append(
+                train_pipeline_config.build_train_cond_kwargs(
+                    denoising_env.pos_cond_kwargs,
+                    latents=latents,
+                    args=self.args,
+                    device=device,
                 )
-            else:
-                positive_cond_kwargs_list.append(
-                    train_pipeline_config.prepare_cond_kwargs(denoising_env.pos_cond_kwargs, device)
-                )
+            )
             if use_cfg:
                 negative_cond_kwargs_list.append(
                     train_pipeline_config.prepare_cond_kwargs(denoising_env.neg_cond_kwargs, device)
@@ -652,6 +622,7 @@ class FSDPTrainRayActor(TrainRayActor):
         flattened to batch = tile_sample * tile_tstep."""
         forward_dtype = self._forward_dtype
         train_pipeline_config = self.train_pipeline_config
+        train_step_backend = self.train_step_backend
         tile_sample_count = int(sample_indices.numel())
         tile_tstep_count = int(tstep_indices.numel())
         num_samples_in_window = grids["num_samples_in_window"]
@@ -664,12 +635,7 @@ class FSDPTrainRayActor(TrainRayActor):
 
         latents_flat = latents_tile.reshape(tile_sample_count * tile_tstep_count, *latents_tile.shape[2:])
         timesteps_flat = timesteps_tile.reshape(tile_sample_count * tile_tstep_count)
-        if self._is_ltx:
-            timesteps_for_sde = timesteps_flat / float(
-                getattr(train_pipeline_config, "sde_timestep_divisor", 1000.0)
-            )
-        else:
-            timesteps_for_sde = timesteps_flat
+        timesteps_for_sde = train_step_backend.scale_timesteps_for_sde(timesteps_flat)
 
         # sgl-d's Qwen DiT divides timestep by num_train_timesteps inside
         # forward; diffusers' does not. SD3 already expects raw timesteps.
@@ -713,81 +679,34 @@ class FSDPTrainRayActor(TrainRayActor):
         # than rollout → systematic noise_pred drift.
         latents_input = latents_flat.to(forward_dtype)
         timesteps_input = timesteps_for_model.to(forward_dtype)
+        prev_sample_flat = next_latents_tile.reshape(
+            tile_sample_count * tile_tstep_count, *next_latents_tile.shape[2:]
+        )
 
-        if self._is_ltx:
-            def _forward(cond: dict) -> torch.Tensor:
-                return train_pipeline_config.forward_velocity(
-                    self.model, latents_input, timesteps_input, cond,
-                )
-
-            def _compute_noise_pred(disable_adapter: bool = False) -> torch.Tensor:
-                adapter_ctx = self.model.disable_adapter() if disable_adapter else nullcontext()
-                with adapter_ctx:
-                    return _forward(pos_cond_tile)
-
-            noise_pred_flat = _compute_noise_pred()
-            sde_extra = train_pipeline_config.build_sde_extra(
-                self.scheduler, grids, sample_indices, tstep_indices, self.args,
-            )
-            prev_sample_dummy, log_prob_new_flat, prev_sample_mean, std_dev_t = train_pipeline_config.sde_step(
-                self.scheduler,
-                noise_pred_flat,
-                timesteps_for_sde,
-                latents_flat,
-                prev_sample=next_latents_tile.reshape(
-                    tile_sample_count * tile_tstep_count, *next_latents_tile.shape[2:]
-                ),
-                noise_level=noise_level,
-                extra=sde_extra,
-            )
-            del prev_sample_dummy
-        else:
-            def _forward(cond: dict) -> torch.Tensor:
-                return self.model(
-                    hidden_states=latents_input,
-                    timestep=timesteps_input,
-                    return_dict=False,
-                    **cond,
-                )[0]
-
-            cfg_batching = bool(self.args.fsdp_cfg_batching)
-
-            def _compute_noise_pred(disable_adapter: bool = False) -> torch.Tensor:
-                adapter_ctx = self.model.disable_adapter() if disable_adapter else nullcontext()
-                with adapter_ctx:
-                    if not use_cfg:
-                        return _forward(pos_cond_tile)
-                    if cfg_batching:
-                        joint_cond = _pack_cond_for_joint_cfg(pos_cond_tile, neg_cond_tile)
-                        joint_out = self.model(
-                            hidden_states=torch.cat([latents_input, latents_input], dim=0),
-                            timestep=torch.cat([timesteps_input, timesteps_input], dim=0),
-                            return_dict=False,
-                            **joint_cond,
-                        )[0]
-                        noise_pred_pos, noise_pred_neg = joint_out.chunk(2, dim=0)
-                    else:
-                        noise_pred_pos = _forward(pos_cond_tile)
-                        noise_pred_neg = _forward(neg_cond_tile)
-                    return train_pipeline_config.cfg_combine(
-                        noise_pred_pos,
-                        noise_pred_neg,
-                        guidance_scale,
-                        true_cfg_scale=true_cfg_scale,
-                    )
-
-            noise_pred_flat = _compute_noise_pred()
-
-            _, log_prob_new_flat, prev_sample_mean, std_dev_t = sde_step_with_logprob(
-                self.scheduler,
-                noise_pred_flat.float(),
-                timesteps_flat,
-                latents_flat.float(),
-                prev_sample=next_latents_tile.reshape(
-                    tile_sample_count * tile_tstep_count, *next_latents_tile.shape[2:]
-                ).float(),
-                noise_level=noise_level,
-            )
+        noise_pred_flat = train_step_backend.compute_noise_pred(
+            model=self.model,
+            latents_input=latents_input,
+            timesteps_input=timesteps_input,
+            pos_cond=pos_cond_tile,
+            neg_cond=neg_cond_tile,
+            use_cfg=use_cfg,
+            guidance_scale=guidance_scale,
+            true_cfg_scale=true_cfg_scale,
+            fsdp_cfg_batching=bool(self.args.fsdp_cfg_batching),
+        )
+        log_prob_new_flat, prev_sample_mean, std_dev_t = train_step_backend.sde_step_logprob(
+            scheduler=self.scheduler,
+            noise_pred=noise_pred_flat,
+            timesteps_for_sde=timesteps_for_sde,
+            timesteps_flat=timesteps_flat,
+            latents_flat=latents_flat,
+            prev_sample=prev_sample_flat,
+            noise_level=noise_level,
+            grids=grids,
+            sample_indices=sample_indices,
+            tstep_indices=tstep_indices,
+            args=self.args,
+        )
 
         # TODO: revamp and gather all loss logics
         log_prob_new = log_prob_new_flat.reshape(tile_sample_count, tile_tstep_count)
@@ -799,31 +718,31 @@ class FSDPTrainRayActor(TrainRayActor):
         kl_loss = log_prob_new.new_zeros(())
         if kl_beta > 0:
             with torch.no_grad():
-                ref_noise_pred_flat = _compute_noise_pred(disable_adapter=True)
-                # TODO: unify sde_step_with_logprob with rollout and trainer forward paths.
-                if self._is_ltx:
-                    _, _, prev_sample_mean_ref, _ = train_pipeline_config.sde_step(
-                        self.scheduler,
-                        ref_noise_pred_flat,
-                        timesteps_for_sde,
-                        latents_flat,
-                        prev_sample=next_latents_tile.reshape(
-                            tile_sample_count * tile_tstep_count, *next_latents_tile.shape[2:]
-                        ),
-                        noise_level=noise_level,
-                        extra=sde_extra,
-                    )
-                else:
-                    _, _, prev_sample_mean_ref, _ = sde_step_with_logprob(
-                        self.scheduler,
-                        ref_noise_pred_flat.float(),
-                        timesteps_flat,
-                        latents_flat.float(),
-                        prev_sample=next_latents_tile.reshape(
-                            tile_sample_count * tile_tstep_count, *next_latents_tile.shape[2:]
-                        ).float(),
-                        noise_level=noise_level,
-                    )
+                ref_noise_pred_flat = train_step_backend.compute_noise_pred(
+                    model=self.model,
+                    latents_input=latents_input,
+                    timesteps_input=timesteps_input,
+                    pos_cond=pos_cond_tile,
+                    neg_cond=neg_cond_tile,
+                    use_cfg=use_cfg,
+                    guidance_scale=guidance_scale,
+                    true_cfg_scale=true_cfg_scale,
+                    fsdp_cfg_batching=bool(self.args.fsdp_cfg_batching),
+                    disable_adapter=True,
+                )
+                _, prev_sample_mean_ref, _ = train_step_backend.sde_step_logprob(
+                    scheduler=self.scheduler,
+                    noise_pred=ref_noise_pred_flat,
+                    timesteps_for_sde=timesteps_for_sde,
+                    timesteps_flat=timesteps_flat,
+                    latents_flat=latents_flat,
+                    prev_sample=prev_sample_flat,
+                    noise_level=noise_level,
+                    grids=grids,
+                    sample_indices=sample_indices,
+                    tstep_indices=tstep_indices,
+                    args=self.args,
+                )
             kl_loss = ((prev_sample_mean - prev_sample_mean_ref) ** 2).mean(
                 dim=tuple(range(1, prev_sample_mean.ndim)),
                 keepdim=True,
@@ -857,12 +776,9 @@ class FSDPTrainRayActor(TrainRayActor):
                 log_stats["model_output_max_abs_diff"].append(diff.max().detach())
                 log_stats["model_output_mean_abs_diff"].append(diff.mean().detach())
                 log_stats["model_output_rel_max"].append((diff.max() / ref_max).detach())
-                if self._is_ltx:
-                    flat_train = noise_pred_flat.float().reshape(noise_pred_flat.shape[0], -1)
-                    flat_rollout = rollout_mo_flat.float().reshape(rollout_mo_flat.shape[0], -1)
-                    log_stats["model_output_cosine_sim"].append(
-                        torch.nn.functional.cosine_similarity(flat_train, flat_rollout, dim=1).mean().detach()
-                    )
+                train_step_backend.append_model_output_compare_stats(
+                    log_stats, noise_pred_flat, rollout_mo_flat
+                )
 
         return loss
 
@@ -908,20 +824,6 @@ def _tile_collated_cond(
     neg_indices = sample_indices + num_samples_in_window
     neg = {k: _tile_value(v, neg_indices) for k, v in cond.items()}
     return pos, neg
-
-
-def _pack_cond_for_joint_cfg(pos: dict, neg: dict) -> dict:
-    """Pack pos and neg per-tile cond dicts into a single [pos | neg] dict
-    along the batch dim, for joint CFG forward."""
-    out: dict = {}
-    for key, value in pos.items():
-        if isinstance(value, torch.Tensor):
-            out[key] = torch.cat([value, neg[key]], dim=0)
-        elif isinstance(value, list):
-            out[key] = value + neg[key]
-        else:
-            out[key] = value
-    return out
 
 
 def _cast_cond_to_dtype(cond: dict, dtype: torch.dtype) -> dict:

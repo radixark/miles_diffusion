@@ -9,14 +9,21 @@ model-specific logic needed for the GRPO training loop:
 
 Each model (QwenImage, SD3, Flux, ...) subclasses TrainPipelineConfig
 and overrides the relevant methods.
+
+Trainer lifecycle (load, forward, SDE) lives in TrainStepBackend; see
+``get_train_step_backend()``.
 """
 
 from __future__ import annotations
 
 import abc
+from typing import TYPE_CHECKING
 
 import torch
 from miles.utils.types import CondKwargs, DiTTrajectory
+
+if TYPE_CHECKING:
+    from miles.backends.fsdp_utils.train_step_backend import TrainStepBackend
 
 
 _REGISTRY: dict[str, type[TrainPipelineConfig]] = {}
@@ -50,6 +57,14 @@ class TrainPipelineConfig(abc.ABC):
     lora_target_modules: list[str] = ["to_q", "to_k", "to_v", "to_out.0"]
     needs_timestep_scaling: bool = True
     optimizer_state_allowed_missing: list[str] = []
+    sde_timestep_divisor: float = 1.0
+    train_step_backend_cls: type[TrainStepBackend] | None = None
+
+    def get_train_step_backend(self) -> TrainStepBackend:
+        from miles.backends.fsdp_utils.train_step_backend import DiffusersTrainStepBackend
+
+        cls = type(self).train_step_backend_cls or DiffusersTrainStepBackend
+        return cls(self)
 
     def prepare_trajectory(
         self,
@@ -74,6 +89,17 @@ class TrainPipelineConfig(abc.ABC):
         device: torch.device,
     ) -> dict:
         """Convert CondKwargs to model-specific forward() kwargs."""
+
+    def build_train_cond_kwargs(
+        self,
+        cond: CondKwargs | None,
+        *,
+        latents: torch.Tensor,
+        args,
+        device: torch.device,
+    ) -> dict:
+        """Build per-sample cond for training; default reuses rollout embeds only."""
+        return self.prepare_cond_kwargs(cond, device)
 
     def expand_cond_for_timestep_batch(
         self,

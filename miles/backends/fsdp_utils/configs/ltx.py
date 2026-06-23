@@ -10,6 +10,7 @@ from typing import Any
 
 import torch
 
+from miles.backends.fsdp_utils.train_step_backend import LTXTrainStepBackend
 from miles.utils.types import CondKwargs
 
 from .train_pipeline_config import TrainPipelineConfig, register_train_pipeline_config
@@ -452,59 +453,15 @@ def validate_args(args: Namespace) -> None:
 class LTXTrainPipelineConfig(TrainPipelineConfig):
     """Training-side adapter for LTX-2.3 video DiT."""
 
+    train_step_backend_cls = LTXTrainStepBackend
     needs_timestep_scaling = False
     # Rollout stores σ×1000 in dit_trajectory.timesteps; CPS uses scheduler σ∈[0,1].
     sde_timestep_divisor = 1000.0
-
-    fsdp_wrap_classes = ["BasicAVTransformerBlock"]
 
     lora_target_modules = [
         "to_q", "to_k", "to_v", "to_out.0",
         "net.0.proj", "net.2",
     ]
-
-    def load_model_and_scheduler(self, args, init_context_factory):
-        from dataclasses import dataclass, field
-
-        from ltx_core.components.schedulers import LTX2Scheduler
-        # load_ltx_transformer_for_train / resolve_transformer_checkpoint defined above
-
-        @dataclass
-        class _LTXSchedulerHolder:
-            sigmas: "torch.Tensor" = field(default_factory=lambda: torch.tensor([]))
-            timesteps: "torch.Tensor" = field(default_factory=lambda: torch.tensor([]))
-            num_inference_steps: int = 0
-            _step_index: int | None = None
-            _begin_index: int | None = None
-
-            def to(self, device):
-                self.sigmas = self.sigmas.to(device)
-                self.timesteps = self.timesteps.to(device)
-                return self
-
-        master_dtype_name = getattr(args, "fsdp_master_dtype", "bf16")
-        master_dtype = {"fp16": torch.float16, "bf16": torch.bfloat16, "fp32": torch.float32}[master_dtype_name]
-
-        checkpoint = resolve_transformer_checkpoint(
-            args.diffusion_model,
-            explicit_path=getattr(args, "sglang_transformer_weights_path", None),
-        )
-        model = load_ltx_transformer_for_train(checkpoint, device="cpu", dtype=master_dtype)
-
-        num_steps = int(getattr(args, "diffusion_num_steps", 24))
-        ltx_sched = LTX2Scheduler()
-        sigmas = ltx_sched.execute(steps=num_steps).float()
-        scheduler = _LTXSchedulerHolder(
-            sigmas=sigmas, timesteps=sigmas[:num_steps], num_inference_steps=num_steps,
-        )
-
-        if getattr(args, "gradient_checkpointing", False):
-            if hasattr(model, "set_gradient_checkpointing"):
-                model.set_gradient_checkpointing(True)
-            elif hasattr(model, "enable_gradient_checkpointing"):
-                model.enable_gradient_checkpointing()
-
-        return model, scheduler
 
     def prepare_cond_kwargs(self, cond: CondKwargs | None, device: torch.device) -> dict:
         if cond is None:
@@ -531,18 +488,6 @@ class LTXTrainPipelineConfig(TrainPipelineConfig):
                 audio_mask = audio_mask.unsqueeze(0)
             kwargs["audio_context_mask"] = audio_mask
         return kwargs
-
-    def resolve_sigmas_ref(
-        self,
-        timesteps_ref: torch.Tensor,
-        sigmas_snapshot: torch.Tensor | None,
-        scheduler,
-    ) -> torch.Tensor:
-        device = timesteps_ref.device
-        if sigmas_snapshot is not None:
-            return sigmas_snapshot.to(device).float()
-        sigmas_ref = timesteps_ref / float(self.sde_timestep_divisor)
-        return torch.cat([sigmas_ref, sigmas_ref.new_zeros(1)])
 
     def build_train_cond_kwargs(
         self,
