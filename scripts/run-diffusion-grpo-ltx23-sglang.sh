@@ -84,6 +84,8 @@ fi
   --rollout-num-gpus "${NUM_GPUS}" \
   --rollout-num-gpus-per-engine "${ROLLOUT_NUM_GPUS_PER_ENGINE:-1}" \
   --use-miles-router \
+  --rollout-health-check-interval "${ROLLOUT_HEALTH_CHECK_INTERVAL:-120}" \
+  --miles-router-health-check-failure-threshold "${MILES_ROUTER_HEALTH_CHECK_FAILURE_THRESHOLD:-30}" \
   --sglang-server-concurrency "${SGLANG_SERVER_CONCURRENCY:-1}" \
   --sglang-attention-backend "${SGLANG_ATTENTION_BACKEND:-torch_sdpa}" \
   "${LORA_ARGS[@]}" \
