@@ -82,9 +82,8 @@ def create_placement_groups(args):
     """Create placement groups for actor and rollout engines.
 
     Two topologies:
-    - Colocate (or ``--debug-train-only`` / ``--debug-rollout-only``): one combined
-      placement group; both roles see the same bundle list (train-only allocates
-      no rollout GPU bundles).
+    - Colocate (or --debug-{train,rollout}-only): one combined placement
+      group; both roles see the same bundle list.
     - Disaggregate (the else branch): two separate placement groups so
       train and rollout each own a disjoint GPU pool — avoids bundle
       overlap / scheduling deadlock when running side-by-side.
