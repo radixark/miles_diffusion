@@ -316,6 +316,14 @@ def server_kwargs_extras(args) -> dict:
     return extras
 
 
+def _normalize_ltx_dynamics_type(name: str) -> str:
+    key = str(name).strip().lower().replace("-", "_")
+    allowed = ("flow_sde", "cps", "ode", "dance_sde")
+    if key not in allowed:
+        raise ValueError(f"Unknown ltx dynamics_type {name!r}; expected one of {allowed}")
+    return key
+
+
 def patch_rollout_sampling_params(
     sampling_params: dict[str, Any],
     args: Namespace,
@@ -333,9 +341,7 @@ def patch_rollout_sampling_params(
     if evaluation:
         return
 
-    from miles.backends.fsdp_utils.ltx_sde import normalize_dynamics_type
-
-    dynamics = normalize_dynamics_type(getattr(args, "ltx_dynamics_type", "cps"))
+    dynamics = _normalize_ltx_dynamics_type(getattr(args, "ltx_dynamics_type", "cps"))
     if dynamics == "dance_sde":
         raise NotImplementedError(
             "dance_sde rollout is not implemented in sglang-d flow_sde_sampling yet."
@@ -720,7 +726,7 @@ class LTXTrainPipelineConfig(TrainPipelineConfig):
         noise_level: float,
         extra: dict | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        from miles.backends.fsdp_utils.ltx_sde import sde_step_with_logprob_dynamics
+        from miles.utils.sde_log_prob import sde_step_with_logprob
 
         if extra is None or "sigmas" not in extra or "sde_step_indices" not in extra:
             raise ValueError(
@@ -731,21 +737,23 @@ class LTXTrainPipelineConfig(TrainPipelineConfig):
         sigma_view = timesteps.float()
         sigma_next = sigmas[torch.clamp(step_indices + 1, max=len(sigmas) - 1)]
 
-        dynamics_type = extra.get("dynamics_type", "cps")
-        sigma_min_override = extra.get("sigma_min_override", None)
-        if sigma_min_override == 0.0:
-            sigma_min_override = None
+        dynamics_type = _normalize_ltx_dynamics_type(extra.get("dynamics_type", "cps"))
+        if dynamics_type != "cps":
+            raise NotImplementedError(
+                f"LTXTrainPipelineConfig.sde_step supports dynamics_type='cps' only "
+                f"(got {dynamics_type!r})."
+            )
 
-        prev, log_prob, prev_mean, std_dev_t, _dt_sqrt = sde_step_with_logprob_dynamics(
-            model_output=noise_pred.float(),
-            sigma=sigma_view,
-            sigma_next=sigma_next,
-            sample=sample.float(),
-            sigmas=sigmas,
-            prev_sample=prev_sample.float(),
-            sigma_min_override=sigma_min_override,
+        prev, log_prob, prev_mean, std_dev_t = sde_step_with_logprob(
+            None,
+            noise_pred.float(),
+            sigma_view,
+            sample.float(),
+            prev_sample.float(),
             noise_level=noise_level,
-            dynamics_type=dynamics_type,
+            sde_type="cps",
+            sigma=sigma_view,
+            sigma_prev=sigma_next,
         )
         if std_dev_t.ndim > 1:
             std_dev_t = std_dev_t.mean(dim=tuple(range(1, std_dev_t.ndim)))
