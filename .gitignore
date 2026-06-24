@@ -177,6 +177,8 @@ settings.json
 .pypirc
 
 wandb/
+logs/
+dist/
 outputs/
 data/
 local/
@@ -193,15 +195,3 @@ glm/
 _examples_synced/
 .env
 .DS_Store
-
-# crash dumps / runtime artifacts
-core
-core.*
-
-logs/
-wandb/
-
-# local debug scripts / alignment tools (not shipped with the library)
-dist/
-scripts/run-ltx23-grpo-local.sh
-.claude/skills/align-ltx-train-rollout/
