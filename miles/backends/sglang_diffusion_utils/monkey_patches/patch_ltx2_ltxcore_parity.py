@@ -6,7 +6,8 @@ velocity-to-x0 paths natively (train/rollout alignment checks pass without patch
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import torch
 import torch.nn.functional as F
@@ -17,12 +18,7 @@ _APPLIED = False
 
 def expand_temb_for_hidden(temb: torch.Tensor, hidden_states: torch.Tensor) -> torch.Tensor:
     """Broadcast batch-level temb ``[B, 1, D]`` to ``[B, T, D]`` when uniform."""
-    if (
-        temb.ndim == 3
-        and temb.shape[1] == 1
-        and hidden_states.ndim == 3
-        and hidden_states.shape[1] > 1
-    ):
+    if temb.ndim == 3 and temb.shape[1] == 1 and hidden_states.ndim == 3 and hidden_states.shape[1] > 1:
         return temb.expand(-1, hidden_states.shape[1], -1)
     return temb
 
@@ -43,9 +39,7 @@ def _ltx_pytorch_sdpa(
             mask = mask.unsqueeze(0)
         if mask.ndim == 3:
             mask = mask.unsqueeze(1)
-    out = F.scaled_dot_product_attention(
-        q, k, v, attn_mask=mask, dropout_p=0.0, is_causal=False
-    )
+    out = F.scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=0.0, is_causal=False)
     return out.transpose(1, 2).reshape(b, -1, heads * dim_head)
 
 
@@ -117,13 +111,8 @@ def _patched_get_ada_values(
 ) -> tuple[torch.Tensor, ...]:
     num_ada_params = int(scale_shift_table.shape[0])
     ada_values = (
-        scale_shift_table[indices]
-        .unsqueeze(0)
-        .unsqueeze(0)
-        .to(device=timestep.device, dtype=timestep.dtype)
-        + timestep.reshape(batch_size, timestep.shape[1], num_ada_params, -1)[
-            :, :, indices, :
-        ]
+        scale_shift_table[indices].unsqueeze(0).unsqueeze(0).to(device=timestep.device, dtype=timestep.dtype)
+        + timestep.reshape(batch_size, timestep.shape[1], num_ada_params, -1)[:, :, indices, :]
     ).unbind(dim=2)
     return ada_values
 
@@ -176,9 +165,7 @@ def _make_patched_ltx2_attention_forward(orig_forward: Callable[..., torch.Tenso
         gather_context_kv_for_sp: bool = False,
     ) -> torch.Tensor:
         from sglang.multimodal_gen.runtime.distributed import get_tp_world_size
-        from sglang.multimodal_gen.runtime.models.dits.ltx_2 import (
-            apply_interleaved_rotary_emb,
-        )
+        from sglang.multimodal_gen.runtime.models.dits.ltx_2 import apply_interleaved_rotary_emb
 
         if get_tp_world_size() > 1 or gather_context_kv_for_sp or self.use_local_attention:
             return orig_forward(
@@ -259,9 +246,7 @@ def _make_patched_ltx2_block_forward(orig_forward: Callable[..., tuple[torch.Ten
                 audio_hidden_states = args[1]
             if isinstance(audio_hidden_states, torch.Tensor):
                 kwargs = dict(kwargs)
-                kwargs["temb_audio"] = expand_temb_for_hidden(
-                    kwargs["temb_audio"], audio_hidden_states
-                )
+                kwargs["temb_audio"] = expand_temb_for_hidden(kwargs["temb_audio"], audio_hidden_states)
         return orig_forward(self, *args, **kwargs)
 
     return _patched_forward

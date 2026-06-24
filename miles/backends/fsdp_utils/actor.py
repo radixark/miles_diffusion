@@ -6,9 +6,9 @@ import ray
 import torch
 import torch.distributed as dist
 
+import miles.backends.fsdp_utils.configs.ltx  # noqa: F401 — register pipeline config
 import miles.backends.fsdp_utils.configs.qwen_image  # noqa: F401 — register pipeline config
 import miles.backends.fsdp_utils.configs.sd3  # noqa: F401 — register pipeline config
-import miles.backends.fsdp_utils.configs.ltx  # noqa: F401 — register pipeline config
 from miles.ray.train_actor import TrainRayActor
 from miles.utils import tracking_utils, train_metric_utils
 from miles.utils.context_utils import with_defer
@@ -320,9 +320,7 @@ class FSDPTrainRayActor(TrainRayActor):
         timesteps_ref = dit_trajectories[0].timesteps.to(device).float()
         sigmas_snapshot = getattr(dit_trajectories[0], "sigmas", None)
         sched_config = getattr(self.scheduler, "config", None)
-        num_train_timesteps = (
-            int(sched_config.num_train_timesteps) if sched_config is not None else 1000
-        )
+        num_train_timesteps = int(sched_config.num_train_timesteps) if sched_config is not None else 1000
         sigmas_ref = self.train_step_backend.resolve_sigmas_ref(
             timesteps_ref,
             sigmas_snapshot,
@@ -541,8 +539,7 @@ class FSDPTrainRayActor(TrainRayActor):
             "rollout_model_outputs": rollout_model_outputs_window,
             "sde_step_indices_window": (
                 torch.stack(sde_indices_per_sample_list, dim=0)
-                if sde_indices_per_sample_list
-                and len(sde_indices_per_sample_list) == (traj_end - traj_start)
+                if sde_indices_per_sample_list and len(sde_indices_per_sample_list) == (traj_end - traj_start)
                 else None
             ),
         }
@@ -776,9 +773,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 log_stats["model_output_max_abs_diff"].append(diff.max().detach())
                 log_stats["model_output_mean_abs_diff"].append(diff.mean().detach())
                 log_stats["model_output_rel_max"].append((diff.max() / ref_max).detach())
-                train_step_backend.append_model_output_compare_stats(
-                    log_stats, noise_pred_flat, rollout_mo_flat
-                )
+                train_step_backend.append_model_output_compare_stats(log_stats, noise_pred_flat, rollout_mo_flat)
 
         return loss
 
@@ -897,9 +892,9 @@ def apply_fsdp2(model, mesh=None, cpu_offload=False, args=None, fsdp_wrap_classe
     layer_cls_to_wrap = getattr(model, "_no_split_modules", None)
     if not layer_cls_to_wrap:
         layer_cls_to_wrap = fsdp_wrap_classes
-    assert layer_cls_to_wrap and layer_cls_to_wrap[0] is not None, (
-        "apply_fsdp2 needs model._no_split_modules or fsdp_wrap_classes for LTX"
-    )
+    assert (
+        layer_cls_to_wrap and layer_cls_to_wrap[0] is not None
+    ), "apply_fsdp2 needs model._no_split_modules or fsdp_wrap_classes for LTX"
 
     modules = [module for name, module in model.named_modules() if module.__class__.__name__ in layer_cls_to_wrap]
 

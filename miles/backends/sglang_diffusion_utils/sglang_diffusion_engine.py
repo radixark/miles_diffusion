@@ -68,7 +68,6 @@ def _scheduler_process_with_sgld_monkey_patches(*args, **kwargs):
         apply_sgld_monkey_patches,
     )
 
-
     if os.environ.get("MILES_APPLY_SGLD_MONKEY_PATCHES") == "1":
         apply_sgld_monkey_patches()
     if os.environ.get(LTX_ROLLOUT_PATCHES_ENV, "0") == "1":
@@ -190,17 +189,11 @@ class SGLangDiffusionEngine(RayActor):
         logger.info(f"Launch HttpServerEngineAdapter at: {self.server_host}:{self.server_port}")
         self._pin_to_assigned_gpu()
         apply_sgld = bool(getattr(self.args, "apply_sgld_monkey_patches", False))
-        apply_ltx = (
-            ltx_config.is_ltx_model(self.args)
-            and os.environ.get(LTX_ROLLOUT_PATCHES_ENV, "1") == "1"
-        )
+        apply_ltx = ltx_config.is_ltx_model(self.args) and os.environ.get(LTX_ROLLOUT_PATCHES_ENV, "1") == "1"
         use_rollout_patches = apply_sgld or apply_ltx
         if apply_sgld:
             os.environ["MILES_APPLY_SGLD_MONKEY_PATCHES"] = "1"
-            logger.info(
-                "Launching sglang-d with sgl-d → diffusers monkey patches "
-                "(--apply-sgld-monkey-patches)"
-            )
+            logger.info("Launching sglang-d with sgl-d → diffusers monkey patches " "(--apply-sgld-monkey-patches)")
         if apply_ltx:
             os.environ[LTX_ROLLOUT_PATCHES_ENV] = "1"
             logger.info("Launching sglang-d with LTX rollout monkey patches")

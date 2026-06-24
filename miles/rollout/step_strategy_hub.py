@@ -51,14 +51,9 @@ def ltx_sde_candidates(
     inject SDE noise and contribute log_probs — same as trainer-rollout.
     """
     del sample, seed  # trainer keys off rollout_id, not per-sample generation seed
-    candidates = _normalize_sde_step_candidates(
-        getattr(args, "ltx_sde_step_candidates", None), num_steps
-    )
+    candidates = _normalize_sde_step_candidates(getattr(args, "ltx_sde_step_candidates", None), num_steps)
     if candidates is None:
-        raise ValueError(
-            "ltx_sde_candidates requires --ltx-sde-step-candidates "
-            "(e.g. 0,1,2,3,4,5,6,7,8,9)"
-        )
+        raise ValueError("ltx_sde_candidates requires --ltx-sde-step-candidates " "(e.g. 0,1,2,3,4,5,6,7,8,9)")
     num_sde = int(getattr(args, "ltx_num_sde_steps", 0) or len(candidates))
     num_sde = min(max(num_sde, 1), len(candidates))
     rng_seed = int(getattr(args, "rollout_seed", 42)) + int(rollout_id)

@@ -63,9 +63,7 @@ def apply_sgld_monkey_patches(*, include_ltx2_ltxcore: bool | None = None) -> No
     if include_ltx2_ltxcore is None:
         include_ltx2_ltxcore = os.environ.get(LTX_ROLLOUT_PATCHES_ENV, "1") == "1"
     if include_ltx2_ltxcore:
-        from miles.backends.sglang_diffusion_utils.monkey_patches import (
-            patch_ltx2_ltxcore_parity,
-        )
+        from miles.backends.sglang_diffusion_utils.monkey_patches import patch_ltx2_ltxcore_parity
 
         patch_ltx2_ltxcore_parity.apply()
 

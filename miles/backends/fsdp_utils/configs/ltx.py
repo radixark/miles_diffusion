@@ -70,9 +70,7 @@ def resolve_model_id(args) -> str:
 
 
 def _diffusion_cache_root() -> Path:
-    return Path(
-        os.environ.get("SGLANG_DIFFUSION_CACHE_ROOT", "/data/wenhao/sgl_diffusion_cache")
-    )
+    return Path(os.environ.get("SGLANG_DIFFUSION_CACHE_ROOT", "/data/wenhao/sgl_diffusion_cache"))
 
 
 def _find_cached_materialized_dir(hf_model_id: str) -> Path | None:
@@ -97,8 +95,7 @@ def _transformer_checkpoint_in_dir(materialized_dir: Path) -> Path:
     checkpoint = materialized_dir / "transformer" / "model.safetensors"
     if not checkpoint.is_file():
         raise FileNotFoundError(
-            f"Materialized LTX model at {materialized_dir} is missing "
-            f"transformer/model.safetensors"
+            f"Materialized LTX model at {materialized_dir} is missing " f"transformer/model.safetensors"
         )
     return checkpoint
 
@@ -118,9 +115,7 @@ def _read_materialized_transformer_config(checkpoint: Path) -> dict:
 
     config_json = _materialized_config_path(checkpoint)
     if config_json is None:
-        raise FileNotFoundError(
-            f"Materialized LTX checkpoint {checkpoint} is missing sibling config.json"
-        )
+        raise FileNotFoundError(f"Materialized LTX checkpoint {checkpoint} is missing sibling config.json")
     transformer_cfg = json.loads(config_json.read_text())
     return {"transformer": transformer_cfg}
 
@@ -142,10 +137,7 @@ def load_ltx_transformer_for_train(
     from ltx_core.loader.registry import DummyRegistry
     from ltx_core.loader.sft_loader import SafetensorsModelStateDictLoader
     from ltx_core.loader.single_gpu_model_builder import SingleGPUModelBuilder
-    from ltx_core.model.transformer.model_configurator import (
-        LTXModelConfigurator,
-        LTXV_MODEL_COMFY_RENAMING_MAP,
-    )
+    from ltx_core.model.transformer.model_configurator import LTXV_MODEL_COMFY_RENAMING_MAP, LTXModelConfigurator
 
     checkpoint = Path(checkpoint_path).expanduser().resolve()
     if not checkpoint.is_file():
@@ -160,7 +152,11 @@ def load_ltx_transformer_for_train(
         meta_model = create_meta_model(LTXModelConfigurator, config, ())
         loader = SafetensorsModelStateDictLoader()
         sd = load_state_dict(
-            str(checkpoint), loader, DummyRegistry(), torch.device("cpu"), None,
+            str(checkpoint),
+            loader,
+            DummyRegistry(),
+            torch.device("cpu"),
+            None,
         )
         state_dict = sd.sd
         if dtype is not None:
@@ -252,7 +248,8 @@ def resolve_transformer_checkpoint(
 
         if _is_hf_model_id(str(diffusion_model)):
             materialized_dir = resolve_materialized_model_dir(
-                str(diffusion_model), materialize=materialize,
+                str(diffusion_model),
+                materialize=materialize,
             )
             if materialized_dir is not None:
                 checkpoint = _transformer_checkpoint_in_dir(materialized_dir)
@@ -264,7 +261,8 @@ def resolve_transformer_checkpoint(
                 return str(checkpoint)
 
     materialized_dir = resolve_materialized_model_dir(
-        LTX_DEFAULT_HF_MODEL, materialize=materialize,
+        LTX_DEFAULT_HF_MODEL,
+        materialize=materialize,
     )
     if materialized_dir is not None:
         checkpoint = _transformer_checkpoint_in_dir(materialized_dir)
@@ -273,7 +271,7 @@ def resolve_transformer_checkpoint(
 
     raise FileNotFoundError(
         "Could not resolve LTX transformer checkpoint. Pass --diffusion-model "
-        f"Lightricks/LTX-2.3 (recommended) or a .safetensors override."
+        "Lightricks/LTX-2.3 (recommended) or a .safetensors override."
     )
 
 
@@ -288,11 +286,10 @@ def server_kwargs_extras(args) -> dict:
     weights_path = None
     if explicit:
         weights_path = resolve_transformer_checkpoint(
-            getattr(args, "diffusion_model", None), explicit_path=explicit,
+            getattr(args, "diffusion_model", None),
+            explicit_path=explicit,
         )
-    elif getattr(args, "diffusion_model", None) and str(args.diffusion_model).endswith(
-        ".safetensors"
-    ):
+    elif getattr(args, "diffusion_model", None) and str(args.diffusion_model).endswith(".safetensors"):
         weights_path = resolve_transformer_checkpoint(args.diffusion_model)
 
     if weights_path:
@@ -344,9 +341,7 @@ def patch_rollout_sampling_params(
 
     dynamics = _normalize_ltx_dynamics_type(getattr(args, "ltx_dynamics_type", "cps"))
     if dynamics == "dance_sde":
-        raise NotImplementedError(
-            "dance_sde rollout is not implemented in sglang-d flow_sde_sampling yet."
-        )
+        raise NotImplementedError("dance_sde rollout is not implemented in sglang-d flow_sde_sampling yet.")
     sampling_params["rollout_sde_type"] = dynamics
     if dynamics in ("cps", "ode"):
         sampling_params["rollout_log_prob_no_const"] = True
@@ -459,8 +454,12 @@ class LTXTrainPipelineConfig(TrainPipelineConfig):
     sde_timestep_divisor = 1000.0
 
     lora_target_modules = [
-        "to_q", "to_k", "to_v", "to_out.0",
-        "net.0.proj", "net.2",
+        "to_q",
+        "to_k",
+        "to_v",
+        "to_out.0",
+        "net.0.proj",
+        "net.2",
     ]
 
     def prepare_cond_kwargs(self, cond: CondKwargs | None, device: torch.device) -> dict:
@@ -502,9 +501,7 @@ class LTXTrainPipelineConfig(TrainPipelineConfig):
 
         kwargs = self.prepare_cond_kwargs(cond, device)
         if "context" not in kwargs:
-            raise ValueError(
-                "LTX train requires denoising_env.pos_cond_kwargs.encoder_hidden_states"
-            )
+            raise ValueError("LTX train requires denoising_env.pos_cond_kwargs.encoder_hidden_states")
 
         ref = latents[0] if latents.ndim >= 2 else latents
         if ref.ndim == 2:
@@ -656,9 +653,7 @@ class LTXTrainPipelineConfig(TrainPipelineConfig):
         timesteps_input: torch.Tensor,
         joint_cond: dict,
     ) -> torch.Tensor:
-        raise NotImplementedError(
-            "LTX trains with guidance_scale=1.0; --fsdp-cfg-batching is not supported."
-        )
+        raise NotImplementedError("LTX trains with guidance_scale=1.0; --fsdp-cfg-batching is not supported.")
 
     def sde_step(
         self,
@@ -674,9 +669,7 @@ class LTXTrainPipelineConfig(TrainPipelineConfig):
         from miles.utils.sde_log_prob import sde_step_with_logprob
 
         if extra is None or "sigmas" not in extra or "sde_step_indices" not in extra:
-            raise ValueError(
-                "LTXTrainPipelineConfig.sde_step requires extra={'sigmas','sde_step_indices',...}"
-            )
+            raise ValueError("LTXTrainPipelineConfig.sde_step requires extra={'sigmas','sde_step_indices',...}")
         sigmas = extra["sigmas"].to(sample.device).float()
         step_indices = extra["sde_step_indices"].to(sample.device).long()
         sigma_view = timesteps.float()
@@ -685,8 +678,7 @@ class LTXTrainPipelineConfig(TrainPipelineConfig):
         dynamics_type = _normalize_ltx_dynamics_type(extra.get("dynamics_type", "cps"))
         if dynamics_type != "cps":
             raise NotImplementedError(
-                f"LTXTrainPipelineConfig.sde_step supports dynamics_type='cps' only "
-                f"(got {dynamics_type!r})."
+                f"LTXTrainPipelineConfig.sde_step supports dynamics_type='cps' only " f"(got {dynamics_type!r})."
             )
 
         prev, log_prob, prev_mean, std_dev_t = sde_step_with_logprob(

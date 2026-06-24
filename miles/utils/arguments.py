@@ -1303,8 +1303,7 @@ def miles_validate_args(args):
             args.train_memory_margin_bytes = 0
 
     assert not (args.debug_rollout_only and args.debug_train_only), (
-        "debug_rollout_only and debug_train_only cannot be set at the same time, "
-        "please set only one of them."
+        "debug_rollout_only and debug_train_only cannot be set at the same time, " "please set only one of them."
     )
 
     model_type_arg = (getattr(args, "diffusion_model_type", "auto") or "auto").lower()

@@ -45,7 +45,8 @@ def resolve_ltx_transformer_weights_path(
 ) -> str | None:
     try:
         return resolve_transformer_checkpoint(
-            diffusion_model, explicit_path=explicit_path,
+            diffusion_model,
+            explicit_path=explicit_path,
         )
     except FileNotFoundError:
         return None

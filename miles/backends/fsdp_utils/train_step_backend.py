@@ -49,8 +49,7 @@ class TrainStepBackend(abc.ABC):
         init_context_factory,
         *,
         master_dtype: torch.dtype,
-    ) -> tuple[torch.nn.Module, object]:
-        ...
+    ) -> tuple[torch.nn.Module, object]: ...
 
     def apply_gradient_checkpointing(self, model: torch.nn.Module, args) -> None:
         if args.gradient_checkpointing:
@@ -97,8 +96,7 @@ class TrainStepBackend(abc.ABC):
         true_cfg_scale: float | None,
         fsdp_cfg_batching: bool,
         disable_adapter: bool = False,
-    ) -> torch.Tensor:
-        ...
+    ) -> torch.Tensor: ...
 
     @abc.abstractmethod
     def sde_step_logprob(
@@ -124,7 +122,8 @@ class TrainStepBackend(abc.ABC):
         noise_pred: torch.Tensor,
         rollout_mo_flat: torch.Tensor,
     ) -> None:
-        pass
+        """Optional hook for comparing rollout vs train noise predictions."""
+        return
 
 
 class DiffusersTrainStepBackend(TrainStepBackend):
@@ -258,11 +257,14 @@ class LTXTrainStepBackend(TrainStepBackend):
                 return self
 
         master_dtype_name = getattr(args, "fsdp_master_dtype", "bf16")
-        resolved_dtype = master_dtype or {
-            "fp16": torch.float16,
-            "bf16": torch.bfloat16,
-            "fp32": torch.float32,
-        }[master_dtype_name]
+        resolved_dtype = (
+            master_dtype
+            or {
+                "fp16": torch.float16,
+                "bf16": torch.bfloat16,
+                "fp32": torch.float32,
+            }[master_dtype_name]
+        )
 
         checkpoint = resolve_transformer_checkpoint(
             args.diffusion_model,
@@ -274,7 +276,9 @@ class LTXTrainStepBackend(TrainStepBackend):
         ltx_sched = LTX2Scheduler()
         sigmas = ltx_sched.execute(steps=num_steps).float()
         scheduler = _LTXSchedulerHolder(
-            sigmas=sigmas, timesteps=sigmas[:num_steps], num_inference_steps=num_steps,
+            sigmas=sigmas,
+            timesteps=sigmas[:num_steps],
+            num_inference_steps=num_steps,
         )
 
         if getattr(args, "gradient_checkpointing", False):

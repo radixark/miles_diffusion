@@ -74,10 +74,7 @@ def first_frame_for_wandb(t: torch.Tensor) -> np.ndarray | None:
 
 
 def fchw_to_pil_frames(video_fchw: torch.Tensor, frame_indices: Sequence[int]) -> list[Image.Image]:
-    return [
-        Image.fromarray(fchw_frame_to_hwc_uint8(video_fchw[idx]))
-        for idx in frame_indices
-    ]
+    return [Image.fromarray(fchw_frame_to_hwc_uint8(video_fchw[idx])) for idx in frame_indices]
 
 
 def is_video_generated_output(t: torch.Tensor) -> bool:

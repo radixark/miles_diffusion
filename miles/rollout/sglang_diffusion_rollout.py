@@ -83,10 +83,7 @@ def build_rollout_generate_payload(
 ) -> dict[str, Any]:
     """Build full JSON payload for ``POST /rollout/generate`` (``RolloutImageRequest``)."""
     sampling_params["prompt"] = prompt
-    if (
-        sampling_params.get("negative_prompt") is None
-        and float(sampling_params.get("guidance_scale", 1.0)) != 1.0
-    ):
+    if sampling_params.get("negative_prompt") is None and float(sampling_params.get("guidance_scale", 1.0)) != 1.0:
         sampling_params["negative_prompt"] = " "  # FlowGRPO default when CFG is on
     sampling_params["num_outputs_per_prompt"] = num_outputs_per_prompt
     return sampling_params
@@ -451,9 +448,7 @@ async def eval_rollout_single_dataset(
     reward_key = args.eval_reward_key
     return {
         dataset_config.name: {
-            "rewards": [
-                sample.get_reward_value(args, reward_key=reward_key) for sample in data
-            ],
+            "rewards": [sample.get_reward_value(args, reward_key=reward_key) for sample in data],
             "samples": data,
         }
     }

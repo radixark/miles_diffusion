@@ -66,9 +66,7 @@ def prepare_ltx_video_positions(
     grid = torch.stack(torch.meshgrid(grid_f, grid_h, grid_w, indexing="ij"), dim=0)
 
     patch_size = (_LTX_PATCH_SIZE_T, _LTX_PATCH_SIZE, _LTX_PATCH_SIZE)
-    patch_ends = grid + torch.tensor(patch_size, dtype=grid.dtype, device=grid.device).view(
-        3, 1, 1, 1
-    )
+    patch_ends = grid + torch.tensor(patch_size, dtype=grid.dtype, device=grid.device).view(3, 1, 1, 1)
     latent_coords = torch.stack([grid, patch_ends], dim=-1)
     latent_coords = latent_coords.flatten(1, 3).unsqueeze(0).expand(batch_size, -1, -1, -1)
 
@@ -76,9 +74,7 @@ def prepare_ltx_video_positions(
     broadcast_shape = [1] * latent_coords.ndim
     broadcast_shape[1] = -1
     pixel_coords = latent_coords * scale_tensor.view(*broadcast_shape)
-    pixel_coords[:, 0, ...] = (
-        pixel_coords[:, 0, ...] + _LTX_CAUSAL_OFFSET - _LTX_SCALE_FACTORS[0]
-    ).clamp(min=0)
+    pixel_coords[:, 0, ...] = (pixel_coords[:, 0, ...] + _LTX_CAUSAL_OFFSET - _LTX_SCALE_FACTORS[0]).clamp(min=0)
     pixel_coords[:, 0, ...] = pixel_coords[:, 0, ...] / float(fps)
     return pixel_coords
 
@@ -96,9 +92,7 @@ def build_ltx_t2v_geometry(
     dtype: torch.dtype,
 ) -> dict[str, torch.Tensor]:
     """Pure text-to-video geometry: all tokens denoise, clean latent is zero."""
-    latent_frames, latent_height, latent_width = latent_grid_shape(
-        height=height, width=width, num_frames=num_frames
-    )
+    latent_frames, latent_height, latent_width = latent_grid_shape(height=height, width=width, num_frames=num_frames)
     expected_tokens = latent_frames * latent_height * latent_width
     if expected_tokens != num_tokens:
         raise ValueError(
