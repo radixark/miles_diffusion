@@ -395,9 +395,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=False,
                 help=(
                     "Apply miles.backends.sglang_diffusion_utils.monkey_patches at "
-                    "sglang-d startup. For SD3: diffusers bf16 parity. For LTX-2: also "
-                    "applies ltx_core AdaLN/RoPE/attention parity patches "
-                    "(disable via MILES_APPLY_LTX2_LTXCORE_PARITY=0). Small perf hit."
+                    "sglang-d startup for SD3 diffusers bf16 parity. Small perf hit."
                 ),
             )
             parser.add_argument(

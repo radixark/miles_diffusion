@@ -57,11 +57,6 @@ if [[ "${USE_LORA:-1}" == "1" ]]; then
   )
 fi
 
-LTX_AV_ARGS=()
-if [[ "${LTX_DISABLE_AV_CROSS_ATTN:-0}" == "1" ]]; then
-  LTX_AV_ARGS+=(--ltx-disable-av-cross-attn)
-fi
-
 "${PYTHON_BIN}" -u "${ROOT_DIR}/train_diffusion.py" \
   --train-backend fsdp \
   --rollout-function-path miles.rollout.sglang_diffusion_rollout.generate_rollout \
@@ -89,7 +84,6 @@ fi
   --sglang-server-concurrency "${SGLANG_SERVER_CONCURRENCY:-1}" \
   --sglang-attention-backend "${SGLANG_ATTENTION_BACKEND:-torch_sdpa}" \
   "${LORA_ARGS[@]}" \
-  "${LTX_AV_ARGS[@]}" \
   --lr 2e-4 \
   --adam-beta2 0.999 \
   --weight-decay 1e-4 \

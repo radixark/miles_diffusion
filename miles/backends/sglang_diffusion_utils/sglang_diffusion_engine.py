@@ -10,7 +10,6 @@ from sglang.multimodal_gen.runtime.launch_server import kill_process_tree
 from sglang.multimodal_gen.runtime.server_args import ServerArgs
 
 from miles.backends.sglang_diffusion_utils.configs import ltx as ltx_config
-from miles.backends.sglang_diffusion_utils.monkey_patches import LTX_ROLLOUT_PATCHES_ENV
 from miles.ray.ray_actor import RayActor
 from miles.utils.http_utils import get_host_info
 
@@ -64,6 +63,7 @@ def _scheduler_process_with_sgld_monkey_patches(*args, **kwargs):
     # before calling the real run_scheduler_process, so the DiT that's
     # constructed inside the grandchild sees the patched classes.
     from miles.backends.sglang_diffusion_utils.monkey_patches import (
+        LTX_ROLLOUT_PATCHES_ENV,
         apply_ltx2_rollout_patches,
         apply_sgld_monkey_patches,
     )
@@ -188,8 +188,10 @@ class SGLangDiffusionEngine(RayActor):
     def _init_normal(self, server_args_dict):
         logger.info(f"Launch HttpServerEngineAdapter at: {self.server_host}:{self.server_port}")
         self._pin_to_assigned_gpu()
+        from miles.backends.sglang_diffusion_utils.monkey_patches import LTX_ROLLOUT_PATCHES_ENV
+
         apply_sgld = bool(getattr(self.args, "apply_sgld_monkey_patches", False))
-        apply_ltx = ltx_config.is_ltx_model(self.args) and os.environ.get(LTX_ROLLOUT_PATCHES_ENV, "1") == "1"
+        apply_ltx = ltx_config.is_ltx_model(self.args)
         use_rollout_patches = apply_sgld or apply_ltx
         if apply_sgld:
             os.environ["MILES_APPLY_SGLD_MONKEY_PATCHES"] = "1"

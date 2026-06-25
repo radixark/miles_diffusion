@@ -358,11 +358,8 @@ def patch_rollout_engine_env_vars(env_vars: dict[str, str], args) -> None:
 
     from miles.backends.sglang_diffusion_utils.monkey_patches import LTX_ROLLOUT_PATCHES_ENV
 
-    if getattr(args, "ltx_disable_av_cross_attn", False):
-        env_vars["MILES_LTX_DISABLE_AV_CROSS"] = "1"
-    for name in (LTX_ROLLOUT_PATCHES_ENV, "MILES_LTX_DISABLE_AV_CROSS"):
-        if os.environ.get(name):
-            env_vars[name] = os.environ[name]
+    if os.environ.get(LTX_ROLLOUT_PATCHES_ENV):
+        env_vars[LTX_ROLLOUT_PATCHES_ENV] = os.environ[LTX_ROLLOUT_PATCHES_ENV]
 
 
 def register_args(parser: ArgumentParser) -> None:
@@ -402,12 +399,6 @@ def register_args(parser: ArgumentParser) -> None:
         type=float,
         default=None,
         help="Override σ_min for LTX SDE step.",
-    )
-    parser.add_argument(
-        "--ltx-disable-av-cross-attn",
-        action="store_true",
-        default=False,
-        help="Disable LTX A2V/V2A cross-attn in sglang rollout (align with ltx_core video-only train).",
     )
     parser.add_argument(
         "--ltx-gemma-path",
