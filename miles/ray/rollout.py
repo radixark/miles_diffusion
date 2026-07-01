@@ -435,9 +435,7 @@ class RolloutManager:
                         # wandb shows all frames, not just frame 0. imageio wants
                         # a list of [H, W, C] uint8 frames.
                         frames = [arr[:, f, :, :].transpose(1, 2, 0) for f in range(num_frames)]
-                        path = os.path.join(
-                            tmpdir, f"{media_key.replace('/', '_')}_{sample_index}.mp4"
-                        )
+                        path = os.path.join(tmpdir, f"{media_key.replace('/', '_')}_{sample_index}.mp4")
                         imageio.mimsave(path, frames, fps=8, codec="libx264", format="FFMPEG")
                         media.append(wandb.Video(path, caption=caption, format="mp4", fps=8))
                     else:
