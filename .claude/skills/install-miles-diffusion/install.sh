@@ -149,21 +149,9 @@ log "pip install -r requirements.txt (all pinned)"
 pip install -r requirements.txt
 log "pip install -e . (miles)"
 pip install -e . --no-deps
-
-# ---------------------------------------------------------------- flow_grpo deps
-if [[ -f "$REPO_DIR/flow_grpo/setup.sh" ]]; then
-  log "installing flow_grpo OCR deps (all pinned: paddleocr, peft, diffusers, ...)"
-  pushd "$REPO_DIR/flow_grpo" >/dev/null
-  # Skip the `pip install -e .` line inside setup.sh — flow_grpo is a sibling
-  # tree we reference, not a package to install into miles' env. The rest of
-  # the file is pinned --no-deps pip installs plus apt calls we already did.
-  grep -v '^pip install -e . --no-deps$' setup.sh | \
-    grep -v '^apt-get install ' | \
-    bash
-  popd >/dev/null
-else
-  warn "flow_grpo/setup.sh not found; skipping OCR reward deps"
-fi
+# OCR reward deps (paddleocr, paddlepaddle-gpu, opencv, peft, ...) are pinned in
+# requirements.txt above and the libGL/libglib system libs are installed in the
+# apt step, so no extra dependency setup is needed here.
 
 # ---------------------------------------------------------------- optional
 if python -c "import torch_memory_saver" 2>/dev/null; then
