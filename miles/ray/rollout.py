@@ -406,27 +406,49 @@ class RolloutManager:
         commit step), so panels pile up over a run — keeping them in their
         own namespace at least groups them in one UI section.
         """
+        import os
+        import tempfile
+
+        import imageio
         import wandb
 
-        log_dict: dict = {}
-        for media_key, samples in media_key_to_samples.items():
-            images = []
-            for s in samples[:max_images]:
-                t = s.generated_output
-                if t is None or t.ndim != 4:
-                    continue
-                frame = t[:, 0, :, :].float().cpu().numpy().transpose(1, 2, 0)
-                if frame.max() <= 1.0 + 1e-3:
-                    frame = frame * 255.0
-                frame = np.clip(frame, 0, 255).astype(np.uint8)
-                reward = s.reward if not reward_key else (s.reward or {}).get(reward_key)
-                images.append(wandb.Image(frame, caption=f"{str(s.prompt)[:160]} | reward={reward}"))
-            if images:
-                log_dict[media_key] = images
-        if not log_dict:
-            return
-        log_dict[step_key] = step_value
-        tracking_utils.log(self.args, log_dict, step_key=step_key)
+        # mp4s must survive until tracking_utils.log() uploads them, so keep the
+        # tmpdir open across the whole build-and-log.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_dict: dict = {}
+            for media_key, samples in media_key_to_samples.items():
+                media = []
+                for sample_index, s in enumerate(samples[:max_images]):
+                    t = s.generated_output
+                    if t is None or t.ndim != 4:
+                        continue
+                    # generated_output is [C, F, H, W]; rescale to uint8 once.
+                    arr = t.float().cpu().numpy()
+                    if arr.max() <= 1.0 + 1e-3:
+                        arr = arr * 255.0
+                    arr = np.clip(arr, 0, 255).astype(np.uint8)
+                    reward = s.reward if not reward_key else (s.reward or {}).get(reward_key)
+                    caption = f"{str(s.prompt)[:160]} | reward={reward}"
+                    num_frames = arr.shape[1]
+                    if num_frames > 1:
+                        # Multi-frame video (e.g. Wan): encode the whole clip so
+                        # wandb shows all frames, not just frame 0. imageio wants
+                        # a list of [H, W, C] uint8 frames.
+                        frames = [arr[:, f, :, :].transpose(1, 2, 0) for f in range(num_frames)]
+                        path = os.path.join(
+                            tmpdir, f"{media_key.replace('/', '_')}_{sample_index}.mp4"
+                        )
+                        imageio.mimsave(path, frames, fps=8, codec="libx264", format="FFMPEG")
+                        media.append(wandb.Video(path, caption=caption, format="mp4", fps=8))
+                    else:
+                        frame = arr[:, 0, :, :].transpose(1, 2, 0)
+                        media.append(wandb.Image(frame, caption=caption))
+                if media:
+                    log_dict[media_key] = media
+            if not log_dict:
+                return
+            log_dict[step_key] = step_value
+            tracking_utils.log(self.args, log_dict, step_key=step_key)
 
     def set_train_parallel_config(self, config: dict):
         self.train_parallel_config = config

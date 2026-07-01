@@ -74,10 +74,14 @@ def build_rollout_sampling_params(
 
     # --diffusion-flow-shift: client-dictated sigma schedule, shared with the
     # step strategies as the single source of truth (see wan_request_sigmas).
-    request_sigmas = wan_request_sigmas(args, num_steps)
-    if request_sigmas is not None:
-        extra_sampling_params = dict(extra_sampling_params or {})
-        extra_sampling_params["sigmas"] = request_sigmas
+    # ONLY for rollout (Euler SDE accepts a list). Eval uses the UniPC scheduler
+    # whose set_timesteps asserts sigmas is an np.ndarray -- a list crashes the
+    # engine -> trainer hangs. Eval keeps the model's default schedule.
+    if not evaluation:
+        request_sigmas = wan_request_sigmas(args, num_steps)
+        if request_sigmas is not None:
+            extra_sampling_params = dict(extra_sampling_params or {})
+            extra_sampling_params["sigmas"] = request_sigmas
 
     if extra_sampling_params:
         sampling_params["extra_sampling_params"] = extra_sampling_params

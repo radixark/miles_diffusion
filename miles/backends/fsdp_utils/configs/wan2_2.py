@@ -51,6 +51,7 @@ class Wan2_2TrainPipelineConfig(TrainPipelineConfig):
         self,
         per_sample_cond_kwargs: list[dict],
         device: torch.device,
+        pad_to_len: int | None = None,  # accepted for interface parity (PR #10); Wan2.2 concats fixed-length T5 embeds
     ) -> dict:
         encs = [kw["encoder_hidden_states"] for kw in per_sample_cond_kwargs]
         return {"encoder_hidden_states": torch.cat(encs, dim=0).to(device)}

@@ -207,3 +207,53 @@ def wan_dual_window(
         start = int(rng.integers(0, len(phase_indices) - window_size + 1))
         indices.extend(phase_indices[start : start + window_size])
     return sorted(indices), None
+
+
+def wan_dual_2high_1low(
+    args: Namespace, sample: Sample, num_steps: int, seed: int
+) -> tuple[list[int] | None, list[int] | None]:
+    """Deterministic dual-expert SDE schedule: the 2 highest-noise high-phase
+    steps plus the single highest-noise low-phase step (the step just past the
+    Wan2.2 boundary).
+
+    This guarantees at least one SDE step in *each* phase every rollout, so both
+    the high-noise expert ("transformer", t >= boundary) and the low-noise expert
+    ("transformer_2", t < boundary) receive gradients. Pair it with
+    ``--update-weight-target-module transformer,transformer_2`` to actually train
+    and weight-sync both DiTs.
+
+    Step indices are ascending = descending noise, so the lowest indices are the
+    highest-noise steps within each phase. ``--diffusion-sde-window-range`` (if
+    set) restricts the high-noise phase only (e.g. ``1,4`` drops the pure-noise
+    step 0), mirroring its meaning in :func:`wan_high_window`. The low-phase pick
+    is always the highest-noise low step. Fully deterministic — ``seed`` unused.
+
+    For the default 10-step / shift=12 schedule this yields ``[1, 2, 6]`` with
+    ``--diffusion-sde-window-range 1,4`` (high steps 1,2 train ``transformer``;
+    low step 6 trains ``transformer_2``)."""
+    n_high = 2
+    n_low = 1
+
+    boundary = _WAN2_2_T2V_A14B_BOUNDARY_RATIO * _WAN_NUM_TRAIN_TIMESTEPS
+    timesteps = _wan2_2_euler_timesteps(num_steps, shift=wan_effective_shift(args))
+    high_indices = [int(i) for i, timestep in enumerate(timesteps) if timestep >= boundary]
+    low_indices = [int(i) for i, timestep in enumerate(timesteps) if timestep < boundary]
+
+    range_raw = getattr(args, "diffusion_sde_window_range", None)
+    if range_raw:
+        parts = [int(x) for x in str(range_raw).split(",")]
+        lo, hi = parts[0], parts[1]
+        high_indices = [i for i in high_indices if lo <= i < hi]
+
+    if len(high_indices) < n_high:
+        raise ValueError(
+            "wan_dual_2high_1low needs >=2 high-noise steps after range filtering: "
+            f"available={high_indices}, num_steps={num_steps}, boundary={boundary}"
+        )
+    if len(low_indices) < n_low:
+        raise ValueError(
+            "wan_dual_2high_1low needs >=1 low-noise step: "
+            f"available={low_indices}, num_steps={num_steps}, boundary={boundary}"
+        )
+
+    return sorted(high_indices[:n_high] + low_indices[:n_low]), None
