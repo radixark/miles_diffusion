@@ -284,11 +284,19 @@ class DiffusionUpdateWeightFromTensorLoRA(DiffusionUpdateWeightFromTensor):
         rollout engine's checksum. Both sides run sgl-d's own
         ``compute_weights_checksum``, so the algorithms cannot drift apart.
 
-        Caveat: when --fsdp-master-dtype differs from the engine's param dtype
-        (e.g. fp32 master vs bf16 engine), expected/actual can never match —
-        the engine hashes its own dtype's bytes. A consistent mismatch with
-        identical values across ranks and engines means the push itself is
-        coherent; rely on log_prob_mean_abs_diff for end-to-end correctness."""
+        Caveat: paired expected/actual equality additionally requires the
+        engine model to share the trainer's (diffusers) param name space and
+        dtype. Names feed the hash, and sgl-d's own DiT implementations use
+        internal names (e.g. Wan: ``to_out.weight`` on a parallel Linear vs
+        diffusers ``to_out.0.weight``; the ``add_prefix`` tables only map
+        names at load time) — so for such models paired_engine_match is
+        structurally False even for a perfect push. Same for fp32 master vs
+        bf16 engine, which hash different bytes. The load-bearing signals are
+        instead: expected identical across ranks, actual identical across
+        engines (all_equal), actual changing after a train step (the push
+        landed) and staying put for untouched components, plus
+        log_prob_mean_abs_diff at the bf16 noise floor for end-to-end
+        correctness. (All observed on a Wan2.2 2-GPU smoke, 2026-07-02.)"""
         if dist.get_rank() != self._ipc_gather_src:
             return
 
