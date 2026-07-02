@@ -1,5 +1,4 @@
 import abc
-import hashlib
 import logging
 import os
 from argparse import Namespace
@@ -22,6 +21,16 @@ try:
     from sglang.srt.weight_sync.tensor_bucket import FlattenedTensorBucket  # type: ignore[import]
 except ImportError:
     from sglang.srt.model_executor.model_runner import FlattenedTensorBucket  # type: ignore[import]
+
+try:
+    # The engine hashes its side with this same function; importing it (rather
+    # than mirroring the algorithm) keeps both sides of the checksum in lockstep
+    # across sgl-d upgrades by construction.
+    from sglang.multimodal_gen.runtime.loader.weight_utils import compute_weights_checksum  # type: ignore[import]
+except ImportError:
+    # sgl-d too old to expose it — its engine-side algorithm predates ours too,
+    # so a local fallback could never match; verification is skipped instead.
+    compute_weights_checksum = None
 
 
 logger = logging.getLogger(__name__)
@@ -272,13 +281,25 @@ class DiffusionUpdateWeightFromTensorLoRA(DiffusionUpdateWeightFromTensor):
 
     def _verify_weight_sync(self, pairs: list[tuple[str, torch.Tensor]], target_module: str) -> None:
         """Compare our expected merged-transformer SHA-256 against the live
-        rollout engine's checksum. Must match exactly — same algorithm as
-        sglang-d's ``compute_weights_checksum`` (sorted by name, raw byte hash).
-        """
+        rollout engine's checksum. Both sides run sgl-d's own
+        ``compute_weights_checksum``, so the algorithms cannot drift apart.
+
+        Caveat: when --fsdp-master-dtype differs from the engine's param dtype
+        (e.g. fp32 master vs bf16 engine), expected/actual can never match —
+        the engine hashes its own dtype's bytes. A consistent mismatch with
+        identical values across ranks and engines means the push itself is
+        coherent; rely on log_prob_mean_abs_diff for end-to-end correctness."""
         if dist.get_rank() != self._ipc_gather_src:
             return
 
-        expected = self._sha256_named_tensors(pairs)
+        if compute_weights_checksum is None:
+            logger.warning(
+                "[weight_sync verify] installed sglang does not expose "
+                "compute_weights_checksum; skipping checksum verification"
+            )
+            return
+
+        expected = compute_weights_checksum(pairs)
 
         try:
             remote = ray.get(self._ipc_engine.get_weights_checksum.remote([target_module]))
@@ -311,24 +332,3 @@ class DiffusionUpdateWeightFromTensorLoRA(DiffusionUpdateWeightFromTensor):
         all_equal = all(s == first_sum for _, s in engine_sums)
         pretty = "  ".join(f"eng{idx}={s[:16] if isinstance(s, str) else s}" for idx, s in engine_sums)
         logger.warning(f"[weight_sync verify v{self.weight_version} cross-engine] " f"all_equal={all_equal}  {pretty}")
-
-    @staticmethod
-    def _sha256_named_tensors(pairs: list[tuple[str, torch.Tensor]]) -> str:
-        """Mirror ``sglang.multimodal_gen.runtime.loader.weight_utils.compute_weights_checksum``
-        (sgl-d 929dc3b37+: name + dtype + shape + raw bytes, sorted by name).
-
-        Caveat: when --fsdp-master-dtype differs from the engine's param dtype
-        (e.g. fp32 master vs bf16 engine), expected/actual can never match —
-        the engine hashes its own dtype's bytes. A consistent mismatch with
-        identical values across ranks and engines means the push itself is
-        coherent; rely on log_prob_mean_abs_diff for end-to-end correctness."""
-        hasher = hashlib.sha256()
-        for name, tensor in sorted(pairs, key=lambda x: x[0]):
-            hasher.update(name.encode())
-            t = tensor.detach()
-            if isinstance(t, DTensor):
-                t = t._local_tensor
-            hasher.update(str(t.dtype).encode())
-            hasher.update(str(tuple(t.shape)).encode())
-            hasher.update(t.cpu().contiguous().reshape(-1).view(torch.uint8).numpy().data)
-        return hasher.hexdigest()
