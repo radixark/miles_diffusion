@@ -23,14 +23,12 @@ except ImportError:
     from sglang.srt.model_executor.model_runner import FlattenedTensorBucket  # type: ignore[import]
 
 try:
-    # The engine hashes its side with this same function; importing it (rather
-    # than mirroring the algorithm) keeps both sides of the checksum in lockstep
-    # across sgl-d upgrades by construction.
     from sglang.multimodal_gen.runtime.loader.weight_utils import compute_weights_checksum  # type: ignore[import]
-except ImportError:
-    # sgl-d too old to expose it — its engine-side algorithm predates ours too,
-    # so a local fallback could never match; verification is skipped instead.
+
+    _checksum_import_error: ImportError | None = None
+except ImportError as _e:
     compute_weights_checksum = None
+    _checksum_import_error = _e
 
 
 logger = logging.getLogger(__name__)
@@ -282,28 +280,15 @@ class DiffusionUpdateWeightFromTensorLoRA(DiffusionUpdateWeightFromTensor):
     def _verify_weight_sync(self, pairs: list[tuple[str, torch.Tensor]], target_module: str) -> None:
         """Compare our expected merged-transformer SHA-256 against the live
         rollout engine's checksum. Both sides run sgl-d's own
-        ``compute_weights_checksum``, so the algorithms cannot drift apart.
-
-        Caveat: paired expected/actual equality additionally requires the
-        engine model to share the trainer's (diffusers) param name space and
-        dtype. Names feed the hash, and sgl-d's own DiT implementations use
-        internal names (e.g. Wan: ``to_out.weight`` on a parallel Linear vs
-        diffusers ``to_out.0.weight``; the ``add_prefix`` tables only map
-        names at load time) — so for such models paired_engine_match is
-        structurally False even for a perfect push. Same for fp32 master vs
-        bf16 engine, which hash different bytes. The load-bearing signals are
-        instead: expected identical across ranks, actual identical across
-        engines (all_equal), actual changing after a train step (the push
-        landed) and staying put for untouched components, plus
-        log_prob_mean_abs_diff at the bf16 noise floor for end-to-end
-        correctness. (All observed on a Wan2.2 2-GPU smoke, 2026-07-02.)"""
+        ``compute_weights_checksum``, so the algorithms cannot drift apart."""
         if dist.get_rank() != self._ipc_gather_src:
             return
 
         if compute_weights_checksum is None:
             logger.warning(
                 "[weight_sync verify] installed sglang does not expose "
-                "compute_weights_checksum; skipping checksum verification"
+                "compute_weights_checksum (%s); skipping checksum verification",
+                _checksum_import_error,
             )
             return
 

@@ -118,11 +118,7 @@ class FSDPTrainRayActor(TrainRayActor):
         # Force a sync to ensure sharding is complete and old memory is freed.
         torch.cuda.synchronize()
         clear_memory()
-        # Single component keeps the bare model as self.model so optimizer /
-        # checkpoint state-dict keys stay identical to pre-dual-DiT runs;
-        # multi-component wraps in a ModuleDict (keys get a component prefix).
-        # Not using ModuleDict for single-component to avoid previous checkpoint
-        # not able to resume training due to key mismatch.
+
         if len(self.models) == 1:
             self.model = next(iter(self.models.values()))
         else:
@@ -454,11 +450,6 @@ class FSDPTrainRayActor(TrainRayActor):
         )
         advantage = torch.clamp(advantage, -self.args.diffusion_adv_clip_max, self.args.diffusion_adv_clip_max)
 
-        # Phase routing (multi-expert models, e.g. Wan2.2 high/low-noise): every
-        # pair in this micro-batch must map to exactly one DiT so a single forward
-        # uses one model and one CFG scale, mirroring sgl-d's per-step model
-        # selection. A single-DiT model always uses its one model (bitwise-identical
-        # to the pre-dual-DiT path).
         if len(self.models) == 1:
             component, model = next(iter(self.models.items()))
         else:
@@ -467,7 +458,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 for t in timesteps_microbatch.tolist()
             }
             # to prevent mixing denoising phases in a single micro-batch
-            # just in case when some customized step strategy is used that
+            # Just in case when some customized step strategy is used that
             # may violate the assumption of one phase per micro-batch, we raise an error here
             if len(components) > 1:
                 raise ValueError(
