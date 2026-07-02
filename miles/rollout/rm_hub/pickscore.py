@@ -151,9 +151,7 @@ class AsyncPickScorePool(metaclass=SingletonMeta):
 
 
 async def pickscore_rm(args, samples: Sequence[Sample]) -> list[float]:
-    # Score every frame and mean-pool per sample, mirroring Flow-Factory's
-    # PickScore video handling (rewards/pick_score.py flat-reconstruct).
-    # Single-frame samples reduce to the previous behavior.
+    # Score every frame and mean-pool per sample
     pool = AsyncPickScorePool(args)
     images: list[np.ndarray] = []
     prompts: list[str] = []

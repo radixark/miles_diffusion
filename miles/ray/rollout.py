@@ -431,9 +431,6 @@ class RolloutManager:
                     caption = f"{str(s.prompt)[:160]} | reward={reward}"
                     num_frames = arr.shape[1]
                     if num_frames > 1:
-                        # Multi-frame video (e.g. Wan): encode the whole clip so
-                        # wandb shows all frames, not just frame 0. imageio wants
-                        # a list of [H, W, C] uint8 frames.
                         frames = [arr[:, f, :, :].transpose(1, 2, 0) for f in range(num_frames)]
                         path = os.path.join(tmpdir, f"{media_key.replace('/', '_')}_{sample_index}.mp4")
                         imageio.mimsave(path, frames, fps=8, codec="libx264", format="FFMPEG")
