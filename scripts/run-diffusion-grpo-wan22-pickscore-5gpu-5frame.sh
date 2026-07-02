@@ -18,21 +18,20 @@
 #      "transformer_2" (low-noise expert). So over rollouts both DiTs get
 #      gradient stochastically (~2/3 high, ~1/3 low), and
 #      --update-weight-target-module transformer,transformer_2 syncs both.
-#      NOTE: this replaced wan_dual_2high_1low, which trained ALL of [1,2,3]
-#      deterministically EVERY rollout (= 3x the sample*step training pairs of
-#      FF's 1-step draw). That tripled per-rollout gradient coverage, fitting
-#      ~3x faster but overfitting the 3 fixed trajectory points and saturating
-#      early at a lower reward ceiling. wan_ff_global_window restores FF's
-#      slower-but-higher trajectory.
+#      NOTE: an earlier deterministic schedule trained ALL of [1,2,3] EVERY
+#      rollout (= 3x the sample*step training pairs of FF's 1-step draw). That
+#      tripled per-rollout gradient coverage, fitting ~3x faster but overfitting
+#      the 3 fixed trajectory points and saturating early at a lower reward
+#      ceiling. wan_ff_global_window restores FF's slower-but-higher trajectory.
 #
 #   3. flow_shift=3.0 (NOT sgl-d's hardcoded 12.0). 3.0 is the diffusers
 #      Wan2.2-T2V-A14B scheduler_config default that FF inherits, and the
 #      historical 480p Wan shift. --diffusion-flow-shift sends a per-request
 #      sigma schedule that composes out sgl-d's built-in 12.0 so the rollout
 #      denoises at an effective shift of 3.0 (verified: matches a plain shift=3
-#      Euler schedule to <1.5e-4). The step strategy reads the same flow_shift,
-#      so step selection and rollout stay consistent. Without this the boundary
-#      sits at idx 5/6 and the SDE steps would be [1,2,6] on a shift=12 traj.
+#      Euler schedule to <1.5e-4). The candidate steps 1,2,3 assume this shift:
+#      without it the boundary sits at idx 5/6, all of 1,2,3 land in the
+#      high-noise phase, and transformer_2 would never train.
 #
 # Other knobs mirror the 1-frame recipe (Flow-Factory Wan2.2 LoRA GRPO):
 #   pretrained = Wan-AI/Wan2.2-T2V-A14B-Diffusers, resolution=480, num_steps=10,
@@ -50,7 +49,7 @@
 # grad-accumulated, so the update is identical regardless of batch size. Set to 2:
 # mbs=4 OOMs on H200 (~134/140 GiB) at 5-frame with grad-ckpt OFF; 2 fits.
 # CAVEAT: only safe while the strategy is single-phase-per-rollout. A multi-step /
-# cross-phase strategy (e.g. wan_dual_2high_1low) would mix phases -> requires
+# cross-phase strategy would mix phases -> requires
 # --micro-batch-size 1 again. The deprecated --micro-batch-size-sample/-tstep 2D
 # grouping (PR #10) cannot express phase routing; use the flat --micro-batch-size.
 #

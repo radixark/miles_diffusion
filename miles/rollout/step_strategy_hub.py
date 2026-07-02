@@ -20,7 +20,6 @@ from miles.utils.types import Sample
 # The server applies this shift to ANY sigma schedule, including per-request
 # custom sigmas — wan_request_sigmas() composes it out when overriding.
 _WAN2_2_T2V_A14B_FLOW_SHIFT = 12.0
-_WAN2_2_T2V_A14B_BOUNDARY_RATIO = 0.875
 _WAN_NUM_TRAIN_TIMESTEPS = 1000
 
 
@@ -28,12 +27,6 @@ def _flow_shift_transform(sigmas: np.ndarray, shift: float) -> np.ndarray:
     """Exponential flow shift. Composes multiplicatively:
     shift_b(shift_a(x)) == shift_{a*b}(x)."""
     return shift * sigmas / (1 + (shift - 1) * sigmas)
-
-
-def wan_effective_shift(args: Namespace) -> float:
-    """The shift the schedule actually runs with (request override or server default)."""
-    flow_shift = getattr(args, "diffusion_flow_shift", None)
-    return float(flow_shift) if flow_shift is not None else _WAN2_2_T2V_A14B_FLOW_SHIFT
 
 
 def wan_request_sigmas(args: Namespace, num_steps: int) -> list[float] | None:
@@ -55,28 +48,6 @@ def wan_request_sigmas(args: Namespace, num_steps: int) -> list[float] | None:
     return [float(s) for s in sent]
 
 
-def _wan2_2_euler_timesteps(
-    num_steps: int,
-    *,
-    shift: float = _WAN2_2_T2V_A14B_FLOW_SHIFT,
-    num_train_timesteps: int = _WAN_NUM_TRAIN_TIMESTEPS,
-) -> np.ndarray:
-    """Rebuild SGLang's FlowMatchEulerDiscreteScheduler timesteps for Wan2.2."""
-    train_timesteps = np.linspace(1, num_train_timesteps, num_train_timesteps, dtype=np.float32)[::-1].copy()
-    train_sigmas = train_timesteps / float(num_train_timesteps)
-    train_sigmas = shift * train_sigmas / (1 + (shift - 1) * train_sigmas)
-
-    timesteps = np.linspace(
-        train_sigmas[0] * num_train_timesteps,
-        train_sigmas[-1] * num_train_timesteps,
-        num_steps,
-        dtype=np.float32,
-    )
-    sigmas = timesteps / float(num_train_timesteps)
-    sigmas = shift * sigmas / (1 + (shift - 1) * sigmas)
-    return sigmas * float(num_train_timesteps)
-
-
 def sde_window(
     args: Namespace, sample: Sample, num_steps: int, seed: int
 ) -> tuple[list[int] | None, list[int] | None]:
@@ -96,36 +67,6 @@ def sde_window(
     start = int(rng.integers(lo, hi - window_size + 1))
     indices = list(range(start, start + window_size))
     return indices, None
-
-
-def wan_high_window(
-    args: Namespace, sample: Sample, num_steps: int, seed: int
-) -> tuple[list[int] | None, list[int] | None]:
-    """Sample an SDE window only from Wan2.2 high-noise steps."""
-    window_size = int(args.diffusion_sde_window_size)
-    if window_size <= 0:
-        raise ValueError("wan_high_window requires --diffusion-sde-window-size > 0")
-
-    boundary = _WAN2_2_T2V_A14B_BOUNDARY_RATIO * _WAN_NUM_TRAIN_TIMESTEPS
-    timesteps = _wan2_2_euler_timesteps(num_steps, shift=wan_effective_shift(args))
-    high_indices = [int(i) for i, timestep in enumerate(timesteps) if timestep >= boundary]
-
-    range_raw = getattr(args, "diffusion_sde_window_range", None)
-    if range_raw:
-        parts = [int(x) for x in str(range_raw).split(",")]
-        lo, hi = parts[0], parts[1]
-        high_indices = [i for i in high_indices if lo <= i < hi]
-
-    if len(high_indices) < window_size:
-        raise ValueError(
-            "Not enough Wan high-noise steps for requested SDE window: "
-            f"available={len(high_indices)}, requested={window_size}, "
-            f"num_steps={num_steps}, boundary={boundary}"
-        )
-
-    rng = np.random.default_rng(seed)
-    start = int(rng.integers(0, len(high_indices) - window_size + 1))
-    return high_indices[start : start + window_size], None
 
 
 # Default candidate list, mirroring the local Flow-Factory wan22 dual recipe's
@@ -167,93 +108,3 @@ def wan_ff_global_window(
     generator = torch.Generator().manual_seed(epoch + int(args.rollout_seed))
     selected = torch.randperm(len(candidates), generator=generator)[:window_size]
     return sorted(candidates[i] for i in selected.tolist()), None
-
-
-def wan_dual_window(
-    args: Namespace, sample: Sample, num_steps: int, seed: int
-) -> tuple[list[int] | None, list[int] | None]:
-    """One SDE window per Wan2.2 phase (high + low noise), merged into one
-    index list for dual-expert training.
-
-    sgl-d gates SDE per step by list membership (``loop_step_index not in
-    sde_step_indices`` → ODE), so the merged list being non-contiguous is fine.
-    ``--diffusion-sde-window-size`` applies to each phase independently;
-    ``--diffusion-sde-window-range`` (if set) restricts the high-noise phase
-    only, mirroring its meaning in ``wan_high_window``."""
-    window_size = int(args.diffusion_sde_window_size)
-    if window_size <= 0:
-        raise ValueError("wan_dual_window requires --diffusion-sde-window-size > 0")
-
-    boundary = _WAN2_2_T2V_A14B_BOUNDARY_RATIO * _WAN_NUM_TRAIN_TIMESTEPS
-    timesteps = _wan2_2_euler_timesteps(num_steps, shift=wan_effective_shift(args))
-    high_indices = [int(i) for i, timestep in enumerate(timesteps) if timestep >= boundary]
-    low_indices = [int(i) for i, timestep in enumerate(timesteps) if timestep < boundary]
-
-    range_raw = getattr(args, "diffusion_sde_window_range", None)
-    if range_raw:
-        parts = [int(x) for x in str(range_raw).split(",")]
-        lo, hi = parts[0], parts[1]
-        high_indices = [i for i in high_indices if lo <= i < hi]
-
-    rng = np.random.default_rng(seed)
-    indices: list[int] = []
-    for phase_name, phase_indices in (("high", high_indices), ("low", low_indices)):
-        if len(phase_indices) < window_size:
-            raise ValueError(
-                f"Not enough Wan {phase_name}-noise steps for requested SDE window: "
-                f"available={len(phase_indices)}, requested={window_size}, "
-                f"num_steps={num_steps}, boundary={boundary}"
-            )
-        start = int(rng.integers(0, len(phase_indices) - window_size + 1))
-        indices.extend(phase_indices[start : start + window_size])
-    return sorted(indices), None
-
-
-def wan_dual_2high_1low(
-    args: Namespace, sample: Sample, num_steps: int, seed: int
-) -> tuple[list[int] | None, list[int] | None]:
-    """Deterministic dual-expert SDE schedule: the 2 highest-noise high-phase
-    steps plus the single highest-noise low-phase step (the step just past the
-    Wan2.2 boundary).
-
-    This guarantees at least one SDE step in *each* phase every rollout, so both
-    the high-noise expert ("transformer", t >= boundary) and the low-noise expert
-    ("transformer_2", t < boundary) receive gradients. Pair it with
-    ``--update-weight-target-module transformer,transformer_2`` to actually train
-    and weight-sync both DiTs.
-
-    Step indices are ascending = descending noise, so the lowest indices are the
-    highest-noise steps within each phase. ``--diffusion-sde-window-range`` (if
-    set) restricts the high-noise phase only (e.g. ``1,4`` drops the pure-noise
-    step 0), mirroring its meaning in :func:`wan_high_window`. The low-phase pick
-    is always the highest-noise low step. Fully deterministic — ``seed`` unused.
-
-    For the default 10-step / shift=12 schedule this yields ``[1, 2, 6]`` with
-    ``--diffusion-sde-window-range 1,4`` (high steps 1,2 train ``transformer``;
-    low step 6 trains ``transformer_2``)."""
-    n_high = 2
-    n_low = 1
-
-    boundary = _WAN2_2_T2V_A14B_BOUNDARY_RATIO * _WAN_NUM_TRAIN_TIMESTEPS
-    timesteps = _wan2_2_euler_timesteps(num_steps, shift=wan_effective_shift(args))
-    high_indices = [int(i) for i, timestep in enumerate(timesteps) if timestep >= boundary]
-    low_indices = [int(i) for i, timestep in enumerate(timesteps) if timestep < boundary]
-
-    range_raw = getattr(args, "diffusion_sde_window_range", None)
-    if range_raw:
-        parts = [int(x) for x in str(range_raw).split(",")]
-        lo, hi = parts[0], parts[1]
-        high_indices = [i for i in high_indices if lo <= i < hi]
-
-    if len(high_indices) < n_high:
-        raise ValueError(
-            "wan_dual_2high_1low needs >=2 high-noise steps after range filtering: "
-            f"available={high_indices}, num_steps={num_steps}, boundary={boundary}"
-        )
-    if len(low_indices) < n_low:
-        raise ValueError(
-            "wan_dual_2high_1low needs >=1 low-noise step: "
-            f"available={low_indices}, num_steps={num_steps}, boundary={boundary}"
-        )
-
-    return sorted(high_indices[:n_high] + low_indices[:n_low]), None

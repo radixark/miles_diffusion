@@ -7,8 +7,9 @@
 #   guidance=4.0 (high-noise) / 3.0 (low-noise), Flow-SDE noise_level=0.9,
 #   LoRA r=64/alpha=128 (self-attn + cross-attn + FFN),
 #   lr=1e-4, adam_beta2=0.999, weight_decay=1e-4, clip_range=1e-4.
-#   One SDE step drawn from the Wan high-noise indices (wan_high_window,
-#   window_size=1, range 1,4) → only the high-noise expert ("transformer") trains.
+#   One SDE step drawn per epoch from the high-noise indices 1,2,3
+#   (wan_ff_global_window, window_size=1, shared across the batch like
+#   Flow-Factory) → only the high-noise expert ("transformer") trains.
 #
 # Layout: first 4 GPUs in CUDA_VISIBLE_DEVICES = train+sgld colocate,
 # the 5th GPU = pickscore reward worker. Default GPUs 0-4.
@@ -101,9 +102,9 @@ WAN_LORA_TARGET_MODULES=(
   --diffusion-noise-level 0.9 \
   --diffusion-height 480 \
   --diffusion-width 480 \
-  --diffusion-step-strategy-path miles.rollout.step_strategy_hub.wan_high_window \
+  --diffusion-step-strategy-path miles.rollout.step_strategy_hub.wan_ff_global_window \
   --diffusion-sde-window-size 1 \
-  --diffusion-sde-window-range 1,4 \
+  --diffusion-sde-candidate-steps 1,2,3 \
   --save "${SAVE_DIR}" \
   --save-interval 10 \
   --eval-prompt-data pickscore_test "${DATASETS_DIR}/flowgrpo_pickscore/test.jsonl" \
