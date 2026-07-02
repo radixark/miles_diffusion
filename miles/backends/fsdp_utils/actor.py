@@ -121,6 +121,8 @@ class FSDPTrainRayActor(TrainRayActor):
         # Single component keeps the bare model as self.model so optimizer /
         # checkpoint state-dict keys stay identical to pre-dual-DiT runs;
         # multi-component wraps in a ModuleDict (keys get a component prefix).
+        # Not using ModuleDict for single-component to avoid previous checkpoint
+        # not able to resume training due to key mismatch.
         if len(self.models) == 1:
             self.model = next(iter(self.models.values()))
         else:
@@ -464,6 +466,9 @@ class FSDPTrainRayActor(TrainRayActor):
                 train_pipeline_config.component_for_timestep(t, num_train_timesteps)
                 for t in timesteps_microbatch.tolist()
             }
+            # to prevent mixing denoising phases in a single micro-batch
+            # just in case when some customized step strategy is used that
+            # may violate the assumption of one phase per micro-batch, we raise an error here
             if len(components) > 1:
                 raise ValueError(
                     f"Micro-batch mixes denoising phases {sorted(components)}; set "
@@ -626,17 +631,14 @@ class FSDPTrainRayActor(TrainRayActor):
             # functions of it). Matches the legacy actor metric name.
             rollout_model_output = stack_train_pair_rollout_debug(batch, "rollout_step_model_output")
             if rollout_model_output is not None:
-                rollout_model_output = rollout_model_output.to(device=device, dtype=torch.float32).float()
-                _append_rollout_train_abs_diff_stats(
+                mean_abs_diff = _append_rollout_train_abs_diff_stats(
                     log_stats,
                     "model_output",
                     noise_pred_microbatch.float(),
-                    rollout_model_output,
+                    rollout_model_output.to(device=device, dtype=torch.float32),
                 )
                 if len(self.models) > 1:
-                    log_stats[f"model_output_mean_abs_diff_{component}"].append(
-                        (noise_pred_microbatch.float() - rollout_model_output).abs().mean().detach()
-                    )
+                    log_stats[f"model_output_mean_abs_diff_{component}"].append(mean_abs_diff)
 
         return loss_sum
 
@@ -646,13 +648,15 @@ def _append_rollout_train_abs_diff_stats(
     prefix: str,
     train: torch.Tensor,
     rollout: torch.Tensor,
-) -> None:
+) -> torch.Tensor:
     bsz = train.shape[0]
     diff = (train.reshape(bsz, -1).float() - rollout.reshape(bsz, -1).float()).abs()
     ref_max = rollout.reshape(bsz, -1).float().abs().max() + 1e-30
+    mean_abs_diff = diff.mean().detach()
     log_stats[f"{prefix}_max_abs_diff"].append(diff.max().detach())
-    log_stats[f"{prefix}_mean_abs_diff"].append(diff.mean().detach())
+    log_stats[f"{prefix}_mean_abs_diff"].append(mean_abs_diff)
     log_stats[f"{prefix}_rel_max"].append((diff.max() / ref_max).detach())
+    return mean_abs_diff
 
 
 def _cast_cond_to_dtype(cond: dict, dtype: torch.dtype) -> dict:

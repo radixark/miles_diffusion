@@ -34,7 +34,7 @@ class DiffusionUpdateWeight(abc.ABC):
         self.args = args
         # Component name -> trained model. Component names are the sglang-d
         # pipeline module names the weights get pushed back to ("transformer",
-        # and "transformer_2" for dual-expert models like Wan2.2).
+        # and "transformer_2" for multi-transformers models like Wan2.2).
         self.models = models
         self.weight_version = 0
 
