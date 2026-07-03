@@ -39,9 +39,6 @@ class DiffusionUpdateWeight(abc.ABC):
 
     def __init__(self, args: Namespace, models: dict[str, torch.nn.Module]) -> None:
         self.args = args
-        # Component name -> trained model. Component names are the sglang-d
-        # pipeline module names the weights get pushed back to ("transformer",
-        # and "transformer_2" for multi-transformers models like Wan2.2).
         self.models = models
         self.weight_version = 0
 

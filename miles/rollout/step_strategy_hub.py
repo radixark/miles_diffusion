@@ -50,10 +50,7 @@ def wan_ff_global_window(
 ) -> tuple[list[int] | None, list[int] | None]:
     """Per-epoch global SDE window: draw ``--diffusion-sde-window-size``
     indices from the candidate set once per epoch, so every sample in an
-    epoch trains the same window. The epoch is derived as
-    ``group_index // rollout_batch_size`` and seeds the draw together with
-    ``--rollout-seed``; draws are not phase-balanced (a window can land
-    entirely in one denoising phase)."""
+    epoch trains the same window."""
     candidates = _sde_candidate_steps(args, num_steps)
     window_size = int(args.diffusion_sde_window_size)
     if window_size <= 0:
@@ -74,7 +71,7 @@ def _sde_candidate_steps(args: Namespace, num_steps: int) -> list[int]:
         raise ValueError(
             "wan_ff_global_window requires --diffusion-sde-candidate-steps "
             "(e.g. '1,2,3'); which indices are valid depends on the "
-            "num-steps/flow-shift schedule, so there is no safe default"
+            "num-steps/flow-shift schedule; there is no safe default"
         )
     candidates = [int(step) for step in str(raw).split(",")]
     out_of_range = [step for step in candidates if not 0 <= step < num_steps]

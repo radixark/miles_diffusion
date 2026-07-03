@@ -323,9 +323,6 @@ def _compute_server_args(args, host, port, nccl_port):
         "warmup": False,
     }
 
-    # Override the engine's pipeline-config flow_shift at launch (ServerArgs
-    # routes this key into PipelineConfig, whose value both the rollout and
-    # eval schedulers read), so rollout requests need no custom sigmas.
     if getattr(args, "diffusion_flow_shift", None) is not None:
         kwargs["flow_shift"] = float(args.diffusion_flow_shift)
 
