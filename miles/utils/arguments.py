@@ -275,11 +275,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=float,
                 default=None,
                 help=(
-                    "Effective flow-matching shift for the Wan rollout/training schedule. "
-                    "When set, the client computes the sigma schedule and sends it with each "
-                    "rollout request (composing out the server's configured shift), and the "
-                    "step strategies derive phase boundaries from the same schedule. "
-                    "None = use the sgl-d server default (12.0 for Wan2.2-T2V-A14B)."
+                    "Flow-matching shift for the generation schedule. Passed to the sgl-d "
+                    "engine at launch as its pipeline-config flow_shift override, so both "
+                    "the rollout and eval schedulers use it. None = engine default "
+                    "(12.0 for Wan2.2-T2V-A14B)."
                 ),
             )
             parser.add_argument(

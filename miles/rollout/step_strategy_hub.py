@@ -16,38 +16,6 @@ import torch
 from miles.utils.types import Sample
 
 
-# sgl-d's serving default for Wan2.2-T2V-A14B (Wan2_2_T2V_A14B_Config.flow_shift).
-# The server applies this shift to ANY sigma schedule, including per-request
-# custom sigmas — wan_request_sigmas() composes it out when overriding.
-_WAN2_2_T2V_A14B_FLOW_SHIFT = 12.0
-_WAN_NUM_TRAIN_TIMESTEPS = 1000
-
-
-def _flow_shift_transform(sigmas: np.ndarray, shift: float) -> np.ndarray:
-    """Exponential flow shift. Composes multiplicatively:
-    shift_b(shift_a(x)) == shift_{a*b}(x)."""
-    return shift * sigmas / (1 + (shift - 1) * sigmas)
-
-
-def wan_request_sigmas(args: Namespace, num_steps: int) -> list[float] | None:
-    """Sigma schedule to attach to rollout requests, or None for server default.
-
-    The sgl-d scheduler applies its configured shift (12.0) on top of custom
-    sigmas (diffusers convention), so to realize an effective shift S we send
-    shift_{S/12}(raw): shift_12(shift_{S/12}(raw)) == shift_S(raw)."""
-    flow_shift = getattr(args, "diffusion_flow_shift", None)
-    if flow_shift is None:
-        return None
-    target = float(flow_shift)
-    # Raw (pre-shift) grid exactly as the scheduler builds it: linspace between
-    # the target-shifted train-sigma endpoints, in sigma units.
-    endpoint_hi = _flow_shift_transform(np.array(1.0), target)
-    endpoint_lo = _flow_shift_transform(np.array(1.0 / _WAN_NUM_TRAIN_TIMESTEPS), target)
-    raw = np.linspace(endpoint_hi, endpoint_lo, num_steps, dtype=np.float64)
-    sent = _flow_shift_transform(raw, target / _WAN2_2_T2V_A14B_FLOW_SHIFT)
-    return [float(s) for s in sent]
-
-
 def sde_window(
     args: Namespace, sample: Sample, num_steps: int, seed: int
 ) -> tuple[list[int] | None, list[int] | None]:

@@ -14,7 +14,6 @@ from tqdm import tqdm
 
 from miles.rollout.base_types import RolloutFnEvalOutput, RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
-from miles.rollout.step_strategy_hub import wan_request_sigmas
 from miles.utils.async_utils import run
 from miles.utils.diffusion_data import Dataset as DiffusionDataset
 from miles.utils.diffusion_rollout_response import RolloutImageResponseParserActor
@@ -71,16 +70,6 @@ def build_rollout_sampling_params(
     if guidance_scale_2 is not None:
         extra_sampling_params = dict(extra_sampling_params or {})
         extra_sampling_params["guidance_scale_2"] = float(guidance_scale_2)
-
-    # --diffusion-flow-shift: client-dictated sigma schedule (see wan_request_sigmas).
-    # ONLY for rollout (Euler SDE accepts a list). Eval uses the UniPC scheduler
-    # whose set_timesteps asserts sigmas is an np.ndarray -- a list crashes the
-    # engine -> trainer hangs. Eval keeps the model's default schedule.
-    if not evaluation:
-        request_sigmas = wan_request_sigmas(args, num_steps)
-        if request_sigmas is not None:
-            extra_sampling_params = dict(extra_sampling_params or {})
-            extra_sampling_params["sigmas"] = request_sigmas
 
     if extra_sampling_params:
         sampling_params["extra_sampling_params"] = extra_sampling_params
