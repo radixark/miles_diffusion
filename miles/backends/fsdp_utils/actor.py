@@ -692,6 +692,15 @@ def apply_fsdp2(model, mesh=None, cpu_offload=False, args=None):
         "mesh": mesh,
     }
 
+    if args.gradient_checkpointing:
+        # MixedPrecisionPolicy does not cast buffers; a buffer above param_dtype
+        # makes the ckpt recompute dtype-diverge from the forward and abort.
+        for module in model.modules():
+            for name, buf in module.named_buffers(recurse=False):
+                if buf.is_floating_point() and buf.dtype != param_dtype:
+                    persistent = name not in module._non_persistent_buffers_set
+                    module.register_buffer(name, buf.to(param_dtype), persistent=persistent)
+
     for module in modules:
         fully_shard(module, **fsdp_kwargs)
 
