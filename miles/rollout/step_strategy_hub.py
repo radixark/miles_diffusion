@@ -77,7 +77,6 @@ def _sde_candidate_steps(args: Namespace, num_steps: int) -> list[int]:
     out_of_range = [step for step in candidates if not 0 <= step < num_steps]
     if out_of_range:
         raise ValueError(
-            f"--diffusion-sde-candidate-steps {out_of_range} out of range for "
-            f"a {num_steps}-step schedule"
+            f"--diffusion-sde-candidate-steps {out_of_range} out of range for a {num_steps}-step schedule"
         )
     return candidates
