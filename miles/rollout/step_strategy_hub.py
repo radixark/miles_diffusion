@@ -24,13 +24,21 @@ def sde_window(
     to the window for loss / backprop. Keeping the full trajectory avoids the
     sglang-d-side trailing ``x_final`` aliasing issue when the window ends before
     the last denoising step."""
-    window_size = args.diffusion_sde_window_size
+    window_size = int(args.diffusion_sde_window_size)
+    if window_size <= 0:
+        raise ValueError("sde_window requires --diffusion-sde-window-size > 0")
     range_raw = args.diffusion_sde_window_range
     if range_raw:
         parts = [int(x) for x in str(range_raw).split(",")]
-        lo, hi = parts[0], parts[1]
+        if len(parts) != 2:
+            raise ValueError(f"--diffusion-sde-window-range must be 'lo,hi', got {range_raw!r}")
+        lo, hi = parts
     else:
         lo, hi = 0, num_steps
+    if not 0 <= lo < hi <= num_steps:
+        raise ValueError(f"--diffusion-sde-window-range [{lo},{hi}) out of range for a {num_steps}-step schedule")
+    if window_size > hi - lo:
+        raise ValueError(f"--diffusion-sde-window-size {window_size} does not fit in window range [{lo},{hi})")
     rng = np.random.default_rng(seed)
     start = int(rng.integers(lo, hi - window_size + 1))
     indices = list(range(start, start + window_size))
@@ -40,17 +48,12 @@ def sde_window(
 def wan_ff_global_window(
     args: Namespace, sample: Sample, num_steps: int, seed: int
 ) -> tuple[list[int] | None, list[int] | None]:
-    """Replicate Flow-Factory's per-epoch global SDE window for A/B comparison.
-
-    FF (``FlowMatchEulerDiscreteSDEScheduler.current_sde_steps``) draws
-    ``num_sde_steps`` indices once per epoch via
-    ``torch.randperm(len(sde_steps), seed=epoch + train_seed)`` — every sample
-    in the epoch shares the window, and phases are NOT balanced (a window can
-    be all-high or all-low). Here ``epoch = group_index // rollout_batch_size``
-    (group_index is 0-based and monotonic across the run), ``train_seed`` is
-    ``--rollout-seed`` and the draw count is ``--diffusion-sde-window-size``
-    (total, not per phase) — with both set to FF's values the two frameworks
-    train the exact same window sequence epoch by epoch."""
+    """Per-epoch global SDE window: draw ``--diffusion-sde-window-size``
+    indices from the candidate set once per epoch, so every sample in an
+    epoch trains the same window. The epoch is derived as
+    ``group_index // rollout_batch_size`` and seeds the draw together with
+    ``--rollout-seed``; draws are not phase-balanced (a window can land
+    entirely in one denoising phase)."""
     candidates = _sde_candidate_steps(args, num_steps)
     window_size = int(args.diffusion_sde_window_size)
     if window_size <= 0:
