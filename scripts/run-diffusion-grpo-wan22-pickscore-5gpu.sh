@@ -1,24 +1,37 @@
 #!/usr/bin/env bash
-# Wan2.2-T2V-A14B 1-frame PickScore GRPO recipe: 4-GPU train+rollout colocate
-# + 1-GPU pickscore reward.
+# 4-GPU train + 1-GPU pickscore reward, Wan2.2-T2V-A14B dual-expert 5-frame video GRPO:
+#   pretrained = Wan-AI/Wan2.2-T2V-A14B-Diffusers, resolution=480, num_frames=5,
+#   num_steps=10, eval_steps=28, flow_shift=3.0 (engine-launch override of the
+#   sgl-d serving default 12.0), guidance=4.0 (high-noise) / 3.0 (low-noise expert),
+#   Flow-SDE noise_level=0.9, beta=0 (no KL), per-prompt mean/std.
+#   train: lr=1e-4, adam_beta2=0.999, weight_decay=1e-4, clip_range=1e-4,
+#          mixed precision (master fp32 / forward bf16).
+#   LoRA: r=64, alpha=128, init=gaussian, self-attn + cross-attn + FFN of both DiTs.
 #
-# Knobs aligned with Flow-Factory's Wan2.2 LoRA GRPO recipe:
-#   pretrained = Wan-AI/Wan2.2-T2V-A14B-Diffusers, resolution=480, num_steps=10,
-#   guidance=4.0 (high-noise) / 3.0 (low-noise), Flow-SDE noise_level=0.9,
-#   LoRA r=64/alpha=128 (self-attn + cross-attn + FFN),
-#   lr=1e-4, adam_beta2=0.999, weight_decay=1e-4, clip_range=1e-4.
-#   One SDE step drawn per epoch from the high-noise indices 1,2,3
-#   (epoch_global_window, window_size=1, shared across the batch like
-#   Flow-Factory) → only the high-noise expert ("transformer") trains.
+# SDE schedule: epoch_global_window draws ONE step per rollout (shared across the
+#   batch) from --diffusion-sde-candidate-steps 1,2,3. At flow_shift=3.0 the
+#   dual-expert boundary is t=875: steps 1,2 train "transformer" (high-noise),
+#   step 3 trains "transformer_2" (low-noise), so both experts get gradient
+#   stochastically and --update-weight-target-module syncs both.
+#
+# Per rollout: 48 prompts × 16 samples = 768 items.
+#   num_steps_per_rollout=2 → 384 items/optim step ÷ 4 train gpus = 96 items/rank.
+#   --micro-batch-size 2: the one-step-per-rollout schedule keeps every
+#   micro-batch phase-pure (one DiT, one CFG scale); mbs=4 OOMs on H200, 2 fits.
+#
+# NOTE: gradient checkpointing stays OFF. Wan2.2 under FSDP2 mixed precision hits
+#   torch.utils.checkpoint CheckpointError (fp32 RoPE freqs buffers; fix pending
+#   in a separate PR). If you OOM, lower --rollout-batch-size,
+#   --n-samples-per-prompt, or --diffusion-microgroup-size.
 #
 # Layout: first 4 GPUs in CUDA_VISIBLE_DEVICES = train+sgld colocate,
-# the 5th GPU = pickscore reward worker. Default GPUs 0-4.
+# the 5th GPU = pickscore reward worker. Default: GPU 0,1,2,3 + GPU 4.
 
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3,4}"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:False
-RUN_NAME="diffusion_grpo_wan22_pickscore_4gpu_$(date +%Y%m%d_%H%M%S)"
+RUN_NAME="diffusion_grpo_wan22_pickscore_5gpu_$(date +%Y%m%d_%H%M%S)"
 SAVE_DIR="${ROOT_DIR}/logs/${RUN_NAME}/ckpt"
 
 WANDB_ARGS=()
@@ -37,9 +50,11 @@ fi
 PYTHON_BIN="${PYTHON_BIN:-python}"
 
 DATASETS_DIR="/root/datasets/miles-diffusion-datasets"
-hf download --repo-type dataset rockdu/miles-diffusion-datasets \
-  --include "flowgrpo_pickscore/**" \
-  --local-dir "${DATASETS_DIR}"
+if [[ ! -f "${DATASETS_DIR}/flowgrpo_pickscore/train.jsonl" ]]; then
+  hf download --repo-type dataset rockdu/miles-diffusion-datasets \
+    --include "flowgrpo_pickscore/**" \
+    --local-dir "${DATASETS_DIR}"
+fi
 
 # Wan2.2 DiT LoRA targets: self-attn (attn1), cross-attn (attn2), and FFN.
 WAN_LORA_TARGET_MODULES=(
@@ -60,10 +75,7 @@ WAN_LORA_TARGET_MODULES=(
   --num-rollout 10000 \
   --num-steps-per-rollout 2 \
   --diffusion-microgroup-size 8 \
-  --micro-batch-size-sample 1 \
-  --micro-batch-size-tstep 1 \
-  --diffusion-train-iter-order sample_major \
-  --gradient-checkpointing \
+  --micro-batch-size 2 \
   --actor-num-gpus-per-node 4 \
   --rollout-num-gpus 4 \
   --rollout-num-gpus-per-engine 1 \
@@ -81,10 +93,9 @@ WAN_LORA_TARGET_MODULES=(
   --use-miles-router \
   --sglang-server-concurrency 8 \
   --update-weight-buffer-size 2147483648 \
-  --update-weight-target-module transformer \
+  --update-weight-target-module transformer,transformer_2 \
   --diffusion-reward pickscore:1.0 \
   --advantage-estimator grpo \
-  --globalize-reward-std \
   --rm-type pickscore \
   --pickscore-num-workers 1 \
   --pickscore-num-gpus-per-worker 1.0 \
@@ -96,15 +107,17 @@ WAN_LORA_TARGET_MODULES=(
   --diffusion-forward-dtype bf16 \
   --diffusion-num-steps 10 \
   --diffusion-eval-num-steps 28 \
-  --diffusion-output-num-frames 1 \
+  --diffusion-output-num-frames 5 \
   --diffusion-guidance-scale 4.0 \
   --diffusion-guidance-scale-2 3.0 \
   --diffusion-noise-level 0.9 \
   --diffusion-height 480 \
   --diffusion-width 480 \
+  --diffusion-flow-shift 3.0 \
   --diffusion-step-strategy-path miles.rollout.step_strategy_hub.epoch_global_window \
   --diffusion-sde-window-size 1 \
   --diffusion-sde-candidate-steps 1,2,3 \
+  --diffusion-debug-mode \
   --save "${SAVE_DIR}" \
   --save-interval 10 \
   --eval-prompt-data pickscore_test "${DATASETS_DIR}/flowgrpo_pickscore/test.jsonl" \
