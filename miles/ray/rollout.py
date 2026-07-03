@@ -412,8 +412,6 @@ class RolloutManager:
         import imageio
         import wandb
 
-        # mp4s must survive until tracking_utils.log() uploads them, so keep the
-        # tmpdir open across the whole build-and-log.
         with tempfile.TemporaryDirectory() as tmpdir:
             log_dict: dict = {}
             for media_key, samples in media_key_to_samples.items():
