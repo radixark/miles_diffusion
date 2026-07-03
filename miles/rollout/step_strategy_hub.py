@@ -45,7 +45,7 @@ def sde_window(
     return indices, None
 
 
-def wan_ff_global_window(
+def epoch_global_window(
     args: Namespace, sample: Sample, num_steps: int, seed: int
 ) -> tuple[list[int] | None, list[int] | None]:
     """Per-epoch global SDE window: draw ``--diffusion-sde-window-size``
@@ -54,7 +54,7 @@ def wan_ff_global_window(
     candidates = _sde_candidate_steps(args, num_steps)
     window_size = int(args.diffusion_sde_window_size)
     if window_size <= 0:
-        raise ValueError("wan_ff_global_window requires --diffusion-sde-window-size > 0")
+        raise ValueError("epoch_global_window requires --diffusion-sde-window-size > 0")
     if window_size >= len(candidates):
         return sorted(candidates), None
 
@@ -69,7 +69,7 @@ def _sde_candidate_steps(args: Namespace, num_steps: int) -> list[int]:
     raw = getattr(args, "diffusion_sde_candidate_steps", None)
     if raw is None:
         raise ValueError(
-            "wan_ff_global_window requires --diffusion-sde-candidate-steps "
+            "epoch_global_window requires --diffusion-sde-candidate-steps "
             "(e.g. '1,2,3'); which indices are valid depends on the "
             "num-steps/flow-shift schedule; there is no safe default"
         )

@@ -8,7 +8,7 @@
 #      already mean-pools over all generated frames (rm_hub/pickscore.py), and
 #      wandb now logs the full clip as mp4 instead of frame 0 (ray/rollout.py
 #      _log_images), so reward and media both reflect all 5 frames.
-#   2. Trains BOTH Wan2.2 experts. The SDE schedule (wan_ff_global_window)
+#   2. Trains BOTH Wan2.2 experts. The SDE schedule (epoch_global_window)
 #      draws ONE step per rollout, shared across the batch, from the candidate
 #      set --diffusion-sde-candidate-steps 1,2,3 (via torch.randperm seeded by
 #      epoch + rollout_seed), exactly mirroring Flow-Factory's
@@ -22,7 +22,7 @@
 #      rollout (= 3x the sample*step training pairs of FF's 1-step draw). That
 #      tripled per-rollout gradient coverage, fitting ~3x faster but overfitting
 #      the 3 fixed trajectory points and saturating early at a lower reward
-#      ceiling. wan_ff_global_window restores FF's slower-but-higher trajectory.
+#      ceiling. epoch_global_window restores FF's slower-but-higher trajectory.
 #
 #   3. flow_shift=3.0 (NOT sgl-d's hardcoded 12.0). 3.0 is the diffusers
 #      Wan2.2-T2V-A14B scheduler_config default that FF inherits, and the
@@ -39,7 +39,7 @@
 #   LoRA r=64/alpha=128 (self-attn + cross-attn + FFN),
 #   lr=1e-4, adam_beta2=0.999, weight_decay=1e-4, clip_range=1e-4.
 #
-# NOTE: --micro-batch-size can be >1 with wan_ff_global_window. That strategy
+# NOTE: --micro-batch-size can be >1 with epoch_global_window. That strategy
 # draws ONE SDE step per rollout, shared across the whole batch, so every train
 # pair in a rollout has the same timestep -> same phase -> same DiT + same CFG
 # scale. actor.py only refuses a micro-batch that MIXES phases (one forward = one
@@ -154,7 +154,7 @@ WAN_LORA_TARGET_MODULES=(
   --diffusion-height 480 \
   --diffusion-width 480 \
   --diffusion-flow-shift 3.0 \
-  --diffusion-step-strategy-path miles.rollout.step_strategy_hub.wan_ff_global_window \
+  --diffusion-step-strategy-path miles.rollout.step_strategy_hub.epoch_global_window \
   --diffusion-sde-window-size 1 \
   --diffusion-sde-candidate-steps 1,2,3 \
   --diffusion-debug-mode \
