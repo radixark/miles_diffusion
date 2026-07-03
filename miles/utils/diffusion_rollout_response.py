@@ -41,9 +41,7 @@ def _deserialize_rollout_log_probs(
     # Eval-mode rollout (rollout=False) sends no log_probs; train-mode always does.
     if value is None:
         return None
-    assert isinstance(value, dict) and value.get("__tensor__") is not None
-    tensor = deserialize_func(value)
-    return None if tensor is None else tensor.detach().cpu()
+    return deserialize_func(value)
 
 
 def _parse_tensor_or_list(
