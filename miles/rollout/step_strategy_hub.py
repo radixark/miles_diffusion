@@ -37,24 +37,6 @@ def sde_window(
     return indices, None
 
 
-def _sde_candidate_steps(args: Namespace, num_steps: int) -> list[int]:
-    raw = getattr(args, "diffusion_sde_candidate_steps", None)
-    if raw is None:
-        raise ValueError(
-            "wan_ff_global_window requires --diffusion-sde-candidate-steps "
-            "(e.g. '1,2,3'); which indices are valid depends on the "
-            "num-steps/flow-shift schedule, so there is no safe default"
-        )
-    candidates = [int(step) for step in str(raw).split(",")]
-    out_of_range = [step for step in candidates if not 0 <= step < num_steps]
-    if out_of_range:
-        raise ValueError(
-            f"--diffusion-sde-candidate-steps {out_of_range} out of range for "
-            f"a {num_steps}-step schedule"
-        )
-    return candidates
-
-
 def wan_ff_global_window(
     args: Namespace, sample: Sample, num_steps: int, seed: int
 ) -> tuple[list[int] | None, list[int] | None]:
@@ -81,3 +63,21 @@ def wan_ff_global_window(
     generator = torch.Generator().manual_seed(epoch + int(args.rollout_seed))
     selected = torch.randperm(len(candidates), generator=generator)[:window_size]
     return sorted(candidates[i] for i in selected.tolist()), None
+
+
+def _sde_candidate_steps(args: Namespace, num_steps: int) -> list[int]:
+    raw = getattr(args, "diffusion_sde_candidate_steps", None)
+    if raw is None:
+        raise ValueError(
+            "wan_ff_global_window requires --diffusion-sde-candidate-steps "
+            "(e.g. '1,2,3'); which indices are valid depends on the "
+            "num-steps/flow-shift schedule, so there is no safe default"
+        )
+    candidates = [int(step) for step in str(raw).split(",")]
+    out_of_range = [step for step in candidates if not 0 <= step < num_steps]
+    if out_of_range:
+        raise ValueError(
+            f"--diffusion-sde-candidate-steps {out_of_range} out of range for "
+            f"a {num_steps}-step schedule"
+        )
+    return candidates
