@@ -37,17 +37,22 @@ def sde_window(
     return indices, None
 
 
-# Default candidate list, mirroring the local Flow-Factory wan22 dual recipe's
-# `sde_steps` ({1,2,3} high window + all low steps {6..9} of the 10-step
-# schedule). Override per run with --diffusion-sde-candidate-steps.
-_FF_DUAL_SDE_CANDIDATES = [1, 2, 3, 6, 7, 8, 9]
-
-
-def _sde_candidate_steps(args: Namespace) -> list[int]:
+def _sde_candidate_steps(args: Namespace, num_steps: int) -> list[int]:
     raw = getattr(args, "diffusion_sde_candidate_steps", None)
     if raw is None:
-        return _FF_DUAL_SDE_CANDIDATES
-    return [int(step) for step in str(raw).split(",")]
+        raise ValueError(
+            "wan_ff_global_window requires --diffusion-sde-candidate-steps "
+            "(e.g. '1,2,3'); which indices are valid depends on the "
+            "num-steps/flow-shift schedule, so there is no safe default"
+        )
+    candidates = [int(step) for step in str(raw).split(",")]
+    out_of_range = [step for step in candidates if not 0 <= step < num_steps]
+    if out_of_range:
+        raise ValueError(
+            f"--diffusion-sde-candidate-steps {out_of_range} out of range for "
+            f"a {num_steps}-step schedule"
+        )
+    return candidates
 
 
 def wan_ff_global_window(
@@ -64,7 +69,7 @@ def wan_ff_global_window(
     ``--rollout-seed`` and the draw count is ``--diffusion-sde-window-size``
     (total, not per phase) — with both set to FF's values the two frameworks
     train the exact same window sequence epoch by epoch."""
-    candidates = _sde_candidate_steps(args)
+    candidates = _sde_candidate_steps(args, num_steps)
     window_size = int(args.diffusion_sde_window_size)
     if window_size <= 0:
         raise ValueError("wan_ff_global_window requires --diffusion-sde-window-size > 0")
