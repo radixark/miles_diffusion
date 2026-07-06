@@ -4,6 +4,8 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 export PYTHONPATH=.
 
+torchrun() { python -m torch.distributed.run "$@"; }
+
 run() { echo; echo "===== $* ====="; "$@"; }
 
 run python -m pytest -q tests/sp/sglang_usp_import_guard.py
