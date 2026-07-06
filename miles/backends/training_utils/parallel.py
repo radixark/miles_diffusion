@@ -25,3 +25,11 @@ class ParallelState:
     is_pp_last_stage: bool = True
     vpp_size: int | None = 1
     microbatch_group_size_per_vp_stage: int | None = None
+    # Sequence Parallelism (USP = Ulysses x Ring). cp_* fields above alias sp_*.
+    sp_rank: int = 0
+    sp_size: int = 1
+    sp_group: dist.ProcessGroup | None = None
+    ulysses_degree: int = 1
+    ring_degree: int = 1
+    ulysses_group: dist.ProcessGroup | None = None
+    ring_group: dist.ProcessGroup | None = None

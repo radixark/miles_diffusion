@@ -57,8 +57,12 @@ class FSDPArgs:
     # support matrix. Name kept identical to Megatron's.
     deterministic_mode: bool = False
 
-    # Context Parallelism
-    context_parallel_size: int = 1  # Context Parallelism size
+    # Sequence Parallelism (USP = Ulysses x Ring). context_parallel_size is a
+    # backward-compatible alias for sequence_parallel_size.
+    context_parallel_size: int = 1
+    sequence_parallel_size: int = 1
+    ulysses_degree: int = 0  # 0=auto: ulysses fills sp, ring=1
+    ring_degree: int = 0  # 0=auto: sp // ulysses
 
     # YAML bookkeeping
     config: str | None = None
