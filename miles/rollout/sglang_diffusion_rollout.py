@@ -2,6 +2,7 @@ import asyncio
 import copy
 import inspect
 import logging
+import time
 from argparse import Namespace
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -129,6 +130,35 @@ class GenerateState(metaclass=SingletonMeta):
         self.remaining_batch_size = 0
         self.pendings = set()
         self.aborted = False
+        # Perf accounting for the reward-bottleneck metrics; see
+        # _compute_reward_perf_metrics. Cleared per rollout.
+        self.generate_done_ts: list[float] = []
+        self.reward_done_ts: list[float] = []
+        self.reward_inflight = 0
+        self.reward_max_inflight = 0
+
+    def mark_generate_done(self) -> None:
+        """Stamp when a microgroup's (semaphore-gated) generation finished."""
+        self.generate_done_ts.append(time.monotonic())
+
+    @contextmanager
+    def reward_inflight_scope(self, *, record: bool):
+        """Track concurrent reward tasks and stamp when each reward finishes.
+
+        Reward runs outside the generation semaphore, so this backlog is what
+        grows when reward cannot keep up with generation (see
+        _compute_reward_perf_metrics).
+        """
+        if not record:
+            yield
+            return
+        self.reward_inflight += 1
+        self.reward_max_inflight = max(self.reward_max_inflight, self.reward_inflight)
+        try:
+            yield
+        finally:
+            self.reward_inflight -= 1
+            self.reward_done_ts.append(time.monotonic())
 
     def submit_generate_tasks(self, samples: list[list[Sample]]) -> None:
         for group in samples:
@@ -215,13 +245,16 @@ async def generate_and_rm_microgroup(
                     microgroup = await custom_generate_func(args, microgroup, sampling_params)
             else:
                 microgroup = await generate_microgroup(args, microgroup, sampling_params, evaluation=evaluation)
+    if not evaluation:
+        state.mark_generate_done()
 
     # for the rm that need the whole group, we will not do the rm here
     if args.group_rm:
         return microgroup
 
     # calculate the reward for the microgroup
-    rewards = await batched_async_rm(args, microgroup)
+    with state.reward_inflight_scope(record=not evaluation):
+        rewards = await batched_async_rm(args, microgroup)
     for sample, reward in zip(microgroup, rewards, strict=True):
         sample.reward = reward
     return microgroup
@@ -230,7 +263,7 @@ async def generate_and_rm_microgroup(
 async def generate_and_rm_group(
     args: Namespace, group: list[Sample], sampling_params: dict[str, Any], evaluation: bool = False
 ) -> list[Sample]:
-    GenerateState(args)
+    state = GenerateState(args)
 
     # N-spaced base so sgl-d's seed→[seed+0..seed+N-1] expansion stays disjoint
     # per (rollout, prompt-group); group_index is monotonic across the run.
@@ -254,7 +287,8 @@ async def generate_and_rm_group(
 
     # for the rm that need the whole group, we will do the rm here
     if args.group_rm:
-        rewards = await batched_async_rm(args, group)
+        with state.reward_inflight_scope(record=not evaluation):
+            rewards = await batched_async_rm(args, group)
         for sample, reward in zip(group, rewards, strict=False):
             sample.reward = reward
 
@@ -264,6 +298,41 @@ async def generate_and_rm_group(
 async def abort(args: Namespace, rollout_id: int) -> list[list[Sample]]:
     # SGL-D TODO: support oversampling+filter & abort
     raise NotImplementedError("SGLang-Diffusion doesn't support abort")
+
+
+def _compute_reward_perf_metrics(state: GenerateState, gen_start: float) -> dict[str, float]:
+    """Metrics that reveal whether reward — not generation — is the streaming bottleneck.
+
+    Reward runs *outside* the generation semaphore, so a slow reward is free as
+    long as it stays hidden under generation: the engine keeps generating the
+    next groups while earlier groups are being scored. Reward only costs
+    wall-clock once generation has drained and the engine sits idle waiting for
+    the remaining reward tasks to finish.
+
+    - ``tail_time``: that idle-waiting-on-reward span (last reward done − last
+      generate done). This is the wall-clock reward adds on top of generation,
+      i.e. the ceiling on what removing/overlapping reward could save.
+    - ``tail_ratio``: ``tail_time`` as a fraction of generation wall-clock.
+      ~0 → reward is fully hidden (not the bottleneck, even if slow per item);
+      large → reward is the bottleneck.
+    - ``max_inflight``: peak concurrent reward tasks — a leading indicator; it
+      grows through the rollout when reward cannot keep up with generation.
+
+    Timestamps cover the microgroups that completed within the rollout; with
+    ``over_sampling_batch_size == rollout_batch_size`` (currently enforced) that
+    is effectively the whole batch.
+    """
+    if not state.generate_done_ts or not state.reward_done_ts:
+        return {}
+    generate_all_done = max(state.generate_done_ts)
+    reward_all_done = max(state.reward_done_ts)
+    wall = reward_all_done - gen_start
+    tail = max(0.0, reward_all_done - generate_all_done)
+    return {
+        "perf/reward/tail_time": tail,
+        "perf/reward/tail_ratio": tail / wall if wall > 0 else 0.0,
+        "perf/reward/max_inflight": float(state.reward_max_inflight),
+    }
 
 
 async def generate_rollout_async(
@@ -284,6 +353,13 @@ async def generate_rollout_async(
     assert args.rollout_global_dataset
 
     state = GenerateState(args)
+    # Fresh perf accounting for this rollout (defensive against a prior rollout
+    # that errored before its end-of-run state.reset()).
+    state.generate_done_ts = []
+    state.reward_done_ts = []
+    state.reward_inflight = 0
+    state.reward_max_inflight = 0
+    rollout_gen_start = time.monotonic()
 
     # instantiate data filters
     dynamic_filter = (
@@ -350,13 +426,16 @@ async def generate_rollout_async(
     data = sorted(data, key=lambda group: group[0][0].index if isinstance(group[0], list) else group[0].index)
     sorted(all_data, key=lambda group: group[0][0].index if isinstance(group[0], list) else group[0].index)
 
+    # Compute perf metrics before reset() clears the timing accumulators.
+    metrics = {**metric_gatherer.collect(), **_compute_reward_perf_metrics(state, rollout_gen_start)}
+
     # reset the global state to prevent effects on the next rollout or eval.
     state.reset()
     if args.rollout_sample_filter_path is not None:
         filter_func = load_function(args.rollout_sample_filter_path)
         filter_func(args, data)
 
-    return RolloutFnTrainOutput(samples=data, metrics=metric_gatherer.collect())
+    return RolloutFnTrainOutput(samples=data, metrics=metrics)
 
 
 EVAL_PROMPT_DATASET = {}
