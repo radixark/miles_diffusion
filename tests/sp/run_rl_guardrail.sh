@@ -11,6 +11,10 @@
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
+# A finished run can leave ray actors holding GPU memory; start clean.
+ray stop --force >/dev/null 2>&1 || true
+sleep 5
+
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:False
 export PICKSCORE_NUM_GPUS_PER_WORKER=0
@@ -22,6 +26,7 @@ RING_DEGREE="${RING_DEGREE:-0}"
 NUM_ROLLOUT="${NUM_ROLLOUT:-2}"
 NUM_FRAMES="${NUM_FRAMES:-5}"
 GRAD_CKPT="${GRAD_CKPT:-0}"
+CANDIDATE_STEPS="${CANDIDATE_STEPS:-1,2,3}"
 RUN_NAME="${RUN_NAME:-sp_guardrail_sp${SP_SIZE}_$(date +%Y%m%d_%H%M%S)}"
 DATASETS_DIR="/root/datasets/miles-diffusion-datasets"
 
@@ -90,7 +95,7 @@ WAN_LORA_TARGET_MODULES=(
   --diffusion-flow-shift 3.0 \
   --diffusion-step-strategy-path miles.rollout.step_strategy_hub.epoch_global_window \
   --diffusion-sde-window-size 1 \
-  --diffusion-sde-candidate-steps 1,2,3 \
+  --diffusion-sde-candidate-steps "${CANDIDATE_STEPS}" \
   --diffusion-debug-mode \
   --save "${ROOT_DIR}/logs/${RUN_NAME}/ckpt" \
   --save-interval 100 \
