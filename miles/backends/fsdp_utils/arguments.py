@@ -64,7 +64,7 @@ class FSDPArgs:
     config: str | None = None
 
 
-def parse_fsdp_cli(extra_args_provider=None):
+def _build_fsdp_parser(extra_args_provider=None):
     parser = argparse.ArgumentParser("FSDP SFT Training (miles)")
     parser.add_argument("--config", type=str, default=None, help="YAML config path")
     for f in dataclasses.fields(FSDPArgs):
@@ -86,8 +86,26 @@ def parse_fsdp_cli(extra_args_provider=None):
 
     if extra_args_provider is not None:
         parser = extra_args_provider(parser)
-    args = parser.parse_args()
-    return args
+    return parser
+
+
+def parse_fsdp_cli(extra_args_provider=None):
+    return _build_fsdp_parser(extra_args_provider).parse_args()
+
+
+def _explicit_cli_dests(extra_args_provider=None):
+    """Dests the user actually passed on the command line.
+
+    argparse fills every dest with its default, so a plain parse can't
+    distinguish "--lr 2e-5 given" from "lr defaulted". Re-parse with all
+    defaults suppressed: only explicitly-passed options survive.
+    """
+    parser = _build_fsdp_parser(extra_args_provider)
+    for action in parser._actions:
+        action.default = argparse.SUPPRESS
+    parser._defaults.clear()  # set_defaults() from extra_args_provider
+    known, _ = parser.parse_known_args()
+    return set(vars(known))
 
 
 # Deterministic-mode attention support matrix — KEEP IN SYNC. torch's flag only
@@ -153,12 +171,20 @@ def validate_attention_args(args):
 
 
 def load_fsdp_args(extra_args_provider=None):
+    """Parse args with precedence: explicit CLI > YAML --config > defaults.
+
+    The previous `if not hasattr(args, k)` guard made YAML unable to set ANY
+    registered option (argparse pre-fills them all with defaults), silently
+    ignoring most of the config file. Unknown YAML keys are still attached to
+    args as-is for custom function arguments.
+    """
     args = parse_fsdp_cli(extra_args_provider)
     if args.config:
         with open(args.config) as f:
             data = yaml.safe_load(f) or {}
+        explicit = _explicit_cli_dests(extra_args_provider)
         for k, v in data.items():
-            if not hasattr(args, k):
+            if k not in explicit:
                 setattr(args, k, v)
     validate_attention_args(args)
     return args
