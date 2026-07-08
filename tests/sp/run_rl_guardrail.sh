@@ -27,11 +27,17 @@ NUM_ROLLOUT="${NUM_ROLLOUT:-2}"
 NUM_FRAMES="${NUM_FRAMES:-5}"
 GRAD_CKPT="${GRAD_CKPT:-0}"
 CANDIDATE_STEPS="${CANDIDATE_STEPS:-1,2,3}"
+# Same-data comparison across bands: save rollout data in one band, replay it
+# in another so both trainers see literally identical samples.
+SAVE_ROLLOUT_DATA="${SAVE_ROLLOUT_DATA:-}"
+LOAD_ROLLOUT_DATA="${LOAD_ROLLOUT_DATA:-}"
 RUN_NAME="${RUN_NAME:-sp_guardrail_sp${SP_SIZE}_$(date +%Y%m%d_%H%M%S)}"
 DATASETS_DIR="/root/datasets/miles-diffusion-datasets"
 
 EXTRA_ARGS=()
 [[ "${GRAD_CKPT}" == "1" ]] && EXTRA_ARGS+=(--gradient-checkpointing)
+[[ -n "${SAVE_ROLLOUT_DATA}" ]] && EXTRA_ARGS+=(--save-debug-rollout-data "${SAVE_ROLLOUT_DATA}")
+[[ -n "${LOAD_ROLLOUT_DATA}" ]] && EXTRA_ARGS+=(--load-debug-rollout-data "${LOAD_ROLLOUT_DATA}")
 
 WAN_LORA_TARGET_MODULES=(
   attn1.to_q attn1.to_k attn1.to_v attn1.to_out.0
