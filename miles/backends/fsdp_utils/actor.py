@@ -122,7 +122,7 @@ class FSDPTrainRayActor(TrainRayActor):
             full_state = model.state_dict() if rank == 0 else {}
             model = apply_fsdp2(
                 model,
-                mesh=self.parallel_state.dp_mesh,
+                mesh=self.parallel_state.fsdp_mesh,
                 cpu_offload=self.args.fsdp_cpu_offload,
                 args=self.args,
                 no_split_modules=self.model_backend.fsdp_no_split_modules(model),
@@ -446,7 +446,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 self.prof.step(rollout_id=rollout_id)
                 if not self.args.debug_skip_optimizer_step:
                     self.scaler.unscale_(self.optimizer)
-                    if self.parallel_state.sp_size > 1:
+                    if self.parallel_state.sp_size > 1 and self.parallel_state.fsdp_shard_mode == "dp":
                         self._all_reduce_sp_grads()
                     grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip_grad)
                     if isinstance(grad_norm, DTensor):
@@ -468,8 +468,6 @@ class FSDPTrainRayActor(TrainRayActor):
     def _all_reduce_sp_grads(self) -> None:
         """Each sp rank sees 1/sp of the tokens, so its grads are partial; all-reduce(SUM)
         across the sp group restores the full gradient. Runs on FSDP-sharded grads, in fp32."""
-        from torch.distributed.tensor import DTensor
-
         group = self.parallel_state.sp_group
         for p in self.model.parameters():
             if p.grad is None:
