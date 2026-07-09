@@ -7,6 +7,7 @@ from contextlib import nullcontext
 import ray
 import torch
 import torch.distributed as dist
+from torch.distributed.tensor import DTensor
 
 import miles.backends.fsdp_utils.configs.qwen_image  # noqa: F401 — register pipeline config
 import miles.backends.fsdp_utils.configs.sd3  # noqa: F401 — register pipeline config
@@ -407,6 +408,10 @@ class FSDPTrainRayActor(TrainRayActor):
                 if not self.args.debug_skip_optimizer_step:
                     self.scaler.unscale_(self.optimizer)
                     grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip_grad)
+                    if isinstance(grad_norm, DTensor):
+                        # clip returns a lazily-reduced partial norm; materialize it,
+                        # otherwise the logged metric leaks the local shard's value.
+                        grad_norm = grad_norm.full_tensor()
                     log_stats["grad_norm"].append(grad_norm.detach())
                     self.scaler.step(self.optimizer)
                     self.scaler.update()
