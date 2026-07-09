@@ -2,16 +2,17 @@ name: CI Job
 
 # Reusable workflow ported from radixark/miles (.github/workflows/_run-ci.yml).
 #
-# CPU-only path: GitHub-hosted ubuntu-latest. Trimmed from miles main:
-#   * GPU `run:` job removed entirely — miles-D has no self-hosted GPU
-#     runners. To re-add: copy the `run:` job block back from miles main,
-#     reintroduce `runs_on / container_image / skip_dependency_install /
-#     cpu_runner` inputs, and add a matching `if: !inputs.cpu_runner` gate.
+# Differences vs miles main:
 #   * Megatron-LM checkout/install removed: miles-D source has zero
 #     `from megatron` imports (verified via grep).
 #   * PR-body magic for `ci-megatron-pr:` removed for the same reason.
 #   * sglang checkout/install preserved (miles-D imports
-#     sglang.multimodal_gen.runtime.* and sglang.srt.*).
+#     sglang.multimodal_gen.runtime.* and sglang.srt.*), fetched from the
+#     Rockdu/sglang fork (`ci-sglang-repo:` PR-body override) until the
+#     diffusion RPCs land on sgl main.
+#   * GPU `run:` job uses the radixark/miles-diffusion image (not
+#     radixark/miles) and the h200 runner fleet on the dedicated CI node
+#     (labels: h200 + 2gpu/4gpu).
 
 on:
   workflow_call:
@@ -19,10 +20,157 @@ on:
       execute_command:
         type: string
         required: true
+      runs_on:
+        type: string
+        required: false
+        description: 'JSON-encoded list of runner labels (all required). e.g. ''["h200", "2gpu"]'' picks runners that carry BOTH labels. No default: GPU jobs (cpu_runner: false) must pass this explicitly.'
+      container_image:
+        type: string
+        required: false
+        default: 'rockdu/miles_diffusion:latest'
+      skip_dependency_install:
+        type: boolean
+        required: false
+        default: false
+      cpu_runner:
+        type: boolean
+        required: false
+        default: false
+        description: 'Run on GitHub-hosted ubuntu-latest with bare pip install (for CPU-only fast tests)'
 
-# TODO: run gpu
 jobs:
+  run:
+    if: ${{ !inputs.cpu_runner }}
+    # fromJSON parses the input list so `runs-on` receives an actual array.
+    # Without this, GitHub treats the string verbatim as one label literal
+    # (e.g. the label name '["h200", "2gpu"]' with brackets), which no
+    # runner carries, and the job queues forever.
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
+    container:
+      image: ${{ inputs.container_image }}
+      options: >
+        --gpus all
+        --env CUDA_VISIBLE_DEVICES
+        --ipc=host
+        --shm-size=32g
+        --ulimit memlock=-1
+        --ulimit stack=67108864
+        --memory=0
+        --memory-swap=0
+        -v /data/miles_ci:/data/miles_ci
+        -v /data/miles_ci/models:/root/models
+        -v /data/miles_ci/datasets:/root/datasets
+        -v /data/miles_ci/hf_cache:/root/.cache/huggingface
+        -v /data/miles_ci/paddleocr:/github/home/.paddleocr
+        --privileged
+        --ulimit nofile=65535:65535
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
+    env:
+      PYTHONPATH: ${{ github.workspace }}
+      GITHUB_COMMIT_NAME: ${{ github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
+      WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Cleanup Ray processes
+        shell: bash
+        run: |
+          pkill -9 -f 'ray::' 2>/dev/null || true
+          pkill -9 -f raylet 2>/dev/null || true
+          pkill -9 -f gcs_server 2>/dev/null || true
+          pkill -9 -f 'ray-dashboard' 2>/dev/null || true
+          pkill -9 sglang 2>/dev/null || true
+          ray stop --force 2>/dev/null || true
+          sleep 3
+
+      - name: Wait for GPU ready
+        shell: bash
+        run: |
+          # When a self-hosted runner accepts a new job seconds after the
+          # previous job's container exits, the NVIDIA driver subsystem may
+          # still be tearing down its prior CUDA context. The next process
+          # to call cudaGetDeviceCount() then hits Error 802 ("system not
+          # yet initialized"). Block here until nvidia-smi succeeds, with
+          # a bounded retry budget so a genuinely-broken GPU fails fast.
+          for i in $(seq 1 60); do
+            if nvidia-smi -L >/dev/null 2>&1; then
+              echo "GPU ready after $((i-1)) retry(s)"
+              nvidia-smi --query-gpu=index,name,memory.used --format=csv,noheader
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "ERROR: nvidia-smi did not become ready after 120s" >&2
+          nvidia-smi 2>&1 | tail -20 || true
+          exit 1
+
+      - name: Resolve dependency refs
+        if: ${{ !inputs.skip_dependency_install }}
+        id: resolve-refs
+        shell: bash
+        env:
+          PR_BODY: ${{ github.event.pull_request.body || '' }}
+          INPUT_SGLANG_PR: ${{ github.event.inputs.ci_sglang_pr || '' }}
+          INPUT_SGLANG_REPO: ${{ github.event.inputs.ci_sglang_repo || '' }}
+        run: |
+          SGLANG_PR="${INPUT_SGLANG_PR}"
+          SGLANG_REPO="${INPUT_SGLANG_REPO}"
+          if [ -n "$PR_BODY" ]; then
+            PR_SGLANG_PR=$(echo "$PR_BODY" | grep -m1 -oP '^ci-sglang-pr:\s+\K\S+' || true)
+            [ -z "$SGLANG_PR" ] && [ -n "$PR_SGLANG_PR" ] && SGLANG_PR="$PR_SGLANG_PR"
+            PR_SGLANG_REPO=$(echo "$PR_BODY" | grep -m1 -oP '^ci-sglang-repo:\s+\K\S+' || true)
+            [ -z "$SGLANG_REPO" ] && [ -n "$PR_SGLANG_REPO" ] && SGLANG_REPO="$PR_SGLANG_REPO"
+          fi
+          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-diffusion-rollout-test"
+          # TODO: default repo Rockdu/sglang to be switched back to sgl-project/sglang
+          [ -z "$SGLANG_REPO" ] && SGLANG_REPO="Rockdu/sglang"
+          resolve_fetch_ref() {
+            local ref="$1"
+            if [[ "$ref" =~ ^#([0-9]+)$ ]]; then
+              echo "refs/pull/${BASH_REMATCH[1]}/head"
+            else
+              echo "$ref"
+            fi
+          }
+          SGLANG_FETCH=$(resolve_fetch_ref "$SGLANG_PR")
+          echo "ci_sglang_pr=$SGLANG_FETCH" >> $GITHUB_OUTPUT
+          echo "sglang_repo=$SGLANG_REPO" >> $GITHUB_OUTPUT
+          echo "Resolved: sglang repo=$SGLANG_REPO ref=$SGLANG_PR -> fetch=$SGLANG_FETCH"
+
+      - name: Install dependencies
+        if: ${{ !inputs.skip_dependency_install }}
+        shell: bash
+        env:
+          SGLANG_PR: ${{ steps.resolve-refs.outputs.ci_sglang_pr }}
+          SGLANG_REPO: ${{ steps.resolve-refs.outputs.sglang_repo }}
+        run: |
+          # The image ships sglang editable at /sgl-workspace/sglang, already
+          # on the Rockdu fork's pinned commit. Fetch by explicit URL so
+          # `ci-sglang-repo:` overrides work regardless of the checkout's
+          # configured remote.
+          cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch "https://github.com/${SGLANG_REPO}.git" "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e python --no-deps --break-system-packages
+          cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
+
+      - name: Install (miles-diffusion only)
+        if: ${{ inputs.skip_dependency_install }}
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
+
+      - name: Resolve suite plan
+        shell: bash
+        run: ${{ inputs.execute_command }} --list-only
+
+      - name: Run tests
+        shell: bash
+        run: ${{ inputs.execute_command }}
+
+  # CPU-only path: GitHub-hosted ubuntu-latest, bare pip install.
   run-cpu:
+    if: ${{ inputs.cpu_runner }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:

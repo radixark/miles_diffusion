@@ -22,15 +22,17 @@ _RUN_CI_PREFIX = "run-ci-"
 # Per-commit test suites (run on every PR; per-domain selection is done at
 # runtime by `filter_tests` via the `--labels` arg, not via per-suite jobs).
 #
-# CUDA suites: empty for now — miles-D does not yet have self-hosted GPU
-# runners. Add stage-c-* entries here when the GPU fleet is provisioned and
-# matching jobs are added to .github/workflows/pr-test.yml.
+# CUDA suites: each is served by a matching workflow job in
+# .github/workflows/pr-test.yml. The H200 fleet is one 8-GPU node split into
+# 3+5 workers via per-runner CUDA_VISIBLE_DEVICES (see pr-test.yml job comments).
 PER_COMMIT_SUITES = {
     HWBackend.CPU: [
         "stage-a-cpu",
         "stage-b-cpu",
     ],
-    HWBackend.CUDA: [],
+    HWBackend.CUDA: [
+        "stage-b-2-gpu-h200",
+    ],
 }
 
 # Nightly test suites (placeholder for future use)
@@ -189,8 +191,13 @@ def run_a_suite(args):
     auto_partition_id = args.auto_partition_id
     auto_partition_size = args.auto_partition_size
 
-    # Discover test files: e2e/ for CUDA, fast/ for CPU
-    e2e_files = [f for f in glob.glob("tests/e2e/**/*.py", recursive=True) if _is_e2e_discovery_file(f)]
+    # Discover test files: e2e/ + fast-gpu/ for CUDA, fast/ for CPU
+    e2e_files = [
+        f
+        for pat in ("tests/e2e/**/*.py", "tests/fast-gpu/**/*.py")
+        for f in glob.glob(pat, recursive=True)
+        if _is_e2e_discovery_file(f)
+    ]
     fast_files = [
         f
         for f in glob.glob("tests/fast/**/*.py", recursive=True)
