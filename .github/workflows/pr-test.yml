@@ -3,12 +3,12 @@ name: PR Test
 # Ported from radixark/miles (.github/workflows/pr-test.yml).
 #
 # Differences vs miles main:
-#   * All GPU stages (stage-b-2-gpu-h200, stage-c-8-gpu-h100,
-#     stage-c-4-gpu-h200, stage-c-2-gpu-h200) removed — miles-D has no
-#     self-hosted GPU runner fleet yet. To re-enable, copy the job blocks
-#     back from miles main and provision matching runners.
-#   * `resolve-ci-image` job removed — only relevant for GPU stages that
-#     pull a `radixark/miles:<tag>` container.
+#   * GPU suites are NOT static jobs: `enumerate-gpu-suites` derives them
+#     from `register_cuda_ci` registrations and the `gpu` job fans out via
+#     a dynamic matrix. Registering a test is the only step needed — no
+#     workflow edits. Suite names encode the runner shape
+#     (…-<N>-gpu-<family> → labels [<family>, "<N>gpu"]).
+#   * `resolve-ci-image` job removed — the image is fixed in _run-ci.yml.
 #   * `ci_megatron_pr` workflow_dispatch input removed — miles-D source has
 #     zero `from megatron` imports.
 
@@ -49,6 +49,7 @@ jobs:
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request)
     uses: ./.github/workflows/_run-ci.yml
     with:
+      cpu_runner: true
       execute_command: >-
         python tests/ci/run_suite.py --hw cpu --suite stage-a-cpu
         --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
@@ -62,8 +63,46 @@ jobs:
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request)
     uses: ./.github/workflows/_run-ci.yml
     with:
+      cpu_runner: true
       execute_command: >-
         python tests/ci/run_suite.py --hw cpu --suite stage-b-cpu
+        --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
+        ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
+    secrets: inherit
+
+  # Derive the GPU suite list from register_cuda_ci registrations, so a new
+  # suite/test never needs a workflow edit.
+  enumerate-gpu-suites:
+    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request)
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.enum.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: enum
+        shell: bash
+        run: |
+          MATRIX=$(PYTHONPATH=. python3 tests/ci/run_suite.py --enumerate-cuda-suites)
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          echo "Enumerated GPU suites: $MATRIX"
+
+  # One matrix job per enumerated suite, gated on stage-a-cpu so broken
+  # imports don't burn GPU runner slots.
+  gpu:
+    needs: [enumerate-gpu-suites, stage-a-cpu]
+    if: |
+      always() && !cancelled() && needs.stage-a-cpu.result == 'success' &&
+      needs.enumerate-gpu-suites.outputs.matrix != '[]' &&
+      ((github.event_name == 'workflow_dispatch') || (github.event.pull_request))
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.enumerate-gpu-suites.outputs.matrix) }}
+    uses: ./.github/workflows/_run-ci.yml
+    with:
+      runs_on: ${{ toJSON(matrix.runs_on) }}
+      execute_command: >-
+        python tests/ci/run_suite.py --hw cuda --suite ${{ matrix.suite }}
         --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
         ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
     secrets: inherit

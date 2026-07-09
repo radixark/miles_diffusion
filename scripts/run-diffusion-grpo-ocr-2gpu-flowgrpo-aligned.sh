@@ -51,7 +51,7 @@ hf download --repo-type dataset rockdu/miles-diffusion-datasets \
   --input-key input \
   --rollout-batch-size 32 \
   --n-samples-per-prompt 16 \
-  --num-rollout 100000 \
+  --num-rollout "${NUM_ROLLOUT:-100000}" \
   --diffusion-microgroup-size 16 \
   --micro-batch-size-sample 4 \
   --micro-batch-size-tstep 2 \

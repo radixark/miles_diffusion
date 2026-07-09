@@ -1,5 +1,7 @@
 import argparse
 import glob
+import json
+import re
 import subprocess
 import sys
 import warnings
@@ -22,15 +24,14 @@ _RUN_CI_PREFIX = "run-ci-"
 # Per-commit test suites (run on every PR; per-domain selection is done at
 # runtime by `filter_tests` via the `--labels` arg, not via per-suite jobs).
 #
-# CUDA suites: empty for now — miles-D does not yet have self-hosted GPU
-# runners. Add stage-c-* entries here when the GPU fleet is provisioned and
-# matching jobs are added to .github/workflows/pr-test.yml.
+# CUDA suites have no static list: they are derived from registrations
+# (see enumerate_cuda_suites) and dispatched via a dynamic job matrix in
+# pr-test.yml — registering a test is the only step needed.
 PER_COMMIT_SUITES = {
     HWBackend.CPU: [
         "stage-a-cpu",
         "stage-b-cpu",
     ],
-    HWBackend.CUDA: [],
 }
 
 # Nightly test suites (placeholder for future use)
@@ -94,7 +95,9 @@ def filter_tests(
 
     valid_suites = NIGHTLY_SUITES.get(hw, []) if nightly else PER_COMMIT_SUITES.get(hw, [])
 
-    if suite not in valid_suites:
+    # An empty/absent list means the backend has no static suite registry
+    # (CUDA suites are enumerated dynamically from registrations).
+    if valid_suites and suite not in valid_suites:
         print(f"Warning: Unknown suite {suite} for backend {hw.name}, nightly={nightly}")
 
     if not match_all_labels:
@@ -146,6 +149,50 @@ def _is_e2e_discovery_file(filename: str) -> bool:
         and "/sglang/utils/" not in filename
         and "short/test_dumper.py" not in filename
     )
+
+
+# CUDA suite names must end in -<N>-gpu-<family> (e.g. stage-b-2-gpu-h200):
+# the runner labels are derived from the name, so registering a test via
+# `register_cuda_ci` is the only step needed to put it on CI.
+_SUITE_SHAPE_RE = re.compile(r"-(\d+)-gpu-([a-z0-9]+)$")
+
+# Runner sizes provisioned per GPU family. node-radixark-32-0000 (8×H200) is
+# split into two disjoint runners: 3gpu (GPUs 0-2) + 5gpu (GPUs 3-7). A suite
+# asking for N GPUs is routed to the smallest runner that fits (a 2-gpu suite
+# runs on the 3gpu runner and leaves one GPU idle); N above the largest size
+# fails here, loudly, instead of queueing forever on a label no runner
+# carries.
+_RUNNER_SIZES = {"h200": [3, 5]}
+
+
+def enumerate_cuda_suites() -> list[dict]:
+    """Emit [{suite, runs_on}] for every CUDA suite with >=1 enabled per-commit
+    test. pr-test.yml feeds this to a dynamic job matrix."""
+    files = [f for f in glob.glob("tests/e2e/**/*.py", recursive=True) if _is_e2e_discovery_file(f)]
+    suites = sorted(
+        {
+            t.suite
+            for t in collect_tests(files, sanity_check=False)
+            if t.backend == HWBackend.CUDA and not t.nightly and t.disabled is None
+        }
+    )
+    out = []
+    for s in suites:
+        m = _SUITE_SHAPE_RE.search(s)
+        if not m:
+            raise ValueError(f"CUDA suite {s!r} must end in -<N>-gpu-<family> to derive runner labels")
+        n, family = int(m.group(1)), m.group(2)
+        sizes = _RUNNER_SIZES.get(family)
+        if sizes is None:
+            raise ValueError(f"CUDA suite {s!r}: no runners provisioned for GPU family {family!r}")
+        fit = min((sz for sz in sizes if sz >= n), default=None)
+        if fit is None:
+            raise ValueError(
+                f"CUDA suite {s!r} needs {n} GPUs but the largest {family} runner has {max(sizes)}; "
+                f"scale the test down (e.g. a NUM_GPUS env knob) or provision a bigger runner"
+            )
+        out.append({"suite": s, "runs_on": [family, f"{fit}gpu"]})
+    return out
 
 
 def pretty_print_tests(args, ci_tests: list[CIRegistry], skipped_tests: list[CIRegistry]):
@@ -246,6 +293,11 @@ def run_a_suite(args):
 
 
 def main():
+    # Standalone mode with no other args required; must print pure JSON.
+    if "--enumerate-cuda-suites" in sys.argv:
+        print(json.dumps(enumerate_cuda_suites()))
+        return
+
     parser = argparse.ArgumentParser(description="Run CI test suites from tests/e2e/")
     parser.add_argument(
         "--hw",
