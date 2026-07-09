@@ -10,6 +10,36 @@ import torch
 import torch.distributed as dist
 
 
+class _GatherSequence(torch.autograd.Function):
+    """All-gather local shards along dim; backward returns each rank's slice."""
+
+    @staticmethod
+    def forward(ctx, x, group, sp_rank, sp_size, dim):
+        ctx.sp_rank = sp_rank
+        ctx.dim = dim
+        ctx.local_size = x.shape[dim]
+        parts = [torch.empty_like(x) for _ in range(sp_size)]
+        dist.all_gather(parts, x.contiguous(), group=group)
+        return torch.cat(parts, dim=dim)
+
+    @staticmethod
+    def backward(ctx, grad):
+        start = ctx.sp_rank * ctx.local_size
+        return grad.narrow(ctx.dim, start, ctx.local_size), None, None, None, None
+
+
+def shard_sequence(x, sp_rank, sp_size, dim=1):
+    s = x.shape[dim]
+    if s % sp_size:
+        raise ValueError(f"sequence length {s} is not divisible by sp_size {sp_size}")
+    s_local = s // sp_size
+    return x.narrow(dim, sp_rank * s_local, s_local)
+
+
+def gather_sequence(x, group, sp_rank, sp_size, dim=1):
+    return _GatherSequence.apply(x, group, sp_rank, sp_size, dim)
+
+
 class _AllToAllSingle(torch.autograd.Function):
     """Even-split all-to-all; an involution, so the adjoint is the same collective."""
 
@@ -137,7 +167,7 @@ def usp_attention(query, key, value, ulysses_group=None, ring_group=None):
     q = query.transpose(1, 2)  # [B, H, S, D]
     k = key.transpose(1, 2)
     v = value.transpose(1, 2)
-    if ring_group is not None and dist.get_world_size(ring_group) > 1:
+    if ring_group is not None:
         out = _RingFlashAttention.apply(q.contiguous(), k.contiguous(), v.contiguous(), ring_group, scale, False)
     else:
         out = torch.nn.functional.scaled_dot_product_attention(

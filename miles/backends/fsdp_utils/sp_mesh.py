@@ -15,13 +15,15 @@ def resolve_sp_degrees(sequence_parallel_size, ulysses_degree=0, ring_degree=0):
     return sp, u, r
 
 
-def validate_sp_config(world_size, sequence_parallel_size, ulysses_degree=0, ring_degree=0, num_heads=None):
-    """Validate at startup. Returns (sp, ulysses, ring)."""
+def validate_sp_config(world_size, sequence_parallel_size, ulysses_degree=0, ring_degree=0):
+    """Validate at startup. Returns (sp, ulysses, ring).
+
+    The num_heads % ulysses check lives in apply_sequence_parallel, where the
+    real model config is available.
+    """
     sp, u, r = resolve_sp_degrees(sequence_parallel_size, ulysses_degree, ring_degree)
     if world_size % sp != 0:
         raise ValueError(f"world_size({world_size}) is not divisible by sequence_parallel_size({sp})")
-    if num_heads is not None and num_heads % u != 0:
-        raise ValueError(f"num_heads({num_heads}) is not divisible by ulysses_degree({u})")
     return sp, u, r
 
 

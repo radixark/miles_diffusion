@@ -86,7 +86,6 @@ def main():
     p.add_argument("--ulysses", type=int, default=0)
     p.add_argument("--ring", type=int, default=0)
     p.add_argument("--ckpt", action="store_true")
-    p.add_argument("--fwd-only", action="store_true")
     p.add_argument("--fp32", action="store_true", help="fp32 + SDPA, isolates bf16 summation rounding")
     cli = p.parse_args()
     if cli.fp32:
@@ -103,7 +102,6 @@ def main():
         sequence_parallel_size=cli.sp,
         ulysses_degree=cli.ulysses,
         ring_degree=cli.ring,
-        context_parallel_size=1,
     )
     ps = create_fsdp_parallel_state(args)
 
@@ -128,13 +126,12 @@ def main():
         print(f"[PARITY] sp={cli.sp} ulysses={ps.ulysses_degree} ring={ps.ring_degree} ckpt={cli.ckpt}")
     _report("forward(out)", out_sp, out_ref, rtol=2e-2, ctol=0.9990)
     _report("grad(input)", gin_sp, gin_ref, rtol=4e-2, ctol=0.9980)
-    if not cli.fwd_only:
-        params = dict(model.named_parameters())
-        for n in attn_weight_names:
-            assert params[n].grad is not None, f"{n} grad is None — all-to-all backward did not propagate"
-            g = params[n].grad.detach().clone()
-            dist.all_reduce(g, group=ps.sp_group)
-            _report(f"grad({n})", g, gw_ref[n], rtol=5e-2, ctol=0.9950)
+    params = dict(model.named_parameters())
+    for n in attn_weight_names:
+        assert params[n].grad is not None, f"{n} grad is None — all-to-all backward did not propagate"
+        g = params[n].grad.detach().clone()
+        dist.all_reduce(g, group=ps.sp_group)
+        _report(f"grad({n})", g, gw_ref[n], rtol=5e-2, ctol=0.9950)
 
     dist.barrier()
     if rank == 0:

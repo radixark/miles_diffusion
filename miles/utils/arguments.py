@@ -1294,9 +1294,6 @@ def parse_args(add_custom_arguments=None):
     args = load_fsdp_args(extra_args_provider=add_miles_arguments)
     args.rank = 0  # Primary process rank for wandb initialization
     args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
-    if args.context_parallel_size > 1 and args.sequence_parallel_size == 1:
-        args.sequence_parallel_size = args.context_parallel_size
-
     miles_validate_args(args)
     sglang_validate_args(args)
 

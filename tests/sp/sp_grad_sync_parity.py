@@ -68,7 +68,7 @@ def main():
     device = torch.cuda.current_device()
     init_gloo_group()
 
-    args = argparse.Namespace(sequence_parallel_size=4, ulysses_degree=4, ring_degree=0, context_parallel_size=1)
+    args = argparse.Namespace(sequence_parallel_size=4, ulysses_degree=4, ring_degree=0)
     ps = create_fsdp_parallel_state(args)
     hidden, enc, ts, out_grad = make_inputs(device)
 

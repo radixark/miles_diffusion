@@ -22,11 +22,7 @@ def create_fsdp_parallel_state(args: Namespace) -> ParallelState:
     rank = dist.get_rank()
 
     sp_size, ulysses_degree, ring_degree = validate_sp_config(
-        world_size,
-        args.sequence_parallel_size,
-        args.ulysses_degree,
-        args.ring_degree,
-        getattr(args, "num_attention_heads", None),
+        world_size, args.sequence_parallel_size, args.ulysses_degree, args.ring_degree
     )
     dp_rank, sp_rank, _, _ = locate_rank(rank, sp_size, ulysses_degree, ring_degree)
     dp_size = world_size // sp_size
@@ -40,17 +36,20 @@ def create_fsdp_parallel_state(args: Namespace) -> ParallelState:
     )
 
     # dist.new_group is collective: every rank must create every group.
+    # Degree-1 dimensions stay None (usp_attention treats None as local).
     ulysses_group = ring_group = None
     if sp_size > 1:
         _, _, _, ulysses_groups, ring_groups = sp_subgroups(world_size, sp_size, ulysses_degree, ring_degree)
-        for ranks in ulysses_groups:
-            group = dist.new_group(ranks)
-            if rank in ranks:
-                ulysses_group = group
-        for ranks in ring_groups:
-            group = dist.new_group(ranks)
-            if rank in ranks:
-                ring_group = group
+        if ulysses_degree > 1:
+            for ranks in ulysses_groups:
+                group = dist.new_group(ranks)
+                if rank in ranks:
+                    ulysses_group = group
+        if ring_degree > 1:
+            for ranks in ring_groups:
+                group = dist.new_group(ranks)
+                if rank in ranks:
+                    ring_group = group
 
     parallel_state = ParallelState(
         dp_rank=dp_rank,
@@ -66,7 +65,7 @@ def create_fsdp_parallel_state(args: Namespace) -> ParallelState:
         cp_group=sp_group,
         tp_size=1,
         tp_rank=0,
-        tp_group=dist.new_group([rank]),
+        tp_group=None,
         sp_rank=sp_rank,
         sp_size=sp_size,
         sp_group=sp_group,

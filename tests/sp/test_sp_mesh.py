@@ -74,14 +74,5 @@ def test_validate_rejects_illegal():
         validate_sp_config(world_size=6, sequence_parallel_size=4)
     with pytest.raises(ValueError):
         validate_sp_config(world_size=8, sequence_parallel_size=4, ulysses_degree=3, ring_degree=1)
-    with pytest.raises(ValueError):
-        validate_sp_config(world_size=4, sequence_parallel_size=4, num_heads=40, ulysses_degree=3)
-    # Wan2.2 heads=40: ulysses in {2, 4} is legal
-    assert validate_sp_config(world_size=4, sequence_parallel_size=2, num_heads=40) == (2, 2, 1)
-    assert validate_sp_config(world_size=4, sequence_parallel_size=4, num_heads=40) == (4, 4, 1)
-
-
-def test_num_heads_guard():
-    with pytest.raises(ValueError):
-        validate_sp_config(world_size=6, sequence_parallel_size=3, num_heads=40)
-    assert validate_sp_config(world_size=8, sequence_parallel_size=8, num_heads=40) == (8, 8, 1)
+    assert validate_sp_config(world_size=4, sequence_parallel_size=2) == (2, 2, 1)
+    assert validate_sp_config(world_size=4, sequence_parallel_size=4) == (4, 4, 1)

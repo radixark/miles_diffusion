@@ -37,7 +37,6 @@ def main():
         sequence_parallel_size=cli.sp,
         ulysses_degree=cli.ulysses,
         ring_degree=cli.ring,
-        context_parallel_size=1,
     )
     ps = create_fsdp_parallel_state(args)
 
@@ -48,11 +47,16 @@ def main():
 
     my_sp = next(g for g in sp_groups if rank in g)
     assert _members(ps.sp_group) == my_sp, f"rank{rank} sp_group {_members(ps.sp_group)} != {my_sp}"
-    if sp_size > 1:
+    if ps.ulysses_degree > 1:
         my_u = next(g for g in ulysses_groups if rank in g)
-        my_r = sorted(next(g for g in ring_groups if rank in g))
         assert _members(ps.ulysses_group) == my_u, f"rank{rank} ulysses {_members(ps.ulysses_group)} != {my_u}"
+    else:
+        assert ps.ulysses_group is None
+    if ps.ring_degree > 1:
+        my_r = sorted(next(g for g in ring_groups if rank in g))
         assert _members(ps.ring_group) == my_r, f"rank{rank} ring {_members(ps.ring_group)} != {my_r}"
+    else:
+        assert ps.ring_group is None
 
     dist.barrier()
     if rank == 0:

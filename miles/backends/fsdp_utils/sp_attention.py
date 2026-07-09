@@ -10,41 +10,9 @@ applies uniformly.
 import inspect
 
 import torch
-import torch.distributed as dist
 from diffusers.models._modeling_parallel import ContextParallelInput, ContextParallelOutput
 
-from .sp_ops import usp_attention
-
-
-class _GatherSequence(torch.autograd.Function):
-    """All-gather local shards along dim; backward returns each rank's slice."""
-
-    @staticmethod
-    def forward(ctx, x, group, sp_rank, sp_size, dim):
-        ctx.sp_rank = sp_rank
-        ctx.dim = dim
-        ctx.local_size = x.shape[dim]
-        parts = [torch.empty_like(x) for _ in range(sp_size)]
-        dist.all_gather(parts, x.contiguous(), group=group)
-        return torch.cat(parts, dim=dim)
-
-    @staticmethod
-    def backward(ctx, grad):
-        start = ctx.sp_rank * ctx.local_size
-        return grad.narrow(ctx.dim, start, ctx.local_size), None, None, None, None
-
-
-def shard_sequence(x, parallel_state, dim=1):
-    sp = parallel_state.sp_size
-    s = x.shape[dim]
-    if s % sp:
-        raise ValueError(f"sequence length {s} is not divisible by sp_size {sp}")
-    s_local = s // sp
-    return x.narrow(dim, parallel_state.sp_rank * s_local, s_local)
-
-
-def gather_sequence(x, parallel_state, dim=1):
-    return _GatherSequence.apply(x, parallel_state.sp_group, parallel_state.sp_rank, parallel_state.sp_size, dim)
+from .sp_ops import gather_sequence, shard_sequence, usp_attention
 
 
 class WanUSPAttnProcessor:
@@ -136,7 +104,7 @@ def _split_if_expected(x, spec, parallel_state):
         return x
     if spec.expected_dims is not None and x.ndim != spec.expected_dims:
         return x
-    return shard_sequence(x, parallel_state, dim=spec.split_dim)
+    return shard_sequence(x, parallel_state.sp_rank, parallel_state.sp_size, dim=spec.split_dim)
 
 
 def _resolve_submodule(root, path):
@@ -162,7 +130,9 @@ def _install_cp_plan_hooks(transformer, parallel_state):
 
             def gather_output(mod, args, output, _spec=spec):
                 assert isinstance(output, torch.Tensor)
-                return gather_sequence(output, parallel_state, dim=_spec.gather_dim)
+                return gather_sequence(
+                    output, parallel_state.sp_group, parallel_state.sp_rank, parallel_state.sp_size, dim=_spec.gather_dim
+                )
 
             module.register_forward_hook(gather_output)
             continue
