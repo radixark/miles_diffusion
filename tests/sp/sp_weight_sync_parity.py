@@ -65,6 +65,7 @@ def main():
     p.add_argument("--sp", type=int, default=2)
     p.add_argument("--ulysses", type=int, default=2)
     p.add_argument("--ring", type=int, default=0)
+    p.add_argument("--shard-mode", choices=("dp", "dp_sp"), default="dp_sp")
     cli = p.parse_args()
 
     dist.init_process_group("nccl")
@@ -78,6 +79,7 @@ def main():
         sequence_parallel_size=cli.sp,
         ulysses_degree=cli.ulysses,
         ring_degree=cli.ring,
+        fsdp_shard_mode=cli.shard_mode,
     )
     ps = create_fsdp_parallel_state(args)
 
@@ -86,8 +88,8 @@ def main():
 
     model = build_model(device)
     for blk in model.blocks:
-        fully_shard(blk, mesh=ps.dp_mesh)
-    fully_shard(model, mesh=ps.dp_mesh)
+        fully_shard(blk, mesh=ps.fsdp_mesh)
+    fully_shard(model, mesh=ps.fsdp_mesh)
 
     my_sum = compute_weights_checksum(full_state_pairs(model))
 
@@ -97,7 +99,7 @@ def main():
     if rank == 0:
         all_equal = all(s == gathered[0] for s in gathered)
         match_ref = gathered[0] == ref_sum
-        print(f"[WEIGHT-SYNC] world={world} dp{ps.dp_size}xsp{ps.sp_size}(u{ps.ulysses_degree}r{ps.ring_degree})")
+        print(f"[WEIGHT-SYNC] world={world} mode={cli.shard_mode} dp{ps.dp_size}xsp{ps.sp_size}(u{ps.ulysses_degree}r{ps.ring_degree})")
         print(f"[WEIGHT-SYNC] all ranks equal={all_equal}  == single-process ref={match_ref}")
         assert all_equal, "reconstructed full weights differ across ranks"
         assert match_ref, "reconstructed full weights != single-process reference"

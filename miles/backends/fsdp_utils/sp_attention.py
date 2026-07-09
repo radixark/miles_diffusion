@@ -131,7 +131,12 @@ def _install_cp_plan_hooks(transformer, parallel_state):
             def gather_output(mod, args, output, _spec=spec):
                 assert isinstance(output, torch.Tensor)
                 return gather_sequence(
-                    output, parallel_state.sp_group, parallel_state.sp_rank, parallel_state.sp_size, dim=_spec.gather_dim
+                    output,
+                    parallel_state.sp_group,
+                    parallel_state.sp_rank,
+                    parallel_state.sp_size,
+                    dim=_spec.gather_dim,
+                    sum_grad=parallel_state.fsdp_shard_mode == "dp_sp",
                 )
 
             module.register_forward_hook(gather_output)

@@ -11,11 +11,18 @@
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
-# A finished run can leave ray actors and sglang engine schedulers holding GPU
-# memory; start clean.
-ray stop --force >/dev/null 2>&1 || true
-pkill -9 -f "sgl_diffusion::" 2>/dev/null || true
-sleep 5
+# Machine-wide cleanup (ray stop / pkill by name) can kill unrelated jobs on a
+# shared node. Instead, fail loudly if this run's GPUs are already occupied and
+# let the operator decide what to kill.
+GUARD_GPUS="${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
+for idx in ${GUARD_GPUS//,/ }; do
+  used=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits -i "$idx")
+  if [ "$used" -gt 20000 ]; then
+    echo "GPU $idx already has ${used}MiB in use. Clean up leftover processes" >&2
+    echo "manually (check owners with: nvidia-smi --query-compute-apps=pid,gpu_uuid,used_memory --format=csv)." >&2
+    exit 1
+  fi
+done
 
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:False
@@ -25,6 +32,7 @@ PYTHON_BIN="${PYTHON_BIN:-python}"
 SP_SIZE="${SP_SIZE:-1}"
 ULYSSES_DEGREE="${ULYSSES_DEGREE:-0}"
 RING_DEGREE="${RING_DEGREE:-0}"
+FSDP_SHARD_MODE="${FSDP_SHARD_MODE:-dp_sp}"
 NUM_ROLLOUT="${NUM_ROLLOUT:-2}"
 NUM_FRAMES="${NUM_FRAMES:-5}"
 GRAD_CKPT="${GRAD_CKPT:-0}"
@@ -64,6 +72,7 @@ WAN_LORA_TARGET_MODULES=(
   --sequence-parallel-size "${SP_SIZE}" \
   --ulysses-degree "${ULYSSES_DEGREE}" \
   --ring-degree "${RING_DEGREE}" \
+  --fsdp-shard-mode "${FSDP_SHARD_MODE}" \
   --rollout-num-gpus 4 \
   --rollout-num-gpus-per-engine 1 \
   --num-gpus-per-node 4 \

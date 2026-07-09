@@ -11,21 +11,31 @@ import torch.distributed as dist
 
 
 class _GatherSequence(torch.autograd.Function):
-    """All-gather local shards along dim; backward returns each rank's slice."""
+    """All-gather local shards along dim; backward returns each rank's slice.
+
+    With sum_grad the backward all-reduces the incoming gradient over the sp
+    group first: downstream partial grads then carry an sp factor, so FSDP's
+    1/(dp*sp) mean over a dp x sp shard mesh restores (1/dp) * sum_dp exactly.
+    """
 
     @staticmethod
-    def forward(ctx, x, group, sp_rank, sp_size, dim):
+    def forward(ctx, x, group, sp_rank, sp_size, dim, sum_grad):
+        ctx.group = group
         ctx.sp_rank = sp_rank
         ctx.dim = dim
         ctx.local_size = x.shape[dim]
+        ctx.sum_grad = sum_grad
         parts = [torch.empty_like(x) for _ in range(sp_size)]
         dist.all_gather(parts, x.contiguous(), group=group)
         return torch.cat(parts, dim=dim)
 
     @staticmethod
     def backward(ctx, grad):
+        if ctx.sum_grad:
+            grad = grad.contiguous()
+            dist.all_reduce(grad, group=ctx.group)
         start = ctx.sp_rank * ctx.local_size
-        return grad.narrow(ctx.dim, start, ctx.local_size), None, None, None, None
+        return grad.narrow(ctx.dim, start, ctx.local_size), None, None, None, None, None
 
 
 def shard_sequence(x, sp_rank, sp_size, dim=1):
@@ -36,8 +46,8 @@ def shard_sequence(x, sp_rank, sp_size, dim=1):
     return x.narrow(dim, sp_rank * s_local, s_local)
 
 
-def gather_sequence(x, group, sp_rank, sp_size, dim=1):
-    return _GatherSequence.apply(x, group, sp_rank, sp_size, dim)
+def gather_sequence(x, group, sp_rank, sp_size, dim=1, sum_grad=False):
+    return _GatherSequence.apply(x, group, sp_rank, sp_size, dim, sum_grad)
 
 
 class _AllToAllSingle(torch.autograd.Function):
