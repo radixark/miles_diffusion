@@ -17,11 +17,7 @@ from diffusers import WanTransformer3DModel
 from torch.distributed.tensor import DTensor
 
 from miles.backends.fsdp_utils.parallel import create_fsdp_parallel_state
-from miles.backends.fsdp_utils.sp_attention import (
-    WanUSPAttnProcessor,
-    apply_sequence_parallel,
-    init_sp_backend,
-)
+from miles.backends.fsdp_utils.sp_attention import WanUSPAttnProcessor, apply_sequence_parallel
 from miles.utils.distributed_utils import init_gloo_group
 
 DTYPE = torch.bfloat16
@@ -76,19 +72,9 @@ def main():
     ps = create_fsdp_parallel_state(args)
     hidden, enc, ts, out_grad = make_inputs(device)
 
-    # Full-sequence single-process reference.
-    from sglang.multimodal_gen.runtime.layers.attention.layer import USPAttention
-
+    # Full-sequence single-process reference (plain SDPA self-attention).
     ref = build_model(device)
-    init_sp_backend(DTYPE)
-    proc = WanUSPAttnProcessor(ref.config.num_attention_heads, ref.config.attention_head_dim, DTYPE)
-    proc.usp_attn = USPAttention(
-        num_heads=ref.config.num_attention_heads,
-        head_size=ref.config.attention_head_dim,
-        causal=False,
-        skip_sequence_parallel=True,
-    )
-    ref.set_attn_processor(proc)
+    ref.set_attn_processor(WanUSPAttnProcessor(None))
     out = ref(hidden_states=hidden, timestep=ts, encoder_hidden_states=enc, return_dict=False)[0]
     out.backward(out_grad)
     ref_grads = {n: p.grad.detach().clone() for n, p in ref.named_parameters()}
@@ -100,7 +86,7 @@ def main():
     for blk in model.blocks:
         fully_shard(blk, mesh=ps.dp_mesh)
     fully_shard(model, mesh=ps.dp_mesh)
-    apply_sequence_parallel(model, ps, compute_dtype=DTYPE)
+    apply_sequence_parallel(model, ps)
 
     out = model(hidden_states=hidden, timestep=ts, encoder_hidden_states=enc, return_dict=False)[0]
 

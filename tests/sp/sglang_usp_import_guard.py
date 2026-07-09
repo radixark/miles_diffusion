@@ -1,25 +1,13 @@
-"""Guard: the sglang tree actually imported must contain the training patches.
+"""Guard: the sglang tree actually imported must have the dtype/shape-aware checksum.
 
-Multiple sglang checkouts can coexist on a machine; training must resolve to the
-one with the USP autograd wrappers and the dtype/shape-aware checksum, otherwise
-Ulysses backward silently drops gradients. Run before any GPU parity script.
+Training's only remaining sglang import is compute_weights_checksum (weight-sync
+verify); a bytes-only checksum would miss transpose/reshape corruption. The USP
+attention operators are miles-owned (sp_ops.py) and need no sglang patches.
 
 Usage: PYTHONPATH=. python -m pytest tests/sp/sglang_usp_import_guard.py
 """
 
 import inspect
-
-
-def test_usp_has_training_autograd():
-    from sglang.multimodal_gen.runtime.layers import usp
-
-    assert hasattr(usp, "_AllToAllSingle"), (
-        f"imported sglang lacks _AllToAllSingle: {usp.__file__} — "
-        "Ulysses training backward would silently drop q/k/v grads"
-    )
-    assert hasattr(usp, "_RingFlashAttention"), (
-        f"imported sglang lacks _RingFlashAttention: {usp.__file__} — ring training dK/dV would be wrong"
-    )
 
 
 def test_checksum_covers_dtype_shape():
@@ -33,8 +21,7 @@ def test_checksum_covers_dtype_shape():
 
 
 if __name__ == "__main__":
-    test_usp_has_training_autograd()
     test_checksum_covers_dtype_shape()
-    from sglang.multimodal_gen.runtime.layers import usp
+    from sglang.multimodal_gen.runtime.loader import weight_utils
 
-    print(f"[GUARD OK] imported sglang = {usp.__file__}")
+    print(f"[GUARD OK] imported sglang = {weight_utils.__file__}")

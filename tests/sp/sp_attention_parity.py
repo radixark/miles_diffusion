@@ -1,10 +1,9 @@
-"""SP parity on a small real Wan DiT: USPAttention + shard/gather vs full-sequence reference.
+"""SP parity on a small real Wan DiT: USP attention + shard/gather vs full-sequence reference.
 
-Both paths use the same attention kernel (the reference runs USPAttention with
-skip_sequence_parallel), so any diff comes from the SP collectives' float
-summation order and must stay within bf16 tolerance. Checks forward output,
-input grad, and per-block self-attn + proj_out weight grads, with and without
-gradient checkpointing.
+Both paths use the same local attention kernel (SDPA), so any diff comes from
+the SP collectives' float summation order and must stay within bf16 tolerance.
+Checks forward output, input grad, and per-block self-attn + proj_out weight
+grads, with and without gradient checkpointing.
 
 Usage: torchrun --standalone --nproc_per_node=N tests/sp/sp_attention_parity.py \
     --sp S [--ulysses U --ring R] [--ckpt] [--fp32]
@@ -57,16 +56,8 @@ def make_inputs(device):
 
 
 def _set_ref_processor(model):
-    from sglang.multimodal_gen.runtime.layers.attention.layer import USPAttention
-
-    proc = WanUSPAttnProcessor(model.config.num_attention_heads, model.config.attention_head_dim, DTYPE)
-    proc.usp_attn = USPAttention(
-        num_heads=model.config.num_attention_heads,
-        head_size=model.config.attention_head_dim,
-        causal=False,
-        skip_sequence_parallel=True,
-    )
-    model.set_attn_processor(proc)
+    # parallel_state=None: same processor, plain SDPA self-attention.
+    model.set_attn_processor(WanUSPAttnProcessor(None))
 
 
 def _run(model, hidden, enc, ts, out_grad, ckpt):

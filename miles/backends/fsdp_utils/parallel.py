@@ -1,7 +1,6 @@
 import logging
 from argparse import Namespace
 
-import torch
 import torch.distributed as dist
 from torch.distributed.device_mesh import init_device_mesh
 
@@ -40,28 +39,18 @@ def create_fsdp_parallel_state(args: Namespace) -> ParallelState:
         f"dp_rank={dp_rank} sp_rank={sp_rank}"
     )
 
-    # USPAttention reads sglang's module-global _SP coordinator;
-    # set_seq_parallel_pg_by_sp_groups only sets ULYSSES_PG/RING_PG.
+    # dist.new_group is collective: every rank must create every group.
     ulysses_group = ring_group = None
     if sp_size > 1:
-        from sglang.multimodal_gen.runtime.distributed import parallel_state as sgl_sp
-        from sglang.multimodal_gen.runtime.distributed.parallel_groups import (
-            PROCESS_GROUP,
-            set_seq_parallel_pg_by_sp_groups,
-        )
-
-        _, _, sp_groups, _, _ = sp_subgroups(world_size, sp_size, ulysses_degree, ring_degree)
-        set_seq_parallel_pg_by_sp_groups(ulysses_degree, ring_degree, rank, sp_groups)
-        ulysses_group = PROCESS_GROUP.ULYSSES_PG
-        ring_group = PROCESS_GROUP.RING_PG
-        sgl_sp._SP = sgl_sp.init_parallel_group_coordinator(
-            group_ranks=sp_groups,
-            local_rank=torch.cuda.current_device(),
-            backend=dist.get_backend(),
-            parallel_mode="sequence",
-            ulysses_group=ulysses_group,
-            ring_group=ring_group,
-        )
+        _, _, _, ulysses_groups, ring_groups = sp_subgroups(world_size, sp_size, ulysses_degree, ring_degree)
+        for ranks in ulysses_groups:
+            group = dist.new_group(ranks)
+            if rank in ranks:
+                ulysses_group = group
+        for ranks in ring_groups:
+            group = dist.new_group(ranks)
+            if rank in ranks:
+                ring_group = group
 
     parallel_state = ParallelState(
         dp_rank=dp_rank,

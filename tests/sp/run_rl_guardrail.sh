@@ -11,8 +11,10 @@
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
-# A finished run can leave ray actors holding GPU memory; start clean.
+# A finished run can leave ray actors and sglang engine schedulers holding GPU
+# memory; start clean.
 ray stop --force >/dev/null 2>&1 || true
+pkill -9 -f "sgl_diffusion::" 2>/dev/null || true
 sleep 5
 
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}"

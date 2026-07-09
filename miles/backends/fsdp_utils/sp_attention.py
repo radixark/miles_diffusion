@@ -1,4 +1,4 @@
-"""Sequence parallelism for diffusers DiTs: self-attention runs sglang's USPAttention.
+"""Sequence parallelism for diffusers DiTs: self-attention runs USP (sp_ops).
 
 Each sp rank holds S/sp latent tokens; attention internally gathers to the full
 sequence via Ulysses all-to-all (+Ring) and scatters back. Shard/gather points are
@@ -12,6 +12,8 @@ import inspect
 import torch
 import torch.distributed as dist
 from diffusers.models._modeling_parallel import ContextParallelInput, ContextParallelOutput
+
+from .sp_ops import usp_attention
 
 
 class _GatherSequence(torch.autograd.Function):
@@ -46,16 +48,15 @@ def gather_sequence(x, parallel_state, dim=1):
 
 
 class WanUSPAttnProcessor:
-    """Wan attention processor: self-attn via USPAttention, cross-attn via local SDPA.
+    """Wan attention processor: self-attn via USP, cross-attn via local SDPA.
 
     Reuses Wan's QKV/RMSNorm/RoPE; rotary_emb arrives pre-sharded to S_local.
+    With parallel_state=None the self-attn falls back to plain SDPA (reference mode).
     """
 
-    def __init__(self, num_heads, head_dim, compute_dtype=torch.bfloat16):
-        from sglang.multimodal_gen.runtime.layers.attention.layer import USPAttention
-
-        init_sp_backend(compute_dtype)
-        self.usp_attn = USPAttention(num_heads=num_heads, head_size=head_dim, causal=False)
+    def __init__(self, parallel_state=None):
+        self.ulysses_group = parallel_state.ulysses_group if parallel_state is not None else None
+        self.ring_group = parallel_state.ring_group if parallel_state is not None else None
 
     def __call__(self, attn, hidden_states, encoder_hidden_states=None, attention_mask=None, rotary_emb=None):
         is_self_attn = encoder_hidden_states is None
@@ -84,7 +85,7 @@ class WanUSPAttnProcessor:
             key = _apply_rotary_emb(key, *rotary_emb)
 
         if is_self_attn:
-            hidden_states = self.usp_attn(query, key, value)
+            hidden_states = usp_attention(query, key, value, self.ulysses_group, self.ring_group)
         else:
             hidden_states = torch.nn.functional.scaled_dot_product_attention(
                 query.transpose(1, 2),
@@ -118,28 +119,6 @@ class WanUSPAttnProcessor:
         hidden_states = attn.to_out[0](hidden_states)
         hidden_states = attn.to_out[1](hidden_states)
         return hidden_states
-
-
-def init_sp_backend(compute_dtype):
-    """Set up the sglang runtime state USPAttention depends on.
-
-    The training process never goes through the sglang server launch, so the
-    attention backend, mixed-precision policy, and forward context are unset.
-    FA requires fp16/bf16; the forward context is persisted module-globally
-    because checkpoint recompute runs after any with-scope has exited.
-    """
-    from sglang.multimodal_gen.runtime.layers.attention.selector import global_force_attn_backend
-    from sglang.multimodal_gen.runtime.platforms import AttentionBackendEnum
-    from sglang.multimodal_gen.utils import set_mixed_precision_policy
-
-    half = compute_dtype in (torch.float16, torch.bfloat16)
-    global_force_attn_backend(AttentionBackendEnum.FA if half else AttentionBackendEnum.TORCH_SDPA)
-    set_mixed_precision_policy(param_dtype=compute_dtype, reduce_dtype=torch.float32)
-
-    from sglang.multimodal_gen.runtime.managers import forward_context as fc
-
-    if fc._forward_context is None:
-        fc._forward_context = fc.ForwardContext(current_timestep=0, attn_metadata=None)
 
 
 def _apply_rotary_emb(hidden_states, freqs_cos, freqs_sin):
@@ -219,7 +198,7 @@ def _install_cp_plan_hooks(transformer, parallel_state):
             module.register_forward_hook(split_outputs, with_kwargs=True)
 
 
-def apply_sequence_parallel(transformer, parallel_state, compute_dtype=None):
+def apply_sequence_parallel(transformer, parallel_state):
     """Wire SP into one transformer: replace self-attn processors and install
     the shard/gather hooks declared by its _cp_plan. Call once per transformer
     after FSDP wrapping."""
@@ -231,14 +210,11 @@ def apply_sequence_parallel(transformer, parallel_state, compute_dtype=None):
             f"SP attention processor currently supports WanTransformer3DModel only, got {base.__class__.__name__}"
         )
     heads = transformer.config.num_attention_heads
-    head_dim = transformer.config.attention_head_dim
     # args carry no head count, so the startup divisibility check must happen
     # here where the real model config is available.
     if heads % parallel_state.ulysses_degree != 0:
         raise ValueError(
             f"num_attention_heads({heads}) is not divisible by ulysses_degree({parallel_state.ulysses_degree})"
         )
-    if compute_dtype is None:
-        compute_dtype = next(transformer.parameters()).dtype
-    transformer.set_attn_processor(WanUSPAttnProcessor(heads, head_dim, compute_dtype))
+    transformer.set_attn_processor(WanUSPAttnProcessor(parallel_state))
     _install_cp_plan_hooks(transformer, parallel_state)
