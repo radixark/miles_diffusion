@@ -79,7 +79,16 @@ def _install_boundary_hooks(transformer, boundaries, parallel_state):
         output_specs = {k: v for k, v in spec.items() if v.split_output}
 
         if input_specs:
-            param_names = list(inspect.signature(module.forward).parameters)
+            # Wrappers like PeftModel expose forward(*args, **kwargs); the real
+            # parameter names live on the base module.
+            sig_module = module.get_base_model() if hasattr(module, "get_base_model") else module
+            param_names = list(inspect.signature(sig_module.forward).parameters)
+            missing = [k for k in input_specs if isinstance(k, str) and k not in param_names]
+            if missing:
+                raise ValueError(
+                    f"boundary keys {missing} at '{path}' are not parameters of "
+                    f"{type(sig_module).__name__}.forward"
+                )
 
             def split_inputs(mod, args, kwargs, _specs=input_specs, _names=param_names):
                 args = list(args)

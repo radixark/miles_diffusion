@@ -169,6 +169,12 @@ class DiffusersModelBackend(ModelBackend):
         boundaries = getattr(base, "_cp_plan", None)
         if not boundaries:
             raise ValueError(f"{base.__class__.__name__} declares no _cp_plan; sequence parallelism unavailable")
+        wildcards = [k for k in boundaries if "*" in k]
+        if wildcards:
+            raise ValueError(
+                f"{base.__class__.__name__}._cp_plan uses wildcard boundaries {wildcards}, "
+                "which the boundary-hook installer does not support yet"
+            )
         return SequenceParallelPlan(
             boundaries=boundaries,
             attention=self.config.apply_sp_attention,
@@ -257,3 +263,28 @@ class LTXModelBackend(ModelBackend):
             )
         masked = MaskedAttentionFunction[name] if name in MaskedAttentionFunction.__members__ else None
         set_attention_module_op(attention=AttentionFunction[name], masked_attention=masked).mutator(model)
+
+
+def validate_sp_support(args, cfg_cls) -> None:
+    """Driver-side, before any actor launches: reject launches whose SP config
+    cannot work, without loading weights."""
+    from miles.utils.misc import load_function
+
+    from .configs.train_pipeline_config import TrainPipelineConfig
+
+    if args.fsdp_attention_backend is not None:
+        raise ValueError(
+            "--fsdp-attention-backend has no effect with sequence parallelism: "
+            "the SP attention installer replaces every attention processor"
+        )
+    backend_cls = load_function(args.model_backend_path)
+    if backend_cls.sequence_parallel_plan is ModelBackend.sequence_parallel_plan:
+        raise ValueError(f"{backend_cls.__name__} does not support sequence parallelism")
+    if (
+        backend_cls.sequence_parallel_plan is DiffusersModelBackend.sequence_parallel_plan
+        and cfg_cls.apply_sp_attention is TrainPipelineConfig.apply_sp_attention
+    ):
+        raise ValueError(
+            f"{cfg_cls.__name__} does not implement apply_sp_attention; "
+            "sequence parallelism is unavailable for this model family"
+        )

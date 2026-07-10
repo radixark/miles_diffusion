@@ -1419,6 +1419,10 @@ def miles_validate_args(args):
                 f"--diffusion-guidance-scale 1.0 and drop --diffusion-negative-prompt"
             )
         cfg_cls.validate_args(args)
+        if getattr(args, "sequence_parallel_size", 1) > 1:
+            from miles.backends.fsdp_utils.model_backend import validate_sp_support
+
+            validate_sp_support(args, cfg_cls)
         if args.use_lora and args.lora_target_modules is None:
             args.lora_target_modules = list(cfg_cls.lora_target_modules)
 
