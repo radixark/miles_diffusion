@@ -1,12 +1,13 @@
 """Model backend: owns model-side behavior for the FSDP trainer.
 
 Selected via ``--model-backend-path`` (miles custom-function style); the
-family config declares the default. Three concerns, all properties of the
+family config declares the default. Four concerns, all properties of the
 concrete modeling rather than of the training loop:
 
   - ``load_component`` / ``load_scheduler``: checkpoint -> model components and scheduler
   - ``enable_gradient_checkpointing``: how this model turns on grad ckpt
   - ``fsdp_no_split_modules``: which block classes FSDP wraps
+  - ``sequence_parallel_plan``: the model's SP boundaries/attention declaration
 
 Defaults implement the diffusers protocol (see ``models/__init__.py``); a
 native model overrides methods here instead of retrofitting its instances.
@@ -23,6 +24,8 @@ from typing import Any
 import torch
 import torch.distributed as dist
 from diffusers import DiffusionPipeline
+
+from .sp_attention import SequenceParallelPlan
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +70,10 @@ class ModelBackend:
 
     def set_attention_backend(self, model: torch.nn.Module, backend: str) -> None:
         raise NotImplementedError
+
+    def sequence_parallel_plan(self, model: torch.nn.Module) -> SequenceParallelPlan:
+        """The model's SequenceParallelPlan (boundaries + attention installer)."""
+        raise NotImplementedError(f"{type(self).__name__} does not support sequence parallelism")
 
 
 class DiffusersModelBackend(ModelBackend):
@@ -156,6 +163,17 @@ class DiffusersModelBackend(ModelBackend):
             except ImportError:
                 return None
         return getattr(module, class_name, None)
+
+    def sequence_parallel_plan(self, model: torch.nn.Module) -> SequenceParallelPlan:
+        base = model.get_base_model() if hasattr(model, "get_base_model") else model
+        boundaries = getattr(base, "_cp_plan", None)
+        if not boundaries:
+            raise ValueError(f"{base.__class__.__name__} declares no _cp_plan; sequence parallelism unavailable")
+        return SequenceParallelPlan(
+            boundaries=boundaries,
+            attention=self.config.apply_sp_attention,
+            num_attention_heads=base.config.num_attention_heads,
+        )
 
 
 class LTXModelBackend(ModelBackend):

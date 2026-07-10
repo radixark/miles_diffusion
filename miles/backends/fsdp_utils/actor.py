@@ -134,7 +134,8 @@ class FSDPTrainRayActor(TrainRayActor):
 
         if self.parallel_state.sp_size > 1:
             for model in self.models.values():
-                apply_sequence_parallel(model, self.parallel_state)
+                plan = self.model_backend.sequence_parallel_plan(model)
+                apply_sequence_parallel(model, self.parallel_state, plan)
 
         # Force a sync to ensure sharding is complete and old memory is freed.
         torch.cuda.synchronize()

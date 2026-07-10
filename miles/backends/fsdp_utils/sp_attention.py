@@ -1,102 +1,35 @@
-"""Sequence parallelism for diffusers DiTs: self-attention runs USP (sp_ops).
+"""Sequence parallelism for diffusion DiTs: self-attention runs USP (sp_ops).
 
 Each sp rank holds S/sp latent tokens; attention internally gathers to the full
-sequence via Ulysses all-to-all (+Ring) and scatters back. Shard/gather points are
-taken from the model's diffusers ``_cp_plan``, so model outputs stay full-sequence
-and every parameter sees a partial gradient; the actor's cross-sp grad all-reduce
-applies uniformly.
+sequence via Ulysses all-to-all (+Ring) and scatters back. A model family opts in
+through a ``SequenceParallelPlan``; model outputs stay full-sequence, so every
+parameter sees a partial gradient and loss/log_prob code is untouched.
 """
 
 import inspect
+from dataclasses import dataclass
+from typing import Callable
 
 import torch
 from diffusers.models._modeling_parallel import ContextParallelInput, ContextParallelOutput
 
-from .sp_ops import gather_sequence, shard_sequence, usp_attention
+from .sp_ops import gather_sequence, shard_sequence
 
 
-class WanUSPAttnProcessor:
-    """Wan attention processor: self-attn via USP, cross-attn via local SDPA.
+@dataclass(frozen=True)
+class SequenceParallelPlan:
+    """What one transformer family declares to run under SP.
 
-    Reuses Wan's QKV/RMSNorm/RoPE; rotary_emb arrives pre-sharded to S_local.
-    With parallel_state=None the self-attn falls back to plain SDPA (reference mode).
+    ``boundaries``: fqn -> ``ContextParallelInput``/``ContextParallelOutput``
+    (the diffusers ``_cp_plan`` vocabulary) — where the sequence dim is sharded
+    to S/sp and where full-sequence outputs are gathered back.
+    ``attention``: called with (transformer, parallel_state); routes the model's
+    self-attention through ``sp_ops.usp_attention``.
     """
 
-    def __init__(self, parallel_state=None):
-        self.ulysses_group = parallel_state.ulysses_group if parallel_state is not None else None
-        self.ring_group = parallel_state.ring_group if parallel_state is not None else None
-
-    def __call__(self, attn, hidden_states, encoder_hidden_states=None, attention_mask=None, rotary_emb=None):
-        is_self_attn = encoder_hidden_states is None
-
-        encoder_hidden_states_img = None
-        if attn.add_k_proj is not None:
-            image_context_length = encoder_hidden_states.shape[1] - 512
-            encoder_hidden_states_img = encoder_hidden_states[:, :image_context_length]
-            encoder_hidden_states = encoder_hidden_states[:, image_context_length:]
-
-        if encoder_hidden_states is None:
-            encoder_hidden_states = hidden_states
-        query = attn.to_q(hidden_states)
-        key = attn.to_k(encoder_hidden_states)
-        value = attn.to_v(encoder_hidden_states)
-
-        query = attn.norm_q(query)
-        key = attn.norm_k(key)
-
-        query = query.unflatten(2, (attn.heads, -1))
-        key = key.unflatten(2, (attn.heads, -1))
-        value = value.unflatten(2, (attn.heads, -1))
-
-        if rotary_emb is not None:
-            query = _apply_rotary_emb(query, *rotary_emb)
-            key = _apply_rotary_emb(key, *rotary_emb)
-
-        if is_self_attn:
-            hidden_states = usp_attention(query, key, value, self.ulysses_group, self.ring_group)
-        else:
-            hidden_states = torch.nn.functional.scaled_dot_product_attention(
-                query.transpose(1, 2),
-                key.transpose(1, 2),
-                value.transpose(1, 2),
-                attn_mask=attention_mask,
-                dropout_p=0.0,
-                is_causal=False,
-            ).transpose(1, 2)
-
-        hidden_states = hidden_states.flatten(2, 3).type_as(query)
-
-        if encoder_hidden_states_img is not None:
-            key_img = attn.norm_added_k(attn.add_k_proj(encoder_hidden_states_img)).unflatten(2, (attn.heads, -1))
-            value_img = attn.add_v_proj(encoder_hidden_states_img).unflatten(2, (attn.heads, -1))
-            hidden_states_img = (
-                torch.nn.functional.scaled_dot_product_attention(
-                    query.transpose(1, 2),
-                    key_img.transpose(1, 2),
-                    value_img.transpose(1, 2),
-                    attn_mask=None,
-                    dropout_p=0.0,
-                    is_causal=False,
-                )
-                .transpose(1, 2)
-                .flatten(2, 3)
-                .type_as(query)
-            )
-            hidden_states = hidden_states + hidden_states_img
-
-        hidden_states = attn.to_out[0](hidden_states)
-        hidden_states = attn.to_out[1](hidden_states)
-        return hidden_states
-
-
-def _apply_rotary_emb(hidden_states, freqs_cos, freqs_sin):
-    x1, x2 = hidden_states.unflatten(-1, (-1, 2)).unbind(-1)
-    cos = freqs_cos[..., 0::2]
-    sin = freqs_sin[..., 1::2]
-    out = torch.empty_like(hidden_states)
-    out[..., 0::2] = x1 * cos - x2 * sin
-    out[..., 1::2] = x1 * sin + x2 * cos
-    return out.type_as(hidden_states)
+    boundaries: dict
+    attention: Callable[[torch.nn.Module, object], None]
+    num_attention_heads: int
 
 
 def _split_if_expected(x, spec, parallel_state):
@@ -116,14 +49,14 @@ def _resolve_submodule(root, path):
     return module
 
 
-def _install_cp_plan_hooks(transformer, parallel_state):
-    """Install shard/gather hooks from the model's diffusers ``_cp_plan``.
+def _install_boundary_hooks(transformer, boundaries, parallel_state):
+    """Install shard/gather hooks from the plan's boundary specs.
 
     ContextParallelInput entries split module inputs (or outputs when
     split_output=True); ContextParallelOutput entries gather module outputs.
     The gather is a differentiable all-gather, so backward stays partial-grad.
     """
-    for path, spec in transformer._cp_plan.items():
+    for path, spec in boundaries.items():
         module = _resolve_submodule(transformer, path) if path else transformer
 
         if isinstance(spec, ContextParallelOutput):
@@ -173,23 +106,14 @@ def _install_cp_plan_hooks(transformer, parallel_state):
             module.register_forward_hook(split_outputs, with_kwargs=True)
 
 
-def apply_sequence_parallel(transformer, parallel_state):
-    """Wire SP into one transformer: replace self-attn processors and install
-    the shard/gather hooks declared by its _cp_plan. Call once per transformer
-    after FSDP wrapping."""
-    from diffusers import WanTransformer3DModel
-
-    base = transformer.get_base_model() if hasattr(transformer, "get_base_model") else transformer
-    if not isinstance(base, WanTransformer3DModel):
+def apply_sequence_parallel(transformer, parallel_state, plan):
+    """Wire SP into one transformer per its plan: install the family's SP
+    self-attention and the shard/gather boundary hooks. Call once per
+    transformer after FSDP wrapping."""
+    if plan.num_attention_heads % parallel_state.ulysses_degree != 0:
         raise ValueError(
-            f"SP attention processor currently supports WanTransformer3DModel only, got {base.__class__.__name__}"
+            f"num_attention_heads({plan.num_attention_heads}) is not divisible by "
+            f"ulysses_degree({parallel_state.ulysses_degree})"
         )
-    heads = transformer.config.num_attention_heads
-    # args carry no head count, so the startup divisibility check must happen
-    # here where the real model config is available.
-    if heads % parallel_state.ulysses_degree != 0:
-        raise ValueError(
-            f"num_attention_heads({heads}) is not divisible by ulysses_degree({parallel_state.ulysses_degree})"
-        )
-    transformer.set_attn_processor(WanUSPAttnProcessor(parallel_state))
-    _install_cp_plan_hooks(transformer, parallel_state)
+    plan.attention(transformer, parallel_state)
+    _install_boundary_hooks(transformer, plan.boundaries, parallel_state)

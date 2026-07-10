@@ -19,8 +19,10 @@ import torch.nn.functional as F
 from diffusers import WanTransformer3DModel
 from torch.distributed.tensor import DTensor
 
+from miles.backends.fsdp_utils.configs.wan2_2 import Wan2_2TrainPipelineConfig, WanUSPAttnProcessor
+from miles.backends.fsdp_utils.model_backend import DiffusersModelBackend
 from miles.backends.fsdp_utils.parallel import create_fsdp_parallel_state
-from miles.backends.fsdp_utils.sp_attention import WanUSPAttnProcessor, apply_sequence_parallel
+from miles.backends.fsdp_utils.sp_attention import apply_sequence_parallel
 from miles.utils.distributed_utils import init_gloo_group
 
 DTYPE = torch.bfloat16
@@ -118,7 +120,8 @@ def main():
     for blk in model.blocks:
         fully_shard(blk, mesh=ps.fsdp_mesh, mp_policy=mp_policy)
     fully_shard(model, mesh=ps.fsdp_mesh, mp_policy=mp_policy)
-    apply_sequence_parallel(model, ps)
+    plan = DiffusersModelBackend(Wan2_2TrainPipelineConfig()).sequence_parallel_plan(model)
+    apply_sequence_parallel(model, ps, plan)
 
     for i, mbsets in enumerate(datasets):
         hidden, enc, ts, out_grad = mbsets[ps.dp_rank]
@@ -176,8 +179,10 @@ def main():
     if rank == 0:
         print(f"[GRAD-NORM] clip={total.item():.6e} ref={ref_total.item():.6e} rel={norm_rel.item():.2e}")
         assert norm_rel.item() < 5e-2, "clip_grad_norm_ reports a wrong total norm"
-        print(f"[SP-GRAD-SYNC] mode={cli.shard_mode} dp{ps.dp_size}xsp{ps.sp_size}"
-              f"(u{ps.ulysses_degree}r{ps.ring_degree}) checked={checked} fails={fails}")
+        print(
+            f"[SP-GRAD-SYNC] mode={cli.shard_mode} dp{ps.dp_size}xsp{ps.sp_size}"
+            f"(u{ps.ulysses_degree}r{ps.ring_degree}) checked={checked} fails={fails}"
+        )
         assert fails == 0
         print("[SP-GRAD-SYNC OK] full grads == full-sequence reference")
     dist.destroy_process_group()

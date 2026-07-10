@@ -17,7 +17,9 @@ import torch.nn.functional as F
 from diffusers import WanTransformer3DModel
 
 from miles.backends.fsdp_utils.parallel import create_fsdp_parallel_state
-from miles.backends.fsdp_utils.sp_attention import WanUSPAttnProcessor, apply_sequence_parallel
+from miles.backends.fsdp_utils.configs.wan2_2 import Wan2_2TrainPipelineConfig, WanUSPAttnProcessor
+from miles.backends.fsdp_utils.model_backend import DiffusersModelBackend
+from miles.backends.fsdp_utils.sp_attention import apply_sequence_parallel
 from miles.utils.distributed_utils import init_gloo_group
 
 DTYPE = torch.bfloat16
@@ -119,7 +121,8 @@ def main():
     gw_ref = {n: dict(model.named_parameters())[n].grad.detach().clone() for n in attn_weight_names}
     model.zero_grad(set_to_none=True)
 
-    apply_sequence_parallel(model, ps)
+    plan = DiffusersModelBackend(Wan2_2TrainPipelineConfig()).sequence_parallel_plan(model)
+    apply_sequence_parallel(model, ps, plan)
     out_sp, gin_sp = _run(model, hidden, enc, ts, out_grad, cli.ckpt)
 
     # Each rank backprops only its 1/sp of the tokens; sum across sp restores full grads.
