@@ -125,6 +125,12 @@ class RolloutManager:
             self._metric_checker.dispose()
         if self._health_monitor is not None:
             self._health_monitor.stop()
+        # Ray tears down the engine actors but not the server trees they spawned.
+        for ref in [engine.shutdown.remote() for engine in self.all_rollout_engines if engine is not None]:
+            try:
+                ray.get(ref)
+            except Exception as e:
+                logger.warning(f"Failed to shut down rollout engine during dispose: {e}")
 
     # TODO maybe rename "rollout_engines" and "all_rollout_engines" later
     @property

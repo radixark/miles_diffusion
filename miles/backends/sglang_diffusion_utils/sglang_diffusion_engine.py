@@ -11,6 +11,7 @@ from sglang.multimodal_gen.runtime.server_args import ServerArgs
 
 from miles.ray.ray_actor import RayActor
 from miles.utils.http_utils import get_host_info
+from miles.utils.process_utils import bind_lifetime_to_parent
 
 logger = logging.getLogger(__name__)
 
@@ -33,13 +34,15 @@ def _to_local_gpu_id(physical_gpu_id: int) -> int:
     )
 
 
-def _scheduler_process_with_rollout_patches(*args, **kwargs):
-    # Runs inside sglang-d's scheduler grandchild (spawned by launch_server via
-    # mp.Process). Grandchild re-imports modules from scratch under spawn, so
-    # any monkey patches done in the middle child are gone. Apply them HERE,
-    # before calling the real run_scheduler_process, so the DiT that's
-    # constructed inside the grandchild sees the patched classes. Which groups
-    # apply is carried by env flags (set in the engine parent, inherited by spawn).
+SGLD_SERVER_PID_ENV = "MILES_SGLD_SERVER_PID"
+
+
+def _scheduler_process_entrypoint(*args, **kwargs):
+    # Bind first: ray's child reaper kills the server before it can reap its schedulers.
+    if (server_pid := os.environ.get(SGLD_SERVER_PID_ENV)) is not None:
+        bind_lifetime_to_parent(int(server_pid))
+
+    # Spawn re-imports modules from scratch; apply env-selected patches before the DiT is built.
     from miles.backends.sglang_diffusion_utils.monkey_patches import apply_env_selected_rollout_patches
 
     apply_env_selected_rollout_patches()
@@ -48,7 +51,9 @@ def _scheduler_process_with_rollout_patches(*args, **kwargs):
     return run_scheduler_process(*args, **kwargs)
 
 
-def _launch_server_target(server_args, apply_rollout_patches: bool = False):
+def _launch_server_target(server_args, parent_pid: int):
+    bind_lifetime_to_parent(parent_pid)
+
     # addict.Dict used by SGL-D loses its `__frozen` instance attribute across spawn pickle.
     # Reconstruct a fresh one from the unpickled (broken) instance
     import addict
@@ -56,32 +61,24 @@ def _launch_server_target(server_args, apply_rollout_patches: bool = False):
     if server_args.attention_backend_config is not None:
         server_args.attention_backend_config = addict.Dict(server_args.attention_backend_config)
 
-    if apply_rollout_patches:
-        # launch_server spawns its scheduler via mp.Process(target=run_scheduler_process).
-        # Under spawn, target is pickled by qualname and re-imported in the grandchild,
-        # so patching in THIS process doesn't help. Instead, rebind the name inside
-        # launch_server's own module to point at our wrapper — pickle then carries
-        # the miles qualname across to the grandchild, which applies the patch before
-        # calling the real scheduler entrypoint.
-        import sglang.multimodal_gen.runtime.launch_server as _ls_mod
+    # Rebind so schedulers spawn through our entrypoint (mp pickles the target by qualname).
+    os.environ[SGLD_SERVER_PID_ENV] = str(os.getpid())
+    import sglang.multimodal_gen.runtime.launch_server as _ls_mod
 
-        _ls_mod.run_scheduler_process = _scheduler_process_with_rollout_patches
+    _ls_mod.run_scheduler_process = _scheduler_process_entrypoint
 
     from sglang.multimodal_gen.runtime.launch_server import launch_server
 
     launch_server(server_args)
 
 
-def launch_server_process(
-    server_args: ServerArgs,
-    apply_rollout_patches: bool = False,
-) -> multiprocessing.Process:
+def launch_server_process(server_args: ServerArgs) -> multiprocessing.Process:
     # use spawn to avoid potential risks of fork in terms of subthreads or CUDA.
     multiprocessing.set_start_method("spawn", force=True)
     server_args.host = server_args.host.strip("[]")
     p = multiprocessing.Process(
         target=_launch_server_target,
-        args=(server_args, apply_rollout_patches),
+        args=(server_args, os.getpid()),
     )
     p.start()
 
@@ -166,10 +163,7 @@ class SGLangDiffusionEngine(RayActor):
         if patch_groups:
             os.environ[ROLLOUT_PATCH_GROUPS_ENV] = ",".join(patch_groups)
             logger.info("Launching sglang-d with rollout patch groups: %s", patch_groups)
-        self.process = launch_server_process(
-            ServerArgs.from_kwargs(**server_args_dict),
-            apply_rollout_patches=bool(patch_groups),
-        )
+        self.process = launch_server_process(ServerArgs.from_kwargs(**server_args_dict))
 
         if self.node_rank == 0 and self.router_ip and self.router_port:
             if self.args.use_miles_router:
@@ -281,15 +275,17 @@ class SGLangDiffusionEngine(RayActor):
         logger.info(f"Shutdown engine {self.server_host}:{self.server_port}...")
         if self.node_rank == 0:
             worker_url = f"http://{self.server_host}:{self.server_port}"
-            response = None
-            if self.args.use_miles_router:
-                response = requests.post(f"http://{self.router_ip}:{self.router_port}/remove_worker?url={worker_url}")
-            else:
-                # SGL-D router TODO: shutdown for sglang-diffusion router
-                logger.warning("Failed to fetch workers list or remove worker: now only support miles_router")
-
-            if response is not None:
-                response.raise_for_status()
+            try:
+                if self.args.use_miles_router:
+                    response = requests.post(
+                        f"http://{self.router_ip}:{self.router_port}/remove_worker?url={worker_url}"
+                    )
+                    response.raise_for_status()
+                else:
+                    # SGL-D router TODO: shutdown for sglang-diffusion router
+                    logger.warning("Failed to fetch workers list or remove worker: now only support miles_router")
+            except requests.RequestException as e:
+                logger.warning(f"Failed to remove worker {worker_url} from router: {e}")
         kill_process_tree(self.process.pid)
 
     def release_memory_occupation(self):
