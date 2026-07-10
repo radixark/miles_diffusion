@@ -34,4 +34,8 @@ run torchrun --standalone --nproc_per_node=4 tests/sp/sp_weight_sync_parity.py -
 run torchrun --standalone --nproc_per_node=4 tests/sp/sp_weight_sync_parity.py --sp 4 --ulysses 2 --ring 2 --shard-mode dp
 run torchrun --standalone --nproc_per_node=4 tests/sp/sp_weight_sync_parity.py --sp 4 --ulysses 2 --ring 2
 
+export CUBLAS_WORKSPACE_CONFIG=:4096:8
+run torchrun --standalone --nproc_per_node=2 tests/sp/sp_determinism_smoke.py --ulysses 2 --ring 1
+run torchrun --standalone --nproc_per_node=2 tests/sp/sp_determinism_smoke.py --ulysses 1 --ring 2
+
 echo; echo "ALL SP GPU TESTS PASSED"
