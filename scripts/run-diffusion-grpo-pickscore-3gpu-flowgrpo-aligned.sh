@@ -23,7 +23,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-4,5,1}"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-RUN_NAME="diffusion_grpo_pickscore_2gpu_flowgrpo_aligned_$(date +%Y%m%d_%H%M%S)"
+RUN_NAME="diffusion_grpo_pickscore_3gpu_flowgrpo_aligned_$(date +%Y%m%d_%H%M%S)"
 SAVE_DIR="${ROOT_DIR}/logs/${RUN_NAME}/ckpt"
 
 WANDB_ARGS=()
