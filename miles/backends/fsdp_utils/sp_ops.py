@@ -132,9 +132,7 @@ class _RingFlashAttention(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_out):
-        from torch.distributed.tensor.experimental._attention import (
-            _templated_ring_attention_backward,
-        )
+        from torch.distributed.tensor.experimental._attention import _templated_ring_attention_backward
 
         query, key, value, out, lse, cum_q, cum_k, philox_seed, philox_offset = ctx.saved_tensors
         grad_q, grad_k, grad_v, *_ = _templated_ring_attention_backward(
@@ -180,9 +178,7 @@ def usp_attention(query, key, value, ulysses_group=None, ring_group=None):
     if ring_group is not None:
         out = _RingFlashAttention.apply(q.contiguous(), k.contiguous(), v.contiguous(), ring_group, scale, False)
     else:
-        out = torch.nn.functional.scaled_dot_product_attention(
-            q, k, v, dropout_p=0.0, is_causal=False, scale=scale
-        )
+        out = torch.nn.functional.scaled_dot_product_attention(q, k, v, dropout_p=0.0, is_causal=False, scale=scale)
     out = out.transpose(1, 2).contiguous()  # [B, S, H, D]
 
     if ulysses_group is not None:

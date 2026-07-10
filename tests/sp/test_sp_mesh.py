@@ -2,12 +2,7 @@
 
 import pytest
 
-from miles.backends.fsdp_utils.sp_mesh import (
-    locate_rank,
-    resolve_sp_degrees,
-    sp_subgroups,
-    validate_sp_config,
-)
+from miles.backends.fsdp_utils.sp_mesh import locate_rank, resolve_sp_degrees, sp_subgroups, validate_sp_config
 
 
 def test_resolve_auto_degrees():

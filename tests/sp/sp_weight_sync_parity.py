@@ -16,9 +16,8 @@ import argparse
 import torch
 import torch.distributed as dist
 from diffusers import WanTransformer3DModel
-from torch.distributed.fsdp import fully_shard
-
 from sglang.multimodal_gen.runtime.loader.weight_utils import compute_weights_checksum
+from torch.distributed.fsdp import fully_shard
 
 from miles.backends.fsdp_utils.parallel import create_fsdp_parallel_state
 from miles.utils.distributed_utils import init_gloo_group
@@ -84,7 +83,9 @@ def main():
     ps = create_fsdp_parallel_state(args)
 
     ref_model = build_model(device)
-    ref_sum = compute_weights_checksum([(n, pa.detach().cpu().contiguous()) for n, pa in ref_model.state_dict().items()])
+    ref_sum = compute_weights_checksum(
+        [(n, pa.detach().cpu().contiguous()) for n, pa in ref_model.state_dict().items()]
+    )
 
     model = build_model(device)
     for blk in model.blocks:
@@ -99,7 +100,9 @@ def main():
     if rank == 0:
         all_equal = all(s == gathered[0] for s in gathered)
         match_ref = gathered[0] == ref_sum
-        print(f"[WEIGHT-SYNC] world={world} mode={cli.shard_mode} dp{ps.dp_size}xsp{ps.sp_size}(u{ps.ulysses_degree}r{ps.ring_degree})")
+        print(
+            f"[WEIGHT-SYNC] world={world} mode={cli.shard_mode} dp{ps.dp_size}xsp{ps.sp_size}(u{ps.ulysses_degree}r{ps.ring_degree})"
+        )
         print(f"[WEIGHT-SYNC] all ranks equal={all_equal}  == single-process ref={match_ref}")
         assert all_equal, "reconstructed full weights differ across ranks"
         assert match_ref, "reconstructed full weights != single-process reference"

@@ -15,8 +15,7 @@ def test_checksum_covers_dtype_shape():
 
     src = inspect.getsource(weight_utils.compute_weights_checksum)
     assert "dtype" in src and "shape" in src, (
-        f"imported sglang checksum is bytes-only: {weight_utils.__file__} — "
-        "transpose/reshape would not be detected"
+        f"imported sglang checksum is bytes-only: {weight_utils.__file__} — " "transpose/reshape would not be detected"
     )
 
 

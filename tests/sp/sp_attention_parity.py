@@ -16,9 +16,9 @@ import torch.distributed as dist
 import torch.nn.functional as F
 from diffusers import WanTransformer3DModel
 
-from miles.backends.fsdp_utils.parallel import create_fsdp_parallel_state
 from miles.backends.fsdp_utils.configs.wan2_2 import Wan2_2TrainPipelineConfig, WanUSPAttnProcessor
 from miles.backends.fsdp_utils.model_backend import DiffusersModelBackend
+from miles.backends.fsdp_utils.parallel import create_fsdp_parallel_state
 from miles.backends.fsdp_utils.sp_attention import apply_sequence_parallel
 from miles.utils.distributed_utils import init_gloo_group
 

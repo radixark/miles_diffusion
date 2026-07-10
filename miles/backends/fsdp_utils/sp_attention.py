@@ -7,11 +7,11 @@ parameter sees a partial gradient and loss/log_prob code is untouched.
 """
 
 import inspect
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 import torch
-from diffusers.models._modeling_parallel import ContextParallelInput, ContextParallelOutput
+from diffusers.models._modeling_parallel import ContextParallelOutput
 
 from .sp_ops import gather_sequence, shard_sequence
 
