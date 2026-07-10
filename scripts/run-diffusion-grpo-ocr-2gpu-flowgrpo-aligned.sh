@@ -22,6 +22,8 @@ export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-2,3}"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 RUN_NAME="diffusion_grpo_ocr_2gpu_flowgrpo_aligned_$(date +%Y%m%d_%H%M%S)"
 SAVE_DIR="${ROOT_DIR}/logs/${RUN_NAME}/ckpt"
+# Per-run metric recording; registerable as CI standard (tests/ci/e2e_metrics_registry.py).
+export MILES_METRICS_JSONL="${MILES_METRICS_JSONL:-${ROOT_DIR}/logs/${RUN_NAME}/metrics.jsonl}"
 
 WANDB_ARGS=()
 if [[ -n "${WANDB_API_KEY:-}" ]]; then

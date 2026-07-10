@@ -1,3 +1,6 @@
+import json
+import os
+
 import wandb
 
 from . import wandb_utils
@@ -11,6 +14,12 @@ def init_tracking(args, primary: bool = True, **kwargs):
 
 
 def log(args, metrics, step_key):
+    # E2E metrics tee (tests/ci/e2e_metrics_registry.py): mirror every metric
+    # dict to MILES_METRICS_JSONL; O_APPEND keeps concurrent writers line-atomic.
+    jsonl_path = os.environ.get("MILES_METRICS_JSONL")
+    if jsonl_path:
+        with open(jsonl_path, "a") as f:
+            f.write(json.dumps({"step_key": step_key, **metrics}, sort_keys=True) + "\n")
     del step_key
     if args.use_wandb:
         # Do NOT pass step=... to wandb.log: wandb requires the explicit step

@@ -1,32 +1,24 @@
 """Smoke e2e: Qwen-Image OCR GRPO, 2 GPUs, 2 rollout steps.
 
-Runs the example script itself with NUM_ROLLOUT=2, so CI verifies the exact
-artifact users run — the example can't drift from what the test covers. Two
-truncated rollouts still exercise the full colocate loop (sglang rollout ->
-OCR reward -> GRPO -> FSDP LoRA update -> weight sync) within the 1800 s
-per-file budget; model/dataset/paddle caches are host-mounted on the CI node.
+Runs the example script itself with NUM_ROLLOUT=2 — the example can't drift
+from what CI verifies. Two truncated rollouts exercise the full colocate
+loop (sglang rollout -> OCR reward -> GRPO -> FSDP LoRA update -> weight
+sync) within the 1800 s per-file budget, then the recorded metric series
+must match the registered standard in tests/ci/fixtures/e2e_standards/
+step by step. Re-register via the update-e2e-metrics workflow (or
+`e2e_metrics_registry.py register`) when a change is intentional.
 """
 
-import os
-import subprocess
-from pathlib import Path
+from tests.ci.e2e_metrics_registry import register_e2e_ci
 
-from tests.ci.ci_register import register_cuda_ci
-
-register_cuda_ci(
+register_e2e_ci(
     est_time=1500,
     suite="stage-b-2-gpu-h200",
+    script="scripts/run-diffusion-grpo-ocr-2gpu-flowgrpo-aligned.sh",
+    env={"NUM_ROLLOUT": "2"},
+    metrics=[
+        "rollout/reward/raw_mean",
+        "rollout/reward/raw_std",
+        "rollout/reward/group_mean_avg",
+    ],
 )
-
-ROOT_DIR = Path(__file__).resolve().parents[3]
-SCRIPT = ROOT_DIR / "scripts" / "run-diffusion-grpo-ocr-2gpu-flowgrpo-aligned.sh"
-
-
-def execute():
-    env = dict(os.environ)
-    env["NUM_ROLLOUT"] = "2"
-    subprocess.run(["bash", str(SCRIPT)], check=True, cwd=ROOT_DIR, env=env)
-
-
-if __name__ == "__main__":
-    execute()

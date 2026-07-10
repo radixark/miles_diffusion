@@ -21,7 +21,10 @@ _POSITIONAL_PARAMS = ("est_time", "suite")
 # All accepted keyword arguments (in addition to the positional pair above).
 _VALID_KWARGS = frozenset({"est_time", "suite", "labels", "nightly", "disabled"})
 
-_REGISTER_NAMES = frozenset({"register_cpu_ci", "register_cuda_ci"})
+_REGISTER_NAMES = frozenset({"register_cpu_ci", "register_cuda_ci", "register_e2e_ci"})
+
+# Runtime-only kwargs of register_e2e_ci; the AST parser accepts and skips them.
+_E2E_RUNTIME_KWARGS = frozenset({"script", "env", "metrics", "tolerances"})
 
 _UNSET = object()
 
@@ -78,6 +81,7 @@ def register_cuda_ci(
 _REGISTER_BACKEND_MAP = {
     "register_cpu_ci": HWBackend.CPU,
     "register_cuda_ci": HWBackend.CUDA,
+    "register_e2e_ci": HWBackend.CUDA,
 }
 
 
@@ -145,6 +149,8 @@ class RegistryVisitor(ast.NodeVisitor):
                 raise ValueError(f"{self.filename}: **kwargs are not supported in {func_name}()")
             if kw.arg in parsed:
                 raise ValueError(f"{self.filename}: duplicated argument '{kw.arg}' in {func_name}()")
+            if func_name == "register_e2e_ci" and kw.arg in _E2E_RUNTIME_KWARGS:
+                continue
             if kw.arg not in _VALID_KWARGS:
                 raise ValueError(f"{self.filename}: unknown argument '{kw.arg}' in {func_name}()")
             if kw.arg == "labels":

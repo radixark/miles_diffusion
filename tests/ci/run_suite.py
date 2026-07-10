@@ -23,14 +23,14 @@ _RUN_CI_PREFIX = "run-ci-"
 
 # Per-commit test suites (run on every PR; per-domain selection is done at
 # runtime by `filter_tests` via the `--labels` arg, not via per-suite jobs).
-#
-# CUDA suites have no static list: they are derived from registrations
-# (see enumerate_cuda_suites) and dispatched via a dynamic job matrix in
-# pr-test.yml — registering a test is the only step needed.
+# CUDA suites are dispatched as a dynamic job matrix (enumerate_cuda_suites).
 PER_COMMIT_SUITES = {
     HWBackend.CPU: [
         "stage-a-cpu",
         "stage-b-cpu",
+    ],
+    HWBackend.CUDA: [
+        "stage-b-2-gpu-h200",
     ],
 }
 
@@ -95,8 +95,7 @@ def filter_tests(
 
     valid_suites = NIGHTLY_SUITES.get(hw, []) if nightly else PER_COMMIT_SUITES.get(hw, [])
 
-    # An empty/absent list means the backend has no static suite registry
-    # (CUDA suites are enumerated dynamically from registrations).
+    # None/empty = no static suite registry for this backend (see PER_COMMIT_SUITES).
     if valid_suites and suite not in valid_suites:
         print(f"Warning: Unknown suite {suite} for backend {hw.name}, nightly={nightly}")
 
@@ -151,33 +150,28 @@ def _is_e2e_discovery_file(filename: str) -> bool:
     )
 
 
-# CUDA suite names must end in -<N>-gpu-<family> (e.g. stage-b-2-gpu-h200):
-# the runner labels are derived from the name, so registering a test via
-# `register_cuda_ci` is the only step needed to put it on CI.
+# CUDA suite names encode the runner shape: …-<N>-gpu-<family> → runner labels.
 _SUITE_SHAPE_RE = re.compile(r"-(\d+)-gpu-([a-z0-9]+)$")
 
-# Runner sizes provisioned per GPU family. node-radixark-32-0000 (8×H200) is
-# split into two disjoint runners: 3gpu (GPUs 0-2) + 5gpu (GPUs 3-7). A suite
-# asking for N GPUs is routed to the smallest runner that fits (a 2-gpu suite
-# runs on the 3gpu runner and leaves one GPU idle); N above the largest size
-# fails here, loudly, instead of queueing forever on a label no runner
-# carries.
+# Runner sizes per GPU family; a suite routes to the smallest runner that fits.
 _RUNNER_SIZES = {"h200": [3, 5]}
 
 
 def enumerate_cuda_suites() -> list[dict]:
-    """Emit [{suite, runs_on}] for every CUDA suite with >=1 enabled per-commit
-    test. pr-test.yml feeds this to a dynamic job matrix."""
+    """Emit [{suite, runs_on}] for the PER_COMMIT_SUITES CUDA suites; pr-test.yml
+    feeds this to a dynamic job matrix."""
     files = [f for f in glob.glob("tests/e2e/**/*.py", recursive=True) if _is_e2e_discovery_file(f)]
-    suites = sorted(
-        {
-            t.suite
-            for t in collect_tests(files, sanity_check=False)
-            if t.backend == HWBackend.CUDA and not t.nightly and t.disabled is None
-        }
-    )
+    registered = {
+        t.suite for t in collect_tests(files, sanity_check=False) if t.backend == HWBackend.CUDA and not t.nightly
+    }
+    listed = PER_COMMIT_SUITES[HWBackend.CUDA]
+    # Fail loud on suites that have tests but were never listed (they would
+    # otherwise silently never run — an existing bug class in miles main).
+    ghosts = sorted(registered - set(listed))
+    if ghosts:
+        raise ValueError(f"suites with registered tests missing from PER_COMMIT_SUITES: {ghosts}")
     out = []
-    for s in suites:
+    for s in listed:
         m = _SUITE_SHAPE_RE.search(s)
         if not m:
             raise ValueError(f"CUDA suite {s!r} must end in -<N>-gpu-<family> to derive runner labels")
