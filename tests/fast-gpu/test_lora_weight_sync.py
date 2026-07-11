@@ -2,7 +2,7 @@ from tests.ci.ci_register import register_cuda_ci
 
 register_cuda_ci(
     est_time=120,
-    suite="stage-b-2-gpu-h200",
+    suite="stage-b-3-gpu-h200",
     labels=[],
 )
 

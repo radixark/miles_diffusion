@@ -12,7 +12,7 @@ name: CI Job
 #     diffusion RPCs land on sgl main.
 #   * GPU `run:` job uses the radixark/miles-diffusion image (not
 #     radixark/miles) and the h200 runner fleet on the dedicated CI node
-#     (labels: h200 + 2gpu/4gpu).
+#     (labels: h200 + 3gpu/5gpu).
 
 on:
   workflow_call:
@@ -37,6 +37,11 @@ on:
         required: false
         default: false
         description: 'Run on GitHub-hosted ubuntu-latest with bare pip install (for CPU-only fast tests)'
+      upload_standards:
+        type: boolean
+        required: false
+        default: false
+        description: 'Upload tests/ci/fixtures/e2e_standards/ as a build artifact for the author to review and commit (record-e2e-standards.yml)'
 
 jobs:
   run:
@@ -167,6 +172,13 @@ jobs:
       - name: Run tests
         shell: bash
         run: ${{ inputs.execute_command }}
+
+      - name: Upload recorded standards
+        if: ${{ inputs.upload_standards }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-standards
+          path: tests/ci/fixtures/e2e_standards/
 
   # CPU-only path: GitHub-hosted ubuntu-latest, bare pip install.
   run-cpu:

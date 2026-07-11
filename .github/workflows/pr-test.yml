@@ -5,7 +5,7 @@ name: PR Test
 # Differences vs miles main:
 #   * GPU stages run on the dedicated miles-D CI node (8×H200,
 #     node-radixark-32-0000) split into (h200,3gpu) + (h200,5gpu) runners —
-#     currently only stage-b-2-gpu-h200 exists (no stage-c-8-gpu-h100).
+#     stage-b (fast-gpu) and stage-c (e2e) only, no stage-c-8-gpu-h100.
 #   * `resolve-ci-image` resolves a `rockdu/miles_diffusion:<tag>`
 #     container (default `latest`), overridable via the `ci-image-tag:`
 #     PR-body line or the `ci_image_tag` dispatch input.
@@ -102,10 +102,10 @@ jobs:
         ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
     secrets: inherit
 
-  # Stage B GPU: fast 2-GPU bucket, gates nothing yet but runs on every PR
+  # Stage B GPU: fast-gpu bucket, gates nothing yet but runs on every PR
   # once stage-a-cpu is green (fast-fail: broken imports shouldn't burn GPU
   # runner slots).
-  stage-b-2-gpu-h200:
+  stage-b-3-gpu-h200:
     needs: [resolve-ci-image, stage-a-cpu]
     if: |
       always() && !cancelled() &&
@@ -114,11 +114,30 @@ jobs:
       ((github.event_name == 'workflow_dispatch') || (github.event.pull_request))
     uses: ./.github/workflows/_run-ci.yml
     with:
-      # 2-gpu suite runs on the 3gpu runner: the node is split 3(GPU0-2)+5(GPU3-7).
+      # Suite names match the runner split: 3gpu (GPUs 0-2) + 5gpu (GPUs 3-7).
       runs_on: '["h200", "3gpu"]'
       container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
       execute_command: >-
-        python tests/ci/run_suite.py --hw cuda --suite stage-b-2-gpu-h200
+        python tests/ci/run_suite.py --hw cuda --suite stage-b-3-gpu-h200
+        --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
+        ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
+    secrets: inherit
+
+  # Stage C GPU: e2e suite. A 2-gpu e2e runs on the 5gpu runner so it
+  # parallelizes with stage-b fast tests on the 3gpu runner.
+  stage-c-5-gpu-h200:
+    needs: [resolve-ci-image, stage-a-cpu]
+    if: |
+      always() && !cancelled() &&
+      needs.resolve-ci-image.result == 'success' &&
+      needs.stage-a-cpu.result == 'success' &&
+      ((github.event_name == 'workflow_dispatch') || (github.event.pull_request))
+    uses: ./.github/workflows/_run-ci.yml
+    with:
+      runs_on: '["h200", "5gpu"]'
+      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
+      execute_command: >-
+        python tests/ci/run_suite.py --hw cuda --suite stage-c-5-gpu-h200
         --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
         ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
     secrets: inherit

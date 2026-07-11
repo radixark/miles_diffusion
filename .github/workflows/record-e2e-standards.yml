@@ -1,0 +1,22 @@
+name: Record E2E Standards
+
+# Rerun one e2e test in record mode on the CI runner and upload the standard
+# as an artifact; download, review, and commit it in your PR (CI never commits).
+
+on:
+  workflow_dispatch:
+    inputs:
+      test:
+        description: 'e2e test file whose standard to record (e.g. tests/e2e/short/test_qwen_image_ocr_grpo_4xGPU.py)'
+        required: true
+
+jobs:
+  record:
+    uses: ./.github/workflows/_run-ci.yml
+    with:
+      # e2e recording runs where e2e verification runs (see pr-test stage-c).
+      runs_on: '["h200", "5gpu"]'
+      upload_standards: true
+      execute_command: >-
+        python tests/ci/e2e_metrics_registry.py record --test ${{ inputs.test }}
+    secrets: inherit
