@@ -26,6 +26,8 @@ export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-4,5,6,7,1}"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 RUN_NAME="diffusion_grpo_pickscore_5gpu_flowgrpo_aligned_$(date +%Y%m%d_%H%M%S)"
 SAVE_DIR="${ROOT_DIR}/logs/${RUN_NAME}/ckpt"
+# Per-run metric recording; registerable as CI standard (tests/ci/e2e_metrics_registry.py).
+export MILES_METRICS_JSONL="${MILES_METRICS_JSONL:-${ROOT_DIR}/logs/${RUN_NAME}/metrics.jsonl}"
 
 WANDB_ARGS=()
 if [[ -n "${WANDB_API_KEY:-}" ]]; then
@@ -49,13 +51,14 @@ hf download --repo-type dataset rockdu/miles-diffusion-datasets \
 
 "${PYTHON_BIN}" -u "${ROOT_DIR}/train_diffusion.py" \
   --train-backend fsdp \
+  ${DETERMINISTIC_MODE:+--deterministic-mode} \
   --rollout-function-path miles.rollout.sglang_diffusion_rollout.generate_rollout \
   --hf-checkpoint Qwen/Qwen-Image \
   --prompt-data "${DATASETS_DIR}/flowgrpo_pickscore/train.jsonl" \
   --input-key input \
   --rollout-batch-size 32 \
   --n-samples-per-prompt 16 \
-  --num-rollout 100000 \
+  --num-rollout "${NUM_ROLLOUT:-100000}" \
   --diffusion-microgroup-size 8 \
   --micro-batch-size-sample 8 \
   --micro-batch-size-tstep 1 \
