@@ -1,17 +1,35 @@
 #!/usr/bin/env bash
 # LTX-2.3 video PickScore GRPO: sglang rollout + FSDP train (colocate).
 #
-# Default: 1-GPU colocate (train FSDP + sglang rollout). Override NUM_GPUS for
-# multi-GPU colocate. CPS dynamics, 3 SDE steps from candidates 0–9, clip 1e-4.
+# Default: 2-GPU colocate on CUDA 6,7 (train FSDP DP + one sglang engine / GPU).
+# Override with CUDA_VISIBLE_DEVICES / NUM_GPUS. CPS dynamics, 3 SDE steps from
+# candidates 0–9, clip 1e-4.
 #
-# Layout mirrors other scripts/run-diffusion-grpo-*.sh recipes:
-#   train+rollout share the first NUM_GPUS in CUDA_VISIBLE_DEVICES;
-#   optional pickscore worker uses additional GPUs when configured.
+# Examples:
+#   # formal 2-GPU (default)
+#   bash scripts/run-diffusion-grpo-ltx23-sglang.sh
+#
+#   # smoke
+#   CUDA_VISIBLE_DEVICES=6,7 NUM_GPUS=2 \
+#     ROLLOUT_BATCH_SIZE=1 N_SAMPLES_PER_PROMPT=2 NUM_ROLLOUT=1 NUM_STEPS_PER_ROLLOUT=1 \
+#     bash scripts/run-diffusion-grpo-ltx23-sglang.sh
+#
+#   # single-GPU
+#   CUDA_VISIBLE_DEVICES=6 NUM_GPUS=1 bash scripts/run-diffusion-grpo-ltx23-sglang.sh
+#
+# Layout: train+rollout share the first NUM_GPUS in CUDA_VISIBLE_DEVICES;
+# optional pickscore worker uses additional GPUs when configured.
 
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-6,7}"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+
+if [[ -z "${NUM_GPUS:-}" ]]; then
+  IFS=',' read -ra _VISIBLE_GPUS <<< "${CUDA_VISIBLE_DEVICES}"
+  NUM_GPUS="${#_VISIBLE_GPUS[@]}"
+fi
+NUM_GPUS="${NUM_GPUS}"
 
 RUN_NAME="diffusion_grpo_ltx23_pickscore_$(date +%Y%m%d_%H%M%S)"
 SAVE_DIR="${ROOT_DIR}/logs/${RUN_NAME}/ckpt"
@@ -27,12 +45,18 @@ if [[ ! -f "${DATASETS_DIR}/flowgrpo_pickscore/train.jsonl" ]]; then
 fi
 
 DIFFUSION_MODEL="${DIFFUSION_MODEL:-Lightricks/LTX-2.3}"
-NUM_GPUS="${NUM_GPUS:-1}"
 ROLLOUT_BATCH_SIZE="${ROLLOUT_BATCH_SIZE:-8}"
 N_SAMPLES_PER_PROMPT="${N_SAMPLES_PER_PROMPT:-8}"
 NUM_STEPS_PER_ROLLOUT="${NUM_STEPS_PER_ROLLOUT:-2}"
 NUM_ROLLOUT="${NUM_ROLLOUT:-200}"
 SAVE_INTERVAL="${SAVE_INTERVAL:-50}"
+# One engine per GPU by default; concurrency scales with engines.
+ROLLOUT_NUM_GPUS_PER_ENGINE="${ROLLOUT_NUM_GPUS_PER_ENGINE:-1}"
+SGLANG_SERVER_CONCURRENCY="${SGLANG_SERVER_CONCURRENCY:-${NUM_GPUS}}"
+
+echo "[ltx23] CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} NUM_GPUS=${NUM_GPUS} engines=$((NUM_GPUS / ROLLOUT_NUM_GPUS_PER_ENGINE))"
+echo "[ltx23] batch=${ROLLOUT_BATCH_SIZE}x${N_SAMPLES_PER_PROMPT} rollouts=${NUM_ROLLOUT} save_interval=${SAVE_INTERVAL}"
+echo "[ltx23] run=${RUN_NAME}"
 
 WANDB_ARGS=()
 if [[ -n "${WANDB_API_KEY:-}" ]]; then
@@ -77,11 +101,11 @@ fi
   --actor-num-nodes 1 \
   --num-gpus-per-node "${NUM_GPUS}" \
   --rollout-num-gpus "${NUM_GPUS}" \
-  --rollout-num-gpus-per-engine "${ROLLOUT_NUM_GPUS_PER_ENGINE:-1}" \
+  --rollout-num-gpus-per-engine "${ROLLOUT_NUM_GPUS_PER_ENGINE}" \
   --use-miles-router \
   --rollout-health-check-interval "${ROLLOUT_HEALTH_CHECK_INTERVAL:-120}" \
   --miles-router-health-check-failure-threshold "${MILES_ROUTER_HEALTH_CHECK_FAILURE_THRESHOLD:-30}" \
-  --sglang-server-concurrency "${SGLANG_SERVER_CONCURRENCY:-1}" \
+  --sglang-server-concurrency "${SGLANG_SERVER_CONCURRENCY}" \
   --sglang-attention-backend "${SGLANG_ATTENTION_BACKEND:-torch_sdpa}" \
   "${LORA_ARGS[@]}" \
   --lr 2e-4 \
