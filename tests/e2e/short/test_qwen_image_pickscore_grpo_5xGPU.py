@@ -8,6 +8,7 @@ from tests.ci.e2e_metrics_registry import register_e2e_ci
 register_e2e_ci(
     est_time=2100,
     suite="stage-c-5-gpu-h200",
+    labels=["e2e"],
     script="scripts/run-diffusion-grpo-pickscore-5gpu-flowgrpo-aligned.sh",
     env={"NUM_ROLLOUT": "2", "DETERMINISTIC_MODE": "1"},
     metrics=[
