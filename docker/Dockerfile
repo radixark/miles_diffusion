@@ -30,7 +30,7 @@ RUN git clone https://github.com/NVIDIA/nccl-tests.git /tmp/nccl-tests && \
 # torch 2.11 + prebuilt sgl-kernel intact). Pinned SHA = reproducible rollouts.
 ARG SGLANG_DIFFUSION_REPO=https://github.com/Rockdu/sglang.git
 ARG SGLANG_DIFFUSION_BRANCH=sglang-diffusion-rollout-test
-ARG SGLANG_DIFFUSION_COMMIT=0372158dd66bc7cb0740c733bd60047db790ec7d
+ARG SGLANG_DIFFUSION_COMMIT=6ad1edeca6eff25eaee101814dc8f290e38ac710
 RUN cd /sgl-workspace/sglang && \
     (git remote add rockdu "${SGLANG_DIFFUSION_REPO}" || git remote set-url rockdu "${SGLANG_DIFFUSION_REPO}") && \
     (git fetch --depth=1 rockdu "${SGLANG_DIFFUSION_COMMIT}" || git fetch rockdu "${SGLANG_DIFFUSION_BRANCH}") && \
