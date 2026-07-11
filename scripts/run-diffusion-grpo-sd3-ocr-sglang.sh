@@ -99,8 +99,9 @@ python -u "${ROOT_DIR}/train_diffusion.py" \
   --rollout-batch-size 8 \
   --n-samples-per-prompt 16 \
   --num-rollout "${NUM_ROLLOUT}" \
-  --micro-batch-size-sample 8 \
+  --micro-batch-size-sample 16 \
   --micro-batch-size-tstep 5 \
+  --diffusion-microgroup-size 8 \
   --gradient-checkpointing \
   --actor-num-gpus-per-node 2 \
   --rollout-num-gpus 2 \
@@ -108,7 +109,7 @@ python -u "${ROOT_DIR}/train_diffusion.py" \
   --num-gpus-per-node 2 \
   --colocate \
   --use-miles-router \
-  --sglang-server-concurrency 4 \
+  --sglang-server-concurrency 8 \
   --use-lora \
   --lora-rank 32 \
   --lora-alpha 64 \
