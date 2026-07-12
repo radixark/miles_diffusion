@@ -18,6 +18,7 @@ RUN_NAME="diffusion_grpo_ocr_4gpu_rollout_sp2_$(date +%Y%m%d_%H%M%S)"
 SAVE_DIR="${ROOT_DIR}/logs/${RUN_NAME}/ckpt"
 # Per-run metric recording; registerable as CI standard (tests/ci/e2e_metrics_registry.py).
 export MILES_METRICS_JSONL="${MILES_METRICS_JSONL:-${ROOT_DIR}/logs/${RUN_NAME}/metrics.jsonl}"
+mkdir -p "$(dirname "${MILES_METRICS_JSONL}")"
 
 WANDB_ARGS=()
 if [[ -n "${WANDB_API_KEY:-}" ]]; then
