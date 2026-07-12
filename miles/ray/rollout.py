@@ -567,6 +567,11 @@ def _allocate_rollout_engine_addr_and_ports_normal(*, args, num_engines, rollout
             addr_and_ports[current_rank]["host"] = get_addr()
             addr_and_ports[current_rank]["port"] = get_port()
             addr_and_ports[current_rank]["nccl_port"] = get_port()
+            # torch-dist master port for SGL-D's multi-worker engine. Probe it
+            # here like the others: the old `nccl_port + 10000` hint is not
+            # probed at allocation time, so two jobs sharing a node race on
+            # the same offset (both allocate nccl ports from the same base).
+            addr_and_ports[current_rank]["master_port"] = get_port()
 
         if args.rollout_num_gpus_per_engine > args.num_gpus_per_node:
             num_node_per_engine = args.rollout_num_gpus_per_engine // args.num_gpus_per_node

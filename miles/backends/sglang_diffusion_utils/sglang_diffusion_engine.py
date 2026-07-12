@@ -121,7 +121,7 @@ class SGLangDiffusionEngine(RayActor):
         self.rank = rank
         self.base_gpu_id = base_gpu_id
 
-    def init(self, dist_init_addr, port, nccl_port, host=None):
+    def init(self, dist_init_addr, port, nccl_port, host=None, master_port=None):
         # `dist_init_addr` is a multi-node concept from LLM sglang; SGL-D runs
         # single-node per engine. Accept it for caller compat, then drop.
         del dist_init_addr
@@ -147,6 +147,7 @@ class SGLangDiffusionEngine(RayActor):
             host=host,
             port=port,
             nccl_port=nccl_port,
+            master_port=master_port,
         )
 
         self.node_rank = server_args_dict.get("node_rank", 0)
@@ -317,18 +318,21 @@ class SGLangDiffusionEngine(RayActor):
         self.shutdown()
 
 
-def _compute_server_args(args, host, port, nccl_port):
+def _compute_server_args(args, host, port, nccl_port, master_port=None):
     # Only set fields SGL-D's ServerArgs actually accepts. GPU pinning is done
     # in `_init_normal` via CUDA_VISIBLE_DEVICES — SGL-D has no base_gpu_id arg.
+    if master_port is None and nccl_port is not None:
+        # Fallback hint for callers that predate probed master ports. Distinct
+        # per engine so concurrent settle_port() probes don't race on the same
+        # default (30005).
+        master_port = nccl_port + 10000
     kwargs = {
         "model_path": args.diffusion_model,
         "trust_remote_code": True,
         "host": host,
         "port": port,
         "nccl_port": nccl_port,
-        # Each engine needs a distinct master_port starting hint so that
-        # concurrent settle_port() probes don't race on the same default (30005).
-        "master_port": nccl_port + 10000 if nccl_port is not None else None,
+        "master_port": master_port,
         # parallel — SGL-D spawns one scheduler worker per num_gpus, and
         # validates dp*cfg*sp*pp*tp <= num_gpus. The engine's GPU span comes
         # from the rollout allocation, so num_gpus must equal it. tp in SGL-D
