@@ -163,6 +163,8 @@ class SGLangDiffusionEngine(RayActor):
         patch_groups = []
         if getattr(self.args, "apply_sgld_monkey_patches", False):
             patch_groups.append("sgld")
+        if self.args.rollout_num_gpus_per_engine > 1:
+            patch_groups.append("rollout_sp")
         if patch_groups:
             os.environ[ROLLOUT_PATCH_GROUPS_ENV] = ",".join(patch_groups)
             logger.info("Launching sglang-d with rollout patch groups: %s", patch_groups)
@@ -189,7 +191,15 @@ class SGLangDiffusionEngine(RayActor):
             return
         visible = [x.strip() for x in cvd.split(",") if x.strip()]
         local_idx = _to_local_gpu_id(self.base_gpu_id)
-        pinned = visible[local_idx]
+        # The engine spans rollout_num_gpus_per_engine consecutive GPUs
+        # starting at base_gpu_id; SGL-D worker local_rank i takes slot i.
+        span = self.args.rollout_num_gpus_per_engine
+        if local_idx + span > len(visible):
+            raise RuntimeError(
+                f"Engine rank={self.rank} needs GPUs [{local_idx}, {local_idx + span}) "
+                f"but CUDA_VISIBLE_DEVICES={cvd} only has {len(visible)} entries"
+            )
+        pinned = ",".join(visible[local_idx : local_idx + span])
         os.environ["CUDA_VISIBLE_DEVICES"] = pinned
         logger.info(
             f"Engine rank={self.rank}: pinned CUDA_VISIBLE_DEVICES={pinned} "
@@ -319,8 +329,12 @@ def _compute_server_args(args, host, port, nccl_port):
         # Each engine needs a distinct master_port starting hint so that
         # concurrent settle_port() probes don't race on the same default (30005).
         "master_port": nccl_port + 10000 if nccl_port is not None else None,
-        # parallel — tp_size must match rollout allocation, not user CLI.
-        "tp_size": args.rollout_num_gpus_per_engine,
+        # parallel — SGL-D spawns one scheduler worker per num_gpus, and
+        # validates dp*cfg*sp*pp*tp <= num_gpus. The engine's GPU span comes
+        # from the rollout allocation, so num_gpus must equal it. tp in SGL-D
+        # is text-encoder TP (the DiT is parallelized by sp/cfg), keep it 1.
+        "num_gpus": args.rollout_num_gpus_per_engine,
+        "tp_size": 1,
         # Sequence-parallel degree (None = disabled, SGL-D decides internally).
         "sp_degree": args.sglang_sp_degree,
         # Classifier-free-guidance parallel (splits cond/uncond across GPUs).
