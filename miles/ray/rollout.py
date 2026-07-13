@@ -666,6 +666,29 @@ def _dump_sample_fingerprints(rollout_id, samples):
             return None
         return [_sha(t[i]) for i in range(t.shape[0])]
 
+    tensor_dir = os.environ.get("MILES_DUMP_SAMPLE_TENSORS_DIR")
+    if tensor_dir:
+        os.makedirs(tensor_dir, exist_ok=True)
+        for s in samples:
+            if s.index in (0, 1):
+                torch.save(
+                    {
+                        "index": s.index,
+                        "seed": s.seed,
+                        "generated_output": s.generated_output,
+                        "rollout_log_probs": s.rollout_log_probs,
+                        "traj_latents": s.dit_trajectory.latents if s.dit_trajectory else None,
+                        "traj_timesteps": s.dit_trajectory.timesteps if s.dit_trajectory else None,
+                        "model_outputs": (
+                            s.rollout_debug_tensors.rollout_model_outputs if s.rollout_debug_tensors else None
+                        ),
+                        "prev_sample_means": (
+                            s.rollout_debug_tensors.rollout_prev_sample_means if s.rollout_debug_tensors else None
+                        ),
+                    },
+                    os.path.join(tensor_dir, f"rollout{rollout_id}_sample{s.index}.pt"),
+                )
+
     with open(path, "a") as f:
         for s in samples:
             traj = s.dit_trajectory
