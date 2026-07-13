@@ -656,10 +656,20 @@ def _dump_sample_fingerprints(rollout_id, samples):
     def _sha(t):
         if t is None:
             return None
-        return hashlib.sha256(t.cpu().contiguous().numpy().tobytes()).hexdigest()[:16]
+        t = t.cpu().contiguous()
+        if t.dtype == torch.bfloat16:
+            t = t.view(torch.int16)
+        return hashlib.sha256(t.numpy().tobytes()).hexdigest()[:16]
+
+    def _step_shas(t):
+        if t is None:
+            return None
+        return [_sha(t[i]) for i in range(t.shape[0])]
 
     with open(path, "a") as f:
         for s in samples:
+            traj = s.dit_trajectory
+            dbg = s.rollout_debug_tensors
             f.write(
                 _json.dumps(
                     {
@@ -670,6 +680,8 @@ def _dump_sample_fingerprints(rollout_id, samples):
                         "reward": s.reward,
                         "out_sha": _sha(s.generated_output),
                         "logp_sha": _sha(s.rollout_log_probs),
+                        "traj_step_shas": _step_shas(traj.latents if traj else None),
+                        "model_out_step_shas": _step_shas(dbg.rollout_model_outputs if dbg else None),
                     },
                     sort_keys=True,
                 )
