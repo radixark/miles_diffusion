@@ -41,7 +41,7 @@ def sde_window(
         raise ValueError(f"--diffusion-sde-window-size {window_size} does not fit in window range [{lo},{hi})")
     rng = np.random.default_rng(seed)
     start = int(rng.integers(lo, hi - window_size + 1))
-    indices = list(range(start, start + window_size))
+    indices = [start + i for i in range(1, window_size + 1)]
     return indices, None
 
 
