@@ -1,6 +1,6 @@
 """Multi-GPU SP init smoke test: NCCL group members must match the sp_mesh layout.
 
-Usage: torchrun --standalone --nproc_per_node=N tests/sp/sp_init_smoke.py --sp S [--ulysses U --ring R]
+Usage: torchrun --standalone --nproc_per_node=N tests/sp/sp_init_smoke.py --sp S [--ulysses U]
 """
 
 import argparse
@@ -25,7 +25,6 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--sp", type=int, default=2)
     p.add_argument("--ulysses", type=int, default=0)
-    p.add_argument("--ring", type=int, default=0)
     cli = p.parse_args()
 
     dist.init_process_group("nccl")
@@ -36,11 +35,10 @@ def main():
     args = argparse.Namespace(
         sequence_parallel_size=cli.sp,
         ulysses_degree=cli.ulysses,
-        ring_degree=cli.ring,
     )
     ps = create_fsdp_parallel_state(args)
 
-    dp_size, sp_size, sp_groups, ulysses_groups, ring_groups = sp_subgroups(world, cli.sp, cli.ulysses, cli.ring)
+    dp_size, sp_size, sp_groups, ulysses_groups, ring_groups = sp_subgroups(world, cli.sp, cli.ulysses)
     assert ps.sp_size == sp_size and ps.dp_size == dp_size
     assert dist.get_world_size(ps.sp_group) == sp_size
     assert dist.get_world_size(ps.dp_group) == dp_size

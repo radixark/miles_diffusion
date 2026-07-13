@@ -24,9 +24,9 @@ def create_fsdp_parallel_state(args: Namespace) -> ParallelState:
     rank = dist.get_rank()
 
     sp_size, ulysses_degree, ring_degree = validate_sp_config(
-        world_size, args.sequence_parallel_size, args.ulysses_degree, getattr(args, "ring_degree", 0)
+        world_size, args.sequence_parallel_size, args.ulysses_degree
     )
-    dp_rank, sp_rank, _, _ = locate_rank(rank, sp_size, ulysses_degree, ring_degree)
+    dp_rank, sp_rank, _, _ = locate_rank(rank, sp_size, ulysses_degree)
     dp_size = world_size // sp_size
 
     mesh = init_device_mesh("cuda", mesh_shape=(dp_size, sp_size), mesh_dim_names=("dp", "sp"))
@@ -41,7 +41,7 @@ def create_fsdp_parallel_state(args: Namespace) -> ParallelState:
     # Degree-1 dimensions stay None (usp_attention treats None as local).
     ulysses_group = ring_group = None
     if sp_size > 1:
-        _, _, _, ulysses_groups, ring_groups = sp_subgroups(world_size, sp_size, ulysses_degree, ring_degree)
+        _, _, _, ulysses_groups, ring_groups = sp_subgroups(world_size, sp_size, ulysses_degree)
         if ulysses_degree > 1:
             for ranks in ulysses_groups:
                 group = dist.new_group(ranks)

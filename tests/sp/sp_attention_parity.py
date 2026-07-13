@@ -6,7 +6,7 @@ Checks forward output, input grad, and per-block self-attn + proj_out weight
 grads, with and without gradient checkpointing.
 
 Usage: torchrun --standalone --nproc_per_node=N tests/sp/sp_attention_parity.py \
-    --sp S [--ulysses U --ring R] [--ckpt] [--fp32]
+    --sp S [--ulysses U] [--ckpt] [--fp32]
 """
 
 import argparse
@@ -86,7 +86,6 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--sp", type=int, default=4)
     p.add_argument("--ulysses", type=int, default=0)
-    p.add_argument("--ring", type=int, default=0)
     p.add_argument("--ckpt", action="store_true")
     p.add_argument("--fp32", action="store_true", help="fp32 + SDPA, isolates bf16 summation rounding")
     cli = p.parse_args()
@@ -103,7 +102,6 @@ def main():
     args = argparse.Namespace(
         sequence_parallel_size=cli.sp,
         ulysses_degree=cli.ulysses,
-        ring_degree=cli.ring,
     )
     ps = create_fsdp_parallel_state(args)
 

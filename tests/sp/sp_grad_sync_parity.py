@@ -10,7 +10,7 @@ Inputs are broadcast to all ranks, so the reference gradient is topology-free.
 Also asserts model outputs are bitwise identical across sp ranks.
 
 Usage: torchrun --standalone --nproc_per_node=4 tests/sp/sp_grad_sync_parity.py \
-    [--sp S --ulysses U --ring R] [--shard-mode dp|dp_sp] [--fp32]
+    [--sp S --ulysses U] [--shard-mode dp|dp_sp] [--fp32]
 """
 
 import argparse
@@ -63,7 +63,6 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--sp", type=int, default=4)
     p.add_argument("--ulysses", type=int, default=0)
-    p.add_argument("--ring", type=int, default=0)
     p.add_argument("--shard-mode", choices=("dp", "dp_sp"), default="dp_sp")
     p.add_argument("--lora", action="store_true", help="train LoRA params only, like the RL recipe")
     p.add_argument("--distinct-dp", action="store_true", help="different data per dp rank, like real RL")
@@ -83,7 +82,6 @@ def main():
     args = argparse.Namespace(
         sequence_parallel_size=cli.sp,
         ulysses_degree=cli.ulysses,
-        ring_degree=cli.ring,
     )
     ps = create_fsdp_parallel_state(args)
     # dp anchor: shard over the dp submesh (sp-replicated params) + slice-backward gather.

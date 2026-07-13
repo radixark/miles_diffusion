@@ -8,7 +8,7 @@ the same function the online verify uses. Also asserts shape/dtype sensitivity.
 Usage:
     torchrun --standalone --nproc_per_node=4 tests/sp/sp_weight_sync_parity.py --sp 2 --ulysses 2
     torchrun --standalone --nproc_per_node=4 tests/sp/sp_weight_sync_parity.py --sp 4 --ulysses 4
-    torchrun --standalone --nproc_per_node=4 tests/sp/sp_weight_sync_parity.py --sp 4 --ulysses 2 --ring 2
+    torchrun --standalone --nproc_per_node=4 tests/sp/sp_weight_sync_parity.py --sp 4 --ulysses 2
 """
 
 import argparse
@@ -63,7 +63,6 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--sp", type=int, default=2)
     p.add_argument("--ulysses", type=int, default=2)
-    p.add_argument("--ring", type=int, default=0)
     p.add_argument("--shard-mode", choices=("dp", "dp_sp"), default="dp_sp")
     cli = p.parse_args()
 
@@ -77,7 +76,6 @@ def main():
     args = argparse.Namespace(
         sequence_parallel_size=cli.sp,
         ulysses_degree=cli.ulysses,
-        ring_degree=cli.ring,
     )
     ps = create_fsdp_parallel_state(args)
     # dp anchor: shard over the dp submesh (sp-replicated params).

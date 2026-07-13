@@ -5,7 +5,7 @@ path is registered nondeterministic). Runs forward+backward twice on identical
 inputs and compares every grad bitwise. --no-det runs without the flag as a
 control.
 
-torchrun --standalone --nproc_per_node=2 tests/sp/sp_determinism_smoke.py --ulysses 1 --ring 2 [--no-det]
+torchrun --standalone --nproc_per_node=2 tests/sp/sp_determinism_smoke.py --sp 2 --ulysses 1 [--no-det]
 """
 
 import argparse
@@ -28,7 +28,6 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--sp", type=int, default=2)
     p.add_argument("--ulysses", type=int, default=1)
-    p.add_argument("--ring", type=int, default=2)
     p.add_argument("--no-det", action="store_true")
     cli = p.parse_args()
 
@@ -47,7 +46,6 @@ def main():
     args = argparse.Namespace(
         sequence_parallel_size=cli.sp,
         ulysses_degree=cli.ulysses,
-        ring_degree=cli.ring,
     )
     ps = create_fsdp_parallel_state(args)
 
@@ -95,7 +93,7 @@ def main():
     if rank == 0:
         mode = "no-det(control)" if cli.no_det else "deterministic"
         print(
-            f"[DET-PROBE] mode={mode} u{cli.ulysses}r{cli.ring} forward_bitwise={out_eq} grad_mismatches={len(diffs)}"
+            f"[DET-PROBE] mode={mode} u{ps.ulysses_degree}r{ps.ring_degree} forward_bitwise={out_eq} grad_mismatches={len(diffs)}"
         )
         for n in diffs[:8]:
             d = (g1[n].float() - g2[n].float()).abs().max().item()
