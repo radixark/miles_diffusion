@@ -25,7 +25,7 @@ import torch
 import torch.distributed as dist
 from diffusers import DiffusionPipeline
 
-from .sp_attention import SequenceParallelPlan
+from .sp_plan import SequenceParallelPlan
 
 logger = logging.getLogger(__name__)
 

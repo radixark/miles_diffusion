@@ -35,7 +35,7 @@ from .diffusion_update_weight_utils import (
 )
 from .lr_scheduler import get_lr_scheduler
 from .parallel import create_fsdp_parallel_state
-from .sp_attention import apply_sequence_parallel
+from .sp_plan import apply_sequence_parallel
 
 logger = logging.getLogger(__name__)
 
