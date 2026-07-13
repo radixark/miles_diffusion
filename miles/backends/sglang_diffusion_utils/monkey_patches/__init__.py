@@ -10,7 +10,8 @@ those groups before model construction.
   from these generic classes.
 - ``rollout_sp``: multi-GPU engine support (rollout_num_gpus_per_engine > 1,
   e.g. sequence-parallel rollout). Routes weight-sync CUDA-IPC payloads by
-  engine world rank instead of tp rank.
+  engine world rank instead of tp rank, and forces the replicated VAE decode
+  path so images stay bitwise equal to 1-GPU engines.
 
 Patch modules are imported inside ``apply_*`` only, so CPU-only Ray actors
 can import this package without pulling sglang triton kernels. Adding a
@@ -59,9 +60,13 @@ def apply_sgld_monkey_patches() -> None:
 
 @register_rollout_patch_group("rollout_sp")
 def apply_rollout_sp_monkey_patches() -> None:
-    from miles.backends.sglang_diffusion_utils.monkey_patches import patch_rank_scoped_payload
+    from miles.backends.sglang_diffusion_utils.monkey_patches import (
+        patch_rank_scoped_payload,
+        patch_vae_parallel_tiling,
+    )
 
     patch_rank_scoped_payload.apply()
+    patch_vae_parallel_tiling.apply()
 
 
 def apply_env_selected_rollout_patches() -> None:
