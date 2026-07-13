@@ -6,8 +6,10 @@ the sglang scheduler grandchild (spawn: fresh imports) re-reads it and applies
 those groups before model construction.
 
 - ``sgld``: diffusers / SD3 op parity (RMSNorm, LayerNormScaleShift, MulAdd,
-  USPAttention, ...). Op-layer patches: they apply to every sgl-d DiT built
-  from these generic classes.
+  ...). Op-layer patches: they apply to every sgl-d DiT built from these
+  generic classes. Attention is NOT patched: overriding USPAttention.forward
+  breaks bitwise SP-invariance (kernel choice depends on head/batch shape) —
+  align the attention kernel via the attention-backend selection instead.
 - ``rollout_sp``: multi-GPU engine support (rollout_num_gpus_per_engine > 1,
   e.g. sequence-parallel rollout). Routes weight-sync CUDA-IPC payloads by
   engine world rank instead of tp rank, and forces the replicated VAE decode
