@@ -49,14 +49,12 @@ def apply_sgld_monkey_patches() -> None:
         patch_qk_norm_rope,
         patch_rmsnorm,
         patch_scale_residual_layernorm,
-        patch_usp_attention,
     )
 
     patch_rmsnorm.apply()
     patch_layernorm_scale_shift.apply()
     patch_scale_residual_layernorm.apply()
     patch_mul_add.apply()
-    patch_usp_attention.apply()
     patch_qk_norm_rope.apply()
 
 
