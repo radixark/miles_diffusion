@@ -265,26 +265,22 @@ class LTXModelBackend(ModelBackend):
         set_attention_module_op(attention=AttentionFunction[name], masked_attention=masked).mutator(model)
 
 
+# to validate and fail earlier if there's invalid condition
 def validate_sp_support(args, cfg_cls) -> None:
     """Driver-side, before any actor launches: reject launches whose SP config
-    cannot work, without loading weights."""
-    from miles.utils.misc import load_function
+    cannot work, without loading weights.
 
-    from .configs.train_pipeline_config import TrainPipelineConfig
+    Models that lack a _cp_plan or don't route attention through diffusers'
+    dispatch fail later (plan construction / attention install) with a clear
+    message — checking those here would require loading the model class.
+    """
+    from miles.utils.misc import load_function
 
     if args.fsdp_attention_backend is not None:
         raise ValueError(
             "--fsdp-attention-backend has no effect with sequence parallelism: "
-            "the SP attention installer replaces every attention processor"
+            "USP owns the self-attention kernel choice"
         )
     backend_cls = load_function(args.model_backend_path)
     if backend_cls.sequence_parallel_plan is ModelBackend.sequence_parallel_plan:
         raise ValueError(f"{backend_cls.__name__} does not support sequence parallelism")
-    if (
-        backend_cls.sequence_parallel_plan is DiffusersModelBackend.sequence_parallel_plan
-        and cfg_cls.apply_sp_attention is TrainPipelineConfig.apply_sp_attention
-    ):
-        raise ValueError(
-            f"{cfg_cls.__name__} does not implement apply_sp_attention; "
-            "sequence parallelism is unavailable for this model family"
-        )

@@ -6,14 +6,16 @@ through a ``SequenceParallelPlan``; model outputs stay full-sequence, so every
 parameter sees a partial gradient and loss/log_prob code is untouched.
 """
 
+import functools
 import inspect
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 
 import torch
 from diffusers.models._modeling_parallel import ContextParallelOutput
 
-from .sp_ops import gather_sequence, shard_sequence
+from .sp_ops import gather_sequence, shard_sequence, usp_attention
 
 
 @dataclass(frozen=True)
@@ -115,6 +117,67 @@ def _install_boundary_hooks(transformer, boundaries, parallel_state, sum_grad=Tr
                 return out[0] if single else tuple(out)
 
             module.register_forward_hook(split_outputs, with_kwargs=True)
+
+
+class _USPDispatchConfig:
+    """Marker consumed by the wrapped dispatch_attention_fn; models pass it
+    through ``_parallel_config`` for self-attention call sites only."""
+
+    def __init__(self, parallel_state):
+        self.ulysses_group = parallel_state.ulysses_group
+        self.ring_group = parallel_state.ring_group
+
+
+def _wrap_dispatch(module):
+    original = module.dispatch_attention_fn
+    if getattr(original, "_miles_usp_wrapped", False):
+        return
+
+    @functools.wraps(original)
+    def dispatch(query, key, value, *args, parallel_config=None, **kwargs):
+        if not isinstance(parallel_config, _USPDispatchConfig):
+            return original(query, key, value, *args, parallel_config=parallel_config, **kwargs)
+        attn_mask = args[0] if args else kwargs.get("attn_mask")
+        if attn_mask is not None:
+            raise ValueError("USP self-attention does not support attention masks")
+        if (len(args) > 1 and args[1]) or kwargs.get("dropout_p"):
+            raise ValueError("USP self-attention requires dropout_p=0 (per-rank RNG streams diverge)")
+        if (len(args) > 2 and args[2]) or kwargs.get("is_causal"):
+            raise ValueError("USP self-attention does not support is_causal yet")
+        if (len(args) > 3 and args[3] is not None) or kwargs.get("scale") is not None:
+            raise ValueError("USP self-attention uses the default 1/sqrt(d) scale")
+        return usp_attention(query, key, value, parallel_config.ulysses_group, parallel_config.ring_group)
+
+    dispatch._miles_usp_wrapped = True
+    module.dispatch_attention_fn = dispatch
+
+
+def apply_dispatch_sp_attention(transformer, parallel_state):
+    """Default SP attention: intercept the model module's dispatch_attention_fn
+    so self-attention call sites (which pass ``_parallel_config`` per upstream
+    convention) route through usp_attention; the model's own processors and
+    cross-attention stay untouched."""
+    base = transformer.get_base_model() if hasattr(transformer, "get_base_model") else transformer
+    # fully_shard swizzles the class (FSDP<Name>, defined in torch's fsdp
+    # module); the modeling module that imported dispatch_attention_fn is
+    # found through the MRO.
+    module = next(
+        (
+            mod
+            for cls in type(base).__mro__
+            if (mod := sys.modules.get(cls.__module__)) is not None and hasattr(mod, "dispatch_attention_fn")
+        ),
+        None,
+    )
+    if module is None:
+        raise ValueError(
+            f"{type(base).__name__} does not route attention through diffusers' "
+            "dispatch_attention_fn; the family must override apply_sp_attention"
+        )
+    _wrap_dispatch(module)
+    config = _USPDispatchConfig(parallel_state)
+    for processor in base.attn_processors.values():
+        processor._parallel_config = config
 
 
 def apply_sequence_parallel(transformer, parallel_state, plan, sum_grad=True):
