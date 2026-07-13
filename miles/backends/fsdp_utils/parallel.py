@@ -15,16 +15,16 @@ logger = logging.getLogger(__name__)
 def create_fsdp_parallel_state(args: Namespace) -> ParallelState:
     """ParallelState for FSDP + optional sequence parallelism.
 
-    SP gets its own process groups. fsdp_shard_mode picks the parameter
-    placement: "dp_sp" shards over the flattened dp x sp mesh; "dp" shards
-    over dp only, replicating parameters across sp ranks. Data dispatch is
-    by dp_rank in both modes.
+    SP gets its own process groups. FSDP shards parameters over every mesh
+    axis (dp x sp flattened) — should a replicate axis (HSDP) ever be added,
+    flatten only the shard axes, not the whole world. Data dispatch is by
+    dp_rank; sp peers share samples.
     """
     world_size = dist.get_world_size()
     rank = dist.get_rank()
 
     sp_size, ulysses_degree, ring_degree = validate_sp_config(
-        world_size, args.sequence_parallel_size, args.ulysses_degree, args.ring_degree
+        world_size, args.sequence_parallel_size, args.ulysses_degree, getattr(args, "ring_degree", 0)
     )
     dp_rank, sp_rank, _, _ = locate_rank(rank, sp_size, ulysses_degree, ring_degree)
     dp_size = world_size // sp_size
@@ -76,11 +76,8 @@ def create_fsdp_parallel_state(args: Namespace) -> ParallelState:
         ulysses_group=ulysses_group,
         ring_group=ring_group,
     )
-    if args.fsdp_shard_mode not in ("dp", "dp_sp"):
-        raise ValueError(f"unknown fsdp_shard_mode: {args.fsdp_shard_mode}")
     parallel_state.dp_mesh = mesh["dp"]
-    parallel_state.fsdp_shard_mode = args.fsdp_shard_mode
-    if sp_size > 1 and args.fsdp_shard_mode == "dp_sp":
+    if sp_size > 1:
         parallel_state.fsdp_mesh = mesh[("dp", "sp")]._flatten("dp_sp")
     else:
         parallel_state.fsdp_mesh = mesh["dp"]

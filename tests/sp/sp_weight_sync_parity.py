@@ -78,9 +78,10 @@ def main():
         sequence_parallel_size=cli.sp,
         ulysses_degree=cli.ulysses,
         ring_degree=cli.ring,
-        fsdp_shard_mode=cli.shard_mode,
     )
     ps = create_fsdp_parallel_state(args)
+    # dp anchor: shard over the dp submesh (sp-replicated params).
+    fsdp_mesh = ps.dp_mesh if cli.shard_mode == "dp" else ps.fsdp_mesh
 
     ref_model = build_model(device)
     ref_sum = compute_weights_checksum(
@@ -89,8 +90,8 @@ def main():
 
     model = build_model(device)
     for blk in model.blocks:
-        fully_shard(blk, mesh=ps.fsdp_mesh)
-    fully_shard(model, mesh=ps.fsdp_mesh)
+        fully_shard(blk, mesh=fsdp_mesh)
+    fully_shard(model, mesh=fsdp_mesh)
 
     my_sum = compute_weights_checksum(full_state_pairs(model))
 

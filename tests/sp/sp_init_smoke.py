@@ -26,7 +26,6 @@ def main():
     p.add_argument("--sp", type=int, default=2)
     p.add_argument("--ulysses", type=int, default=0)
     p.add_argument("--ring", type=int, default=0)
-    p.add_argument("--shard-mode", choices=("dp", "dp_sp"), default="dp_sp")
     cli = p.parse_args()
 
     dist.init_process_group("nccl")
@@ -38,7 +37,6 @@ def main():
         sequence_parallel_size=cli.sp,
         ulysses_degree=cli.ulysses,
         ring_degree=cli.ring,
-        fsdp_shard_mode=cli.shard_mode,
     )
     ps = create_fsdp_parallel_state(args)
 
@@ -46,8 +44,8 @@ def main():
     assert ps.sp_size == sp_size and ps.dp_size == dp_size
     assert dist.get_world_size(ps.sp_group) == sp_size
     assert dist.get_world_size(ps.dp_group) == dp_size
-    expected_fsdp = world if (cli.shard_mode == "dp_sp" and sp_size > 1) else dp_size
-    assert ps.fsdp_mesh.size() == expected_fsdp, f"fsdp mesh {ps.fsdp_mesh.size()} != {expected_fsdp}"
+    assert ps.fsdp_mesh.size() == world, f"fsdp mesh {ps.fsdp_mesh.size()} != world {world}"
+    assert ps.dp_mesh.size() == dp_size, f"dp mesh {ps.dp_mesh.size()} != dp {dp_size}"
 
     my_sp = next(g for g in sp_groups if rank in g)
     assert _members(ps.sp_group) == my_sp, f"rank{rank} sp_group {_members(ps.sp_group)} != {my_sp}"
@@ -66,7 +64,7 @@ def main():
     if rank == 0:
         print(
             f"[SP-INIT-SMOKE OK] world={world} dp={dp_size} sp={sp_size} "
-            f"ulysses={ps.ulysses_degree} ring={ps.ring_degree} fsdp_mesh={ps.fsdp_mesh.size()}({cli.shard_mode})"
+            f"ulysses={ps.ulysses_degree} ring={ps.ring_degree} fsdp_mesh={ps.fsdp_mesh.size()}"
         )
     dist.destroy_process_group()
 

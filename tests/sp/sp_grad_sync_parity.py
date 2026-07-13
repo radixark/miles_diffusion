@@ -1,9 +1,11 @@
 """SP gradient parity under real FSDP2: full grads must match a single-process
-full-sequence reference, for both shard modes.
+full-sequence reference, for both parameter placements.
 
-dp mode: FSDP reduce-scatter over dp, then an explicit cross-sp all-reduce(SUM).
-dp_sp mode: FSDP shards over the flattened dp x sp mesh; the sequence gather's
-sum_grad backward makes FSDP's own reduce restore full grads with no extra sync.
+dp_sp (production): FSDP shards over the flattened dp x sp mesh; the sequence
+gather's sum_grad backward makes FSDP's own reduce restore full grads.
+dp (validation anchor, test-only): params shard over dp only (replicated
+across sp), slice-backward gather, explicit cross-sp grad all-reduce here in
+the test — the obvious mechanism cross-checking the subtle one.
 Inputs are broadcast to all ranks, so the reference gradient is topology-free.
 Also asserts model outputs are bitwise identical across sp ranks.
 
@@ -82,9 +84,11 @@ def main():
         sequence_parallel_size=cli.sp,
         ulysses_degree=cli.ulysses,
         ring_degree=cli.ring,
-        fsdp_shard_mode=cli.shard_mode,
     )
     ps = create_fsdp_parallel_state(args)
+    # dp anchor: shard over the dp submesh (sp-replicated params) + slice-backward gather.
+    fsdp_mesh = ps.dp_mesh if cli.shard_mode == "dp" else ps.fsdp_mesh
+    sum_grad = cli.shard_mode == "dp_sp"
     # One dataset per (microbatch, dp group); seeds are rank-independent so the
     # reference can rebuild every dataset locally.
     datasets = []
@@ -118,10 +122,10 @@ def main():
     mp_policy = MixedPrecisionPolicy(param_dtype=DTYPE, reduce_dtype=torch.float32)
     model = maybe_lora(build_model(device))
     for blk in model.blocks:
-        fully_shard(blk, mesh=ps.fsdp_mesh, mp_policy=mp_policy)
-    fully_shard(model, mesh=ps.fsdp_mesh, mp_policy=mp_policy)
+        fully_shard(blk, mesh=fsdp_mesh, mp_policy=mp_policy)
+    fully_shard(model, mesh=fsdp_mesh, mp_policy=mp_policy)
     plan = DiffusersModelBackend(Wan2_2TrainPipelineConfig()).sequence_parallel_plan(model)
-    apply_sequence_parallel(model, ps, plan)
+    apply_sequence_parallel(model, ps, plan, sum_grad=sum_grad)
 
     for i, mbsets in enumerate(datasets):
         hidden, enc, ts, out_grad = mbsets[ps.dp_rank]
@@ -137,7 +141,7 @@ def main():
         out.backward(out_grad)
 
     if cli.shard_mode == "dp":
-        # Mirror actor._all_reduce_sp_grads; in dp_sp mode FSDP's own
+        # The anchor's explicit cross-sp grad sum; in dp_sp mode FSDP's own
         # reduce-scatter already restores full grads (sum_grad gather).
         for p in model.parameters():
             if p.grad is None:

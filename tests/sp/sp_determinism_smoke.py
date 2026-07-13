@@ -48,7 +48,6 @@ def main():
         sequence_parallel_size=cli.sp,
         ulysses_degree=cli.ulysses,
         ring_degree=cli.ring,
-        fsdp_shard_mode="dp",
     )
     ps = create_fsdp_parallel_state(args)
 

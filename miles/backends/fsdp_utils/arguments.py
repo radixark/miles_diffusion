@@ -59,12 +59,7 @@ class FSDPArgs:
 
     # Sequence Parallelism (USP = Ulysses x Ring)
     sequence_parallel_size: int = 1
-    ulysses_degree: int = 0  # 0=auto: ulysses fills sp, ring=1
-    ring_degree: int = 0  # 0=auto: sp // ulysses
-    # "dp_sp": FSDP shards parameters over dp x sp (grads sp-summed inside the
-    # sequence gather's backward). "dp": shard over dp only, parameters
-    # replicated across sp, grads synced by an explicit cross-sp all-reduce.
-    fsdp_shard_mode: str = "dp_sp"
+    ulysses_degree: int = 0  # 0=auto: ulysses fills sp; ring = sp // ulysses
 
     # YAML bookkeeping
     config: str | None = None

@@ -49,12 +49,14 @@ def _resolve_submodule(root, path):
     return module
 
 
-def _install_boundary_hooks(transformer, boundaries, parallel_state):
+def _install_boundary_hooks(transformer, boundaries, parallel_state, sum_grad=True):
     """Install shard/gather hooks from the plan's boundary specs.
 
     ContextParallelInput entries split module inputs (or outputs when
     split_output=True); ContextParallelOutput entries gather module outputs.
-    The gather is a differentiable all-gather, so backward stays partial-grad.
+    The gather is a differentiable all-gather; its sum_grad backward pairs
+    with FSDP's 1/(dp*sp) mean (sum_grad=False is the sp-replicated-parameter
+    variant, used by tests as a validation anchor).
     """
     for path, spec in boundaries.items():
         module = _resolve_submodule(transformer, path) if path else transformer
@@ -69,7 +71,7 @@ def _install_boundary_hooks(transformer, boundaries, parallel_state):
                     parallel_state.sp_rank,
                     parallel_state.sp_size,
                     dim=_spec.gather_dim,
-                    sum_grad=parallel_state.fsdp_shard_mode == "dp_sp",
+                    sum_grad=sum_grad,
                 )
 
             module.register_forward_hook(gather_output)
@@ -115,7 +117,7 @@ def _install_boundary_hooks(transformer, boundaries, parallel_state):
             module.register_forward_hook(split_outputs, with_kwargs=True)
 
 
-def apply_sequence_parallel(transformer, parallel_state, plan):
+def apply_sequence_parallel(transformer, parallel_state, plan, sum_grad=True):
     """Wire SP into one transformer per its plan: install the family's SP
     self-attention and the shard/gather boundary hooks. Call once per
     transformer after FSDP wrapping."""
@@ -125,4 +127,4 @@ def apply_sequence_parallel(transformer, parallel_state, plan):
             f"ulysses_degree({parallel_state.ulysses_degree})"
         )
     plan.attention(transformer, parallel_state)
-    _install_boundary_hooks(transformer, plan.boundaries, parallel_state)
+    _install_boundary_hooks(transformer, plan.boundaries, parallel_state, sum_grad=sum_grad)

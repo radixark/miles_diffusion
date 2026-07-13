@@ -104,8 +104,6 @@ def main():
         sequence_parallel_size=cli.sp,
         ulysses_degree=cli.ulysses,
         ring_degree=cli.ring,
-        # operator-level parity uses plain slice-backward gather semantics
-        fsdp_shard_mode="dp",
     )
     ps = create_fsdp_parallel_state(args)
 
@@ -122,7 +120,8 @@ def main():
     model.zero_grad(set_to_none=True)
 
     plan = DiffusersModelBackend(Wan2_2TrainPipelineConfig()).sequence_parallel_plan(model)
-    apply_sequence_parallel(model, ps, plan)
+    # operator-level parity uses plain slice-backward gather semantics
+    apply_sequence_parallel(model, ps, plan, sum_grad=False)
     out_sp, gin_sp = _run(model, hidden, enc, ts, out_grad, cli.ckpt)
 
     # Each rank backprops only its 1/sp of the tokens; sum across sp restores full grads.

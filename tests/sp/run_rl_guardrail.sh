@@ -31,8 +31,6 @@ export PICKSCORE_NUM_GPUS_PER_WORKER=0
 PYTHON_BIN="${PYTHON_BIN:-python}"
 SP_SIZE="${SP_SIZE:-1}"
 ULYSSES_DEGREE="${ULYSSES_DEGREE:-0}"
-RING_DEGREE="${RING_DEGREE:-0}"
-FSDP_SHARD_MODE="${FSDP_SHARD_MODE:-dp_sp}"
 NUM_ROLLOUT="${NUM_ROLLOUT:-2}"
 NUM_FRAMES="${NUM_FRAMES:-5}"
 GRAD_CKPT="${GRAD_CKPT:-0}"
@@ -71,8 +69,6 @@ WAN_LORA_TARGET_MODULES=(
   --actor-num-gpus-per-node 4 \
   --sequence-parallel-size "${SP_SIZE}" \
   --ulysses-degree "${ULYSSES_DEGREE}" \
-  --ring-degree "${RING_DEGREE}" \
-  --fsdp-shard-mode "${FSDP_SHARD_MODE}" \
   --rollout-num-gpus 4 \
   --rollout-num-gpus-per-engine 1 \
   --num-gpus-per-node 4 \

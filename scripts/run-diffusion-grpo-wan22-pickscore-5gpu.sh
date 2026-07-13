@@ -49,11 +49,9 @@ fi
 PYTHON_BIN="${PYTHON_BIN:-python}"
 
 # Sequence parallelism (USP). Default off; sp = ulysses x ring must divide the
-# train world size. 0 = auto (ulysses fills sp).
+# train world size. 0 = auto (ulysses fills sp); ring = sp / ulysses.
 SP_SIZE="${SP_SIZE:-1}"
 ULYSSES_DEGREE="${ULYSSES_DEGREE:-0}"
-RING_DEGREE="${RING_DEGREE:-0}"
-FSDP_SHARD_MODE="${FSDP_SHARD_MODE:-dp_sp}"
 
 DATASETS_DIR="/root/datasets/miles-diffusion-datasets"
 if [[ ! -f "${DATASETS_DIR}/flowgrpo_pickscore/train.jsonl" ]]; then
@@ -85,8 +83,6 @@ WAN_LORA_TARGET_MODULES=(
   --actor-num-gpus-per-node 4 \
   --sequence-parallel-size "${SP_SIZE}" \
   --ulysses-degree "${ULYSSES_DEGREE}" \
-  --ring-degree "${RING_DEGREE}" \
-  --fsdp-shard-mode "${FSDP_SHARD_MODE}" \
   --rollout-num-gpus 4 \
   --rollout-num-gpus-per-engine 1 \
   --num-gpus-per-node 5 \

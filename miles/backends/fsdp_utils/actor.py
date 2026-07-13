@@ -447,8 +447,6 @@ class FSDPTrainRayActor(TrainRayActor):
                 self.prof.step(rollout_id=rollout_id)
                 if not self.args.debug_skip_optimizer_step:
                     self.scaler.unscale_(self.optimizer)
-                    if self.parallel_state.sp_size > 1 and self.parallel_state.fsdp_shard_mode == "dp":
-                        self._all_reduce_sp_grads()
                     grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip_grad)
                     if isinstance(grad_norm, DTensor):
                         # clip returns a lazily-reduced partial norm; materialize it,
@@ -465,21 +463,6 @@ class FSDPTrainRayActor(TrainRayActor):
                 # Do mean over all ranks for now, may need to be updated for p99, max, etc.
                 reduced = {f"train/{k}": torch.stack(v).mean().item() for k, v in log_stats.items()}
                 self._gather_and_log_metrics(rollout_id, reduced, step=self.global_step)
-
-    def _all_reduce_sp_grads(self) -> None:
-        """Each sp rank sees 1/sp of the tokens, so its grads are partial; all-reduce(SUM)
-        across the sp group restores the full gradient. Runs on FSDP-sharded grads, in fp32."""
-        group = self.parallel_state.sp_group
-        for p in self.model.parameters():
-            if p.grad is None:
-                continue
-            local = p.grad.to_local() if isinstance(p.grad, DTensor) else p.grad
-            if local.dtype == torch.float32:
-                dist.all_reduce(local, group=group)
-            else:
-                f = local.float()
-                dist.all_reduce(f, group=group)
-                local.copy_(f)
 
     def _maybe_legacy_window_pad_len(self, train_pairs: list, microbatch_ranges: list) -> int | None:
         """LEGACY 2D parity: the whole-window max cond seq_len (like the legacy tile path), or
