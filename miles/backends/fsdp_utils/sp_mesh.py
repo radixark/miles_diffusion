@@ -27,7 +27,10 @@ def validate_sp_config(world_size, sequence_parallel_size, ulysses_degree=0):
 
 
 def sp_subgroups(world_size, sequence_parallel_size, ulysses_degree=0):
-    """Return (dp_size, sp_size, sp_groups, ulysses_groups, ring_groups); groups are global-rank lists."""
+    """Return (dp_size, sp_size, sp_groups, ulysses_groups, ring_groups); groups are global-rank lists.
+
+    Inverse of locate_rank: coordinates -> full member list per group.
+    """
     sp, u, r = resolve_sp_degrees(sequence_parallel_size, ulysses_degree)
     dp_size = world_size // sp
     sp_groups = [list(range(d * sp, (d + 1) * sp)) for d in range(dp_size)]
@@ -37,7 +40,10 @@ def sp_subgroups(world_size, sequence_parallel_size, ulysses_degree=0):
 
 
 def locate_rank(rank, sequence_parallel_size, ulysses_degree=0):
-    """Locate a global rank's (dp_rank, sp_rank, ulysses_rank, ring_rank)."""
+    """Locate a global rank's (dp_rank, sp_rank, ulysses_rank, ring_rank).
+
+    Inverse of sp_subgroups: global rank -> its index on each axis.
+    """
     sp, u, _ = resolve_sp_degrees(sequence_parallel_size, ulysses_degree)
     dp_rank, sp_rank = divmod(rank, sp)
     ring_rank, ulysses_rank = divmod(sp_rank, u)
