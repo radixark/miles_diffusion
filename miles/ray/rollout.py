@@ -641,7 +641,44 @@ def _log_eval_rollout_data(rollout_id, args, data, extra_metrics: dict[str, Any]
     return log_dict
 
 
+def _dump_sample_fingerprints(rollout_id, samples):
+    """Debug aid (MILES_DUMP_SAMPLE_FINGERPRINTS=<path>): per-sample reward +
+    output/log-prob hashes, for bitwise run-vs-run comparison (e.g. rollout
+    SP on/off). jsonl, one line per sample per rollout."""
+    import os
+
+    path = os.environ.get("MILES_DUMP_SAMPLE_FINGERPRINTS")
+    if not path:
+        return
+    import hashlib
+    import json as _json
+
+    def _sha(t):
+        if t is None:
+            return None
+        return hashlib.sha256(t.cpu().contiguous().numpy().tobytes()).hexdigest()[:16]
+
+    with open(path, "a") as f:
+        for s in samples:
+            f.write(
+                _json.dumps(
+                    {
+                        "rollout_id": rollout_id,
+                        "group_index": s.group_index,
+                        "index": s.index,
+                        "seed": s.seed,
+                        "reward": s.reward,
+                        "out_sha": _sha(s.generated_output),
+                        "logp_sha": _sha(s.rollout_log_probs),
+                    },
+                    sort_keys=True,
+                )
+                + "\n"
+            )
+
+
 def _log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_time):
+    _dump_sample_fingerprints(rollout_id, samples)
     if args.custom_rollout_log_function_path is not None:
         custom_log_func = load_function(args.custom_rollout_log_function_path)
         if custom_log_func(rollout_id, args, samples, rollout_extra_metrics, rollout_time):
