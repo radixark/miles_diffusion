@@ -58,13 +58,6 @@ def apply_sgld_monkey_patches() -> None:
     patch_qk_norm_rope.apply()
 
 
-@register_rollout_patch_group("deterministic_kernels")
-def apply_deterministic_kernel_patches() -> None:
-    from miles.backends.sglang_diffusion_utils.monkey_patches import patch_deterministic_kernels
-
-    patch_deterministic_kernels.apply()
-
-
 @register_rollout_patch_group("rollout_sp")
 def apply_rollout_sp_monkey_patches() -> None:
     from miles.backends.sglang_diffusion_utils.monkey_patches import (
