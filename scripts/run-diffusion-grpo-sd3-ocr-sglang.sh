@@ -59,6 +59,8 @@ RUN_NAME="diffusion_grpo_sd3_ocr_sglang_$(date +%Y%m%d_%H%M%S)"
 SAVE_DIR="${ROOT_DIR}/logs/${RUN_NAME}/ckpt"
 mkdir -p "${SAVE_DIR}"
 NUM_ROLLOUT="${NUM_ROLLOUT:-100000}"
+# Per-run metric recording; registerable as CI standard (tests/ci/e2e_metrics_registry.py).
+export MILES_METRICS_JSONL="${MILES_METRICS_JSONL:-${ROOT_DIR}/logs/${RUN_NAME}/metrics.jsonl}"
 
 DEBUG_ARGS=()
 if [[ "${MILES_DEBUG_ALIGNMENT:-0}" == "1" ]]; then
@@ -85,13 +87,16 @@ fi
 
 # ── Prepare prompt data ────────────────────────────────────────────────────────
 DATASETS_DIR="${DATASETS_DIR:-/root/datasets/miles-diffusion-datasets}"
-hf download --repo-type dataset rockdu/miles-diffusion-datasets \
-  --include "flowgrpo_ocr/**" \
-  --local-dir "${DATASETS_DIR}"
+if [[ "${HF_HUB_OFFLINE:-0}" != "1" ]]; then
+  hf download --repo-type dataset rockdu/miles-diffusion-datasets \
+    --include "flowgrpo_ocr/**" \
+    --local-dir "${DATASETS_DIR}"
+fi
 
 # ── Training ───────────────────────────────────────────────────────────────────
 python -u "${ROOT_DIR}/train_diffusion.py" \
   --train-backend fsdp \
+  ${DETERMINISTIC_MODE:+--deterministic-mode} \
   --rollout-function-path miles.rollout.sglang_diffusion_rollout.generate_rollout \
   --hf-checkpoint "${SD3_MODEL}" \
   --prompt-data "${DATASETS_DIR}/flowgrpo_ocr/train.jsonl" \

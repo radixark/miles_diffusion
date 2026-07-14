@@ -67,6 +67,7 @@ jobs:
         -v /data/miles_ci/datasets:/root/datasets
         -v /data/miles_ci/hf_cache:/root/.cache/huggingface
         -v /data/miles_ci/paddleocr:/github/home/.paddleocr
+        -v /data/miles_ci/master_sglang:/sgl-workspace/master_sglang
         --privileged
         --ulimit nofile=65535:65535
     defaults:
