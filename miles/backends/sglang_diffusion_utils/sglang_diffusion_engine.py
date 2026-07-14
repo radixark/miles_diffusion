@@ -164,6 +164,11 @@ class SGLangDiffusionEngine(RayActor):
         patch_groups = []
         if getattr(self.args, "apply_sgld_monkey_patches", False):
             patch_groups.append("sgld")
+            # Allocation-invariant kernels: cuBLAS/cuDNN pick kernel variants
+            # by pointer alignment and context, so different engine topologies
+            # (sp=1 vs sp>1) silently diverge bitwise. Applied together with
+            # the parity patches on EVERY engine so all topologies match.
+            patch_groups.append("deterministic_kernels")
         if self.args.rollout_num_gpus_per_engine > 1:
             patch_groups.append("rollout_sp")
         if patch_groups:
