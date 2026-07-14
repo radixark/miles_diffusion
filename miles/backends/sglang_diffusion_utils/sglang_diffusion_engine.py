@@ -333,12 +333,9 @@ def _compute_server_args(args, host, port, nccl_port, master_port=None):
         "port": port,
         "nccl_port": nccl_port,
         "master_port": master_port,
-        # parallel — SGL-D spawns one scheduler worker per num_gpus, and
-        # validates dp*cfg*sp*pp*tp <= num_gpus. The engine's GPU span comes
-        # from the rollout allocation, so num_gpus must equal it. tp in SGL-D
-        # is text-encoder TP (the DiT is parallelized by sp/cfg), keep it 1.
+        # SGL-D spawns one scheduler worker per num_gpus; must match the engine's GPU span.
         "num_gpus": args.rollout_num_gpus_per_engine,
-        "tp_size": 1,
+        "tp_size": args.sglang_tp_size,
         # Sequence-parallel degree (None = disabled, SGL-D decides internally).
         "sp_degree": args.sglang_sp_degree,
         # Classifier-free-guidance parallel (splits cond/uncond across GPUs).

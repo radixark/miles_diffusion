@@ -93,6 +93,13 @@ def add_sglang_diffusion_arguments(parser):
 
 
 def validate_args(args):
+    if args.sglang_tp_size is not None and args.sglang_sp_degree is not None:
+        if args.sglang_tp_size * args.sglang_sp_degree != args.rollout_num_gpus_per_engine:
+            raise ValueError(
+                f"sglang_tp_size ({args.sglang_tp_size}) * sglang_sp_degree ({args.sglang_sp_degree}) "
+                f"must equal rollout_num_gpus_per_engine ({args.rollout_num_gpus_per_engine})"
+            )
+
     # `sglang_dp_size` is used by rollout port allocation; default to 1 if
     # SGL-D's ServerArgs didn't register the CLI arg in this build.
     if not hasattr(args, "sglang_dp_size"):
