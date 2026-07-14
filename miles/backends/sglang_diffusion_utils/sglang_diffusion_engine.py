@@ -339,4 +339,12 @@ def _compute_server_args(args, host, port, nccl_port):
         if hasattr(args, f"sglang_{attr.name}") and attr.name not in kwargs:
             kwargs[attr.name] = getattr(args, f"sglang_{attr.name}")
 
+    # dit_precision / vae_precision are PipelineConfig fields, not ServerArgs, so forward them explicitly (only when changed from the class default, to avoid clobbering a subclass override).
+    from sglang.multimodal_gen.configs.pipeline_configs.base import PipelineConfig
+
+    for field_name in ("dit_precision", "vae_precision"):
+        val = getattr(args, f"sglang_{field_name}", None)
+        if val is not None and val != getattr(PipelineConfig, field_name, None):
+            kwargs[field_name] = val
+
     return kwargs
