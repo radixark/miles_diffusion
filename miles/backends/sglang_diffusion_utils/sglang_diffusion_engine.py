@@ -18,13 +18,10 @@ logger = logging.getLogger(__name__)
 def _to_local_gpu_id(physical_gpu_id: int) -> int:
     cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
     if not cvd:
-        return physical_gpu_id  # no remapping
-    # CUDA_VISIBLE_DEVICES can be like "4,5,6,7"
+        return physical_gpu_id
     visible = [int(x) for x in cvd.split(",") if x.strip() != ""]
-    # In a remapped process, valid torch device indices are 0..len(visible)-1
     if physical_gpu_id in visible:
         return visible.index(physical_gpu_id)
-    # If we're already getting local IDs, allow them
     if 0 <= physical_gpu_id < len(visible):
         return physical_gpu_id
     raise RuntimeError(
@@ -34,12 +31,7 @@ def _to_local_gpu_id(physical_gpu_id: int) -> int:
 
 
 def _scheduler_process_with_rollout_patches(*args, **kwargs):
-    # Runs inside sglang-d's scheduler grandchild (spawned by launch_server via
-    # mp.Process). Grandchild re-imports modules from scratch under spawn, so
-    # any monkey patches done in the middle child are gone. Apply them HERE,
-    # before calling the real run_scheduler_process, so the DiT that's
-    # constructed inside the grandchild sees the patched classes. Which groups
-    # apply is carried by env flags (set in the engine parent, inherited by spawn).
+    # Re-apply patches here: the spawned scheduler grandchild re-imports modules fresh, losing the parent's patches.
     from miles.backends.sglang_diffusion_utils.monkey_patches import apply_env_selected_rollout_patches
 
     apply_env_selected_rollout_patches()
@@ -49,20 +41,14 @@ def _scheduler_process_with_rollout_patches(*args, **kwargs):
 
 
 def _launch_server_target(server_args, apply_rollout_patches: bool = False):
-    # addict.Dict used by SGL-D loses its `__frozen` instance attribute across spawn pickle.
-    # Reconstruct a fresh one from the unpickled (broken) instance
+    # addict.Dict loses its `__frozen` attribute across spawn pickle; rebuild it.
     import addict
 
     if server_args.attention_backend_config is not None:
         server_args.attention_backend_config = addict.Dict(server_args.attention_backend_config)
 
     if apply_rollout_patches:
-        # launch_server spawns its scheduler via mp.Process(target=run_scheduler_process).
-        # Under spawn, target is pickled by qualname and re-imported in the grandchild,
-        # so patching in THIS process doesn't help. Instead, rebind the name inside
-        # launch_server's own module to point at our wrapper — pickle then carries
-        # the miles qualname across to the grandchild, which applies the patch before
-        # calling the real scheduler entrypoint.
+        # Rebind the scheduler entrypoint in launch_server's module so spawn pickles our patched wrapper by qualname.
         import sglang.multimodal_gen.runtime.launch_server as _ls_mod
 
         _ls_mod.run_scheduler_process = _scheduler_process_with_rollout_patches
@@ -101,7 +87,6 @@ def _wait_server_healthy(base_url, is_process_alive):
     with requests.Session() as session:
         while True:
             try:
-                # SGL-D health_generate
                 response = session.get(f"{base_url}/health_generate", headers=headers)
                 if response.status_code == 200:
                     break
@@ -117,13 +102,11 @@ def _wait_server_healthy(base_url, is_process_alive):
 class SGLangDiffusionEngine(RayActor):
     def __init__(self, args, rank: int, base_gpu_id: int | None = None):
         self.args = args
-        # rank: the global rank of this engine among all rollout engines
         self.rank = rank
         self.base_gpu_id = base_gpu_id
 
     def init(self, dist_init_addr, port, nccl_port, host=None):
-        # `dist_init_addr` is a multi-node concept from LLM sglang; SGL-D runs
-        # single-node per engine. Accept it for caller compat, then drop.
+        # SGL-D runs single-node per engine; accept dist_init_addr for caller compat, then drop.
         del dist_init_addr
         self.router_ip = self.args.sglang_router_ip
         self.router_port = self.args.sglang_router_port
@@ -150,7 +133,7 @@ class SGLangDiffusionEngine(RayActor):
         )
 
         self.node_rank = server_args_dict.get("node_rank", 0)
-        self.server_host = server_args_dict["host"]  # with [] if ipv6
+        self.server_host = server_args_dict["host"]
         self.server_port = server_args_dict["port"]
 
         self._init_normal(server_args_dict)
@@ -308,33 +291,27 @@ class SGLangDiffusionEngine(RayActor):
 
 
 def _compute_server_args(args, host, port, nccl_port):
-    # Only set fields SGL-D's ServerArgs actually accepts. GPU pinning is done
-    # in `_init_normal` via CUDA_VISIBLE_DEVICES — SGL-D has no base_gpu_id arg.
+    # Only fields SGL-D's ServerArgs accepts; GPU pinning is done in _init_normal via CUDA_VISIBLE_DEVICES.
     kwargs = {
         "model_path": args.diffusion_model,
         "trust_remote_code": True,
         "host": host,
         "port": port,
         "nccl_port": nccl_port,
-        # Each engine needs a distinct master_port starting hint so that
-        # concurrent settle_port() probes don't race on the same default (30005).
+        # Distinct per engine so concurrent settle_port() probes don't race on the default.
         "master_port": nccl_port + 10000 if nccl_port is not None else None,
-        # parallel — tp_size must match rollout allocation, not user CLI.
+        # Must match rollout allocation, not user CLI.
         "tp_size": args.rollout_num_gpus_per_engine,
-        # Sequence-parallel degree (None = disabled, SGL-D decides internally).
         "sp_degree": args.sglang_sp_degree,
-        # Classifier-free-guidance parallel (splits cond/uncond across GPUs).
         "enable_cfg_parallel": args.sglang_enable_cfg_parallel,
-        # Force-skip warmup to prevent warmup timeout during RL rollouts.
+        # Skip warmup to avoid timeout during RL rollouts.
         "warmup": False,
     }
 
     if getattr(args, "diffusion_flow_shift", None) is not None:
         kwargs["flow_shift"] = float(args.diffusion_flow_shift)
 
-    # Forward every `args.sglang_<field>` the user set via --sglang-* CLI for
-    # ServerArgs fields not already hardcoded above. Picks up ulysses_degree /
-    # ring_degree / dp_size / etc. without listing each one.
+    # Forward remaining ServerArgs fields set via --sglang-* CLI (ulysses_degree, ring_degree, dp_size, etc.).
     for attr in dataclasses.fields(ServerArgs):
         if hasattr(args, f"sglang_{attr.name}") and attr.name not in kwargs:
             kwargs[attr.name] = getattr(args, f"sglang_{attr.name}")
