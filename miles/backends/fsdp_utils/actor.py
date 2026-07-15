@@ -94,9 +94,19 @@ class FSDPTrainRayActor(TrainRayActor):
         if args.deterministic_mode:
             # flash-attn is opaque to torch's determinism flag; backends patch their own dispatch.
             self.model_backend.enable_deterministic_attention(args.fsdp_attention_backend)
-        raw_models, self.scheduler = self.model_backend.load_models_and_scheduler(
-            args, master_dtype=self._master_dtype
-        )
+
+        if args.fsdp_load_mode not in ("stream", "legacy"):
+            raise ValueError(f"--fsdp-load-mode must be 'stream' or 'legacy', got {args.fsdp_load_mode!r}")
+        stream_load = args.fsdp_load_mode == "stream"
+        if stream_load:
+            # params on meta: no rank ever holds a full unsharded copy
+            raw_models, self.scheduler = self.model_backend.build_models_and_scheduler(
+                args, master_dtype=self._master_dtype
+            )
+        else:
+            raw_models, self.scheduler = self.model_backend.load_models_and_scheduler(
+                args, master_dtype=self._master_dtype
+            )
 
         self.models: dict[str, torch.nn.Module] = {}
         for component, model in raw_models.items():
@@ -104,25 +114,47 @@ class FSDPTrainRayActor(TrainRayActor):
             if args.fsdp_attention_backend is not None:
                 self.model_backend.set_attention_backend(model, args.fsdp_attention_backend)
 
+            key_map = None
             if args.use_lora:
-                model = apply_lora(model, args, self.train_pipeline_config)
+                model = apply_lora(model, args, self.train_pipeline_config, on_meta=stream_load)
+                if stream_load:
+                    key_map = peft_checkpoint_key_map(model)
 
             model.train()
 
             if args.gradient_checkpointing:
                 self.model_backend.enable_gradient_checkpointing(model)
 
-            model.to(torch.cuda.current_device())
+            if stream_load:
+                # shard while still on meta (costs nothing), materialize only
+                # this rank's shards, then fill weights file-by-file from rank0.
+                model = apply_fsdp2(
+                    model,
+                    mesh=self.parallel_state.dp_mesh,
+                    cpu_offload=self.args.fsdp_cpu_offload,
+                    args=self.args,
+                    no_split_modules=self.model_backend.fsdp_no_split_modules(model),
+                )
+                device = torch.device("cpu") if self.args.fsdp_cpu_offload else torch.cuda.current_device()
+                materialize_sharded_model(model, device)
+                self.model_backend.stream_load_weights(
+                    model, component, args, master_dtype=self._master_dtype, key_map=key_map
+                )
+                if args.use_lora:
+                    reset_lora_adapters(model, args.diffusion_init_lora_weight)
+                self.train_pipeline_config.postprocess_model_after_materialize(model)
+            else:
+                model.to(torch.cuda.current_device())
 
-            self.train_pipeline_config.preprocess_model_before_fsdp(model)
+                self.train_pipeline_config.preprocess_model_before_fsdp(model)
 
-            model = apply_fsdp2(
-                model,
-                mesh=self.parallel_state.dp_mesh,
-                cpu_offload=self.args.fsdp_cpu_offload,
-                args=self.args,
-                no_split_modules=self.model_backend.fsdp_no_split_modules(model),
-            )
+                model = apply_fsdp2(
+                    model,
+                    mesh=self.parallel_state.dp_mesh,
+                    cpu_offload=self.args.fsdp_cpu_offload,
+                    args=self.args,
+                    no_split_modules=self.model_backend.fsdp_no_split_modules(model),
+                )
             self.models[component] = model
         # Force a sync to ensure sharding is complete and old memory is freed.
         torch.cuda.synchronize()
@@ -677,13 +709,16 @@ def _resolve_dtype(name: str) -> torch.dtype:
     return {"fp32": torch.float32, "bf16": torch.bfloat16, "fp16": torch.float16}[name]
 
 
-def apply_lora(model: torch.nn.Module, args: Namespace, train_pipeline_config) -> None:
+def apply_lora(model: torch.nn.Module, args: Namespace, train_pipeline_config, on_meta: bool = False) -> None:
     """Apply PEFT LoRA to the model.
 
     Args:
         model: The model to apply LoRA to.
         args: Arguments containing LoRA settings.
         train_pipeline_config: The train pipeline config.
+        on_meta: Base model params are on meta (--fsdp-load-mode stream);
+            create the adapters on meta too and defer their init to
+            reset_lora_adapters, after materialization.
     """
     from peft import LoraConfig, get_peft_model
 
@@ -692,6 +727,12 @@ def apply_lora(model: torch.nn.Module, args: Namespace, train_pipeline_config) -
     init_lora_weight = args.diffusion_init_lora_weight
     if init_lora_weight == "kaiming-uniform":
         init_lora_weight = True  # namely kaiming-uniform
+    if on_meta and init_lora_weight not in (True, "gaussian"):
+        raise ValueError(
+            f"--diffusion-init-lora-weight {args.diffusion_init_lora_weight!r} is data-aware "
+            f"(needs real base weights at wrap time) and incompatible with --fsdp-load-mode "
+            f"stream; run with --fsdp-load-mode legacy"
+        )
     model = get_peft_model(
         model,
         LoraConfig(
@@ -700,10 +741,54 @@ def apply_lora(model: torch.nn.Module, args: Namespace, train_pipeline_config) -
             target_modules=targets,
             init_lora_weights=init_lora_weight,
         ),
+        low_cpu_mem_usage=on_meta,
     )
     if dist.get_rank() == 0:
         model.print_trainable_parameters()
     return model
+
+
+def reset_lora_adapters(model: torch.nn.Module, init_lora_weight) -> None:
+    """(Re)initialize LoRA A/B in place. Under --fsdp-load-mode stream the
+    adapters were created on meta, so PEFT's own init never ran on real
+    memory; to_empty left them uninitialized. nn.init works on the sharded
+    DTensor params directly (the RNG tracker keeps ranks coordinated)."""
+    from peft.tuners.lora import LoraLayer
+
+    if init_lora_weight == "kaiming-uniform":
+        init_lora_weight = True
+    for module in model.modules():
+        if isinstance(module, LoraLayer):
+            for adapter_name in module.lora_A:
+                module.reset_lora_parameters(adapter_name, init_lora_weight)
+
+
+def peft_checkpoint_key_map(model: torch.nn.Module):
+    """Checkpoint keys are un-wrapped DiT names; after get_peft_model the live
+    FQNs gain ``base_model.model.`` and ``.base_layer``. Build the inverse of
+    the stripping done when pushing weights to sglang-d
+    (diffusion_update_weight_utils), so streamed checkpoints land on the
+    wrapped names."""
+    mapping = {}
+    for name, _ in model.named_parameters():
+        if "lora_" in name:
+            continue  # adapter params don't come from the checkpoint
+        checkpoint_key = name.replace(".base_layer", "")
+        checkpoint_key = checkpoint_key.removeprefix("base_model.model.")
+        mapping[checkpoint_key] = name
+    return lambda key: mapping.get(key, key)
+
+
+def materialize_sharded_model(model: torch.nn.Module, device) -> None:
+    """to_empty allocates this rank's shards but leaves every buffer
+    uninitialized. Persistent buffers are refilled by the checkpoint load
+    that follows; non-persistent ones (e.g. Wan's rope freq tables) exist
+    only as __init__'s output, so carry them across the transition."""
+    real_buffers = {name: buffer.detach().clone() for name, buffer in model.named_buffers() if not buffer.is_meta}
+    model.to_empty(device=device)
+    for name, buffer in model.named_buffers():
+        if name in real_buffers:
+            buffer.copy_(real_buffers[name])
 
 
 def apply_fsdp2(model, mesh=None, cpu_offload=False, args=None, no_split_modules=None):

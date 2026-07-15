@@ -187,3 +187,11 @@ class TrainPipelineConfig(abc.ABC):
     @abc.abstractmethod
     def preprocess_model_before_fsdp(self, model: torch.nn.Module) -> None:
         """Preprocess the model before FSDP."""
+
+    def postprocess_model_after_materialize(self, model: torch.nn.Module) -> None:
+        """Called under ``--fsdp-load-mode stream`` once the sharded model is
+        materialized and pretrained weights are loaded — the earliest point
+        that path has real tensors on device. Default: run the before-fsdp
+        hook here, since its usual job (device-sensitive cache rebuilds, e.g.
+        qwen-image rope parity) would silently no-op on a meta-device model."""
+        self.preprocess_model_before_fsdp(model)

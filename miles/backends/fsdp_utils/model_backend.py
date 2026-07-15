@@ -1,10 +1,15 @@
 """Model backend: owns model-side behavior for the FSDP trainer.
 
 Selected via ``--model-backend-path`` (miles custom-function style); the
-family config declares the default. Three concerns, all properties of the
+family config declares the default. The concerns are all properties of the
 concrete modeling rather than of the training loop:
 
-  - ``load_models_and_scheduler``: checkpoint -> ``({component: model}, scheduler)``
+  - ``build_models_and_scheduler``: checkpoint -> ``({component: model}, scheduler)``
+    with parameters on the meta device (``--fsdp-load-mode stream``)
+  - ``stream_load_weights``: fill one already-sharded component's weights,
+    reading the checkpoint on rank 0 only
+  - ``load_models_and_scheduler``: legacy path — full weights on every rank
+    (``--fsdp-load-mode legacy``)
   - ``enable_gradient_checkpointing``: how this model turns on grad ckpt
   - ``fsdp_no_split_modules``: which block classes FSDP wraps
 
@@ -17,14 +22,20 @@ from __future__ import annotations
 import abc
 import functools
 import inspect
+import json
 import logging
+import os
+from collections.abc import Callable
 from typing import Any
 
 import torch
+import torch.distributed as dist
 from diffusers import DiffusionPipeline
 
 logger = logging.getLogger(__name__)
 
+_SAFETENSORS_INDEX = "diffusion_pytorch_model.safetensors.index.json"
+_SAFETENSORS_SINGLE = "diffusion_pytorch_model.safetensors"
 
 class ModelBackend(abc.ABC):
     def __init__(self, train_pipeline_config):
@@ -49,7 +60,37 @@ class ModelBackend(abc.ABC):
         *,
         master_dtype: torch.dtype,
     ) -> tuple[dict[str, torch.nn.Module], Any]:
-        """Return ``({component: model}, scheduler)`` on CPU."""
+        """Legacy path: return ``({component: model}, scheduler)`` fully
+        materialized on CPU, on every rank."""
+
+    def build_models_and_scheduler(
+        self,
+        args,
+        *,
+        master_dtype: torch.dtype,
+    ) -> tuple[dict[str, torch.nn.Module], Any]:
+        """Return ``({component: model}, scheduler)`` with component
+        parameters on the meta device (buffers real, computed by __init__).
+        Weights are filled in later via ``stream_load_weights``, after FSDP
+        sharding, so no rank ever holds a full unsharded copy."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement meta-device init; run with --fsdp-load-mode legacy"
+        )
+
+    def stream_load_weights(
+        self,
+        model: torch.nn.Module,
+        component: str,
+        args,
+        *,
+        master_dtype: torch.dtype,
+        key_map: Callable[[str], str] | None = None,
+    ) -> None:
+        """Fill ``model``'s weights from the checkpoint. ``model`` is already
+        FSDP-sharded and materialized; rank 0 reads, everyone receives."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement streaming load; run with --fsdp-load-mode legacy"
+        )
 
     def enable_gradient_checkpointing(self, model: torch.nn.Module) -> None:
         """Turn on grad checkpointing; default = the diffusers protocol method."""
@@ -105,6 +146,120 @@ class DiffusersModelBackend(ModelBackend):
         scheduler = pipeline.scheduler
         del pipeline
         return raw_models, scheduler
+
+    def build_models_and_scheduler(
+        self,
+        args,
+        *,
+        master_dtype: torch.dtype,
+    ) -> tuple[dict[str, torch.nn.Module], Any]:
+        import diffusers
+        from accelerate import init_empty_weights
+
+        root = self._resolve_checkpoint_dir(args)
+        with open(os.path.join(root, "model_index.json")) as f:
+            model_index = json.load(f)
+
+        raw_models: dict[str, torch.nn.Module] = {}
+        for component in args.update_weight_target_modules:
+            if component not in model_index:
+                raise ValueError(
+                    f"--update-weight-target-module: pipeline {args.hf_checkpoint} " f"has no component '{component}'"
+                )
+            library, cls_name = model_index[component]
+            if library != "diffusers":
+                raise ValueError(
+                    f"component '{component}' comes from library '{library}'; only diffusers "
+                    f"components support meta init — run with --fsdp-load-mode legacy"
+                )
+            cls = getattr(diffusers, cls_name, None)
+            if cls is None:
+                raise ValueError(
+                    f"component class '{cls_name}' not found in diffusers (remote code?); "
+                    f"run with --fsdp-load-mode legacy"
+                )
+            config = cls.load_config(root, subfolder=component)
+            # include_buffers=False: parameters land on meta (zero memory), but
+            # buffers and plain tensor attributes are computed for real by
+            # __init__ (Wan's rope freq tables, Qwen's pos/neg freqs).  This is
+            # the same context diffusers' own from_pretrained builds under, so
+            # buffer values match the legacy path bit-exactly.
+            with init_empty_weights(include_buffers=False):
+                model = cls.from_config(config)
+            raw_models[component] = model.to(master_dtype)
+
+        _, scheduler_cls_name = model_index["scheduler"]
+        scheduler = getattr(diffusers, scheduler_cls_name).from_pretrained(root, subfolder="scheduler")
+        return raw_models, scheduler
+
+    def stream_load_weights(
+        self,
+        model: torch.nn.Module,
+        component: str,
+        args,
+        *,
+        master_dtype: torch.dtype,
+        key_map: Callable[[str], str] | None = None,
+    ) -> None:
+        from safetensors.torch import load_file
+        from torch.distributed.checkpoint.state_dict import StateDictOptions, set_model_state_dict
+
+        component_dir = os.path.join(self._resolve_checkpoint_dir(args), component)
+        index_path = os.path.join(component_dir, _SAFETENSORS_INDEX)
+        rank = dist.get_rank()
+        if rank == 0:
+            if os.path.exists(index_path):
+                with open(index_path) as f:
+                    files = sorted(set(json.load(f)["weight_map"].values()))
+            elif os.path.exists(os.path.join(component_dir, _SAFETENSORS_SINGLE)):
+                files = [_SAFETENSORS_SINGLE]
+            else:
+                raise FileNotFoundError(f"no safetensors checkpoint under {component_dir}")
+        else:
+            files = None
+        # rank0 discovered the file list; everyone must loop the same number of
+        # times since set_model_state_dict is collective.
+        obj = [files]
+        dist.broadcast_object_list(obj, src=0)
+        files = obj[0]
+
+        options = StateDictOptions(full_state_dict=True, broadcast_from_rank0=True, strict=False)
+        loaded_keys: set[str] = set()
+        for fname in files:
+            partial: dict[str, torch.Tensor] = {}
+            if rank == 0:
+                # load_file mmaps; peak CPU ~= one file (+ a dtype-cast copy)
+                for key, tensor in load_file(os.path.join(component_dir, fname)).items():
+                    partial[key_map(key) if key_map is not None else key] = tensor.to(master_dtype)
+            set_model_state_dict(model, partial, options=options)
+            key_obj = [set(partial.keys())]
+            dist.broadcast_object_list(key_obj, src=0)
+            loaded_keys |= key_obj[0]
+            del partial
+
+        # strict=False enables the per-file partial loads above, so missing
+        # weights would pass silently — verify full coverage ourselves.
+        expected = {name for name, _ in model.named_parameters() if "lora_" not in name}
+        missing = expected - loaded_keys
+        if missing:
+            raise RuntimeError(
+                f"{component}: {len(missing)} parameters not covered by checkpoint, " f"e.g. {sorted(missing)[:3]}"
+            )
+        logger.info("[FSDP] %s: streamed %d files, %d tensors", component, len(files), len(loaded_keys))
+
+    @staticmethod
+    def _resolve_checkpoint_dir(args) -> str:
+        ckpt = args.hf_checkpoint
+        if os.path.isdir(ckpt):
+            return ckpt
+        from huggingface_hub import snapshot_download
+
+        # every rank needs the configs/index; weight files only on rank 0,
+        # where stream_load_weights reads them.
+        patterns = ["model_index.json", "*/*.json"]
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            patterns += [f"{component}/*" for component in args.update_weight_target_modules]
+        return snapshot_download(ckpt, allow_patterns=patterns)
 
 
 class LTXModelBackend(ModelBackend):
