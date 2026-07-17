@@ -71,6 +71,8 @@ class ModelBackend(abc.ABC):
 
 
 class DiffusersModelBackend(ModelBackend):
+    """Load trainable components from a diffusers pipeline checkpoint."""
+
     def set_attention_backend(self, model: torch.nn.Module, backend: str) -> None:
         model.set_attention_backend(backend)
 
@@ -92,41 +94,52 @@ class DiffusersModelBackend(ModelBackend):
         *,
         master_dtype: torch.dtype,
     ) -> torch.nn.Module:
-        config = DiffusionPipeline.load_config(args.hf_checkpoint)
-        if component not in config:
-            raise ValueError(f"pipeline {args.hf_checkpoint} has no component {component!r}")
-
-        pipeline = self._load_pipeline(args, config, component, master_dtype)
-        model = getattr(pipeline, component)
-        del pipeline
-        return model
-
-    def load_scheduler(self, args) -> Any:
-        config = DiffusionPipeline.load_config(args.hf_checkpoint)
-        pipeline = self._load_pipeline(args, config, "scheduler")
-        scheduler = pipeline.scheduler
-        del pipeline
-        return scheduler
-
-    @classmethod
-    def _load_pipeline(cls, args, config: dict, component: str, master_dtype=None):
-        skipped = {
-            name: None for name, value in config.items() if name != component and isinstance(value, (list, tuple))
+        model_cls = self._resolve_component_class(args, component)
+        kwargs = {
+            "subfolder": component,
+            "torch_dtype": master_dtype,
+            "low_cpu_mem_usage": dist.get_rank() == 0,
         }
-        kwargs = {"trust_remote_code": True, "low_cpu_mem_usage": dist.get_rank() == 0, **skipped}
-        if master_dtype is not None:
-            kwargs["torch_dtype"] = master_dtype
 
-        model_cls = cls._component_class(config.get(component))
+        # Non-rank0 loads with low_cpu_mem_usage=False so the ambient meta-device
+        # context keeps params on meta; diffusers forbids that combination when the
+        # class pins modules to fp32, so disable the pin for the duration (dtypes are
+        # re-synced from rank0 afterwards, see ``sync_model_dtypes``).
         keep_in_fp32 = getattr(model_cls, "_keep_in_fp32_modules", None)
         if dist.get_rank() != 0 and keep_in_fp32 is not None:
-            # Diffusers otherwise forces low_cpu_mem_usage and materializes meta ranks.
             model_cls._keep_in_fp32_modules = None
         try:
-            return DiffusionPipeline.from_pretrained(args.hf_checkpoint, **kwargs)
+            return model_cls.from_pretrained(args.hf_checkpoint, **kwargs)
         finally:
             if dist.get_rank() != 0 and keep_in_fp32 is not None:
                 model_cls._keep_in_fp32_modules = keep_in_fp32
+
+    def load_scheduler(self, args) -> Any:
+        scheduler_cls = self._resolve_component_class(args, "scheduler")
+        return scheduler_cls.from_pretrained(args.hf_checkpoint, subfolder="scheduler")
+
+    @classmethod
+    def _resolve_component_class(cls, args, component: str):
+        """Resolve ``component``'s class from ``model_index.json``.
+
+        Components load individually via ``cls.from_pretrained(subfolder=...)`` rather
+        than through ``DiffusionPipeline.from_pretrained`` with the siblings passed as
+        ``None``: pipelines that declare a component optional with a ``None`` default
+        (e.g. ``WanPipeline.transformer``/``transformer_2``) drop it from
+        ``expected_modules``, so the ``None`` is silently ignored and the sibling is
+        loaded from disk anyway — on every rank, and with ``low_cpu_mem_usage=False``
+        it also trips diffusers' ``_keep_in_fp32_modules`` guard.
+        """
+        config = DiffusionPipeline.load_config(args.hf_checkpoint)
+        if component not in config:
+            raise ValueError(f"pipeline {args.hf_checkpoint} has no component {component!r}")
+        component_cls = cls._component_class(config[component])
+        if component_cls is None:
+            raise ValueError(
+                f"cannot resolve the class for component {component!r} of {args.hf_checkpoint} "
+                f"from spec {config[component]!r}; remote-code components are not supported"
+            )
+        return component_cls
 
     @staticmethod
     def _component_class(spec):

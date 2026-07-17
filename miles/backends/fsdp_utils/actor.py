@@ -95,7 +95,6 @@ class FSDPTrainRayActor(TrainRayActor):
         if args.deterministic_mode:
             # flash-attn is opaque to torch's determinism flag; backends patch their own dispatch.
             self.model_backend.enable_deterministic_attention(args.fsdp_attention_backend)
-
         self.scheduler = self.model_backend.load_scheduler(args)
         init_context = self._get_init_weight_context_manager()
 
@@ -790,7 +789,7 @@ def sync_model_dtypes(model: torch.nn.Module) -> None:
     """Cast non-rank0 (meta) params/buffers to rank0's per-tensor dtypes.
 
     Meta ranks load with ``_keep_in_fp32_modules`` disabled (see
-    ``DiffusersModelBackend._load_pipeline``), so their dtypes can drift from rank0's
+    ``DiffusersModelBackend.load_component``), so their dtypes can drift from rank0's
     real load; sharding and rank0-broadcast require identical dtypes on every rank.
     """
     dtypes = None

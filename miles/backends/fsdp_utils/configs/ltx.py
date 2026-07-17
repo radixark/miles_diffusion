@@ -198,6 +198,3 @@ class LTXTrainPipelineConfig(TrainPipelineConfig):
         if scale == 1.0:
             return noise_pred_pos
         return noise_pred_neg + scale * (noise_pred_pos - noise_pred_neg)
-
-    def preprocess_model_before_fsdp(self, model: torch.nn.Module) -> None:
-        return None
