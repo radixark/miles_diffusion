@@ -115,9 +115,7 @@ class _RingFlashAttention(torch.autograd.Function):
         # torch's experimental (private) ring-attention templates; this home
         # requires torch >= 2.11 (the CI image's pin) — before the 2.11 move
         # they lived in torch.distributed.tensor.experimental._attention.
-        from torch.distributed.tensor.experimental._context_parallel._attention import (
-            _templated_ring_attention,
-        )
+        from torch.distributed.tensor.experimental._context_parallel._attention import _templated_ring_attention
 
         out, lse, cum_q, cum_k, max_q, max_k, philox_seed, philox_offset, _dbg = _templated_ring_attention(
             group,
