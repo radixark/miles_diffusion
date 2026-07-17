@@ -126,12 +126,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 args=self.args,
                 no_split_modules=self.model_backend.fsdp_no_split_modules(model),
             )
-            device = (
-                torch.device("cpu")
-                if self.args.fsdp_cpu_offload
-                else torch.device("cuda", torch.cuda.current_device())
-            )
-            load_sharded_model(model, full_state, device)
+            load_sharded_model(model, full_state, cpu_offload=self.args.fsdp_cpu_offload)
             del full_state
             self.train_pipeline_config.postprocess_model_after_materialize(model)
             self.models[component] = model
@@ -197,10 +192,22 @@ class FSDPTrainRayActor(TrainRayActor):
         return self.args.start_rollout_id
 
     def _get_init_weight_context_manager(self):
+        """Init context: rank0 builds on CPU with real weights; other ranks build on
+        the meta device (zero allocation) and are materialized by ``load_sharded_model``.
+
+        Mirrors miles' ``FSDPTrainRayActor._get_init_weight_context_manager`` (itself
+        from verl), except: ``include_buffers=False`` is explicit so buffers are
+        computed for real in ``__init__`` (non-persistent ones exist in no checkpoint),
+        and diffusers' per-tensor meta-copy warnings are suppressed. No
+        ``tie_word_embeddings`` escape hatch — DiT components don't tie embeddings.
+        """
         from accelerate import init_empty_weights
 
+        def cpu_init_weights():
+            return torch.device("cpu")
+
         if dist.get_rank() == 0:
-            return lambda: torch.device("cpu")
+            return cpu_init_weights
 
         @contextmanager
         def meta_init_weights():
@@ -739,27 +746,53 @@ def apply_lora(
     return model
 
 
-def load_sharded_model(model: torch.nn.Module, full_state: dict, device) -> None:
+def load_sharded_model(model: torch.nn.Module, full_state: dict, cpu_offload: bool) -> None:
+    """Materialize an FSDP2-wrapped model by broadcasting rank0's full state dict.
+
+    Rank0 moves its real shards to GPU; other ranks allocate empty shards and are
+    filled via ``set_model_state_dict(broadcast_from_rank0=True)``; buffers are then
+    broadcast from rank0. Mirrors miles' ``FSDPTrainRayActor._fsdp2_load_full_state_dict``
+    (itself from verl/utils/fsdp_utils.py::fsdp2_load_full_state_dict).
+    """
     from torch.distributed.checkpoint.state_dict import StateDictOptions, set_model_state_dict
 
-    real_buffers = {name: buffer.detach().clone() for name, buffer in model.named_buffers() if not buffer.is_meta}
-    model.to_empty(device=device)
-    for name, buffer in model.named_buffers():
-        if name in real_buffers:
-            buffer.copy_(real_buffers[name])
+    if dist.get_rank() == 0:
+        # Rank 0 was sharded on real CPU weights; move them (and real buffers) along.
+        model.to(device=torch.cuda.current_device(), non_blocking=True)
+    else:
+        # to_empty creates tensors on device without initializing memory.
+        model.to_empty(device=torch.cuda.current_device())
+
     set_model_state_dict(
         model,
         full_state,
         options=StateDictOptions(
             full_state_dict=True,
-            cpu_offload=device.type == "cpu",
+            cpu_offload=cpu_offload,
             broadcast_from_rank0=True,
             strict=True,
         ),
     )
+    # set_model_state_dict only covers state_dict entries; non-persistent buffers
+    # (e.g. Wan's rope tables) exist in no state_dict and were wiped by to_empty
+    # on non-rank0 ranks — take rank0's real values for every buffer.
+    for _name, buffer in model.named_buffers():
+        dist.broadcast(buffer, src=0)
+
+    if cpu_offload:
+        model.to("cpu", non_blocking=True)
+        # CPUOffloadPolicy manages params only; buffers must live on GPU for forward.
+        for buffer in model.buffers():
+            buffer.data = buffer.data.to(torch.cuda.current_device())
 
 
 def sync_model_dtypes(model: torch.nn.Module) -> None:
+    """Cast non-rank0 (meta) params/buffers to rank0's per-tensor dtypes.
+
+    Meta ranks load with ``_keep_in_fp32_modules`` disabled (see
+    ``DiffusersModelBackend._load_pipeline``), so their dtypes can drift from rank0's
+    real load; sharding and rank0-broadcast require identical dtypes on every rank.
+    """
     dtypes = None
     if dist.get_rank() == 0:
         dtypes = {
