@@ -53,12 +53,10 @@ class ModelBackend(abc.ABC):
         master_dtype: torch.dtype,
     ) -> torch.nn.Module:
         """Return the ``component`` model on CPU; must honor an ambient meta-device init context."""
-        raise NotImplementedError
 
     @abc.abstractmethod
     def load_scheduler(self, args) -> Any:
         """Return the pipeline's training scheduler."""
-        raise NotImplementedError
 
     def enable_gradient_checkpointing(self, model: torch.nn.Module) -> None:
         """Turn on grad checkpointing; default = the diffusers protocol method."""
