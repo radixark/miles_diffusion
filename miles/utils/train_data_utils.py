@@ -436,11 +436,11 @@ def validate_same_microbatch_counts_across_dp(
 ) -> None:
     """Ensure every DP rank will run the same number of FSDP micro-batches."""
     local_microbatch_counts = [len(step_ranges) for step_ranges in microbatch_schedule]
-    gathered_microbatch_counts = [None] * parallel_state.dp_cp_size
+    gathered_microbatch_counts = [None] * parallel_state.dp_sp_size
     dist.all_gather_object(
         gathered_microbatch_counts,
         local_microbatch_counts,
-        group=parallel_state.dp_cp_group_gloo,
+        group=parallel_state.dp_sp_group_gloo,
     )
     if any(counts != local_microbatch_counts for counts in gathered_microbatch_counts):
         raise ValueError(

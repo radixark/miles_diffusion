@@ -274,14 +274,14 @@ class FSDPTrainRayActor(TrainRayActor):
                 log_dict["train/lr"] = float(self.optimizer.param_groups[0]["lr"])
             except Exception:
                 pass
-        if self.parallel_state.dp_cp_rank == 0:
-            dp_size = self.parallel_state.dp_cp_size
+        if self.parallel_state.dp_sp_rank == 0:
+            dp_size = self.parallel_state.dp_sp_size
             gathered = [None] * dp_size
             dist.gather_object(
                 log_dict,
                 gathered,
                 dst=self.parallel_state.dp_src_rank,
-                group=self.parallel_state.dp_cp_group_gloo,
+                group=self.parallel_state.dp_sp_group_gloo,
             )
             reduced = {k: sum(d[k] for d in gathered) / dp_size for k in log_dict}
             reduced["train/epoch"] = float(rollout_id)
@@ -302,7 +302,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 log_dict,
                 None,
                 dst=self.parallel_state.dp_src_rank,
-                group=self.parallel_state.dp_cp_group_gloo,
+                group=self.parallel_state.dp_sp_group_gloo,
             )
 
     def train(self, rollout_id: int, rollout_data_ref) -> None:  # type: ignore[override]
