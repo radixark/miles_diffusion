@@ -1,3 +1,17 @@
+"""Model backend: owns model-side behavior for the FSDP trainer.
+
+Selected via ``--model-backend-path`` (miles custom-function style); the
+family config declares the default. Three concerns, all properties of the
+concrete modeling rather than of the training loop:
+
+  - ``load_component`` / ``load_scheduler``: checkpoint -> model components and scheduler
+  - ``enable_gradient_checkpointing``: how this model turns on grad ckpt
+  - ``fsdp_no_split_modules``: which block classes FSDP wraps
+
+Defaults implement the diffusers protocol (see ``models/__init__.py``); a
+native model overrides methods here instead of retrofitting its instances.
+"""
+
 from __future__ import annotations
 
 import abc
@@ -169,7 +183,12 @@ class LTXModelBackend(ModelBackend):
         if component != "transformer":
             raise ValueError(f"LTX trains the single DiT ('transformer'); got {component!r}")
         checkpoint = resolve_transformer_checkpoint(str(args.diffusion_model))
-        return load_ltx_transformer_for_train(checkpoint, device="cpu", dtype=master_dtype)
+        return load_ltx_transformer_for_train(
+            checkpoint,
+            device="cpu",
+            dtype=master_dtype,
+            materialize_weights=dist.get_rank() == 0,
+        )
 
     def load_scheduler(self, args) -> Any:
         from miles.backends.fsdp_utils.models.ltx2 import build_ltx_train_scheduler

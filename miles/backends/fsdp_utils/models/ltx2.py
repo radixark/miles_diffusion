@@ -85,6 +85,7 @@ def load_ltx_transformer_for_train(
     *,
     device: str = "cpu",
     dtype: Any = None,
+    materialize_weights: bool = True,
 ):
     """Load LTX DiT for FSDP train from materialized diffusers or comfy safetensors.
 
@@ -110,6 +111,8 @@ def load_ltx_transformer_for_train(
     if _is_materialized_diffusers_checkpoint(checkpoint):
         config = _read_materialized_transformer_config(checkpoint)
         meta_model = create_meta_model(LTXModelConfigurator, config, ())
+        if not materialize_weights:
+            return meta_model.to(dtype=dtype)
         loader = SafetensorsModelStateDictLoader()
         sd = load_state_dict(
             str(checkpoint),
@@ -128,11 +131,14 @@ def load_ltx_transformer_for_train(
         )
         return meta_model.to(torch_device)
 
-    return SingleGPUModelBuilder(
+    builder = SingleGPUModelBuilder(
         model_path=str(checkpoint),
         model_class_configurator=LTXModelConfigurator,
         model_sd_ops=LTXV_MODEL_COMFY_RENAMING_MAP,
-    ).build(device=torch_device, dtype=dtype)
+    )
+    if not materialize_weights:
+        return builder.meta_model(builder.model_config(), builder.module_ops).to(dtype=dtype)
+    return builder.build(device=torch_device, dtype=dtype)
 
 
 def ensure_materialized_model(hf_model_id: str) -> Path:
