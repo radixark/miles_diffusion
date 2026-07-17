@@ -112,7 +112,12 @@ class _RingFlashAttention(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, query, key, value, group, scale, is_causal):
-        from torch.distributed.tensor.experimental._attention import _templated_ring_attention
+        # torch's experimental (private) ring-attention templates; this home
+        # requires torch >= 2.11 (the CI image's pin) — before the 2.11 move
+        # they lived in torch.distributed.tensor.experimental._attention.
+        from torch.distributed.tensor.experimental._context_parallel._attention import (
+            _templated_ring_attention,
+        )
 
         out, lse, cum_q, cum_k, max_q, max_k, philox_seed, philox_offset, _dbg = _templated_ring_attention(
             group,
@@ -132,7 +137,9 @@ class _RingFlashAttention(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_out):
-        from torch.distributed.tensor.experimental._attention import _templated_ring_attention_backward
+        from torch.distributed.tensor.experimental._context_parallel._attention import (
+            _templated_ring_attention_backward,
+        )
 
         query, key, value, out, lse, cum_q, cum_k, philox_seed, philox_offset = ctx.saved_tensors
         grad_q, grad_k, grad_v, *_ = _templated_ring_attention_backward(

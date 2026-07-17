@@ -59,7 +59,10 @@ class FSDPArgs:
 
     # Sequence Parallelism (USP = Ulysses x Ring)
     sequence_parallel_size: int = 1
-    ulysses_degree: int = 0  # 0=auto: ulysses fills sp; ring = sp // ulysses
+    # 0=auto: ulysses fills sp; ring = sp // ulysses. Ring degrees > 1 run on
+    # torch's experimental (private) ring-attention implementation and require
+    # torch >= 2.11 (the CI image's pin).
+    ulysses_degree: int = 0
 
     # YAML bookkeeping
     config: str | None = None
