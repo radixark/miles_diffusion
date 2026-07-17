@@ -187,4 +187,5 @@ class QwenImageTrainPipelineConfig(TrainPipelineConfig):
         return combined
 
     def postprocess_model_after_materialize(self, model: torch.nn.Module) -> None:
+        """Postprocess the model after FSDP wrap + weight materialization."""
         _rebuild_pos_embed_freqs_on_cuda(model)

@@ -101,6 +101,7 @@ class FSDPTrainRayActor(TrainRayActor):
 
         self.models: dict[str, torch.nn.Module] = {}
         for component in args.update_weight_target_modules:
+            # per raw component (wan2.2 has two transformers), before LoRA/FSDP wrap
             with init_context():
                 model = self.model_backend.load_component(component, args, master_dtype=self._master_dtype)
             if args.fsdp_attention_backend is not None:
@@ -707,12 +708,22 @@ def _resolve_dtype(name: str) -> torch.dtype:
 def apply_lora(
     model: torch.nn.Module, args: Namespace, train_pipeline_config, on_meta: bool = False
 ) -> torch.nn.Module:
+    """Apply PEFT LoRA to the model.
+
+    Args:
+        model: The model to apply LoRA to.
+        args: Arguments containing LoRA settings.
+        train_pipeline_config: The train pipeline config.
+        on_meta: Build the adapter on the meta device without initializing
+            weights (they arrive later via broadcast from rank 0).
+    """
     from peft import LoraConfig, get_peft_model
 
+    # Per-model fallback when --lora-target-modules is unset (runtime inference: depends on loaded pipeline).
     targets = args.lora_target_modules or train_pipeline_config.lora_target_modules
     init_lora_weight = args.diffusion_init_lora_weight
     if init_lora_weight == "kaiming-uniform":
-        init_lora_weight = True
+        init_lora_weight = True  # namely kaiming-uniform
     model = get_peft_model(
         model,
         LoraConfig(

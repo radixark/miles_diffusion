@@ -52,16 +52,20 @@ class ModelBackend(abc.ABC):
         *,
         master_dtype: torch.dtype,
     ) -> torch.nn.Module:
+        """Return the ``component`` model on CPU; must honor an ambient meta-device init context."""
         raise NotImplementedError
 
     @abc.abstractmethod
     def load_scheduler(self, args) -> Any:
+        """Return the pipeline's training scheduler."""
         raise NotImplementedError
 
     def enable_gradient_checkpointing(self, model: torch.nn.Module) -> None:
+        """Turn on grad checkpointing; default = the diffusers protocol method."""
         model.enable_gradient_checkpointing()
 
     def fsdp_no_split_modules(self, model: torch.nn.Module) -> list[str]:
+        """Block class names FSDP wraps; default = the model's own declaration."""
         return model._no_split_modules
 
     def set_attention_backend(self, model: torch.nn.Module, backend: str) -> None:
