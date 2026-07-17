@@ -45,12 +45,6 @@ class FSDPArgs:
     fp16: bool = False
 
     # FSDP configuration
-    # Weight init/loading strategy. "stream": build on meta, shard first, then
-    # rank0 streams safetensors files and broadcasts into the shards — peak GPU
-    # = shard size, only rank0 touches disk. "legacy": every rank materializes
-    # the full model on CPU and moves it to GPU before sharding — peak GPU =
-    # full model; escape hatch for custom pipelines / data-aware LoRA inits.
-    fsdp_load_mode: str = "stream"
     fsdp_state_dict_cpu_offload: bool = True  # If True, offload full state dict to CPU during collection.
     fsdp_cpu_offload: bool = (
         False  # If True, offload parameters, gradients, and optimizer states to CPU (optimizer runs on CPU)

@@ -22,12 +22,7 @@ def _rebuild_pos_embed_freqs_on_cuda(model) -> None:
     RoPE output differs → every block's output drifts → frozen-weight
     ``noise_pred`` mean|Δ| ~2e-02.
     """
-    try:
-        device = next(model.parameters()).device
-    except StopIteration:
-        return
-    if device.type != "cuda":
-        return
+    device = torch.device("cuda", torch.cuda.current_device())
     for submod in model.modules():
         # Match by attribute shape rather than class name so we also
         # handle ``QwenEmbedLayer3DRope`` and similar variants
@@ -191,6 +186,5 @@ class QwenImageTrainPipelineConfig(TrainPipelineConfig):
             combined = combined * (pos_norm / combined_norm)
         return combined
 
-    def preprocess_model_before_fsdp(self, model: torch.nn.Module) -> None:
-        """Preprocess the model before FSDP."""
+    def postprocess_model_after_materialize(self, model: torch.nn.Module) -> None:
         _rebuild_pos_embed_freqs_on_cuda(model)
