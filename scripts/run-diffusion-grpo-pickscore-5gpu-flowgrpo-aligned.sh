@@ -55,7 +55,8 @@ hf download --repo-type dataset rockdu/miles-diffusion-datasets \
   --input-key input \
   --rollout-batch-size 32 \
   --n-samples-per-prompt 16 \
-  --num-rollout 100000 \
+  --num-rollout 400 \
+  --deterministic-mode \
   --diffusion-microgroup-size 8 \
   --micro-batch-size-sample 8 \
   --micro-batch-size-tstep 1 \

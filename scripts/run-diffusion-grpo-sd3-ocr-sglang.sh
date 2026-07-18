@@ -58,7 +58,7 @@ SD3_MODEL="${SD3_MODEL:-stabilityai/stable-diffusion-3.5-medium}"
 RUN_NAME="diffusion_grpo_sd3_ocr_sglang_$(date +%Y%m%d_%H%M%S)"
 SAVE_DIR="${ROOT_DIR}/logs/${RUN_NAME}/ckpt"
 mkdir -p "${SAVE_DIR}"
-NUM_ROLLOUT="${NUM_ROLLOUT:-100000}"
+NUM_ROLLOUT="${NUM_ROLLOUT:-600}"
 
 DEBUG_ARGS=()
 if [[ "${MILES_DEBUG_ALIGNMENT:-0}" == "1" ]]; then
@@ -99,6 +99,7 @@ python -u "${ROOT_DIR}/train_diffusion.py" \
   --rollout-batch-size 8 \
   --n-samples-per-prompt 16 \
   --num-rollout "${NUM_ROLLOUT}" \
+  --deterministic-mode \
   --micro-batch-size-sample 16 \
   --micro-batch-size-tstep 5 \
   --diffusion-microgroup-size 8 \
