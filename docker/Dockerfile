@@ -22,20 +22,26 @@ RUN git clone https://github.com/NVIDIA/nccl-tests.git /tmp/nccl-tests && \
 
 # ====================================== Python dependencies ============================================
 
-# ===== Swap stock upstream sglang for the Rockdu sglang-diffusion fork =====
-# miles-diffusion needs multimodal_gen + RL RPCs (release/resume_memory_occupation,
-# update_weights_from_tensor) that now ONLY exist on Rockdu/sglang@sglang-diffusion-rollout-test.
-# sglang is installed editable at /sgl-workspace/sglang, so check out the pinned
-# fork commit in place and re-register editable (--no-deps keeps the base image's
-# torch 2.11 + prebuilt sgl-kernel intact). Pinned SHA = reproducible rollouts.
-ARG SGLANG_DIFFUSION_REPO=https://github.com/Rockdu/sglang.git
-ARG SGLANG_DIFFUSION_BRANCH=sglang-diffusion-rollout-test
-ARG SGLANG_DIFFUSION_COMMIT=6ad1edeca6eff25eaee101814dc8f290e38ac710
+# sglang-diffusion is merged upstream: track sgl-project/sglang main; SGLANG_DIFFUSION_COMMIT=<sha> pins, "none" follows the branch tip.
+ARG SGLANG_DIFFUSION_REPO=https://github.com/sgl-project/sglang.git
+ARG SGLANG_DIFFUSION_BRANCH=main
+ARG SGLANG_DIFFUSION_COMMIT=none
+# SGLANG_BUILD_RUST_EXTS=none skips the gRPC Rust extension: unused here and the base image has no Rust toolchain.
 RUN cd /sgl-workspace/sglang && \
-    (git remote add rockdu "${SGLANG_DIFFUSION_REPO}" || git remote set-url rockdu "${SGLANG_DIFFUSION_REPO}") && \
-    (git fetch --depth=1 rockdu "${SGLANG_DIFFUSION_COMMIT}" || git fetch rockdu "${SGLANG_DIFFUSION_BRANCH}") && \
-    git checkout --detach "${SGLANG_DIFFUSION_COMMIT}" && \
-    pip install -e python --no-deps
+    if [ "${SGLANG_DIFFUSION_COMMIT}" = "none" ]; then \
+        git fetch --depth=1 "${SGLANG_DIFFUSION_REPO}" "${SGLANG_DIFFUSION_BRANCH}"; \
+    else \
+        git fetch --depth=1 "${SGLANG_DIFFUSION_REPO}" "${SGLANG_DIFFUSION_COMMIT}"; \
+    fi && \
+    git checkout --detach FETCH_HEAD && \
+    SGLANG_BUILD_RUST_EXTS=none pip install -e python --no-deps
+# sgl main's FA3 wrappers need sglang-kernel 0.4.5 (only_qv kwarg); the base image ships 0.4.2.
+RUN pip install --no-deps "sglang-kernel==0.4.5+cu129" --extra-index-url https://docs.sglang.io/whl/cu129
+# Bake the kernels lockfile like upstream so the FA3 hub loader never resolves a stale snapshot.
+RUN cd /sgl-workspace/sglang && \
+    kernels lock python && \
+    mkdir -p /root/.cache/sglang && \
+    mv python/kernels.lock /root/.cache/sglang/
 # torch_memory_saver backs release/resume_memory_occupation; pin the validated version.
 RUN pip install torch_memory_saver==0.0.9
 
