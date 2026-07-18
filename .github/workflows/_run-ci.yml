@@ -158,6 +158,9 @@ jobs:
           # configured remote.
           cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch "https://github.com/${SGLANG_REPO}.git" "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e python --no-deps --break-system-packages
           cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
+          # Keep GPU CI aligned with requirements.txt for LTX-2.3 tests.
+          LTX_CORE_REQ=$(grep -E '^ltx-core[[:space:]]*@' requirements.txt)
+          pip install "${LTX_CORE_REQ}" --break-system-packages
 
       - name: Install (miles-diffusion only)
         if: ${{ inputs.skip_dependency_install }}
