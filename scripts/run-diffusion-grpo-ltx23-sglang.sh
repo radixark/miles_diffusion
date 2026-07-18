@@ -78,6 +78,7 @@ LORA_ARGS=()
 if [[ "${USE_LORA:-1}" == "1" ]]; then
   LORA_ARGS+=(
     --use-lora
+    --lora-ipc-weight-sync
     --lora-rank 64
     --lora-alpha 128
     --diffusion-init-lora-weight gaussian

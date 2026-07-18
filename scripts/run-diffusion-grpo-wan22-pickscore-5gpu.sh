@@ -82,6 +82,7 @@ WAN_LORA_TARGET_MODULES=(
   --num-gpus-per-node 5 \
   --colocate \
   --use-lora \
+  --lora-ipc-weight-sync \
   --lora-rank 64 \
   --lora-alpha 128 \
   --lora-target-modules "${WAN_LORA_TARGET_MODULES[@]}" \
