@@ -7,9 +7,9 @@ name: CI Job
 #     `from megatron` imports (verified via grep).
 #   * PR-body magic for `ci-megatron-pr:` removed for the same reason.
 #   * sglang checkout/install preserved (miles-D imports
-#     sglang.multimodal_gen.runtime.* and sglang.srt.*), fetched from the
-#     Rockdu/sglang fork (`ci-sglang-repo:` PR-body override) until the
-#     diffusion RPCs land on sgl main.
+#     sglang.multimodal_gen.runtime.* and sglang.srt.*), fetched from
+#     sgl-project/sglang main now that the diffusion RPCs have landed
+#     upstream (`ci-sglang-repo:` / `ci-sglang-pr:` PR-body overrides).
 #   * GPU `run:` job uses the radixark/miles-diffusion image (not
 #     radixark/miles) and the h200 runner fleet on the dedicated CI node
 #     (labels: h200 + 3gpu/5gpu).
@@ -129,9 +129,8 @@ jobs:
             PR_SGLANG_REPO=$(echo "$PR_BODY" | grep -m1 -oP '^ci-sglang-repo:\s+\K\S+' || true)
             [ -z "$SGLANG_REPO" ] && [ -n "$PR_SGLANG_REPO" ] && SGLANG_REPO="$PR_SGLANG_REPO"
           fi
-          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-diffusion-rollout-test"
-          # TODO: default repo Rockdu/sglang to be switched back to sgl-project/sglang
-          [ -z "$SGLANG_REPO" ] && SGLANG_REPO="Rockdu/sglang"
+          [ -z "$SGLANG_PR" ] && SGLANG_PR="main"
+          [ -z "$SGLANG_REPO" ] && SGLANG_REPO="sgl-project/sglang"
           resolve_fetch_ref() {
             local ref="$1"
             if [[ "$ref" =~ ^#([0-9]+)$ ]]; then
@@ -152,11 +151,11 @@ jobs:
           SGLANG_PR: ${{ steps.resolve-refs.outputs.ci_sglang_pr }}
           SGLANG_REPO: ${{ steps.resolve-refs.outputs.sglang_repo }}
         run: |
-          # The image ships sglang editable at /sgl-workspace/sglang, already
-          # on the Rockdu fork's pinned commit. Fetch by explicit URL so
+          # The image ships sglang editable at /sgl-workspace/sglang. Fetch by
+          # explicit URL so
           # `ci-sglang-repo:` overrides work regardless of the checkout's
           # configured remote.
-          cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch "https://github.com/${SGLANG_REPO}.git" "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e python --no-deps --break-system-packages
+          cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch "https://github.com/${SGLANG_REPO}.git" "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && SGLANG_BUILD_RUST_EXTS=none pip install -e python --no-deps --break-system-packages
           cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
 
       - name: Install (miles-diffusion only)
@@ -213,7 +212,6 @@ jobs:
           sudo apt-get install -y protobuf-compiler
           protoc --version
 
-      # TODO: sglang-diffusion-rollout-test to be switched back to sgl main
       - name: Resolve dependency refs
         id: resolve-refs
         shell: bash
@@ -230,9 +228,8 @@ jobs:
             PR_SGLANG_REPO=$(echo "$PR_BODY" | grep -m1 -oP '^ci-sglang-repo:\s+\K\S+' || true)
             [ -z "$SGLANG_REPO" ] && [ -n "$PR_SGLANG_REPO" ] && SGLANG_REPO="$PR_SGLANG_REPO"
           fi
-          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-diffusion-rollout-test"
-          # TODO: default repo Rockdu/sglang to be switched back to sgl-project/sglang
-          [ -z "$SGLANG_REPO" ] && SGLANG_REPO="Rockdu/sglang"
+          [ -z "$SGLANG_PR" ] && SGLANG_PR="main"
+          [ -z "$SGLANG_REPO" ] && SGLANG_REPO="sgl-project/sglang"
           resolve_fetch_ref() {
             local ref="$1"
             if [[ "$ref" =~ ^#([0-9]+)$ ]]; then
@@ -246,27 +243,19 @@ jobs:
           echo "sglang_repo=$SGLANG_REPO" >> $GITHUB_OUTPUT
           echo "Resolved: sglang repo=$SGLANG_REPO ref=$SGLANG_PR -> fetch=$SGLANG_FETCH"
 
-      # TODO: default sglang repo (Rockdu/sglang) to be switched back to sgl main
-      - name: Checkout temporary sglang
+      - name: Checkout sglang
         uses: actions/checkout@v4
         with:
           repository: ${{ steps.resolve-refs.outputs.sglang_repo }}
           ref: ${{ steps.resolve-refs.outputs.ci_sglang_pr }}
           path: sglang
-      
-      # - name: Checkout sglang
-      #   uses: actions/checkout@v4
-      #   with:
-      #     repository: sgl-project/sglang
-      #     ref: ${{ steps.resolve-refs.outputs.ci_sglang_pr }}
-      #     path: sglang
 
       - name: Install dependencies
         shell: bash
         env:
           UV_SYSTEM_PYTHON: "1"
         run: |
-          uv pip install -e sglang/python --no-deps
+          SGLANG_BUILD_RUST_EXTS=none uv pip install -e sglang/python --no-deps
           uv pip install -r requirements.txt
           uv pip install -e . --no-deps
           # sglang is installed --no-deps above, but miles-D's import chain
