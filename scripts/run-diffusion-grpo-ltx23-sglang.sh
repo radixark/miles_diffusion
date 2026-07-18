@@ -34,6 +34,8 @@ NUM_GPUS="${NUM_GPUS}"
 RUN_NAME="diffusion_grpo_ltx23_pickscore_$(date +%Y%m%d_%H%M%S)"
 SAVE_DIR="${ROOT_DIR}/logs/${RUN_NAME}/ckpt"
 mkdir -p "${SAVE_DIR}"
+# Per-run metric recording; registerable as CI standard (tests/ci/e2e_metrics_registry.py).
+export MILES_METRICS_JSONL="${MILES_METRICS_JSONL:-${ROOT_DIR}/logs/${RUN_NAME}/metrics.jsonl}"
 
 PYTHON_BIN="${PYTHON_BIN:-python}"
 
@@ -83,6 +85,7 @@ fi
 
 "${PYTHON_BIN}" -u "${ROOT_DIR}/train_diffusion.py" \
   --train-backend fsdp \
+  ${DETERMINISTIC_MODE:+--deterministic-mode} \
   --rollout-function-path miles.rollout.sglang_diffusion_rollout.generate_rollout \
   --diffusion-model "${DIFFUSION_MODEL}" \
   --hf-checkpoint gpt2 \
@@ -112,7 +115,7 @@ fi
   --lr 2e-4 \
   --adam-beta2 0.999 \
   --weight-decay 1e-4 \
-  --diffusion-clip-range "${CLIP_RANGE:-1e-4}" \
+  --diffusion-clip-range "${CLIP_RANGE:-1e-5}" \
   --diffusion-kl-beta 0.0 \
   --diffusion-num-steps "${NUM_STEPS:-24}" \
   --diffusion-step-strategy-path miles.rollout.step_strategy_hub.epoch_global_random_choice \
