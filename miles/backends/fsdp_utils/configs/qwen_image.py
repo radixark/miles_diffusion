@@ -123,8 +123,9 @@ class QwenImageTrainPipelineConfig(TrainPipelineConfig):
         img_shapes: list = []
         for kw in per_sample_cond_kwargs:
             lens = kw.get("txt_seq_lens") or []
-            assert len(lens) == 1, (
-                f"collate expects per-sample cond_kwargs with txt_seq_lens of length 1, " f"got {lens}"
+            # sgl main emits batch-level txt_seq_lens; entries are identical for one prompt, take the first.
+            assert len(lens) >= 1 and len({int(x) for x in lens}) == 1, (
+                f"collate expects per-sample cond_kwargs with identical txt_seq_lens, " f"got {lens}"
             )
             L = int(lens[0])
             seq_lens.append(L)
