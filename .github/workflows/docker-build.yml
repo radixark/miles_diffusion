@@ -47,7 +47,8 @@ jobs:
           UPDATE_LATEST: ${{ github.event_name == 'push' || inputs.update_latest }}
         run: |
           [ -z "${IMAGE_TAG}" ] && IMAGE_TAG="dev-cu129-sglang-main-$(date +%Y%m%d)"
-          docker build -f docker/Dockerfile . -t "${IMAGE_REPO}:${IMAGE_TAG}"
+          # --no-cache --pull: the Dockerfile fetches branch tips, so cached layers would pin stale sources.
+          docker build --no-cache --pull -f docker/Dockerfile . -t "${IMAGE_REPO}:${IMAGE_TAG}"
           docker push "${IMAGE_REPO}:${IMAGE_TAG}"
           if [ "${UPDATE_LATEST}" = "true" ]; then
             docker tag "${IMAGE_REPO}:${IMAGE_TAG}" "${IMAGE_REPO}:latest"
