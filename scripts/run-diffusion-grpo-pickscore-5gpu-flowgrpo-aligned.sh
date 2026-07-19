@@ -76,6 +76,7 @@ hf download --repo-type dataset rockdu/miles-diffusion-datasets \
   --weight-decay 1e-4 \
   --use-miles-router \
   --sglang-server-concurrency 4 \
+  --sglang-attention-backend torch_sdpa \
   --update-weight-buffer-size 2147483648 \
   --diffusion-model Qwen/Qwen-Image \
   --diffusion-reward pickscore:1.0 \

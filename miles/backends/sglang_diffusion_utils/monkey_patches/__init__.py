@@ -6,8 +6,10 @@ the sglang scheduler grandchild (spawn: fresh imports) re-reads it and applies
 those groups before model construction.
 
 - ``sgld``: diffusers / SD3 op parity (RMSNorm, LayerNormScaleShift, MulAdd,
-  USPAttention, ...). Op-layer patches: they apply to every sgl-d DiT built
-  from these generic classes.
+  ...). Op-layer patches: they apply to every sgl-d DiT built from these
+  generic classes. Attention is NOT patched: overriding USPAttention.forward
+  breaks bitwise SP-invariance (kernel choice depends on head/batch shape) —
+  align the attention kernel via the attention-backend selection instead.
 - ``ltx``:  LTX rollout cond kwargs + AV cross-off (video-only train parity).
 
 Patch modules are imported inside ``apply_*`` only, so CPU-only Ray actors
@@ -44,14 +46,12 @@ def apply_sgld_monkey_patches() -> None:
         patch_qk_norm_rope,
         patch_rmsnorm,
         patch_scale_residual_layernorm,
-        patch_usp_attention,
     )
 
     patch_rmsnorm.apply()
     patch_layernorm_scale_shift.apply()
     patch_scale_residual_layernorm.apply()
     patch_mul_add.apply()
-    patch_usp_attention.apply()
     patch_qk_norm_rope.apply()
 
 
