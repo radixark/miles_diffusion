@@ -27,6 +27,10 @@ on:
       - 'docker/Dockerfile'
       - 'requirements.txt'
 
+concurrency:
+  group: docker-build
+  cancel-in-progress: false
+
 jobs:
   build-and-push:
     runs-on: self-hosted
@@ -58,3 +62,8 @@ jobs:
             docker tag "${IMAGE_REPO}:${IMAGE_TAG}" "${IMAGE_REPO}:latest"
             docker push "${IMAGE_REPO}:latest"
           fi
+
+      # Each no-cache build leaves a full new layer set locally; keep the runner disk from filling up.
+      - name: Prune local build leftovers
+        if: always()
+        run: docker image prune -f
