@@ -27,10 +27,18 @@ on:
       - 'docker/Dockerfile'
       - 'requirements.txt'
 
+concurrency:
+  group: docker-build
+  cancel-in-progress: false
+
 jobs:
   build-and-push:
     runs-on: self-hosted
     steps:
+      # Container CI jobs leave root-owned files in the shared workspace; reclaim it before checkout cleans.
+      - name: Fix workspace ownership
+        run: docker run --rm -v "${{ github.workspace }}:/ws" alpine:3 chown -R "$(id -u):$(id -g)" /ws
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -54,3 +62,8 @@ jobs:
             docker tag "${IMAGE_REPO}:${IMAGE_TAG}" "${IMAGE_REPO}:latest"
             docker push "${IMAGE_REPO}:latest"
           fi
+
+      # Each no-cache build leaves a full new layer set locally; keep the runner disk from filling up.
+      - name: Prune local build leftovers
+        if: always()
+        run: docker image prune -f
