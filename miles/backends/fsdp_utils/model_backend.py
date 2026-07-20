@@ -27,6 +27,7 @@ import torch.distributed as dist
 from diffusers import DiffusionPipeline
 
 from .sp_attention import apply_dispatch_sp_attention
+from .sp_mesh import resolve_sp_degrees
 from .sp_plan import MILES_SP_PLAN_ATTR, SequenceParallelPlan
 
 logger = logging.getLogger(__name__)
@@ -289,10 +290,14 @@ def validate_sp_support(args, cfg_cls) -> None:
     """
     from miles.utils.misc import load_function
 
-    if args.fsdp_attention_backend is not None:
+    _, _, ring_degree = resolve_sp_degrees(
+        getattr(args, "sequence_parallel_size", 1),
+        getattr(args, "ulysses_degree", 0),
+    )
+    if args.fsdp_attention_backend is not None and ring_degree > 1:
         raise ValueError(
-            "--fsdp-attention-backend has no effect with sequence parallelism: "
-            "USP owns the self-attention kernel choice"
+            "--fsdp-attention-backend is supported with pure Ulysses only: "
+            f"the configured SP topology has ring_degree={ring_degree}, whose ring attention owns the kernel choice"
         )
     backend_cls = load_function(args.model_backend_path)
     if backend_cls.sequence_parallel_plan is ModelBackend.sequence_parallel_plan:

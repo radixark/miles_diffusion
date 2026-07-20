@@ -164,11 +164,13 @@ class _RingFlashAttention(torch.autograd.Function):
         return grad_q, grad_k, grad_v, None, None, None
 
 
-def usp_attention(query, key, value, ulysses_group=None, ring_group=None):
+def usp_attention(query, key, value, ulysses_group=None, ring_group=None, local_attention=None):
     """USP self-attention on [B, S_local, H, D] tensors; returns the same layout.
 
     Ulysses all-to-all temporarily gathers the sequence (sharding heads), ring
-    attention covers the remaining split; with no groups this is plain SDPA.
+    attention covers the remaining split. Without Ring, ``local_attention`` may
+    route the gathered tensors through the model's configured attention backend;
+    the fallback is plain SDPA.
     """
     scale = query.shape[-1] ** -0.5
 
@@ -177,14 +179,20 @@ def usp_attention(query, key, value, ulysses_group=None, ring_group=None):
         key = ulysses_input_all_to_all(key, ulysses_group)
         value = ulysses_input_all_to_all(value, ulysses_group)
 
-    q = query.transpose(1, 2)  # [B, H, S, D]
-    k = key.transpose(1, 2)
-    v = value.transpose(1, 2)
     if ring_group is not None:
+        q = query.transpose(1, 2)  # [B, H, S, D]
+        k = key.transpose(1, 2)
+        v = value.transpose(1, 2)
         out = _RingFlashAttention.apply(q.contiguous(), k.contiguous(), v.contiguous(), ring_group, scale, False)
+        out = out.transpose(1, 2).contiguous()  # [B, S, H, D]
+    elif local_attention is not None:
+        out = local_attention(query, key, value)
     else:
+        q = query.transpose(1, 2)
+        k = key.transpose(1, 2)
+        v = value.transpose(1, 2)
         out = torch.nn.functional.scaled_dot_product_attention(q, k, v, dropout_p=0.0, is_causal=False, scale=scale)
-    out = out.transpose(1, 2).contiguous()  # [B, S, H, D]
+        out = out.transpose(1, 2).contiguous()  # [B, S, H, D]
 
     if ulysses_group is not None:
         out = ulysses_output_all_to_all(out, ulysses_group)

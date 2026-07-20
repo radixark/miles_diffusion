@@ -33,7 +33,8 @@ class FSDPArgs:
     attn_implementation: str = "flash_attention_2"
 
     # DiT attention backend, passed to diffusers set_attention_backend (e.g.
-    # "flash", "sage", "native"). None keeps the diffusers default.
+    # "flash", "sage", "native"). None keeps the diffusers default. Under SP,
+    # explicit backends are supported for pure Ulysses; Ring owns its kernel.
     fsdp_attention_backend: str | None = None
 
     # Logging
