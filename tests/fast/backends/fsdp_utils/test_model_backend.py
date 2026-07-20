@@ -30,10 +30,7 @@ class TestSetAttentionBackend:
         seen = {}
 
         class _CustomBackend(ModelBackend):
-            def load_component(self, component, args, *, master_dtype):
-                raise NotImplementedError
-
-            def load_scheduler(self, args):
+            def load_models_and_scheduler(self, args, *, master_dtype):
                 raise NotImplementedError
 
             def set_attention_backend(self, model, backend):
@@ -52,10 +49,7 @@ class TestSetAttentionBackend:
             pass  # no set_attention_backend, like a native ltx_core transformer
 
         class _OptOutBackend(ModelBackend):
-            def load_component(self, component, args, *, master_dtype):
-                raise NotImplementedError
-
-            def load_scheduler(self, args):
+            def load_models_and_scheduler(self, args, *, master_dtype):
                 raise NotImplementedError
 
             def set_attention_backend(self, model, backend):

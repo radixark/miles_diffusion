@@ -14,7 +14,6 @@ native model overrides methods here instead of retrofitting its instances.
 
 from __future__ import annotations
 
-import abc
 import functools
 import importlib
 import inspect
@@ -28,7 +27,7 @@ from diffusers import DiffusionPipeline
 logger = logging.getLogger(__name__)
 
 
-class ModelBackend(abc.ABC):
+class ModelBackend:
     def __init__(self, train_pipeline_config):
         self.config = train_pipeline_config
 
@@ -44,7 +43,6 @@ class ModelBackend(abc.ABC):
             f"{name!r}; use a native/math attention backend under deterministic mode."
         )
 
-    @abc.abstractmethod
     def load_component(
         self,
         component: str,
@@ -53,10 +51,11 @@ class ModelBackend(abc.ABC):
         master_dtype: torch.dtype,
     ) -> torch.nn.Module:
         """Return the ``component`` model on CPU; must honor an ambient meta-device init context."""
+        raise NotImplementedError
 
-    @abc.abstractmethod
     def load_scheduler(self, args) -> Any:
         """Return the pipeline's training scheduler."""
+        raise NotImplementedError
 
     def enable_gradient_checkpointing(self, model: torch.nn.Module) -> None:
         """Turn on grad checkpointing; default = the diffusers protocol method."""
@@ -95,10 +94,11 @@ class DiffusersModelBackend(ModelBackend):
         master_dtype: torch.dtype,
     ) -> torch.nn.Module:
         model_cls = self._resolve_component_class(args, component)
+        rank = dist.get_rank()
         kwargs = {
             "subfolder": component,
             "torch_dtype": master_dtype,
-            "low_cpu_mem_usage": dist.get_rank() == 0,
+            "low_cpu_mem_usage": rank == 0,
         }
 
         # Non-rank0 loads with low_cpu_mem_usage=False so the ambient meta-device
@@ -106,12 +106,12 @@ class DiffusersModelBackend(ModelBackend):
         # class pins modules to fp32, so disable the pin for the duration (dtypes are
         # re-synced from rank0 afterwards, see ``sync_model_dtypes``).
         keep_in_fp32 = getattr(model_cls, "_keep_in_fp32_modules", None)
-        if dist.get_rank() != 0 and keep_in_fp32 is not None:
+        if rank != 0 and keep_in_fp32 is not None:
             model_cls._keep_in_fp32_modules = None
         try:
             return model_cls.from_pretrained(args.hf_checkpoint, **kwargs)
         finally:
-            if dist.get_rank() != 0 and keep_in_fp32 is not None:
+            if rank != 0 and keep_in_fp32 is not None:
                 model_cls._keep_in_fp32_modules = keep_in_fp32
 
     def load_scheduler(self, args) -> Any:

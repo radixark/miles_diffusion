@@ -3,6 +3,7 @@ import warnings
 from argparse import Namespace
 from collections import defaultdict
 from contextlib import contextmanager, nullcontext
+from itertools import chain
 
 import ray
 import torch
@@ -96,28 +97,28 @@ class FSDPTrainRayActor(TrainRayActor):
             # flash-attn is opaque to torch's determinism flag; backends patch their own dispatch.
             self.model_backend.enable_deterministic_attention(args.fsdp_attention_backend)
         self.scheduler = self.model_backend.load_scheduler(args)
-        init_context = self._get_init_weight_context_manager()
+        rank = dist.get_rank()
 
         self.models: dict[str, torch.nn.Module] = {}
         for component in args.update_weight_target_modules:
             # per raw component (wan2.2 has two transformers), before LoRA/FSDP wrap
-            with init_context():
+            with self._init_weight_context():
                 model = self.model_backend.load_component(component, args, master_dtype=self._master_dtype)
             if args.fsdp_attention_backend is not None:
                 self.model_backend.set_attention_backend(model, args.fsdp_attention_backend)
 
             if args.use_lora:
-                model = apply_lora(model, args, self.train_pipeline_config, on_meta=dist.get_rank() != 0)
+                model = apply_lora(model, args, self.train_pipeline_config)
 
             model.train()
 
             if args.gradient_checkpointing:
                 self.model_backend.enable_gradient_checkpointing(model)
 
-            if dist.get_rank() != 0 and any(not parameter.is_meta for parameter in model.parameters()):
+            if rank != 0 and any(not parameter.is_meta for parameter in model.parameters()):
                 raise RuntimeError(f"{component} did not honor meta initialization")
             sync_model_dtypes(model)
-            full_state = model.state_dict()
+            full_state = model.state_dict() if rank == 0 else {}
             model = apply_fsdp2(
                 model,
                 mesh=self.parallel_state.dp_mesh,
@@ -190,34 +191,23 @@ class FSDPTrainRayActor(TrainRayActor):
 
         return self.args.start_rollout_id
 
-    def _get_init_weight_context_manager(self):
-        """Init context: rank0 builds on CPU with real weights; other ranks build on
-        the meta device (zero allocation) and are materialized by ``load_sharded_model``.
+    @contextmanager
+    def _init_weight_context(self):
+        """Build real weights on rank0 and allocation-free meta weights elsewhere."""
+        if dist.get_rank() == 0:
+            with torch.device("cpu"):
+                yield
+            return
 
-        Mirrors miles' ``FSDPTrainRayActor._get_init_weight_context_manager`` (itself
-        from verl), except: ``include_buffers=False`` is explicit so buffers are
-        computed for real in ``__init__`` (non-persistent ones exist in no checkpoint),
-        and diffusers' per-tensor meta-copy warnings are suppressed. No
-        ``tie_word_embeddings`` escape hatch — DiT components don't tie embeddings.
-        """
         from accelerate import init_empty_weights
 
-        def cpu_init_weights():
-            return torch.device("cpu")
-
-        if dist.get_rank() == 0:
-            return cpu_init_weights
-
-        @contextmanager
-        def meta_init_weights():
-            with init_empty_weights(include_buffers=False), warnings.catch_warnings():
-                warnings.filterwarnings(
-                    "ignore",
-                    message=r"for .*: copying from a non-meta parameter in the checkpoint to a meta parameter.*",
-                )
-                yield
-
-        return meta_init_weights
+        # Some models compute buffer values during __init__, which cannot run on meta.
+        with init_empty_weights(include_buffers=False), warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=r"for .*: copying from a non-meta parameter in the checkpoint to a meta parameter.*",
+            )
+            yield
 
     def _get_parallel_config(self) -> dict:
         return {"dp_size": getattr(self.parallel_state, "dp_size", 1)}
@@ -711,20 +701,11 @@ def _resolve_dtype(name: str) -> torch.dtype:
     return {"fp32": torch.float32, "bf16": torch.bfloat16, "fp16": torch.float16}[name]
 
 
-def apply_lora(
-    model: torch.nn.Module, args: Namespace, train_pipeline_config, on_meta: bool = False
-) -> torch.nn.Module:
-    """Apply PEFT LoRA to the model.
-
-    Args:
-        model: The model to apply LoRA to.
-        args: Arguments containing LoRA settings.
-        train_pipeline_config: The train pipeline config.
-        on_meta: Build the adapter on the meta device without initializing
-            weights (they arrive later via broadcast from rank 0).
-    """
+def apply_lora(model: torch.nn.Module, args: Namespace, train_pipeline_config) -> torch.nn.Module:
+    """Apply PEFT LoRA, leaving non-rank0 adapters uninitialized on meta."""
     from peft import LoraConfig, get_peft_model
 
+    on_meta = dist.get_rank() != 0
     # Per-model fallback when --lora-target-modules is unset (runtime inference: depends on loaded pipeline).
     targets = args.lora_target_modules or train_pipeline_config.lora_target_modules
     init_lora_weight = args.diffusion_init_lora_weight
@@ -746,13 +727,7 @@ def apply_lora(
 
 
 def load_sharded_model(model: torch.nn.Module, full_state: dict, cpu_offload: bool) -> None:
-    """Materialize an FSDP2-wrapped model by broadcasting rank0's full state dict.
-
-    Rank0 moves its real shards to GPU; other ranks allocate empty shards and are
-    filled via ``set_model_state_dict(broadcast_from_rank0=True)``; buffers are then
-    broadcast from rank0. Mirrors miles' ``FSDPTrainRayActor._fsdp2_load_full_state_dict``
-    (itself from verl/utils/fsdp_utils.py::fsdp2_load_full_state_dict).
-    """
+    """Materialize FSDP2 shards from rank0's full state dict."""
     from torch.distributed.checkpoint.state_dict import StateDictOptions, set_model_state_dict
 
     if dist.get_rank() == 0:
@@ -769,13 +744,12 @@ def load_sharded_model(model: torch.nn.Module, full_state: dict, cpu_offload: bo
             full_state_dict=True,
             cpu_offload=cpu_offload,
             broadcast_from_rank0=True,
-            strict=True,
         ),
     )
     # set_model_state_dict only covers state_dict entries; non-persistent buffers
     # (e.g. Wan's rope tables) exist in no state_dict and were wiped by to_empty
     # on non-rank0 ranks — take rank0's real values for every buffer.
-    for _name, buffer in model.named_buffers():
+    for buffer in model.buffers():
         dist.broadcast(buffer, src=0)
 
     if cpu_offload:
@@ -786,27 +760,15 @@ def load_sharded_model(model: torch.nn.Module, full_state: dict, cpu_offload: bo
 
 
 def sync_model_dtypes(model: torch.nn.Module) -> None:
-    """Cast non-rank0 (meta) params/buffers to rank0's per-tensor dtypes.
-
-    Meta ranks load with ``_keep_in_fp32_modules`` disabled (see
-    ``DiffusersModelBackend.load_component``), so their dtypes can drift from rank0's
-    real load; sharding and rank0-broadcast require identical dtypes on every rank.
-    """
-    dtypes = None
-    if dist.get_rank() == 0:
-        dtypes = {
-            "parameters": {name: parameter.dtype for name, parameter in model.named_parameters()},
-            "buffers": {name: buffer.dtype for name, buffer in model.named_buffers()},
-        }
+    """Match meta parameter and buffer dtypes to rank0 before sharding."""
+    rank = dist.get_rank()
+    tensors = list(chain(model.parameters(), model.buffers()))
+    dtypes = [tensor.dtype for tensor in tensors] if rank == 0 else None
     objects = [dtypes]
     dist.broadcast_object_list(objects, src=0)
-    dtypes = objects[0]
-    if dist.get_rank() == 0:
-        return
-    for name, parameter in model.named_parameters():
-        parameter.data = parameter.data.to(dtypes["parameters"][name])
-    for name, buffer in model.named_buffers():
-        buffer.data = buffer.data.to(dtypes["buffers"][name])
+    if rank != 0:
+        for tensor, dtype in zip(tensors, objects[0], strict=True):
+            tensor.data = tensor.data.to(dtype)
 
 
 def apply_fsdp2(model, mesh=None, cpu_offload=False, args=None, no_split_modules=None):
