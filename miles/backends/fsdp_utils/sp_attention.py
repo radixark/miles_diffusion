@@ -65,7 +65,7 @@ def apply_dispatch_sp_attention(transformer, parallel_state):
     if module is None:
         raise ValueError(
             f"{type(base).__name__} does not route attention through diffusers' "
-            "dispatch_attention_fn; the family must override apply_sp_attention"
+            "dispatch_attention_fn; its SequenceParallelPlan must provide a custom attention_installer"
         )
     _wrap_dispatch(module)
     config = _USPDispatchConfig(parallel_state)

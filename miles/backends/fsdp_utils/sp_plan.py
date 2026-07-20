@@ -16,6 +16,8 @@ from diffusers.models._modeling_parallel import ContextParallelOutput
 
 from .sp_ops import gather_sequence, shard_sequence
 
+MILES_SP_PLAN_ATTR = "_miles_sp_plan"
+
 
 @dataclass(frozen=True)
 class SequenceParallelPlan:
@@ -24,12 +26,16 @@ class SequenceParallelPlan:
     ``boundaries``: fqn -> ``ContextParallelInput``/``ContextParallelOutput``
     (the diffusers ``_cp_plan`` vocabulary) — where the sequence dim is sharded
     to S/sp and where full-sequence outputs are gathered back.
-    ``attention``: called with (transformer, parallel_state); routes the model's
-    self-attention through ``sp_ops.usp_attention``.
+    ``attention_installer``: called with (transformer, parallel_state); routes
+    the model's self-attention through ``sp_ops.usp_attention``.
+
+    Backends may attach one plan to a model instance as ``_miles_sp_plan``.
+    The plan is topology-independent; ranks and process groups remain in the
+    runtime parallel state passed to ``apply_sequence_parallel``.
     """
 
     boundaries: dict
-    attention: Callable[[torch.nn.Module, object], None]
+    attention_installer: Callable[[torch.nn.Module, object], None]
     num_attention_heads: int
 
 
@@ -127,5 +133,5 @@ def apply_sequence_parallel(transformer, parallel_state, plan, sum_grad=True):
             f"num_attention_heads({plan.num_attention_heads}) is not divisible by "
             f"ulysses_degree({parallel_state.ulysses_degree})"
         )
-    plan.attention(transformer, parallel_state)
+    plan.attention_installer(transformer, parallel_state)
     _install_boundary_hooks(transformer, plan.boundaries, parallel_state, sum_grad=sum_grad)

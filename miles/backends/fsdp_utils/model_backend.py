@@ -9,8 +9,9 @@ concrete modeling rather than of the training loop:
   - ``fsdp_no_split_modules``: which block classes FSDP wraps
   - ``sequence_parallel_plan``: the model's SP boundaries/attention declaration
 
-Defaults implement the diffusers protocol (see ``models/__init__.py``); a
-native model overrides methods here instead of retrofitting its instances.
+Defaults adapt the diffusers protocol (see ``models/__init__.py``); a native
+backend overrides the model-side seams and provides one plan for each model it
+supports under sequence parallelism.
 """
 
 from __future__ import annotations
@@ -25,7 +26,8 @@ import torch
 import torch.distributed as dist
 from diffusers import DiffusionPipeline
 
-from .sp_plan import SequenceParallelPlan
+from .sp_attention import apply_dispatch_sp_attention
+from .sp_plan import MILES_SP_PLAN_ATTR, SequenceParallelPlan
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +74,7 @@ class ModelBackend:
         raise NotImplementedError
 
     def sequence_parallel_plan(self, model: torch.nn.Module) -> SequenceParallelPlan:
-        """The model's SequenceParallelPlan (boundaries + attention installer)."""
+        """Return the model's SequenceParallelPlan (boundaries + attention installer)."""
         raise NotImplementedError(f"{type(self).__name__} does not support sequence parallelism")
 
 
@@ -166,6 +168,15 @@ class DiffusersModelBackend(ModelBackend):
 
     def sequence_parallel_plan(self, model: torch.nn.Module) -> SequenceParallelPlan:
         base = model.get_base_model() if hasattr(model, "get_base_model") else model
+        plan = getattr(base, MILES_SP_PLAN_ATTR, None)
+        if plan is not None:
+            if not isinstance(plan, SequenceParallelPlan):
+                raise TypeError(
+                    f"{base.__class__.__name__}.{MILES_SP_PLAN_ATTR} must be a SequenceParallelPlan, "
+                    f"got {type(plan).__name__}"
+                )
+            return plan
+
         boundaries = getattr(base, "_cp_plan", None)
         if not boundaries:
             raise ValueError(f"{base.__class__.__name__} declares no _cp_plan; sequence parallelism unavailable")
@@ -175,11 +186,13 @@ class DiffusersModelBackend(ModelBackend):
                 f"{base.__class__.__name__}._cp_plan uses wildcard boundaries {wildcards}, "
                 "which the boundary-hook installer does not support yet"
             )
-        return SequenceParallelPlan(
+        plan = SequenceParallelPlan(
             boundaries=boundaries,
-            attention=self.config.apply_sp_attention,
+            attention_installer=apply_dispatch_sp_attention,
             num_attention_heads=base.config.num_attention_heads,
         )
+        setattr(base, MILES_SP_PLAN_ATTR, plan)
+        return plan
 
 
 class LTXModelBackend(ModelBackend):

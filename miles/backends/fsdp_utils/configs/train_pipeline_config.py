@@ -188,17 +188,6 @@ class TrainPipelineConfig(abc.ABC):
     def preprocess_model_before_fsdp(self, model: torch.nn.Module) -> None:
         """Preprocess the model before FSDP."""
 
-    def apply_sp_attention(self, model: torch.nn.Module, parallel_state) -> None:
-        """Route this family's self-attention through ``sp_ops.usp_attention``.
-
-        Default = intercept at diffusers' attention dispatch (covers every model
-        whose processors call ``dispatch_attention_fn``); families with a
-        non-dispatch attention path override with their own installer.
-        """
-        from ..sp_attention import apply_dispatch_sp_attention
-
-        apply_dispatch_sp_attention(model, parallel_state)
-
     def postprocess_model_after_materialize(self, model: torch.nn.Module) -> None:
         """Postprocess the model after FSDP wrap + weight materialization (default: no-op)."""
         return None
