@@ -12,10 +12,7 @@ register_e2e_ci(
     script="scripts/run-diffusion-grpo-ltx23-sglang.sh",
     env={
         "NUM_ROLLOUT": "2",
-        "DETERMINISTIC_MODE": "1",
         "CUDA_VISIBLE_DEVICES": "0,1,2,3,4",
-        "NUM_GPUS": "4",
-        "PICKSCORE_NUM_GPUS_PER_WORKER": "1.0",
     },
     metrics=[
         "rollout/reward/raw_num_samples",
