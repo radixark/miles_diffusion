@@ -1135,6 +1135,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Number of Ray PickScore actors used when --rm-type pickscore.",
             )
             parser.add_argument(
+                "--rollout-parser-num-workers",
+                type=int,
+                default=1,
+                help="Number of Ray actors that deserialize rollout responses; raise to keep "
+                "engines fed when trajectory tensors are large.",
+            )
+            parser.add_argument(
                 "--pickscore-num-gpus-per-worker",
                 type=float,
                 default=1.0,

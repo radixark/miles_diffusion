@@ -92,6 +92,7 @@ fi
   --pickscore-num-frames 3 \
   --pickscore-num-gpus-per-worker 1.0 \
   --pickscore-num-workers 1 \
+  --rollout-parser-num-workers 8 \
   --pickscore-batch-size 8 \
   --update-weight-buffer-size 2147483648 \
   --save "${SAVE_DIR}" \

@@ -441,7 +441,7 @@ class RolloutManager:
             if not log_dict:
                 return
             log_dict[step_key] = step_value
-            tracking_utils.log(self.args, log_dict, step_key=step_key)
+            tracking_utils.log(self.args, log_dict, step_key=step_key, is_media=True)
 
     def set_train_parallel_config(self, config: dict):
         self.train_parallel_config = config

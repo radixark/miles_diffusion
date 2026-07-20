@@ -13,24 +13,15 @@ def init_tracking(args, primary: bool = True, **kwargs):
         wandb_utils.init_wandb_secondary(args, **kwargs)
 
 
-def log(args, metrics, step_key):
+def log(args, metrics, step_key, is_media=False):
     # E2E metrics tee (tests/ci/e2e_metrics_registry.py): mirror every metric
     # dict to MILES_METRICS_JSONL; O_APPEND keeps concurrent writers line-atomic.
     jsonl_path = os.environ.get("MILES_METRICS_JSONL")
-    if jsonl_path:
+    if jsonl_path and not is_media:
         with open(jsonl_path, "a") as f:
             f.write(json.dumps({"step_key": step_key, **metrics}, sort_keys=True) + "\n")
     del step_key
     if args.use_wandb:
-        # Do NOT pass step=... to wandb.log: wandb requires the explicit step
-        # argument to be monotonically increasing across all log calls, but
-        # miles interleaves per-rollout logs (step=rollout_id, +1 per rollout)
-        # with per-optimizer-step training logs (step=global_step, +2 per
-        # rollout), so rollout calls end up < current internal step and get
-        # dropped / bumped — users see rollout/* x-axis jumping like 1, 6, 10.
-        # The right pattern with wandb.define_metric(step_metric=...) is to
-        # leave wandb's internal commit counter auto-incrementing and let
-        # define_metric pull the x-axis value out of each metric dict
-        # (``rollout/step`` / ``train/step`` / ``eval/step``) — that's the
-        # step_metric wiring set up in wandb_utils._init_wandb_common().
+        # No step=: interleaved rollout/train logs aren't globally monotonic; the
+        # x-axis comes from per-metric step_metric (wandb_utils._init_wandb_common).
         wandb.log(metrics)

@@ -4,18 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from typing import Any
+
+import msgpack
 import ray
 import torch
 
 from miles.utils.processing_utils import fhwc_to_cfhw
-from miles.utils.types import (
-    CondKwargs,
-    DenoisingEnv,
-    DiTTrajectory,
-    RolloutDebugTensors,
-    Sample,
-    decode_tensor_base64,
-)
+from miles.utils.types import CondKwargs, DenoisingEnv, DiTTrajectory, RolloutDebugTensors, Sample, decode_tensor
 
 __all__ = [
     "apply_rollout_image_response",
@@ -31,7 +26,7 @@ def _default_deserialize_func(value: Any) -> torch.Tensor | None:
     if value is None:
         return None
     if isinstance(value, dict) and value.get("__tensor__"):
-        return decode_tensor_base64(value["data"]).detach().cpu()
+        return decode_tensor(value["data"]).detach().cpu()
     raise TypeError(f"Cannot deserialize {type(value)}")
 
 
@@ -201,5 +196,6 @@ def apply_rollout_image_response(
 
 @ray.remote(num_cpus=1)
 class RolloutImageResponseParserActor:
-    def apply(self, sample: Sample, body: dict[str, Any]) -> Sample:
-        return apply_rollout_image_response(sample, body)
+    def apply_raw(self, samples: list[Sample], raw: bytes) -> list[Sample]:
+        bodies = msgpack.unpackb(raw, raw=False)
+        return [apply_rollout_image_response(s, b) for s, b in zip(samples, bodies, strict=True)]

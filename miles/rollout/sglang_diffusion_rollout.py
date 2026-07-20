@@ -108,11 +108,20 @@ class GenerateState(metaclass=SingletonMeta):
         self.dp_counts = [0] * args.sglang_dp_size
         self.dp_rank = 0
         self.node_id = ray.get_runtime_context().get_node_id()
-        self.response_parser_actor = RolloutImageResponseParserActor.options(
-            scheduling_strategy=NodeAffinitySchedulingStrategy(node_id=self.node_id, soft=False)
-        ).remote()
+        self.response_parsers = [
+            RolloutImageResponseParserActor.options(
+                scheduling_strategy=NodeAffinitySchedulingStrategy(node_id=self.node_id, soft=False)
+            ).remote()
+            for _ in range(args.rollout_parser_num_workers)
+        ]
+        self._parser_rr = 0
 
         self.reset()
+
+    def next_parser(self):
+        parser = self.response_parsers[self._parser_rr % len(self.response_parsers)]
+        self._parser_rr += 1
+        return parser
 
     @contextmanager
     def dp_rank_context(self):
@@ -176,12 +185,9 @@ async def generate_microgroup(
         sampling_params, microgroup[0].prompt, num_outputs_per_prompt=len(microgroup)
     )
 
-    output = await post(url, payload)
-    refs = [
-        state.response_parser_actor.apply.remote(sample, response)
-        for sample, response in zip(microgroup, output, strict=True)
-    ]
-    microgroup = await asyncio.to_thread(ray.get, refs)
+    raw = await post(url, payload, raw=True)
+    ref = state.next_parser().apply_raw.remote(microgroup, raw)
+    microgroup = await asyncio.to_thread(ray.get, ref)
 
     # Stash the SDE/training step indices on each sample so _train_core can
     # slice the full-length trajectory & rollout_log_probs down to the window.
