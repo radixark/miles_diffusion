@@ -7,7 +7,7 @@ from torch.distributed.device_mesh import init_device_mesh
 from miles.utils.distributed_utils import get_gloo_group
 
 from ..training_utils.parallel import ParallelState
-from .sp_mesh import locate_rank, sp_subgroups, validate_sp_config
+from .sequence_parallel.topology import locate_rank, sp_subgroups, validate_sp_config
 
 logger = logging.getLogger(__name__)
 

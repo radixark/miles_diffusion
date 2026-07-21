@@ -14,7 +14,7 @@ from dataclasses import dataclass
 import torch
 from diffusers.models._modeling_parallel import ContextParallelOutput
 
-from .sp_ops import gather_sequence, shard_sequence
+from .attention import gather_sequence, shard_sequence
 
 MILES_SP_PLAN_ATTR = "_miles_sp_plan"
 
@@ -27,7 +27,7 @@ class SequenceParallelPlan:
     (the diffusers ``_cp_plan`` vocabulary) — where the sequence dim is sharded
     to S/sp and where full-sequence outputs are gathered back.
     ``attention_installer``: called with (transformer, parallel_state); routes
-    the model's self-attention through ``sp_ops.usp_attention``.
+    the model's self-attention through ``attention.usp_attention``.
 
     Backends may attach one plan to a model instance as ``_miles_sp_plan``.
     The plan is topology-independent; ranks and process groups remain in the

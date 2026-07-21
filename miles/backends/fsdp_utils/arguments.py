@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import yaml
 
-from .sp_mesh import validate_sp_config
+from .sequence_parallel.topology import validate_sp_config
 
 
 @dataclass

@@ -1,15 +1,15 @@
-"""Dispatch-level USP attention: the default installer for diffusers models.
+"""Diffusers dispatcher integration for USP self-attention.
 
 Wraps the modeling module's ``dispatch_attention_fn`` so self-attention call
 sites (which pass ``_parallel_config`` per upstream convention) route through
-``sp_ops.usp_attention``; cross-attention and the model's own processors run
+``attention.usp_attention``; cross-attention and the model's own processors run
 untouched.
 """
 
 import functools
 import sys
 
-from .sp_ops import usp_attention
+from .attention import usp_attention
 
 
 class _USPDispatchConfig:
