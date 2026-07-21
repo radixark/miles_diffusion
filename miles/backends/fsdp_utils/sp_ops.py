@@ -3,7 +3,8 @@
 Layout convention matches sglang-diffusion's USP (heads sharded across the ulysses
 group inside attention, sequence sharded outside), so training numerics stay
 aligned with rollout; the collectives only move data. Local attention is torch
-SDPA; ring attention uses torch's ring templates with the aten flash op.
+SDPA by default and may be injected by the model adapter; ring attention uses
+torch's ring templates with the aten flash op.
 """
 
 import torch

@@ -4,6 +4,8 @@ from dataclasses import dataclass
 
 import yaml
 
+from .sp_mesh import validate_sp_config
+
 
 @dataclass
 class FSDPArgs:
@@ -156,6 +158,31 @@ def validate_attention_args(args):
         f"torch.use_deterministic_algorithms with no deterministic hook here. Use a "
         f"flash (flash/_flash_3) or native (SDPA) backend."
     )
+
+
+def validate_sp_args(args) -> None:
+    """Validate the finalized train topology and SP/backend combination on the driver.
+
+    Model-instance constraints such as ``_cp_plan`` availability and attention
+    dispatch compatibility are checked later, after the model is loaded.
+    """
+    from miles.utils.misc import load_function
+
+    sp_size, _, ring_degree = validate_sp_config(
+        args.actor_num_gpus_per_node * args.actor_num_nodes,
+        args.sequence_parallel_size,
+        args.ulysses_degree,
+    )
+    if sp_size == 1:
+        return
+    if args.fsdp_attention_backend is not None and ring_degree > 1:
+        raise ValueError(
+            "--fsdp-attention-backend is supported with pure Ulysses only: "
+            f"the configured SP topology has ring_degree={ring_degree}, whose ring attention owns the kernel choice"
+        )
+    backend_cls = load_function(args.model_backend_path)
+    if not backend_cls.supports_sequence_parallelism():
+        raise ValueError(f"{backend_cls.__name__} does not support sequence parallelism")
 
 
 def load_fsdp_args(extra_args_provider=None):

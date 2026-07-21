@@ -26,7 +26,7 @@ from miles.utils.train_data_utils import (
     build_microbatch_schedule,
     scheduler_meta_from_rollout,
     stack_train_pair_rollout_debug,
-    validate_same_microbatch_counts_across_dp,
+    validate_same_microbatch_counts_across_train_ranks,
 )
 from . import checkpoint
 from .diffusion_update_weight_utils import (
@@ -383,7 +383,7 @@ class FSDPTrainRayActor(TrainRayActor):
             num_optim_steps_per_rollout=num_optim_steps_per_rollout,
             micro_batch_size=micro_bs,
         )
-        validate_same_microbatch_counts_across_dp(
+        validate_same_microbatch_counts_across_train_ranks(
             microbatch_schedule=microbatch_schedule,
             parallel_state=self.parallel_state,
         )

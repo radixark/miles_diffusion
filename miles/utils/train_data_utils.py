@@ -429,12 +429,12 @@ def reorder_train_pairs_for_tiling(
     return [train_data[i] for step in schedule for micro_batch in step for i in micro_batch]
 
 
-def validate_same_microbatch_counts_across_dp(
+def validate_same_microbatch_counts_across_train_ranks(
     *,
     microbatch_schedule: list[list[tuple[int, int]]],
     parallel_state,
 ) -> None:
-    """Ensure every DP rank will run the same number of FSDP micro-batches."""
+    """Ensure every rank in the flattened DP×SP FSDP mesh runs the same number of micro-batches."""
     local_microbatch_counts = [len(step_ranges) for step_ranges in microbatch_schedule]
     gathered_microbatch_counts = [None] * parallel_state.dp_sp_size
     dist.all_gather_object(
@@ -444,6 +444,6 @@ def validate_same_microbatch_counts_across_dp(
     )
     if any(counts != local_microbatch_counts for counts in gathered_microbatch_counts):
         raise ValueError(
-            "Uneven train-pair counts would make DP ranks run different numbers of FSDP "
+            "Uneven train-pair counts would make training ranks run different numbers of FSDP "
             f"micro-batches per optimizer step: {gathered_microbatch_counts}"
         )

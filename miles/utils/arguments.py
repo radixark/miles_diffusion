@@ -1465,9 +1465,9 @@ def miles_validate_args(args):
     )
 
     if getattr(args, "diffusion_model", None):
-        from miles.backends.fsdp_utils.model_backend import validate_sp_support
+        from miles.backends.fsdp_utils.arguments import validate_sp_args
 
-        validate_sp_support(args)
+        validate_sp_args(args)
 
     # always true on offload for colocate at the moment.
     if args.colocate:

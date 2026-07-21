@@ -27,7 +27,6 @@ import torch.distributed as dist
 from diffusers import DiffusionPipeline
 
 from .sp_attention import apply_dispatch_sp_attention
-from .sp_mesh import validate_sp_config
 from .sp_plan import MILES_SP_PLAN_ATTR, SequenceParallelPlan
 
 logger = logging.getLogger(__name__)
@@ -73,6 +72,11 @@ class ModelBackend:
 
     def set_attention_backend(self, model: torch.nn.Module, backend: str) -> None:
         raise NotImplementedError
+
+    @classmethod
+    def supports_sequence_parallelism(cls) -> bool:
+        """Whether the backend declares a model-specific SP plan resolver."""
+        return cls.sequence_parallel_plan is not ModelBackend.sequence_parallel_plan
 
     def sequence_parallel_plan(self, model: torch.nn.Module) -> SequenceParallelPlan:
         """Return the model's SequenceParallelPlan (boundaries + attention installer)."""
@@ -181,12 +185,6 @@ class DiffusersModelBackend(ModelBackend):
         boundaries = getattr(base, "_cp_plan", None)
         if not boundaries:
             raise ValueError(f"{base.__class__.__name__} declares no _cp_plan; sequence parallelism unavailable")
-        wildcards = [k for k in boundaries if "*" in k]
-        if wildcards:
-            raise ValueError(
-                f"{base.__class__.__name__}._cp_plan uses wildcard boundaries {wildcards}, "
-                "which the boundary-hook installer does not support yet"
-            )
         plan = SequenceParallelPlan(
             boundaries=boundaries,
             attention_installer=apply_dispatch_sp_attention,
@@ -277,30 +275,3 @@ class LTXModelBackend(ModelBackend):
             )
         masked = MaskedAttentionFunction[name] if name in MaskedAttentionFunction.__members__ else None
         set_attention_module_op(attention=AttentionFunction[name], masked_attention=masked).mutator(model)
-
-
-def validate_sp_support(args) -> None:
-    """Driver-side, before any actor launches: reject launches whose SP config
-    cannot work, without loading weights.
-
-    Models that lack a _cp_plan or don't route attention through diffusers'
-    dispatch fail later (plan construction / attention install) with a clear
-    message — checking those here would require loading the model class.
-    """
-    from miles.utils.misc import load_function
-
-    sp_size, _, ring_degree = validate_sp_config(
-        args.actor_num_gpus_per_node * args.actor_num_nodes,
-        args.sequence_parallel_size,
-        args.ulysses_degree,
-    )
-    if sp_size == 1:
-        return
-    if args.fsdp_attention_backend is not None and ring_degree > 1:
-        raise ValueError(
-            "--fsdp-attention-backend is supported with pure Ulysses only: "
-            f"the configured SP topology has ring_degree={ring_degree}, whose ring attention owns the kernel choice"
-        )
-    backend_cls = load_function(args.model_backend_path)
-    if backend_cls.sequence_parallel_plan is ModelBackend.sequence_parallel_plan:
-        raise ValueError(f"{backend_cls.__name__} does not support sequence parallelism")

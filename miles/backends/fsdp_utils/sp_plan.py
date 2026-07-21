@@ -38,6 +38,13 @@ class SequenceParallelPlan:
     attention_installer: Callable[[torch.nn.Module, object], None]
     num_attention_heads: int
 
+    def __post_init__(self) -> None:
+        wildcards = [path for path in self.boundaries if "*" in path]
+        if wildcards:
+            raise ValueError(f"SequenceParallelPlan does not support wildcard boundary paths: {wildcards}")
+        if self.num_attention_heads < 1:
+            raise ValueError(f"num_attention_heads must be positive, got {self.num_attention_heads}")
+
 
 def _split_if_expected(x, spec, parallel_state):
     if not isinstance(x, torch.Tensor):
