@@ -184,10 +184,6 @@ class TrainPipelineConfig(abc.ABC):
     ) -> torch.Tensor:
         """Apply classifier-free guidance. Model-specific (e.g. rescale or not)."""
 
-    @abc.abstractmethod
-    def preprocess_model_before_fsdp(self, model: torch.nn.Module) -> None:
-        """Preprocess the model before FSDP."""
-
     def postprocess_model_after_materialize(self, model: torch.nn.Module) -> None:
         """Postprocess the model after FSDP wrap + weight materialization (default: no-op)."""
         return None

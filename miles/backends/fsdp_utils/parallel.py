@@ -55,7 +55,7 @@ def create_fsdp_parallel_state(args: Namespace) -> ParallelState:
 
     parallel_state = ParallelState(
         dp_rank=dp_rank,
-        dp_src_rank=dp_rank // world_size,
+        dp_src_rank=0,
         dp_size=dp_size,
         dp_group=dp_group,
         sp_rank=sp_rank,
@@ -72,9 +72,5 @@ def create_fsdp_parallel_state(args: Namespace) -> ParallelState:
         tp_rank=0,
         tp_group=None,
     )
-    parallel_state.dp_mesh = mesh["dp"]
-    if sp_size > 1:
-        parallel_state.fsdp_mesh = mesh[("dp", "sp")]._flatten("dp_sp")
-    else:
-        parallel_state.fsdp_mesh = mesh["dp"]
+    parallel_state.fsdp_mesh = mesh[("dp", "sp")]._flatten("dp_sp") if sp_size > 1 else mesh["dp"]
     return parallel_state

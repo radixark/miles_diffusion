@@ -66,6 +66,3 @@ class Wan2_2TrainPipelineConfig(TrainPipelineConfig):
     ) -> torch.Tensor:
         scale = true_cfg_scale if true_cfg_scale is not None else guidance_scale
         return noise_pred_neg + scale * (noise_pred_pos - noise_pred_neg)
-
-    def preprocess_model_before_fsdp(self, model: torch.nn.Module) -> None:
-        return None

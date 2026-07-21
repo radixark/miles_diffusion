@@ -19,8 +19,9 @@
 #   --micro-batch-size 2: the one-step-per-rollout schedule keeps every
 #   micro-batch phase-pure (one DiT, one CFG scale); mbs=4 OOMs on H200, 2 fits.
 #
-# NOTE: gradient checkpointing stays OFF by default (not needed at 5 frames).
-#   If you OOM, enable --gradient-checkpointing or lower --rollout-batch-size,
+# NOTE: gradient checkpointing stays OFF. Wan2.2 under FSDP2 mixed precision hits
+#   torch.utils.checkpoint CheckpointError (fp32 RoPE freqs buffers; fix pending
+#   in a separate PR). If you OOM, lower --rollout-batch-size,
 #   --n-samples-per-prompt, or --diffusion-microgroup-size.
 #
 # Layout: first 4 GPUs in CUDA_VISIBLE_DEVICES = train+sgld colocate,
@@ -47,11 +48,6 @@ if [[ -n "${WANDB_API_KEY:-}" ]]; then
 fi
 
 PYTHON_BIN="${PYTHON_BIN:-python}"
-
-# Sequence parallelism (USP). Default off; sp = ulysses x ring must divide the
-# train world size. 0 = auto (ulysses fills sp); ring = sp / ulysses.
-SP_SIZE="${SP_SIZE:-1}"
-ULYSSES_DEGREE="${ULYSSES_DEGREE:-0}"
 
 DATASETS_DIR="/root/datasets/miles-diffusion-datasets"
 if [[ ! -f "${DATASETS_DIR}/flowgrpo_pickscore/train.jsonl" ]]; then
@@ -81,8 +77,6 @@ WAN_LORA_TARGET_MODULES=(
   --diffusion-microgroup-size 8 \
   --micro-batch-size 2 \
   --actor-num-gpus-per-node 4 \
-  --sequence-parallel-size "${SP_SIZE}" \
-  --ulysses-degree "${ULYSSES_DEGREE}" \
   --rollout-num-gpus 4 \
   --rollout-num-gpus-per-engine 1 \
   --num-gpus-per-node 5 \

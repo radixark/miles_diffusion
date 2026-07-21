@@ -7,7 +7,11 @@ Pure functions, no distributed init required. Group layout matches sglang's USP
 
 def resolve_sp_degrees(sequence_parallel_size, ulysses_degree=0):
     """Normalize to (sp, ulysses, ring); ring = sp // ulysses. 0 means auto: ulysses fills sp."""
-    sp = max(1, sequence_parallel_size)
+    if sequence_parallel_size < 1:
+        raise ValueError(f"sequence_parallel_size must be positive, got {sequence_parallel_size}")
+    if ulysses_degree < 0:
+        raise ValueError(f"ulysses_degree must be non-negative, got {ulysses_degree}")
+    sp = sequence_parallel_size
     u = ulysses_degree or sp
     if sp % u:
         raise ValueError(f"sequence_parallel_size({sp}) is not divisible by ulysses_degree({u})")
@@ -31,7 +35,7 @@ def sp_subgroups(world_size, sequence_parallel_size, ulysses_degree=0):
 
     Inverse of locate_rank: coordinates -> full member list per group.
     """
-    sp, u, r = resolve_sp_degrees(sequence_parallel_size, ulysses_degree)
+    sp, u, r = validate_sp_config(world_size, sequence_parallel_size, ulysses_degree)
     dp_size = world_size // sp
     sp_groups = [list(range(d * sp, (d + 1) * sp)) for d in range(dp_size)]
     ulysses_groups = [g[i * u : (i + 1) * u] for g in sp_groups for i in range(r)]

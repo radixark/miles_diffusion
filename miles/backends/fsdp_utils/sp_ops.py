@@ -11,31 +11,29 @@ import torch.distributed as dist
 
 
 class _GatherSequence(torch.autograd.Function):
-    """All-gather local shards along dim; backward returns each rank's slice.
+    """All-gather local shards along dim; backward sums then returns each rank's slice.
 
-    With sum_grad the backward all-reduces the incoming gradient over the sp
-    group first: downstream partial grads then carry an sp factor, so FSDP's
+    The backward all-reduces the incoming gradient over the sp group first:
+    downstream partial grads then carry an sp factor, so FSDP's
     1/(dp*sp) mean over a dp x sp shard mesh restores (1/dp) * sum_dp exactly.
     """
 
     @staticmethod
-    def forward(ctx, x, group, sp_rank, sp_size, dim, sum_grad):
+    def forward(ctx, x, group, sp_rank, sp_size, dim):
         ctx.group = group
         ctx.sp_rank = sp_rank
         ctx.dim = dim
         ctx.local_size = x.shape[dim]
-        ctx.sum_grad = sum_grad
         parts = [torch.empty_like(x) for _ in range(sp_size)]
         dist.all_gather(parts, x.contiguous(), group=group)
         return torch.cat(parts, dim=dim)
 
     @staticmethod
     def backward(ctx, grad):
-        if ctx.sum_grad:
-            grad = grad.contiguous()
-            dist.all_reduce(grad, group=ctx.group)
+        grad = grad.contiguous()
+        dist.all_reduce(grad, group=ctx.group)
         start = ctx.sp_rank * ctx.local_size
-        return grad.narrow(ctx.dim, start, ctx.local_size), None, None, None, None, None
+        return grad.narrow(ctx.dim, start, ctx.local_size), None, None, None, None
 
 
 def shard_sequence(x, sp_rank, sp_size, dim=1):
@@ -46,8 +44,8 @@ def shard_sequence(x, sp_rank, sp_size, dim=1):
     return x.narrow(dim, sp_rank * s_local, s_local)
 
 
-def gather_sequence(x, group, sp_rank, sp_size, dim=1, sum_grad=False):
-    return _GatherSequence.apply(x, group, sp_rank, sp_size, dim, sum_grad)
+def gather_sequence(x, group, sp_rank, sp_size, dim=1):
+    return _GatherSequence.apply(x, group, sp_rank, sp_size, dim)
 
 
 class _AllToAllSingle(torch.autograd.Function):
@@ -111,7 +109,7 @@ class _RingFlashAttention(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, query, key, value, group, scale, is_causal):
+    def forward(ctx, query, key, value, group, scale):
         # torch's experimental (private) ring-attention templates; this home
         # requires torch >= 2.11 (the CI image's pin) — before the 2.11 move
         # they lived in torch.distributed.tensor.experimental._attention.
@@ -124,13 +122,13 @@ class _RingFlashAttention(torch.autograd.Function):
             query=query,
             key=key,
             value=value,
-            is_causal=is_causal,
+            is_causal=False,
             dropout_p=0.0,
             scale=scale,
         )
         out = out.to(query.dtype)
         ctx.save_for_backward(query, key, value, out, lse, cum_q, cum_k, philox_seed, philox_offset)
-        ctx.group, ctx.scale, ctx.is_causal, ctx.max_q, ctx.max_k = group, scale, is_causal, max_q, max_k
+        ctx.group, ctx.scale, ctx.max_q, ctx.max_k = group, scale, max_q, max_k
         return out
 
     @staticmethod
@@ -151,7 +149,7 @@ class _RingFlashAttention(torch.autograd.Function):
             value=value,
             out=out,
             logsumexp=lse,
-            is_causal=ctx.is_causal,
+            is_causal=False,
             cum_seq_q=cum_q,
             cum_seq_k=cum_k,
             max_q=ctx.max_q,
@@ -161,33 +159,33 @@ class _RingFlashAttention(torch.autograd.Function):
             philox_offset=philox_offset,
             scale=ctx.scale,
         )
-        return grad_q, grad_k, grad_v, None, None, None
+        return grad_q, grad_k, grad_v, None, None
 
 
-def usp_attention(query, key, value, ulysses_group=None, ring_group=None, local_attention=None):
+def usp_attention(query, key, value, ulysses_group=None, ring_group=None, local_attention_fn=None):
     """USP self-attention on [B, S_local, H, D] tensors; returns the same layout.
 
     Ulysses all-to-all temporarily gathers the sequence (sharding heads), ring
-    attention covers the remaining split. Without Ring, ``local_attention`` may
+    attention covers the remaining split. Without Ring, ``local_attention_fn`` may
     route the gathered tensors through the model's configured attention backend;
     the fallback is plain SDPA.
     """
-    scale = query.shape[-1] ** -0.5
-
     if ulysses_group is not None:
         query = ulysses_input_all_to_all(query, ulysses_group)
         key = ulysses_input_all_to_all(key, ulysses_group)
         value = ulysses_input_all_to_all(value, ulysses_group)
 
     if ring_group is not None:
+        scale = query.shape[-1] ** -0.5
         q = query.transpose(1, 2)  # [B, H, S, D]
         k = key.transpose(1, 2)
         v = value.transpose(1, 2)
-        out = _RingFlashAttention.apply(q.contiguous(), k.contiguous(), v.contiguous(), ring_group, scale, False)
+        out = _RingFlashAttention.apply(q.contiguous(), k.contiguous(), v.contiguous(), ring_group, scale)
         out = out.transpose(1, 2).contiguous()  # [B, S, H, D]
-    elif local_attention is not None:
-        out = local_attention(query, key, value)
+    elif local_attention_fn is not None:
+        out = local_attention_fn(query, key, value)
     else:
+        scale = query.shape[-1] ** -0.5
         q = query.transpose(1, 2)
         k = key.transpose(1, 2)
         v = value.transpose(1, 2)

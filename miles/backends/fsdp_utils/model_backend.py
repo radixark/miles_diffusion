@@ -27,7 +27,7 @@ import torch.distributed as dist
 from diffusers import DiffusionPipeline
 
 from .sp_attention import apply_dispatch_sp_attention
-from .sp_mesh import resolve_sp_degrees
+from .sp_mesh import validate_sp_config
 from .sp_plan import MILES_SP_PLAN_ATTR, SequenceParallelPlan
 
 logger = logging.getLogger(__name__)
@@ -279,8 +279,7 @@ class LTXModelBackend(ModelBackend):
         set_attention_module_op(attention=AttentionFunction[name], masked_attention=masked).mutator(model)
 
 
-# to validate and fail earlier if there's invalid condition
-def validate_sp_support(args, cfg_cls) -> None:
+def validate_sp_support(args) -> None:
     """Driver-side, before any actor launches: reject launches whose SP config
     cannot work, without loading weights.
 
@@ -290,10 +289,13 @@ def validate_sp_support(args, cfg_cls) -> None:
     """
     from miles.utils.misc import load_function
 
-    _, _, ring_degree = resolve_sp_degrees(
-        getattr(args, "sequence_parallel_size", 1),
-        getattr(args, "ulysses_degree", 0),
+    sp_size, _, ring_degree = validate_sp_config(
+        args.actor_num_gpus_per_node * args.actor_num_nodes,
+        args.sequence_parallel_size,
+        args.ulysses_degree,
     )
+    if sp_size == 1:
+        return
     if args.fsdp_attention_backend is not None and ring_degree > 1:
         raise ValueError(
             "--fsdp-attention-backend is supported with pure Ulysses only: "

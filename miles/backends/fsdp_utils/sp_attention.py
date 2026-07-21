@@ -39,10 +39,14 @@ def _wrap_dispatch(module):
             raise ValueError("USP self-attention does not support is_causal yet")
         if (len(args) > 3 and args[3] is not None) or kwargs.get("scale") is not None:
             raise ValueError("USP self-attention uses the default 1/sqrt(d) scale")
-        if parallel_config.ring_group is not None and kwargs.get("backend") is not None:
-            raise ValueError("An explicit attention backend is supported with pure Ulysses only, not Ring attention")
+        if parallel_config.ring_group is not None:
+            if kwargs.get("backend") is not None:
+                raise ValueError(
+                    "An explicit attention backend is supported with pure Ulysses only, not Ring attention"
+                )
+            return usp_attention(query, key, value, parallel_config.ulysses_group, parallel_config.ring_group)
 
-        def local_attention(local_query, local_key, local_value):
+        def local_attention_fn(local_query, local_key, local_value):
             return original(
                 local_query,
                 local_key,
@@ -57,8 +61,7 @@ def _wrap_dispatch(module):
             key,
             value,
             parallel_config.ulysses_group,
-            parallel_config.ring_group,
-            local_attention=local_attention,
+            local_attention_fn=local_attention_fn,
         )
 
     dispatch._miles_usp_wrapped = True

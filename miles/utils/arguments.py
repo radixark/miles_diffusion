@@ -1294,6 +1294,7 @@ def parse_args(add_custom_arguments=None):
     args = load_fsdp_args(extra_args_provider=add_miles_arguments)
     args.rank = 0  # Primary process rank for wandb initialization
     args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
+
     miles_validate_args(args)
     sglang_validate_args(args)
 
@@ -1419,10 +1420,6 @@ def miles_validate_args(args):
                 f"--diffusion-guidance-scale 1.0 and drop --diffusion-negative-prompt"
             )
         cfg_cls.validate_args(args)
-        if getattr(args, "sequence_parallel_size", 1) > 1:
-            from miles.backends.fsdp_utils.model_backend import validate_sp_support
-
-            validate_sp_support(args, cfg_cls)
         if args.use_lora and args.lora_target_modules is None:
             args.lora_target_modules = list(cfg_cls.lora_target_modules)
 
@@ -1466,6 +1463,11 @@ def miles_validate_args(args):
     assert not (args.debug_rollout_only and args.debug_train_only), (
         "debug_rollout_only and debug_train_only cannot be set at the same time, " "please set only one of them."
     )
+
+    if getattr(args, "diffusion_model", None):
+        from miles.backends.fsdp_utils.model_backend import validate_sp_support
+
+        validate_sp_support(args)
 
     # always true on offload for colocate at the moment.
     if args.colocate:
@@ -1525,7 +1527,9 @@ def miles_validate_args(args):
             )
         args.global_batch_size = derived_gbs
 
-    dp_size = args.actor_num_gpus_per_node * args.actor_num_nodes
+    train_world_size = args.actor_num_gpus_per_node * args.actor_num_nodes
+    sp_size = args.sequence_parallel_size if getattr(args, "diffusion_model", None) else 1
+    dp_size = train_world_size // sp_size
     if args.global_batch_size is not None:
         assert (
             args.global_batch_size % dp_size == 0
