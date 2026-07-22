@@ -131,6 +131,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Max absolute value for advantage clipping in diffusion training.",
             )
             parser.add_argument(
+                "--diffusion-recompute-old-log-prob",
+                action="store_true",
+                help=(
+                    "Recompute old log-probs with the trainer forward (pre-update weights) "
+                    "instead of using rollout-stored values, making the PPO ratio "
+                    "implementation-consistent."
+                ),
+            )
+            parser.add_argument(
                 "--diffusion-kl-beta",
                 type=float,
                 default=0.0,

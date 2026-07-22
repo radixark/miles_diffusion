@@ -381,6 +381,26 @@ class FSDPTrainRayActor(TrainRayActor):
             parallel_state=self.parallel_state,
         )
 
+        # ------------- Recompute old log-probs (impl-consistent PPO ratio) -------------
+        if self.args.diffusion_recompute_old_log_prob:
+            with timer("recompute_old_log_prob"), torch.no_grad():
+                for microbatch_ranges in microbatch_schedule:
+                    legacy_pad_to_len = self._maybe_legacy_window_pad_len(train_pairs, microbatch_ranges)
+                    for pair_lo, pair_hi in microbatch_ranges:
+                        self._forward_train_pair_batch(
+                            train_pairs[pair_lo:pair_hi],
+                            use_cfg=use_cfg,
+                            guidance_scale=guidance_scale,
+                            true_cfg_scale=true_cfg_scale,
+                            clip_range=clip_range,
+                            noise_level=noise_level,
+                            num_train_timesteps=num_train_timesteps,
+                            log_stats=defaultdict(list),
+                            device=device,
+                            pad_to_len=legacy_pad_to_len,
+                            write_old_log_prob=True,
+                        )
+
         # ------------- Forward / Backward -------------
         with timer("actor_train"):
             for microbatch_ranges in microbatch_schedule:
@@ -461,8 +481,12 @@ class FSDPTrainRayActor(TrainRayActor):
         device: torch.device,
         kl_beta: float = 0.0,
         pad_to_len: int | None = None,
-    ) -> torch.Tensor:
-        """One DiT forward + PPO loss over ``len(batch)`` train pairs. Returns sum of per-pair losses."""
+        write_old_log_prob: bool = False,
+    ) -> torch.Tensor | None:
+        """One DiT forward + PPO loss over ``len(batch)`` train pairs. Returns sum of per-pair losses.
+
+        With ``write_old_log_prob``, the computed log-prob overwrites each pair's
+        ``log_prob_old`` and no loss is returned (caller wraps in ``no_grad``)."""
         forward_dtype = self._forward_dtype
         train_pipeline_config = self.train_pipeline_config
         bsz = len(batch)
@@ -588,6 +612,11 @@ class FSDPTrainRayActor(TrainRayActor):
             prev_sample=next_latents_microbatch.float(),
             noise_level=noise_level,
         )
+
+        if write_old_log_prob:
+            for pair, log_prob in zip(batch, log_prob_new_microbatch):
+                pair["log_prob_old"] = log_prob.cpu()
+            return None
 
         log_prob_new = log_prob_new_microbatch  # (bsz,) -- sde_step_with_logprob means over non-batch dims
         log_prob_old = log_prob_old_microbatch  # (bsz,)
