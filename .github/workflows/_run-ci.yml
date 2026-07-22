@@ -76,6 +76,9 @@ jobs:
       PYTHONPATH: ${{ github.workspace }}
       GITHUB_COMMIT_NAME: ${{ github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+      # Gated models (e.g. stabilityai/stable-diffusion-3.5-medium for the SD3
+      # e2e) need an HF token with repo access; unset for public-model tests.
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
