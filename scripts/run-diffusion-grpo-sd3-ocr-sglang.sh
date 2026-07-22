@@ -8,37 +8,10 @@
 #
 # GPU layout (default, override with CUDA_VISIBLE_DEVICES):
 #   2-GPU colocate: FSDP DP=2 + 2 sglang rollout engines (time-multiplexed per GPU).
-#
-# The script kills only processes whose cwd is inside this Miles workspace,
-# so co-located experiments on other GPUs are not disturbed.
-
-MILES_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-echo "[kill] hunting for stale miles processes under cwd=${MILES_ROOT}"
-for pid in $(ls /proc 2>/dev/null | grep -E '^[0-9]+$'); do
-  link=$(readlink "/proc/${pid}/cwd" 2>/dev/null) || continue
-  exe=$(readlink  "/proc/${pid}/exe" 2>/dev/null) || continue
-  case "${link}" in
-    "${MILES_ROOT}"|"${MILES_ROOT}"/*)
-      case "${exe}" in
-        */python*|*/ray*)
-          echo "[kill] ${pid} (${exe}) cwd=${link}"
-          kill -9 "${pid}" 2>/dev/null || true
-          ;;
-      esac
-      ;;
-  esac
-done
-sleep 3
-
-# Reap zombie parents.
-ps -eo ppid,state,comm --no-headers \
-  | awk '$2=="Z" && $1!=1 && $3~/ray|python|sglang/ {print $1}' \
-  | sort -u | xargs -r kill -9 2>/dev/null || true
-sleep 2
 
 set -euo pipefail
 
-ROOT_DIR="${MILES_ROOT}"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-6,7}"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
