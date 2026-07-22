@@ -124,8 +124,7 @@ def allocate_train_group(args, num_nodes, num_gpus_per_node, pg):
         num_nodes=num_nodes,
         num_gpus_per_node=num_gpus_per_node,
         pg=pg,
-        # Diffusion training is GPU-heavy; avoid fractional-GPU scheduling stalls.
-        num_gpus_per_actor=0.8,
+        num_gpus_per_actor=0.7,
     )
 
 

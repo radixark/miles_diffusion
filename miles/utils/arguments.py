@@ -1145,7 +1145,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--pickscore-num-gpus-per-worker",
                 type=float,
                 default=1.0,
-                help="GPU resources per PickScore actor. Use 1.0 for a dedicated GPU smoke test.",
+                help="GPU resources per PickScore actor when reward is not colocated. "
+                "Use a fractional value below 1.0 for lightweight single-GPU reward models.",
+            )
+            parser.add_argument(
+                "--colocate-reward",
+                action="store_true",
+                default=False,
+                help="Colocate reward actors onto rollout GPUs (train 0.7 + rollout 0.25 + reward 0.05). "
+                "Requires --colocate.",
             )
             parser.add_argument(
                 "--pickscore-batch-size",
@@ -1464,6 +1472,15 @@ def miles_validate_args(args):
         args.offload_train = False
     if args.offload_rollout is None:
         args.offload_rollout = False
+
+    if args.colocate_reward:
+        assert args.colocate, "--colocate-reward requires --colocate."
+        num_gpu_per_engine = min(args.rollout_num_gpus_per_engine, args.num_gpus_per_node)
+        num_engines = args.rollout_num_gpus // num_gpu_per_engine
+        assert args.pickscore_num_workers <= num_engines, (
+            f"--colocate-reward requires pickscore_num_workers ({args.pickscore_num_workers}) "
+            f"<= rollout engines ({num_engines})."
+        )
 
     if args.eval_function_path is None:
         args.eval_function_path = args.rollout_function_path

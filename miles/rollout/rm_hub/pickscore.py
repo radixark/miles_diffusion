@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import asyncio
-import logging
 from collections.abc import Sequence
 
 import numpy as np
@@ -13,7 +11,7 @@ from miles.utils.misc import SingletonMeta
 from miles.utils.processing_utils import cfhw_to_fhwc, image_or_video_to_uint8
 from miles.utils.types import Sample
 
-logger = logging.getLogger(__name__)
+from .core import AsyncRewardActorPool
 
 
 def sample_frame_indices(num_total_frames: int, num_frames: int | None) -> list[int]:
@@ -115,46 +113,22 @@ class PickScoreRewardActor:
         return self.scorer(prompts, pil_images)
 
 
-class AsyncPickScorePool(metaclass=SingletonMeta):
+class AsyncPickScorePool(AsyncRewardActorPool, metaclass=SingletonMeta):
     """Ray actor pool for GPU PickScore reward inference."""
 
     def __init__(self, args) -> None:
-        num_workers = args.pickscore_num_workers
-        num_gpus_per_worker = args.pickscore_num_gpus_per_worker
-        self._batch_size = args.pickscore_batch_size
-        self._actors = [
-            PickScoreRewardActor.options(
-                num_cpus=1,
-                num_gpus=num_gpus_per_worker,
-                scheduling_strategy="DEFAULT",
-            ).remote(
-                processor_path=args.pickscore_processor_path,
-                model_path=args.pickscore_model_path,
-            )
-            for _ in range(num_workers)
-        ]
-        self._round_robin_index = 0
-        logger.info(
-            "Initialized PickScore actor pool with %d workers, %.3f GPUs/worker, batch_size=%d.",
-            num_workers,
-            num_gpus_per_worker,
-            self._batch_size,
+        super().__init__(
+            actor_cls=PickScoreRewardActor,
+            actor_kwargs={
+                "processor_path": args.pickscore_processor_path,
+                "model_path": args.pickscore_model_path,
+            },
+            num_workers=args.pickscore_num_workers,
+            batch_size=args.pickscore_batch_size,
+            num_gpus_per_worker=args.pickscore_num_gpus_per_worker,
+            colocate=args.colocate_reward,
+            name="PickScore",
         )
-
-    def _next_actor(self):
-        i = self._round_robin_index % len(self._actors)
-        self._round_robin_index += 1
-        return self._actors[i]
-
-    async def score(self, images: list, prompts: list[str]) -> list[float]:
-        refs = []
-        for start in range(0, len(images), self._batch_size):
-            end = start + self._batch_size
-            refs.append(self._next_actor().score_batch.remote(images[start:end], prompts[start:end]))
-
-        loop = asyncio.get_running_loop()
-        chunked_scores = await loop.run_in_executor(None, ray.get, refs)
-        return [float(score) for chunk in chunked_scores for score in chunk]
 
 
 async def pickscore_rm(args, samples: Sequence[Sample]) -> list[float]:

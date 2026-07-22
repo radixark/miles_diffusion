@@ -14,6 +14,7 @@ from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 
 from miles.backends.sglang_diffusion_utils.sglang_diffusion_engine import SGLangDiffusionEngine
 from miles.rollout.base_types import call_rollout_fn
+from miles.rollout.rm_hub.core import set_reward_placement_group
 from miles.utils import tracking_utils
 from miles.utils.health_monitor import RolloutHealthMonitor
 from miles.utils.http_utils import _wrap_ipv6, find_available_port, get_host_info, init_http_client
@@ -45,6 +46,7 @@ class RolloutManager:
         logger.info("RolloutManager init start")
         self.args = args
         self.pg = pg
+        set_reward_placement_group(pg)
         logger.info("RolloutManager: starting router...")
         _start_router(args)
         logger.info("RolloutManager: router started, init tracking...")
@@ -465,7 +467,8 @@ def init_rollout_engines(args, pg, all_rollout_engines):
         if all_rollout_engines[i] is not None:
             continue
 
-        num_gpus = 0.2
+        # Leave 0.05 for a colocated reward actor when --colocate-reward is set.
+        num_gpus = 0.25 if args.colocate_reward else 0.3
         num_cpus = num_gpus
 
         # Get the base GPU ID from placement group
