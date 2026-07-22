@@ -7,15 +7,20 @@ on:
   workflow_dispatch:
     inputs:
       test:
-        description: 'e2e test file whose standard to record (e.g. tests/e2e/short/test_qwen_image_ocr_grpo_4xGPU.py)'
+        description: 'e2e test file whose standard to record (e.g. tests/e2e/short/test_sd3_ocr_grpo_2xGPU.py)'
         required: true
+      runs_on:
+        description: 'Runner label set to record on. MUST match the runner the test verifies on in pr-test.yml (e.g. 3gpu-suite tests record on the 3gpu runner) or the bit-for-bit comparison drifts.'
+        required: false
+        type: string
+        default: '["h200", "5gpu"]'
 
 jobs:
   record:
     uses: ./.github/workflows/_run-ci.yml
     with:
       # e2e recording runs where e2e verification runs (see pr-test stage-c).
-      runs_on: '["h200", "5gpu"]'
+      runs_on: ${{ inputs.runs_on }}
       upload_standards: true
       execute_command: >-
         python tests/ci/e2e_metrics_registry.py record --test ${{ inputs.test }}
