@@ -384,7 +384,8 @@ class FSDPTrainRayActor(TrainRayActor):
         # ------------- Recompute old log-probs (impl-consistent PPO ratio) -------------
         if self.args.diffusion_recompute_old_log_prob:
             with timer("recompute_old_log_prob"), torch.no_grad():
-                for microbatch_ranges in microbatch_schedule:
+                # Skip window 0: its training forward runs on the same pre-update weights and doubles as the recompute.
+                for microbatch_ranges in microbatch_schedule[1:]:
                     legacy_pad_to_len = self._maybe_legacy_window_pad_len(train_pairs, microbatch_ranges)
                     for pair_lo, pair_hi in microbatch_ranges:
                         self._forward_train_pair_batch(
@@ -403,8 +404,10 @@ class FSDPTrainRayActor(TrainRayActor):
 
         # ------------- Forward / Backward -------------
         with timer("actor_train"):
-            for microbatch_ranges in microbatch_schedule:
+            for optim_step_idx, microbatch_ranges in enumerate(microbatch_schedule):
                 self.optimizer.zero_grad(set_to_none=True)
+
+                old_log_prob_from_new = self.args.diffusion_recompute_old_log_prob and optim_step_idx == 0
 
                 num_local_pairs = sum(pair_hi - pair_lo for pair_lo, pair_hi in microbatch_ranges)
 
@@ -427,6 +430,7 @@ class FSDPTrainRayActor(TrainRayActor):
                         device=device,
                         kl_beta=kl_beta,
                         pad_to_len=legacy_pad_to_len,
+                        old_log_prob_from_new=old_log_prob_from_new,
                     )
                     if not self.args.debug_skip_optimizer_step:
                         # ShardedGradScaler keeps fp16 policy grads from underflowing
@@ -482,11 +486,15 @@ class FSDPTrainRayActor(TrainRayActor):
         kl_beta: float = 0.0,
         pad_to_len: int | None = None,
         write_old_log_prob: bool = False,
+        old_log_prob_from_new: bool = False,
     ) -> torch.Tensor | None:
         """One DiT forward + PPO loss over ``len(batch)`` train pairs. Returns sum of per-pair losses.
 
         With ``write_old_log_prob``, the computed log-prob overwrites each pair's
-        ``log_prob_old`` and no loss is returned (caller wraps in ``no_grad``)."""
+        ``log_prob_old`` and no loss is returned (caller wraps in ``no_grad``).
+
+        With ``old_log_prob_from_new``, the PPO ratio uses this forward's detached
+        log-prob as old (valid only under pre-update weights)."""
         forward_dtype = self._forward_dtype
         train_pipeline_config = self.train_pipeline_config
         bsz = len(batch)
@@ -614,12 +622,12 @@ class FSDPTrainRayActor(TrainRayActor):
         )
 
         if write_old_log_prob:
-            for pair, log_prob in zip(batch, log_prob_new_microbatch):
+            for pair, log_prob in zip(batch, log_prob_new_microbatch, strict=True):
                 pair["log_prob_old"] = log_prob.cpu()
             return None
 
         log_prob_new = log_prob_new_microbatch  # (bsz,) -- sde_step_with_logprob means over non-batch dims
-        log_prob_old = log_prob_old_microbatch  # (bsz,)
+        log_prob_old = log_prob_new.detach() if old_log_prob_from_new else log_prob_old_microbatch  # (bsz,)
         ratio = torch.exp(log_prob_new - log_prob_old)  # (bsz,)
         unclipped = -advantage * ratio
         clipped = -advantage * torch.clamp(ratio, 1.0 - clip_range, 1.0 + clip_range)

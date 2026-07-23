@@ -136,7 +136,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "Recompute old log-probs with the trainer forward (pre-update weights) "
                     "instead of using rollout-stored values, making the PPO ratio "
-                    "implementation-consistent."
+                    "implementation-consistent. The first optimizer window skips the extra "
+                    "pass and reuses its training forward's log-prob (ratio == 1)."
                 ),
             )
             parser.add_argument(
