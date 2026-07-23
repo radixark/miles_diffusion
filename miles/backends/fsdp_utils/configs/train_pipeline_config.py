@@ -187,3 +187,11 @@ class TrainPipelineConfig(abc.ABC):
     def postprocess_model_after_materialize(self, model: torch.nn.Module) -> None:
         """Postprocess the model after FSDP wrap + weight materialization (default: no-op)."""
         return None
+
+    def apply_sp_attention(self, transformer, parallel_state) -> None:
+        """Install the family's sequence-parallel self-attention (families opt in by overriding)."""
+        raise NotImplementedError(f"{type(self).__name__} declares no sequence-parallel attention installer")
+
+    @classmethod
+    def supports_sp_attention(cls) -> bool:
+        return cls.apply_sp_attention is not TrainPipelineConfig.apply_sp_attention

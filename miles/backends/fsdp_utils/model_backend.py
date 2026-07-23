@@ -26,7 +26,6 @@ import torch
 import torch.distributed as dist
 from diffusers import DiffusionPipeline
 
-from .sequence_parallel.diffusers_dispatch import apply_dispatch_sp_attention
 from .sequence_parallel.plan import MILES_SP_PLAN_ATTR, SequenceParallelPlan
 
 logger = logging.getLogger(__name__)
@@ -187,7 +186,7 @@ class DiffusersModelBackend(ModelBackend):
             raise ValueError(f"{base.__class__.__name__} declares no _cp_plan; sequence parallelism unavailable")
         plan = SequenceParallelPlan(
             boundaries=boundaries,
-            attention_installer=apply_dispatch_sp_attention,
+            attention_installer=self.config.apply_sp_attention,
             num_attention_heads=base.config.num_attention_heads,
         )
         setattr(base, MILES_SP_PLAN_ATTR, plan)
