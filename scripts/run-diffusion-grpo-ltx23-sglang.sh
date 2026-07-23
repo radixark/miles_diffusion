@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# LTX-2.3 video PickScore GRPO: 4-GPU FSDP train + sglang rollout colocate, 1-GPU pickscore.
+# LTX-2.3 video PickScore GRPO: 4-GPU FSDP train + sglang rollout + colocated pickscore reward.
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3,4}"
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 RUN_NAME="diffusion_grpo_ltx23_pickscore_$(date +%Y%m%d_%H%M%S)"
 SAVE_DIR="${ROOT_DIR}/logs/${RUN_NAME}/ckpt"
@@ -48,6 +48,7 @@ fi
   --diffusion-microgroup-size 1 \
   --gradient-checkpointing \
   --colocate \
+  --colocate-reward \
   --actor-num-gpus-per-node 4 \
   --actor-num-nodes 1 \
   --num-gpus-per-node 4 \
