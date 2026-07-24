@@ -34,9 +34,7 @@ class FSDPArgs:
 
     attn_implementation: str = "flash_attention_2"
 
-    # DiT attention backend, passed to diffusers set_attention_backend (e.g.
-    # "flash", "sage", "native"). None keeps the diffusers default. Under SP,
-    # explicit backends are supported for pure Ulysses; Ring owns its kernel.
+    # diffusers set_attention_backend value; None keeps the default. Ring attention accepts the RING_KERNELS subset.
     fsdp_attention_backend: str | None = None
 
     # Logging
@@ -168,6 +166,8 @@ def validate_sp_args(args) -> None:
     """
     from miles.utils.misc import load_function
 
+    from .sequence_parallel.attention import RING_KERNELS
+
     sp_size, _, ring_degree = validate_sp_config(
         args.actor_num_gpus_per_node * args.actor_num_nodes,
         args.sequence_parallel_size,
@@ -175,10 +175,10 @@ def validate_sp_args(args) -> None:
     )
     if sp_size == 1:
         return
-    if args.fsdp_attention_backend is not None and ring_degree > 1:
+    if ring_degree > 1 and args.fsdp_attention_backend not in RING_KERNELS:
         raise ValueError(
-            "--fsdp-attention-backend is supported with pure Ulysses only: "
-            f"the configured SP topology has ring_degree={ring_degree}, whose ring attention owns the kernel choice"
+            f"--fsdp-attention-backend {args.fsdp_attention_backend!r} cannot drive ring attention; "
+            f"supported: {sorted(k for k in RING_KERNELS if k is not None)}"
         )
     backend_cls = load_function(args.model_backend_path)
     if not backend_cls.supports_sequence_parallelism():

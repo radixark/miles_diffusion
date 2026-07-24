@@ -40,11 +40,14 @@ def _wrap_dispatch(module):
         if (len(args) > 3 and args[3] is not None) or kwargs.get("scale") is not None:
             raise ValueError("USP self-attention uses the default 1/sqrt(d) scale")
         if parallel_config.ring_group is not None:
-            if kwargs.get("backend") is not None:
-                raise ValueError(
-                    "An explicit attention backend is supported with pure Ulysses only, not Ring attention"
-                )
-            return usp_attention(query, key, value, parallel_config.ulysses_group, parallel_config.ring_group)
+            return usp_attention(
+                query,
+                key,
+                value,
+                parallel_config.ulysses_group,
+                parallel_config.ring_group,
+                ring_backend=kwargs.get("backend"),
+            )
 
         def local_attention_fn(local_query, local_key, local_value):
             return original(

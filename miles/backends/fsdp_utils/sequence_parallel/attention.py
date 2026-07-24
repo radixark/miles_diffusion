@@ -4,7 +4,7 @@ Layout convention matches sglang-diffusion's USP (heads sharded across the ulyss
 group inside attention, sequence sharded outside), so training numerics stay
 aligned with rollout; the collectives only move data. Local attention is torch
 SDPA by default and may be injected by the model adapter; ring attention uses
-torch's ring templates with the aten flash op.
+torch's ring templates with an aten fused op selected per RING_KERNELS.
 """
 
 import torch
@@ -103,33 +103,44 @@ def ulysses_output_all_to_all(x, group):
     return x.permute(2, 1, 0, 3, 4).contiguous().reshape(b, s_local, h_global, d)
 
 
-class _RingFlashAttention(torch.autograd.Function):
-    """Ring attention via torch's ring templates (fwd + reverse-ring bwd), aten flash op.
+# --fsdp-attention-backend values ring attention honors: aten ops returning LSE with a real backward.
+RING_KERNELS = {None: "flash", "_native_flash": "flash", "_native_cudnn": "cudnn"}
+
+
+class _RingAttention(torch.autograd.Function):
+    """Ring attention via torch's ring templates (fwd + reverse-ring bwd), aten fused ops.
 
     q/k/v: [B, H, S, D].
     """
 
     @staticmethod
-    def forward(ctx, query, key, value, group, scale):
-        # torch's experimental (private) ring-attention templates; this home
-        # requires torch >= 2.11 (the CI image's pin) — before the 2.11 move
-        # they lived in torch.distributed.tensor.experimental._attention.
+    def forward(ctx, query, key, value, group, scale, kernel):
+        # torch's private ring templates, at their torch >= 2.11 home (2.9: experimental._attention).
         from torch.distributed.tensor.experimental._context_parallel._attention import _templated_ring_attention
 
+        if kernel == "cudnn":
+            op = torch.ops.aten._scaled_dot_product_cudnn_attention
+            # cudnn computes LSE only on request; ring merging always needs it
+            op_kwargs = {"attn_bias": None, "compute_log_sumexp": True}
+        else:
+            op = torch.ops.aten._scaled_dot_product_flash_attention
+            op_kwargs = {}
         out, lse, cum_q, cum_k, max_q, max_k, philox_seed, philox_offset, _dbg = _templated_ring_attention(
             group,
             2,
-            torch.ops.aten._scaled_dot_product_flash_attention,
+            op,
             query=query,
             key=key,
             value=value,
             is_causal=False,
             dropout_p=0.0,
             scale=scale,
+            **op_kwargs,
         )
         out = out.to(query.dtype)
         ctx.save_for_backward(query, key, value, out, lse, cum_q, cum_k, philox_seed, philox_offset)
         ctx.group, ctx.scale, ctx.max_q, ctx.max_k = group, scale, max_q, max_k
+        ctx.kernel = kernel
         return out
 
     @staticmethod
@@ -138,11 +149,17 @@ class _RingFlashAttention(torch.autograd.Function):
             _templated_ring_attention_backward,
         )
 
+        if ctx.kernel == "cudnn":
+            op = torch.ops.aten._scaled_dot_product_cudnn_attention_backward.default
+            op_kwargs = {"attn_bias": None}
+        else:
+            op = torch.ops.aten._scaled_dot_product_flash_attention_backward.default
+            op_kwargs = {}
         query, key, value, out, lse, cum_q, cum_k, philox_seed, philox_offset = ctx.saved_tensors
         grad_q, grad_k, grad_v, *_ = _templated_ring_attention_backward(
             ctx.group,
             2,
-            torch.ops.aten._scaled_dot_product_flash_attention_backward.default,
+            op,
             grad_out=grad_out.contiguous(),
             grad_out_name="grad_out",
             query=query,
@@ -159,17 +176,19 @@ class _RingFlashAttention(torch.autograd.Function):
             philox_seed=philox_seed,
             philox_offset=philox_offset,
             scale=ctx.scale,
+            **op_kwargs,
         )
-        return grad_q, grad_k, grad_v, None, None
+        return grad_q, grad_k, grad_v, None, None, None
 
 
-def usp_attention(query, key, value, ulysses_group=None, ring_group=None, local_attention_fn=None):
+def usp_attention(query, key, value, ulysses_group=None, ring_group=None, local_attention_fn=None, ring_backend=None):
     """USP self-attention on [B, S_local, H, D] tensors; returns the same layout.
 
     Ulysses all-to-all temporarily gathers the sequence (sharding heads), ring
     attention covers the remaining split. Without Ring, ``local_attention_fn`` may
     route the gathered tensors through the model's configured attention backend;
-    the fallback is plain SDPA.
+    the fallback is plain SDPA. With Ring, ``ring_backend`` picks the local
+    kernel per ``RING_KERNELS``.
     """
     if ulysses_group is not None:
         query = ulysses_input_all_to_all(query, ulysses_group)
@@ -177,11 +196,15 @@ def usp_attention(query, key, value, ulysses_group=None, ring_group=None, local_
         value = ulysses_input_all_to_all(value, ulysses_group)
 
     if ring_group is not None:
+        if ring_backend not in RING_KERNELS:
+            raise ValueError(f"ring attention has no kernel for attention backend {ring_backend!r}")
         scale = query.shape[-1] ** -0.5
         q = query.transpose(1, 2)  # [B, H, S, D]
         k = key.transpose(1, 2)
         v = value.transpose(1, 2)
-        out = _RingFlashAttention.apply(q.contiguous(), k.contiguous(), v.contiguous(), ring_group, scale)
+        out = _RingAttention.apply(
+            q.contiguous(), k.contiguous(), v.contiguous(), ring_group, scale, RING_KERNELS[ring_backend]
+        )
         out = out.transpose(1, 2).contiguous()  # [B, S, H, D]
     elif local_attention_fn is not None:
         out = local_attention_fn(query, key, value)

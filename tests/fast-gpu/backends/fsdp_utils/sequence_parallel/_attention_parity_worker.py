@@ -32,9 +32,13 @@ TOLERANCES = {
 }
 
 
+_SDPA_BACKENDS = {None: SDPBackend.FLASH_ATTENTION, "_native_cudnn": SDPBackend.CUDNN_ATTENTION}
+_REFERENCE_BACKEND = None
+
+
 def _sdpa(query, key, value):
     scale = query.shape[-1] ** -0.5
-    with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
+    with sdpa_kernel(_SDPA_BACKENDS[_REFERENCE_BACKEND]):
         output = F.scaled_dot_product_attention(
             query.transpose(1, 2),
             key.transpose(1, 2),
@@ -87,7 +91,7 @@ def _run_reference(query, key, value, grad_output):
     return output.detach(), (query.grad.detach(), key.grad.detach(), value.grad.detach())
 
 
-def _run_usp(query, key, value, grad_output, ulysses_group, ring_group):
+def _run_usp(query, key, value, grad_output, ulysses_group, ring_group, ring_backend):
     rank = dist.get_rank()
     local_sequence = SHAPE[1] // SP_SIZE
     start = rank * local_sequence
@@ -103,6 +107,7 @@ def _run_usp(query, key, value, grad_output, ulysses_group, ring_group):
         ulysses_group=ulysses_group,
         ring_group=ring_group,
         local_attention_fn=_sdpa,
+        ring_backend=ring_backend,
     )
     output.backward(local_grad_output)
     return output.detach(), (query.grad.detach(), key.grad.detach(), value.grad.detach())
@@ -159,11 +164,16 @@ def _enable_deterministic_mode():
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--ulysses-degree", type=int, choices=(1, 2, 4), required=True)
+    parser.add_argument("--ring-backend", choices=("_native_cudnn",), default=None)
     parser.add_argument("--deterministic", action="store_true")
     args = parser.parse_args()
 
     if args.deterministic:
         _enable_deterministic_mode()
+    if args.ring_backend is not None:
+        # reference must run the same local kernel family as the ring op under test
+        global _REFERENCE_BACKEND
+        _REFERENCE_BACKEND = args.ring_backend
     local_rank = int(os.environ["LOCAL_RANK"])
     torch.cuda.set_device(local_rank)
     device = torch.device("cuda", local_rank)
@@ -172,11 +182,12 @@ def main():
 
     ulysses_group, ring_group = _create_usp_groups(args.ulysses_degree)
     full_inputs = _make_full_inputs(device)
-    topology = f"sp4-u{args.ulysses_degree}r{SP_SIZE // args.ulysses_degree}"
+    kernel_tag = "" if args.ring_backend is None else "-cudnn"
+    topology = f"sp4-u{args.ulysses_degree}r{SP_SIZE // args.ulysses_degree}{kernel_tag}"
 
     if args.deterministic:
-        output_1, grads_1 = _run_usp(*full_inputs, ulysses_group, ring_group)
-        output_2, grads_2 = _run_usp(*full_inputs, ulysses_group, ring_group)
+        output_1, grads_1 = _run_usp(*full_inputs, ulysses_group, ring_group, args.ring_backend)
+        output_2, grads_2 = _run_usp(*full_inputs, ulysses_group, ring_group, args.ring_backend)
         _assert_bitwise(f"{topology} deterministic forward", output_1, output_2)
         for name, actual, expected in zip(("dQ", "dK", "dV"), grads_1, grads_2, strict=True):
             _assert_bitwise(f"{topology} deterministic {name}", actual, expected)
@@ -187,7 +198,7 @@ def main():
         return
 
     reference_output, reference_grads = _run_reference(*full_inputs)
-    usp_output, usp_grads = _run_usp(*full_inputs, ulysses_group, ring_group)
+    usp_output, usp_grads = _run_usp(*full_inputs, ulysses_group, ring_group, args.ring_backend)
     local_reference_output = _local_shard(reference_output)
     if args.ulysses_degree == SP_SIZE:
         _assert_bitwise(f"{topology} forward", usp_output, local_reference_output)
