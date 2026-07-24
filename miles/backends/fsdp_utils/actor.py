@@ -35,6 +35,7 @@ from .diffusion_update_weight_utils import (
     DiffusionUpdateWeightFromTensorLoRAIPC,
 )
 from .lr_scheduler import get_lr_scheduler
+from .offload_utils import PinnedCPUOffload
 from .parallel import create_fsdp_parallel_state
 
 logger = logging.getLogger(__name__)
@@ -212,6 +213,12 @@ class FSDPTrainRayActor(TrainRayActor):
     def _get_parallel_config(self) -> dict:
         return {"dp_size": getattr(self.parallel_state, "dp_size", 1)}
 
+    def _pinned_offload(self) -> PinnedCPUOffload:
+        # Lazily created; caches reusable pinned host buffers across sleep/wake.
+        if not hasattr(self, "_offload_mgr"):
+            self._offload_mgr = PinnedCPUOffload()
+        return self._offload_mgr
+
     @timer
     def sleep(self) -> None:
         if not self.args.offload_train:
@@ -219,8 +226,11 @@ class FSDPTrainRayActor(TrainRayActor):
 
         print_memory("before offload DiT")
 
-        self.model.cpu()
-        move_torch_optimizer(self.optimizer, "cpu")
+        if getattr(self.args, "offload_pin_memory", True):
+            self._pinned_offload().sleep(self.model, self.optimizer)
+        else:
+            self.model.cpu()
+            move_torch_optimizer(self.optimizer, "cpu")
         clear_memory()
         dist.barrier(group=get_gloo_group())
         print_memory("after sleep DiT")
@@ -230,8 +240,11 @@ class FSDPTrainRayActor(TrainRayActor):
         if not self.args.offload_train:
             return
 
-        self.model.cuda()
-        move_torch_optimizer(self.optimizer, "cuda")
+        if getattr(self.args, "offload_pin_memory", True):
+            self._pinned_offload().wake_up(self.model, self.optimizer, torch.cuda.current_device())
+        else:
+            self.model.cuda()
+            move_torch_optimizer(self.optimizer, "cuda")
         dist.barrier(group=get_gloo_group())
         print_memory("after wake_up DiT")
 

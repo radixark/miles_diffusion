@@ -53,6 +53,11 @@ class FSDPArgs:
         "gloo"  # CPU backend for FSDP CPU offload (e.g., "gloo"). Set to None to disable hybrid backend.
     )
 
+    # sleep()/wake_up() offload staging. When True, weights + optimizer state are
+    # parked in reusable pinned (page-locked) host buffers so wake_up is a single
+    # async H2D DMA instead of the pageable bounce-buffer copy plain .cuda() does.
+    offload_pin_memory: bool = True
+
     # Train-actor deterministic mode; see validate_attention_args for the backend
     # support matrix. Name kept identical to Megatron's.
     deterministic_mode: bool = False
