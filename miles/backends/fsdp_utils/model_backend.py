@@ -7,7 +7,8 @@ concrete modeling rather than of the training loop:
   - ``load_component`` / ``load_scheduler``: checkpoint -> model components and scheduler
   - ``enable_gradient_checkpointing``: how this model turns on grad ckpt
   - ``fsdp_no_split_modules``: which block classes FSDP wraps
-  - ``sequence_parallel_plan``: the model's SP boundaries/attention declaration
+  - ``sequence_parallel_plan`` / ``install_sequence_parallel_attention``:
+    the model's SP declaration and attention integration
 
 Defaults adapt the diffusers protocol (see ``models/__init__.py``); a native
 backend overrides the model-side seams and provides one plan for each model it
@@ -26,7 +27,7 @@ import torch
 import torch.distributed as dist
 from diffusers import DiffusionPipeline
 
-from .sequence_parallel.diffusers_dispatch import apply_dispatch_sp_attention
+from .sequence_parallel.diffusers_dispatch import install_diffusers_usp_patch
 from .sequence_parallel.plan import MILES_SP_PLAN_ATTR, SequenceParallelPlan
 
 logger = logging.getLogger(__name__)
@@ -82,12 +83,21 @@ class ModelBackend:
         """Return the model's SequenceParallelPlan (boundaries + attention installer)."""
         raise NotImplementedError(f"{type(self).__name__} does not support sequence parallelism")
 
+    def install_sequence_parallel_attention(self, model: torch.nn.Module, parallel_state) -> None:
+        """Install this backend's model-specific sequence-parallel attention integration."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not provide a sequence-parallel attention integration"
+        )
+
 
 class DiffusersModelBackend(ModelBackend):
     """Load trainable components from a diffusers pipeline checkpoint."""
 
     def set_attention_backend(self, model: torch.nn.Module, backend: str) -> None:
         model.set_attention_backend(backend)
+
+    def install_sequence_parallel_attention(self, model: torch.nn.Module, parallel_state) -> None:
+        install_diffusers_usp_patch(model, parallel_state)
 
     def _enable_deterministic_flash_attention(self, name: str) -> None:
         """Patch diffusers flash entrypoints to deterministic=True (backward only; idempotent)."""
@@ -187,7 +197,6 @@ class DiffusersModelBackend(ModelBackend):
             raise ValueError(f"{base.__class__.__name__} declares no _cp_plan; sequence parallelism unavailable")
         plan = SequenceParallelPlan(
             boundaries=boundaries,
-            attention_installer=apply_dispatch_sp_attention,
             num_attention_heads=base.config.num_attention_heads,
         )
         setattr(base, MILES_SP_PLAN_ATTR, plan)

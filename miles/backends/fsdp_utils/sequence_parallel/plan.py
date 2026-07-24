@@ -1,7 +1,7 @@
 """Sequence-parallel plan: the per-family declaration and its interpreter.
 
 A model family opts into SP through a ``SequenceParallelPlan`` (where the
-sequence is sharded/gathered, how self-attention is installed, head count).
+sequence is sharded/gathered and its attention head count).
 ``apply_sequence_parallel`` consumes it: boundary hooks keep model outputs
 full-sequence, so every parameter sees a partial gradient and loss/log_prob
 code is untouched.
@@ -26,16 +26,12 @@ class SequenceParallelPlan:
     ``boundaries``: fqn -> ``ContextParallelInput``/``ContextParallelOutput``
     (the diffusers ``_cp_plan`` vocabulary) — where the sequence dim is sharded
     to S/sp and where full-sequence outputs are gathered back.
-    ``attention_installer``: called with (transformer, parallel_state); routes
-    the model's self-attention through ``attention.usp_attention``.
-
     Backends may attach one plan to a model instance as ``_miles_sp_plan``.
     The plan is topology-independent; ranks and process groups remain in the
     runtime parallel state passed to ``apply_sequence_parallel``.
     """
 
     boundaries: dict
-    attention_installer: Callable[[torch.nn.Module, object], None]
     num_attention_heads: int
 
     def __post_init__(self) -> None:
@@ -128,7 +124,7 @@ def _install_boundary_hooks(transformer, boundaries, parallel_state):
             module.register_forward_hook(split_outputs, with_kwargs=True)
 
 
-def apply_sequence_parallel(transformer, parallel_state, plan):
+def apply_sequence_parallel(transformer, parallel_state, plan, attention_installer: Callable):
     """Wire SP into one transformer per its plan: install the family's SP
     self-attention and the shard/gather boundary hooks. Call once per
     transformer after FSDP wrapping."""
@@ -137,5 +133,5 @@ def apply_sequence_parallel(transformer, parallel_state, plan):
             f"num_attention_heads({plan.num_attention_heads}) is not divisible by "
             f"ulysses_degree({parallel_state.ulysses_degree})"
         )
-    plan.attention_installer(transformer, parallel_state)
+    attention_installer(transformer, parallel_state)
     _install_boundary_hooks(transformer, plan.boundaries, parallel_state)

@@ -8,7 +8,6 @@ untouched.
 
 import functools
 import inspect
-import sys
 
 from .attention import usp_attention
 
@@ -84,8 +83,18 @@ def _wrap_dispatch(module):
     module.dispatch_attention_fn = dispatch
 
 
-def apply_dispatch_sp_attention(transformer, parallel_state):
-    """Default SP attention: intercept the model module's dispatch_attention_fn
+def _find_dispatch_module(model):
+    for cls in type(model).__mro__:
+        module = inspect.getmodule(cls)
+        if module is not None and hasattr(module, "dispatch_attention_fn"):
+            return module
+    return None
+
+
+def install_diffusers_usp_patch(transformer, parallel_state):
+    """Install the Diffusers runtime patch that routes self-attention through USP.
+
+    Intercept the model module's dispatch_attention_fn
     so self-attention call sites (which pass ``_parallel_config`` per upstream
     convention) route through usp_attention; the model's own processors and
     cross-attention stay untouched."""
@@ -93,18 +102,11 @@ def apply_dispatch_sp_attention(transformer, parallel_state):
     # fully_shard swizzles the class (FSDP<Name>, defined in torch's fsdp
     # module); the modeling module that imported dispatch_attention_fn is
     # found through the MRO.
-    module = next(
-        (
-            mod
-            for cls in type(base).__mro__
-            if (mod := sys.modules.get(cls.__module__)) is not None and hasattr(mod, "dispatch_attention_fn")
-        ),
-        None,
-    )
+    module = _find_dispatch_module(base)
     if module is None:
         raise ValueError(
             f"{type(base).__name__} does not route attention through diffusers' "
-            "dispatch_attention_fn; its SequenceParallelPlan must provide a custom attention_installer"
+            "dispatch_attention_fn; its ModelBackend must override install_sequence_parallel_attention"
         )
     _wrap_dispatch(module)
     config = _USPDispatchConfig(parallel_state)
