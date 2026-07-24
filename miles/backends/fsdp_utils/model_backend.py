@@ -82,9 +82,7 @@ class ModelBackend:
 
     def install_sequence_parallel_attention(self, model: torch.nn.Module, parallel_state) -> None:
         """Install this backend's model-specific sequence-parallel attention integration."""
-        raise NotImplementedError(
-            f"{type(self).__name__} does not provide a sequence-parallel attention integration"
-        )
+        raise NotImplementedError(f"{type(self).__name__} does not provide a sequence-parallel attention integration")
 
 
 class DiffusersModelBackend(ModelBackend):
