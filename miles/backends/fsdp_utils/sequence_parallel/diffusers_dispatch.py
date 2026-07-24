@@ -7,6 +7,7 @@ untouched.
 """
 
 import functools
+import inspect
 import sys
 
 from .attention import usp_attention
@@ -25,19 +26,31 @@ def _wrap_dispatch(module):
     original = module.dispatch_attention_fn
     if getattr(original, "_miles_usp_wrapped", False):
         return
+    signature = inspect.signature(original)
 
     @functools.wraps(original)
     def dispatch(query, key, value, *args, parallel_config=None, **kwargs):
         if not isinstance(parallel_config, _USPDispatchConfig):
             return original(query, key, value, *args, parallel_config=parallel_config, **kwargs)
-        attn_mask = args[0] if args else kwargs.get("attn_mask")
-        if attn_mask is not None:
+
+        bound = signature.bind(
+            query,
+            key,
+            value,
+            *args,
+            parallel_config=parallel_config,
+            **kwargs,
+        )
+        bound.apply_defaults()
+        arguments = bound.arguments
+
+        if arguments.get("attn_mask") is not None:
             raise ValueError("USP self-attention does not support attention masks")
-        if (len(args) > 1 and args[1]) or kwargs.get("dropout_p"):
+        if arguments.get("dropout_p", 0.0):
             raise ValueError("USP self-attention requires dropout_p=0 (per-rank RNG streams diverge)")
-        if (len(args) > 2 and args[2]) or kwargs.get("is_causal"):
+        if arguments.get("is_causal", False):
             raise ValueError("USP self-attention does not support is_causal yet")
-        if (len(args) > 3 and args[3] is not None) or kwargs.get("scale") is not None:
+        if arguments.get("scale") is not None:
             raise ValueError("USP self-attention uses the default 1/sqrt(d) scale")
         if parallel_config.ring_group is not None:
             return usp_attention(
@@ -46,7 +59,7 @@ def _wrap_dispatch(module):
                 value,
                 parallel_config.ulysses_group,
                 parallel_config.ring_group,
-                ring_backend=kwargs.get("backend"),
+                ring_backend=arguments.get("backend"),
             )
 
         def local_attention_fn(local_query, local_key, local_value):
