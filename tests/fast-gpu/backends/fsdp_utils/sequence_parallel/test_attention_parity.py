@@ -17,7 +17,7 @@ import pytest
 _WORKER = Path(__file__).with_name("_attention_parity_worker.py")
 
 
-def _run_worker(ulysses_degree, *, deterministic=False, ring_backend=None):
+def _run_worker(ulysses_degree, *, deterministic=False):
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
     command = [
@@ -31,8 +31,6 @@ def _run_worker(ulysses_degree, *, deterministic=False, ring_backend=None):
         "--ulysses-degree",
         str(ulysses_degree),
     ]
-    if ring_backend is not None:
-        command += ["--ring-backend", ring_backend]
     if deterministic:
         env["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
         command.append("--deterministic")
@@ -44,12 +42,12 @@ def _run_worker(ulysses_degree, *, deterministic=False, ring_backend=None):
 
 
 @pytest.mark.parametrize(
-    ("ulysses_degree", "ring_backend"),
-    [(4, None), (2, None), (1, None), (2, "_native_cudnn"), (1, "_native_cudnn")],
-    ids=["sp4-u4r1", "sp4-u2r2", "sp4-u1r4", "sp4-u2r2-cudnn", "sp4-u1r4-cudnn"],
+    "ulysses_degree",
+    [4, 2, 1],
+    ids=["sp4-u4r1", "sp4-u2r2", "sp4-u1r4"],
 )
-def test_usp_forward_backward_matches_full_sequence_sdpa(ulysses_degree, ring_backend):
-    _run_worker(ulysses_degree, ring_backend=ring_backend)
+def test_usp_forward_backward_matches_full_sequence_sdpa(ulysses_degree):
+    _run_worker(ulysses_degree)
 
 
 @pytest.mark.parametrize(

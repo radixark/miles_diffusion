@@ -35,8 +35,8 @@ class FSDPArgs:
     attn_implementation: str = "flash_attention_2"
 
     # DiT attention backend, passed to diffusers set_attention_backend (e.g.
-    # "native", "_native_cudnn", "flash"). None keeps the diffusers default. Under
-    # SP it also selects the ring kernel; see sequence_parallel.attention.RING_KERNELS.
+    # "flash", "sage", "native"). None keeps the diffusers default. Under SP,
+    # explicit backends are supported for pure Ulysses; Ring owns its kernel.
     fsdp_attention_backend: str | None = None
 
     # Logging
@@ -138,12 +138,6 @@ def validate_attention_args(args):
         return
     backend = args.fsdp_attention_backend
     name = "" if backend is None else backend.lower()
-    # cudnn attention has no deterministic backward kernel (raises "No available kernel").
-    if name == "_native_cudnn":
-        raise ValueError(
-            "deterministic_mode cannot run attention backend '_native_cudnn': cudnn attention "
-            "has no deterministic backward kernel. Use a flash or SDPA backend."
-        )
     # torch SDPA (diffusers default / native): torch's global determinism covers it.
     # 'math' backends (torch SDPBackend.MATH semantics) are deterministic by construction.
     if backend is None or "native" in name or "math" in name:
@@ -174,8 +168,6 @@ def validate_sp_args(args) -> None:
     """
     from miles.utils.misc import load_function
 
-    from .sequence_parallel.attention import RING_KERNELS
-
     sp_size, _, ring_degree = validate_sp_config(
         args.actor_num_gpus_per_node * args.actor_num_nodes,
         args.sequence_parallel_size,
@@ -183,23 +175,14 @@ def validate_sp_args(args) -> None:
     )
     if sp_size == 1:
         return
-    if ring_degree > 1 and args.fsdp_attention_backend not in RING_KERNELS:
+    if args.fsdp_attention_backend is not None and ring_degree > 1:
         raise ValueError(
-            f"--fsdp-attention-backend {args.fsdp_attention_backend!r} cannot drive ring attention "
-            f"(the kernel must return LSE and have a backward); supported: "
-            f"{sorted(k for k in RING_KERNELS if k is not None)}"
+            "--fsdp-attention-backend is supported with pure Ulysses only: "
+            f"the configured SP topology has ring_degree={ring_degree}, whose ring attention owns the kernel choice"
         )
     backend_cls = load_function(args.model_backend_path)
     if not backend_cls.supports_sequence_parallelism():
         raise ValueError(f"{backend_cls.__name__} does not support sequence parallelism")
-    from .model_backend import DiffusersModelBackend
-
-    # The diffusers default plan takes its attention installer from the family config;
-    # native backends own their whole plan and need no config hook.
-    if backend_cls.sequence_parallel_plan is DiffusersModelBackend.sequence_parallel_plan:
-        config_cls = load_function(args.train_pipeline_config_path)
-        if not config_cls.supports_sp_attention():
-            raise ValueError(f"{config_cls.__name__} declares no sequence-parallel attention installer")
 
 
 def load_fsdp_args(extra_args_provider=None):

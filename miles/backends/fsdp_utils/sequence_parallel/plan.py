@@ -1,4 +1,11 @@
-"""Sequence-parallel plan: the per-family SP declaration and its interpreter."""
+"""Sequence-parallel plan: the per-family declaration and its interpreter.
+
+A model family opts into SP through a ``SequenceParallelPlan`` (where the
+sequence is sharded/gathered, how self-attention is installed, head count).
+``apply_sequence_parallel`` consumes it: boundary hooks keep model outputs
+full-sequence, so every parameter sees a partial gradient and loss/log_prob
+code is untouched.
+"""
 
 import inspect
 from collections.abc import Callable
@@ -14,8 +21,18 @@ MILES_SP_PLAN_ATTR = "_miles_sp_plan"
 
 @dataclass(frozen=True)
 class SequenceParallelPlan:
-    """A family's SP declaration: shard/gather boundaries (diffusers ``_cp_plan``
-    vocabulary), a (transformer, parallel_state) attention installer, and head count."""
+    """What one transformer family declares to run under SP.
+
+    ``boundaries``: fqn -> ``ContextParallelInput``/``ContextParallelOutput``
+    (the diffusers ``_cp_plan`` vocabulary) — where the sequence dim is sharded
+    to S/sp and where full-sequence outputs are gathered back.
+    ``attention_installer``: called with (transformer, parallel_state); routes
+    the model's self-attention through ``attention.usp_attention``.
+
+    Backends may attach one plan to a model instance as ``_miles_sp_plan``.
+    The plan is topology-independent; ranks and process groups remain in the
+    runtime parallel state passed to ``apply_sequence_parallel``.
+    """
 
     boundaries: dict
     attention_installer: Callable[[torch.nn.Module, object], None]
@@ -38,7 +55,8 @@ def _split_if_expected(x, spec, parallel_state):
 
 
 def _resolve_submodule(root, path):
-    # getattr walk instead of get_submodule: also traverses wrapper attribute forwarding (peft)
+    # getattr-based walk: unlike get_submodule, it also traverses attribute
+    # forwarding of wrappers such as peft's PeftModel.
     module = root
     for part in path.split("."):
         module = module[int(part)] if part.isdigit() else getattr(module, part)
@@ -46,7 +64,12 @@ def _resolve_submodule(root, path):
 
 
 def _install_boundary_hooks(transformer, boundaries, parallel_state):
-    """Install shard/gather hooks; the gather's backward SP-sum pairs with FSDP's 1/(dp*sp) mean."""
+    """Install shard/gather hooks from the plan's boundary specs.
+
+    ContextParallelInput entries split module inputs (or outputs when
+    split_output=True); ContextParallelOutput entries gather module outputs.
+    The gather's backward sums across SP, pairing with FSDP's 1/(dp*sp) mean.
+    """
     for path, spec in boundaries.items():
         module = _resolve_submodule(transformer, path) if path else transformer
 
@@ -69,7 +92,8 @@ def _install_boundary_hooks(transformer, boundaries, parallel_state):
         output_specs = {k: v for k, v in spec.items() if v.split_output}
 
         if input_specs:
-            # PeftModel exposes forward(*args, **kwargs); real parameter names live on the base module
+            # Wrappers like PeftModel expose forward(*args, **kwargs); the real
+            # parameter names live on the base module.
             sig_module = module.get_base_model() if hasattr(module, "get_base_model") else module
             param_names = list(inspect.signature(sig_module.forward).parameters)
             missing = [k for k in input_specs if isinstance(k, str) and k not in param_names]
@@ -105,7 +129,9 @@ def _install_boundary_hooks(transformer, boundaries, parallel_state):
 
 
 def apply_sequence_parallel(transformer, parallel_state, plan):
-    """Install the plan's attention and boundary hooks; call once per transformer after FSDP wrapping."""
+    """Wire SP into one transformer per its plan: install the family's SP
+    self-attention and the shard/gather boundary hooks. Call once per
+    transformer after FSDP wrapping."""
     if plan.num_attention_heads % parallel_state.ulysses_degree != 0:
         raise ValueError(
             f"num_attention_heads({plan.num_attention_heads}) is not divisible by "
