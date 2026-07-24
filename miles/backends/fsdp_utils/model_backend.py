@@ -34,6 +34,8 @@ logger = logging.getLogger(__name__)
 
 
 class ModelBackend:
+    supports_sequence_parallelism = False
+
     def __init__(self, train_pipeline_config):
         self.config = train_pipeline_config
 
@@ -74,13 +76,8 @@ class ModelBackend:
     def set_attention_backend(self, model: torch.nn.Module, backend: str) -> None:
         raise NotImplementedError
 
-    @classmethod
-    def supports_sequence_parallelism(cls) -> bool:
-        """Whether the backend declares a model-specific SP plan resolver."""
-        return cls.sequence_parallel_plan is not ModelBackend.sequence_parallel_plan
-
     def sequence_parallel_plan(self, model: torch.nn.Module) -> SequenceParallelPlan:
-        """Return the model's SequenceParallelPlan (boundaries + attention installer)."""
+        """Return the model's declarative SequenceParallelPlan."""
         raise NotImplementedError(f"{type(self).__name__} does not support sequence parallelism")
 
     def install_sequence_parallel_attention(self, model: torch.nn.Module, parallel_state) -> None:
@@ -92,6 +89,8 @@ class ModelBackend:
 
 class DiffusersModelBackend(ModelBackend):
     """Load trainable components from a diffusers pipeline checkpoint."""
+
+    supports_sequence_parallelism = True
 
     def set_attention_backend(self, model: torch.nn.Module, backend: str) -> None:
         model.set_attention_backend(backend)

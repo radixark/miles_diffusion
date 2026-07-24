@@ -181,7 +181,7 @@ def validate_sp_args(args) -> None:
             f"supported: {sorted(k for k in RING_KERNELS if k is not None)}"
         )
     backend_cls = load_function(args.model_backend_path)
-    if not backend_cls.supports_sequence_parallelism():
+    if not backend_cls.supports_sequence_parallelism:
         raise ValueError(f"{backend_cls.__name__} does not support sequence parallelism")
 
 
