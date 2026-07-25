@@ -2,7 +2,7 @@ accelerate==1.12.0
 addict==2.4.0
 blobfile==3.0.0
 datasets==4.4.2
-diffusers==0.37.0
+diffusers==0.38.0
 fastapi==0.128.8
 httpx[http2]==0.28.1
 ltx-core @ git+https://github.com/Lightricks/LTX-2.git@780984275fd47128b02bef9b5c085404276866ee#subdirectory=packages/ltx-core
@@ -26,7 +26,7 @@ qwen_vl_utils==0.0.14
 ray[default]==2.53.0
 requests==2.32.5
 ring_flash_attn==0.1.8
-safetensors==0.7.0
+safetensors==0.8.0
 sglang-router==0.3.0
 tensorboard==2.20.0
 transformers==5.5.4
