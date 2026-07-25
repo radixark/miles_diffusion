@@ -22,6 +22,16 @@ RUN git clone https://github.com/NVIDIA/nccl-tests.git /tmp/nccl-tests && \
 
 # ====================================== Python dependencies ============================================
 
+# Install Miles' prebuilt Hopper FA3 wheel, including the upstream ``flash_attn_interface`` module.
+ARG MILES_WHEELS_REPO=yueming-yuan/miles-wheels
+ARG FA3_WHEELS_TAG=cu129-x86_64
+RUN mkdir -p /tmp/fa3-wheel && \
+    curl -sL "https://api.github.com/repos/${MILES_WHEELS_REPO}/releases/tags/${FA3_WHEELS_TAG}" \
+    | python3 -c "import json,os,subprocess,sys; assets=[a for a in json.load(sys.stdin).get('assets',[]) if a['name'].startswith('flash_attn_3-') and a['name'].endswith('.whl')]; assert len(assets) == 1, f'expected one FA3 wheel, found {len(assets)}'; a=assets[0]; subprocess.run(['curl','-fSL','-o',os.path.join('/tmp/fa3-wheel',a['name']),a['browser_download_url']],check=True)" && \
+    pip install --no-deps /tmp/fa3-wheel/flash_attn_3-*.whl && \
+    python -c "import flash_attn_interface" && \
+    rm -rf /tmp/fa3-wheel
+
 # sglang-diffusion is merged upstream: track sgl-project/sglang main; SGLANG_DIFFUSION_COMMIT=<sha> pins, "none" follows the branch tip.
 ARG SGLANG_DIFFUSION_REPO=https://github.com/sgl-project/sglang.git
 ARG SGLANG_DIFFUSION_BRANCH=main

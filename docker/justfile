@@ -8,7 +8,7 @@ SGLANG_IMAGE_TAG_CU13 := "v0.5.14-cu130"
 release-primary variant="cu12":
     #!/bin/bash
     if [ "{{variant}}" = "cu13" ]; then
-        ARG_TAG_POSTFIX="-cu13" ARG_BUILD_EXTRA_ARGS="--build-arg SGLANG_IMAGE_TAG={{SGLANG_IMAGE_TAG_CU13}}" ARG_VERSION_FILE="docker/version-cu13.txt" just _release-raw
+        ARG_TAG_POSTFIX="-cu13" ARG_BUILD_EXTRA_ARGS="--build-arg SGLANG_IMAGE_TAG={{SGLANG_IMAGE_TAG_CU13}} --build-arg FA3_WHEELS_TAG=cu130-x86_64" ARG_VERSION_FILE="docker/version-cu13.txt" just _release-raw
     else
         ARG_TAG_POSTFIX="" ARG_BUILD_EXTRA_ARGS="" just _release-raw
     fi
@@ -35,7 +35,7 @@ debug variant="cu12":
     cd ..
 
     if [ "{{variant}}" = "cu13" ]; then
-        EXTRA="--build-arg SGLANG_IMAGE_TAG={{SGLANG_IMAGE_TAG_CU13}}"; VFILE="docker/version-cu13.txt"; POSTFIX="-cu13"
+        EXTRA="--build-arg SGLANG_IMAGE_TAG={{SGLANG_IMAGE_TAG_CU13}} --build-arg FA3_WHEELS_TAG=cu130-x86_64"; VFILE="docker/version-cu13.txt"; POSTFIX="-cu13"
     else
         EXTRA=""; VFILE="docker/version.txt"; POSTFIX=""
     fi
@@ -58,7 +58,7 @@ build-local variant="cu12":
     cd ..
 
     if [ "{{variant}}" = "cu13" ]; then
-        EXTRA="--build-arg SGLANG_IMAGE_TAG={{SGLANG_IMAGE_TAG_CU13}}"; VFILE="docker/version-cu13.txt"; POSTFIX="-cu13"
+        EXTRA="--build-arg SGLANG_IMAGE_TAG={{SGLANG_IMAGE_TAG_CU13}} --build-arg FA3_WHEELS_TAG=cu130-x86_64"; VFILE="docker/version-cu13.txt"; POSTFIX="-cu13"
     else
         EXTRA=""; VFILE="docker/version.txt"; POSTFIX=""
     fi
