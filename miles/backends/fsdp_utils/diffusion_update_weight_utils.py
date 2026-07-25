@@ -106,6 +106,7 @@ class DiffusionUpdateWeight(abc.ABC):
         self.args = args
         self.models = models
         self.weight_version = 0
+        self._sync_bucket_count = 0
 
     @abc.abstractmethod
     def connect_rollout_engines(
@@ -206,6 +207,10 @@ class DiffusionUpdateWeightFromTensor(DiffusionUpdateWeight):
         weight_version=None,
         weight_update_mode: str | None = None,
     ) -> None:
+        # Serializing pins the storage until the payload is deserialized somewhere and released;
+        # only the src rank's payload is ever consumed, so no other rank may serialize.
+        if dist.get_rank() != self._ipc_gather_src:
+            return
         monkey_patch_torch_reductions()
         logger.info("Using flattened tensor bucket (diffusion updater, module=%s)", target_module)
         named_tensors_by_dtypes = {}
@@ -215,7 +220,6 @@ class DiffusionUpdateWeightFromTensor(DiffusionUpdateWeight):
                 named_tensors_by_dtypes[dtype] = []
             named_tensors_by_dtypes[dtype].append((name, tensor))
 
-        serialized_tensors = []
         for _dtype, named_tensors in named_tensors_by_dtypes.items():
             flattened_tensor_bucket = FlattenedTensorBucket(named_tensors=named_tensors)
             metadata = flattened_tensor_bucket.get_metadata()
@@ -230,37 +234,28 @@ class DiffusionUpdateWeightFromTensor(DiffusionUpdateWeight):
                     "metadata": metadata,
                 }
             }
-            serialized_tensors.append(MultiprocessingSerializer.serialize(flattened_tensor_data, output_str=True))
+            kwargs = {
+                "serialized_named_tensors": [
+                    MultiprocessingSerializer.serialize(flattened_tensor_data, output_str=True)
+                ],
+                "load_format": "flattened_bucket",
+                "target_modules": [target_module],
+                "weight_version": str(weight_version),
+            }
+            if weight_update_mode is not None:
+                kwargs["weight_update_mode"] = weight_update_mode
+                kwargs["lora_alpha"] = self.args.lora_alpha
+                kwargs["lora_rank"] = self.args.lora_rank
+            ref = self._ipc_engine.update_weights_from_tensor.remote(**kwargs)
+            ray.get(ref)
 
-        if self._ipc_gather_src == dist.get_rank():
-            gathered_serialized_batches = [None for _ in range(dist.get_world_size(self._ipc_gather_group))]
-        else:
-            gathered_serialized_batches = None
-
-        dist.gather_object(
-            obj=serialized_tensors,
-            object_gather_list=gathered_serialized_batches,
-            dst=self._ipc_gather_src,
-            group=self._ipc_gather_group,
-        )
-
-        if dist.get_rank() == self._ipc_gather_src:
-            # TODO: here we assume all ranks have the same number of dtypes.
-            num_dtypes = len(gathered_serialized_batches[0])
-            assert num_dtypes > 0
-            for i in range(num_dtypes):
-                kwargs = {
-                    "serialized_named_tensors": [tensors[i] for tensors in gathered_serialized_batches],
-                    "load_format": "flattened_bucket",
-                    "target_modules": [target_module],
-                    "weight_version": str(weight_version),
-                }
-                if weight_update_mode is not None:
-                    kwargs["weight_update_mode"] = weight_update_mode
-                    kwargs["lora_alpha"] = self.args.lora_alpha
-                    kwargs["lora_rank"] = self.args.lora_rank
-                ref = self._ipc_engine.update_weights_from_tensor.remote(**kwargs)
-                ray.get(ref)
+        self._sync_bucket_count += 1
+        if self._sync_bucket_count % 16 == 1:
+            logger.info(
+                "[wsync-mem] bucket=%d allocated=%.2fGB",
+                self._sync_bucket_count,
+                torch.cuda.memory_allocated() / 2**30,
+            )
 
 
 # TODO: update weights only for sgl-d LoRA params
