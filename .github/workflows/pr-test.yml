@@ -9,6 +9,7 @@ name: PR Test
 #   * `resolve-ci-image` resolves a `rockdu/miles_diffusion:<tag>`
 #     container (default `latest`), overridable via the `ci-image-tag:`
 #     PR-body line or the `ci_image_tag` dispatch input.
+#   * `docker-paths` + `docker-build` build a `pr-<num>` image on docker PRs.
 #   * `ci_megatron_pr` workflow_dispatch input removed — miles-D source has
 #     zero `from megatron` imports.
 #   * No `schedule` trigger yet (miles main runs a nightly full CI).
@@ -50,8 +51,68 @@ concurrency:
 # every enabled test in the suite.
 
 jobs:
+  # Nothing rebuilds the CI image for a PR, so a docker PR would otherwise be tested inside the old `latest`.
+  docker-paths:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.diff.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - id: diff
+        shell: bash
+        run: |
+          git fetch --depth 1 origin "${{ github.event.pull_request.base.sha }}"
+          # Assigned outside the `if` so a failed diff fails the step instead of reading as no change.
+          CHANGED_FILES=$(git diff --name-only "${{ github.event.pull_request.base.sha }}" HEAD)
+          # Same paths as docker-build.yml's post-merge filter.
+          if printf '%s\n' "$CHANGED_FILES" | grep -qE '^(docker/Dockerfile|requirements\.txt)$'; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Docker PRs: build the image first, then run every GPU suite inside it.
+  docker-build:
+    needs: [docker-paths]
+    if: needs.docker-paths.outputs.changed == 'true' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: self-hosted
+    timeout-minutes: 180
+    steps:
+      # Container CI jobs leave root-owned files in the shared workspace; reclaim it before checkout cleans.
+      - name: Fix workspace ownership
+        run: docker run --rm -v "${{ github.workspace }}:/ws" alpine:3 chown -R "$(id -u):$(id -g)" /ws
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push
+        run: |
+          IMAGE="rockdu/miles_diffusion:pr-${{ github.event.pull_request.number }}"
+          # --no-cache --pull: the Dockerfile fetches branch tips, so cached layers would pin stale sources.
+          docker build --no-cache --pull -f docker/Dockerfile . -t "${IMAGE}"
+          docker push "${IMAGE}"
+
+      # Each no-cache build leaves a full new layer set locally; keep the runner disk from filling up.
+      - name: Prune local build leftovers
+        if: always()
+        run: docker image prune -f
+
   resolve-ci-image:
-    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request)
+    needs: [docker-build]
+    # A failed build must skip this job so the GPU stages' `success` guard stops the matrix.
+    if: |
+      always() && !cancelled() &&
+      (needs.docker-build.result == 'success' || needs.docker-build.result == 'skipped') &&
+      ((github.event_name == 'workflow_dispatch') || (github.event.pull_request))
     runs-on: ubuntu-latest
     outputs:
       container_image: ${{ steps.resolve.outputs.container_image }}
@@ -62,8 +123,12 @@ jobs:
         env:
           PR_BODY: ${{ github.event.pull_request.body || '' }}
           INPUT_CI_IMAGE_TAG: ${{ github.event.inputs.ci_image_tag || '' }}
+          DOCKER_BUILT: ${{ needs.docker-build.result == 'success' }}
+          PR_NUMBER: ${{ github.event.pull_request.number || '' }}
         run: |
           CI_IMAGE_TAG="${INPUT_CI_IMAGE_TAG}"
+          # A freshly built PR image outranks the `ci-image-tag:` directive.
+          [ -z "$CI_IMAGE_TAG" ] && [ "$DOCKER_BUILT" = "true" ] && CI_IMAGE_TAG="pr-${PR_NUMBER}"
           if [ -n "$PR_BODY" ]; then
             PR_CI_IMAGE_TAG=$(echo "$PR_BODY" | grep -m1 -oP '^ci-image-tag:\s+\K\S+' || true)
             [ -z "$CI_IMAGE_TAG" ] && [ -n "$PR_CI_IMAGE_TAG" ] && CI_IMAGE_TAG="$PR_CI_IMAGE_TAG"
