@@ -157,6 +157,7 @@ jobs:
   # CPU tests that don't fit stage-a-cpu's fast budget). Always runs on PR.
   # Empty result exits 0 in run_suite.py.
   stage-b-cpu:
+    needs: [stage-a-cpu]
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request)
     uses: ./.github/workflows/_run-ci.yml
     with:
@@ -167,16 +168,11 @@ jobs:
         ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
     secrets: inherit
 
-  # Stage B GPU: fast-gpu bucket, gates nothing yet but runs on every PR
-  # once stage-a-cpu is green (fast-fail: broken imports shouldn't burn GPU
-  # runner slots).
+  # Stage B GPU: fast-gpu bucket, runs once stage-a-cpu is green (fast-fail:
+  # broken imports shouldn't burn GPU runner slots).
   stage-b-3-gpu-h200:
     needs: [resolve-ci-image, stage-a-cpu]
-    if: |
-      always() && !cancelled() &&
-      needs.resolve-ci-image.result == 'success' &&
-      needs.stage-a-cpu.result == 'success' &&
-      ((github.event_name == 'workflow_dispatch') || (github.event.pull_request))
+    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request)
     uses: ./.github/workflows/_run-ci.yml
     with:
       # Suite names match the runner split: 3gpu (GPUs 0-2) + 5gpu (GPUs 3-7).
@@ -188,16 +184,17 @@ jobs:
         ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
     secrets: inherit
 
+  # Fan-in so each stage-c needs one job instead of every stage-b.
+  stage-b:
+    needs: [stage-b-cpu, stage-b-3-gpu-h200]
+    runs-on: ubuntu-latest
+    steps:
+      - run: 'true'
+
   # Stage C GPU (3gpu runner): e2e suite for the 2-GPU SD3.5 OCR recipe.
-  # Shares the 3gpu runner with stage-b, so the two queue rather than run
-  # concurrently — acceptable for a 2-rollout smoke e2e.
   stage-c-3-gpu-h200:
-    needs: [resolve-ci-image, stage-a-cpu]
-    if: |
-      always() && !cancelled() &&
-      needs.resolve-ci-image.result == 'success' &&
-      needs.stage-a-cpu.result == 'success' &&
-      ((github.event_name == 'workflow_dispatch') || (github.event.pull_request))
+    needs: [resolve-ci-image, stage-b]
+    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request)
     uses: ./.github/workflows/_run-ci.yml
     with:
       runs_on: '["h200", "3gpu"]'
@@ -208,15 +205,10 @@ jobs:
         ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
     secrets: inherit
 
-  # Stage C GPU: e2e suite. A 2-gpu e2e runs on the 5gpu runner so it
-  # parallelizes with stage-b fast tests on the 3gpu runner.
+  # Stage C GPU: e2e suite on the 5gpu runner.
   stage-c-5-gpu-h200:
-    needs: [resolve-ci-image, stage-a-cpu]
-    if: |
-      always() && !cancelled() &&
-      needs.resolve-ci-image.result == 'success' &&
-      needs.stage-a-cpu.result == 'success' &&
-      ((github.event_name == 'workflow_dispatch') || (github.event.pull_request))
+    needs: [resolve-ci-image, stage-b]
+    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request)
     uses: ./.github/workflows/_run-ci.yml
     with:
       runs_on: '["h200", "5gpu"]'
