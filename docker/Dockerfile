@@ -23,6 +23,8 @@ RUN git clone https://github.com/NVIDIA/nccl-tests.git /tmp/nccl-tests && \
 # ====================================== Python dependencies ============================================
 
 # Install Miles' prebuilt Hopper FA3 wheel, including the upstream ``flash_attn_interface`` module.
+# cu13 builds: pass --build-arg SGLANG_IMAGE_TAG=v0.5.14-cu130 --build-arg FA3_WHEELS_TAG=cu130-x86_64
+# (recipe previously carried by docker/justfile; version file: docker/version-cu13.txt).
 ARG MILES_WHEELS_REPO=yueming-yuan/miles-wheels
 ARG FA3_WHEELS_TAG=cu129-x86_64
 RUN mkdir -p /tmp/fa3-wheel && \
