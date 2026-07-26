@@ -1402,7 +1402,8 @@ def miles_validate_args(args):
     if args.diffusion_log_image_interval < 1:
         raise ValueError(f"diffusion_log_image_interval must be >= 1, got {args.diffusion_log_image_interval}")
 
-    args.rollout_patch_groups = ["sgld"] if args.apply_sgld_monkey_patches else []
+    # offload is a fix, not a parity choice, so it is not gated on a flag.
+    args.rollout_patch_groups = ["offload"] + (["sgld"] if args.apply_sgld_monkey_patches else [])
 
     if getattr(args, "diffusion_model", None):
         from miles.utils.misc import load_function

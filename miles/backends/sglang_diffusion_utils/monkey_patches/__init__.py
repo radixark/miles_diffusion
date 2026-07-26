@@ -11,6 +11,7 @@ those groups before model construction.
   breaks bitwise SP-invariance (kernel choice depends on head/batch shape) —
   align the attention kernel via the attention-backend selection instead.
 - ``ltx``:  LTX rollout cond kwargs + AV cross-off (video-only train parity).
+- ``offload``: stride-preserving pinned-host offload; a fix, not a parity choice, so always on.
 
 Patch modules are imported inside ``apply_*`` only, so CPU-only Ray actors
 can import this package without pulling sglang triton kernels. Adding a
@@ -53,6 +54,13 @@ def apply_sgld_monkey_patches() -> None:
     patch_scale_residual_layernorm.apply()
     patch_mul_add.apply()
     patch_qk_norm_rope.apply()
+
+
+@register_rollout_patch_group("offload")
+def apply_offload_patches() -> None:
+    from miles.backends.sglang_diffusion_utils.monkey_patches import patch_pinned_offload_stride
+
+    patch_pinned_offload_stride.apply()
 
 
 @register_rollout_patch_group("ltx")
