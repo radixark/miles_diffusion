@@ -16,7 +16,7 @@ name: PR Test
 
 on:
   pull_request:
-    types: [synchronize, labeled, opened, reopened]
+    types: [synchronize, labeled, unlabeled, opened, reopened]
   workflow_dispatch:
     inputs:
       ci_sglang_pr:
@@ -51,9 +51,26 @@ concurrency:
 # every enabled test in the suite.
 
 jobs:
+  # Repository collaborators grant CI access by adding `run-ci`. This is the
+  # only PR job allowed to fail before the expensive CPU/GPU jobs are started.
+  ci-permission:
+    name: CI permission
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require run-ci label
+        if: github.event_name == 'pull_request'
+        env:
+          CI_APPROVED: ${{ contains(github.event.pull_request.labels.*.name, 'run-ci') }}
+        run: |
+          if [ "$CI_APPROVED" != "true" ]; then
+            echo "::error::A repository collaborator must add the run-ci label before CI can run."
+            exit 1
+          fi
+
   # Nothing rebuilds the CI image for a PR, so a docker PR would otherwise be tested inside the old `latest`.
   docker-paths:
-    if: github.event_name == 'pull_request'
+    needs: [ci-permission]
+    if: needs.ci-permission.result == 'success' && github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     outputs:
       changed: ${{ steps.diff.outputs.changed }}
@@ -107,10 +124,11 @@ jobs:
         run: docker image prune -f
 
   resolve-ci-image:
-    needs: [docker-build]
+    needs: [ci-permission, docker-build]
     # A failed build must skip this job so the GPU stages' `success` guard stops the matrix.
     if: |
       always() && !cancelled() &&
+      needs.ci-permission.result == 'success' &&
       (needs.docker-build.result == 'success' || needs.docker-build.result == 'skipped') &&
       ((github.event_name == 'workflow_dispatch') || (github.event.pull_request))
     runs-on: ubuntu-latest
@@ -141,9 +159,10 @@ jobs:
           echo "container_image=rockdu/miles_diffusion:${CI_IMAGE_TAG}" >> "$GITHUB_OUTPUT"
           echo "Resolved CI image: rockdu/miles_diffusion:${CI_IMAGE_TAG}"
 
-  # Stage A: CPU-only fast tests (always runs on PR)
+  # Stage A: CPU-only fast tests.
   stage-a-cpu:
-    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request)
+    needs: [ci-permission]
+    if: needs.ci-permission.result == 'success'
     uses: ./.github/workflows/_run-ci.yml
     with:
       cpu_runner: true
@@ -240,3 +259,34 @@ jobs:
         --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
         ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
     secrets: inherit
+
+  # Configure this job as a required status check. It fails when CI was not
+  # approved, any required stage failed, or Stage C was skipped without the
+  # explicit skip-ci-stage-c exemption.
+  ci-required:
+    name: CI required
+    needs: [ci-permission, stage-b, stage-c-3-gpu-h200, stage-c-5-gpu-h200]
+    if: always() && !cancelled()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify required CI
+        env:
+          PERMISSION_RESULT: ${{ needs.ci-permission.result }}
+          STAGE_B_RESULT: ${{ needs.stage-b.result }}
+          STAGE_C_3_RESULT: ${{ needs.stage-c-3-gpu-h200.result }}
+          STAGE_C_5_RESULT: ${{ needs.stage-c-5-gpu-h200.result }}
+          SKIP_STAGE_C: ${{ contains(github.event.pull_request.labels.*.name, 'skip-ci-stage-c') }}
+        run: |
+          if [ "$PERMISSION_RESULT" != "success" ]; then
+            echo "::error::CI was not approved with the run-ci label."
+            exit 1
+          fi
+          if [ "$STAGE_B_RESULT" != "success" ]; then
+            echo "::error::Stage B did not pass (result: $STAGE_B_RESULT)."
+            exit 1
+          fi
+          if [ "$SKIP_STAGE_C" != "true" ] &&
+             { [ "$STAGE_C_3_RESULT" != "success" ] || [ "$STAGE_C_5_RESULT" != "success" ]; }; then
+            echo "::error::Stage C did not pass (3-GPU: $STAGE_C_3_RESULT, 5-GPU: $STAGE_C_5_RESULT)."
+            exit 1
+          fi
