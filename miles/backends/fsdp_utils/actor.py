@@ -446,7 +446,7 @@ class FSDPTrainRayActor(TrainRayActor):
                         # clip returns a lazily-reduced partial norm; materialize it,
                         # otherwise the logged metric leaks the local shard's value.
                         grad_norm = grad_norm.full_tensor()
-                    metrics.emit_replicated(key="grad_norm", value=grad_norm)
+                    metrics.emit_replicated("grad_norm", grad_norm)
                     self.scaler.step(self.optimizer)
                     self.scaler.update()
                     self.lr_scheduler.step()
@@ -657,21 +657,21 @@ class FSDPTrainRayActor(TrainRayActor):
 
         with torch.no_grad():
             # Sums, not means: the flush divides by the globally summed pair count.
-            metrics.emit_mean(key="loss", total=loss_sum, count=bsz)
-            metrics.emit_mean(key="policy_loss", total=per_pair_loss.sum(), count=bsz)
-            metrics.emit_mean(key="kl_loss", total=kl_sum, count=bsz)
-            metrics.emit_mean(key="loss_abs_mean", total=per_pair_loss.abs().sum(), count=bsz)
-            metrics.emit_mean(key="adv_abs_mean", total=advantage.abs().sum(), count=bsz)
-            metrics.emit_mean(key="ratio_abs_minus_1", total=(ratio - 1.0).abs().sum(), count=bsz)
-            metrics.emit_mean(key="approx_kl", total=0.5 * ((log_prob_new - log_prob_old) ** 2).sum(), count=bsz)
-            metrics.emit_mean(key="clipfrac", total=(torch.abs(ratio - 1.0) > clip_range).float().sum(), count=bsz)
+            metrics.emit_mean("loss", total=loss_sum, count=bsz)
+            metrics.emit_mean("policy_loss", total=per_pair_loss.sum(), count=bsz)
+            metrics.emit_mean("kl_loss", total=kl_sum, count=bsz)
+            metrics.emit_mean("loss_abs_mean", total=per_pair_loss.abs().sum(), count=bsz)
+            metrics.emit_mean("adv_abs_mean", total=advantage.abs().sum(), count=bsz)
+            metrics.emit_mean("ratio_abs_minus_1", total=(ratio - 1.0).abs().sum(), count=bsz)
+            metrics.emit_mean("approx_kl", total=0.5 * ((log_prob_new - log_prob_old) ** 2).sum(), count=bsz)
+            metrics.emit_mean("clipfrac", total=(torch.abs(ratio - 1.0) > clip_range).float().sum(), count=bsz)
             # Single-pair probes: one observation per micro-batch, not a batch statistic.
-            metrics.emit_mean(key="log_prob_new_idx_0", total=log_prob_new[0], count=1)
-            metrics.emit_mean(key="log_prob_old_idx_0", total=log_prob_old[0], count=1)
+            metrics.emit_mean("log_prob_new_idx_0", total=log_prob_new[0], count=1)
+            metrics.emit_mean("log_prob_old_idx_0", total=log_prob_old[0], count=1)
             log_prob_abs_diff_sum = torch.abs(log_prob_new - log_prob_old).sum()
-            metrics.emit_mean(key="log_prob_mean_abs_diff", total=log_prob_abs_diff_sum, count=bsz)
+            metrics.emit_mean("log_prob_mean_abs_diff", total=log_prob_abs_diff_sum, count=bsz)
             if len(self.models) > 1:
-                metrics.emit_mean(key=f"log_prob_mean_abs_diff_{component}", total=log_prob_abs_diff_sum, count=bsz)
+                metrics.emit_mean(f"log_prob_mean_abs_diff_{component}", total=log_prob_abs_diff_sum, count=bsz)
 
             # model_output_* checks the train forward reproduces the rollout forward -- the only
             # model-dependent consistency metric (std_dev/prev_sample_mean are deterministic
