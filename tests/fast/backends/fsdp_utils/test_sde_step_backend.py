@@ -2,9 +2,11 @@ from tests.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=30, suite="stage-a-cpu", labels=[])
 
+import math
+
 import torch
 
-from miles.backends.fsdp_utils.sde_step_backend import DiffusersSdeStepBackend
+from miles.backends.fsdp_utils.sde_step_backend import CpsSdeStepBackend, DiffusersSdeStepBackend
 from miles.utils.sde_log_prob import sde_step_with_logprob
 
 
@@ -32,3 +34,25 @@ class TestDiffusersSdeStepBackend:
         for g, w in zip(got, want, strict=True):
             torch.testing.assert_close(g, w, rtol=0.0, atol=0.0)
         assert got[1].shape == (2,)
+
+
+class TestCpsSdeStepBackend:
+    # LTX uses CPS dynamics: σ = timestep/divisor straight from the rollout values
+    # (no scheduler), and the CPS mean/std kernel must match sgl-d's rollout_sde_type="cps".
+    def test_cps_kernel_matches_reference(self):
+        torch.manual_seed(0)
+        sb = CpsSdeStepBackend(None, sde_timestep_divisor=1000.0)  # no scheduler / no config
+        t = torch.tensor([700.0, 300.0])
+        nt = torch.tensor([600.0, 0.0])  # terminal σ_next = 0
+        x, v, nxt = (torch.randn(2, 128, 8) for _ in range(3))
+        _, log_prob, mean, std = sb.sde_step_logprob(v, t, nt, x, prev_sample=nxt, noise_level=0.8)
+
+        sigma, sigma_next = (t / 1000).view(-1, 1, 1), (nt / 1000).view(-1, 1, 1)
+        std_t = sigma_next * math.sin(0.8 * math.pi / 2)
+        expected_mean = (x - sigma * v) * (1 - sigma_next) + (x + v * (1 - sigma)) * torch.sqrt(
+            torch.clamp(sigma_next**2 - std_t**2, min=1e-12)
+        )
+        torch.testing.assert_close(mean, expected_mean, rtol=0.0, atol=0.0)
+        # no-const log_prob = -(prev - mean)^2 mean over non-batch dims
+        torch.testing.assert_close(log_prob, (-((nxt - expected_mean) ** 2)).mean(dim=(1, 2)), rtol=0.0, atol=0.0)
+        assert log_prob.shape == (2,)

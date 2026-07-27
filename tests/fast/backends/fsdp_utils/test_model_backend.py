@@ -4,16 +4,41 @@ register_cpu_ci(est_time=15, suite="stage-a-cpu", labels=[])
 
 import torch
 
-from miles.backends.fsdp_utils.model_backend import DiffusersModelBackend, ModelBackend
+from miles.backends.fsdp_utils.model_backend import (
+    BaseModelBackend,
+    DiffusersModelBackend,
+    MilesModelBackend,
+)
 
 
 class _RecordingModel(torch.nn.Module):
     def __init__(self):
         super().__init__()
         self.selected = None
+        self.gradient_checkpointing_enabled = False
+        self._no_split_modules = ["TransformerBlock"]
 
     def set_attention_backend(self, backend):  # diffusers protocol method
         self.selected = backend
+
+    def enable_gradient_checkpointing(self):
+        self.gradient_checkpointing_enabled = True
+
+
+class TestBackendHierarchy:
+    def test_concrete_backends_are_sibling_implementations(self):
+        assert issubclass(MilesModelBackend, BaseModelBackend)
+        assert issubclass(DiffusersModelBackend, BaseModelBackend)
+        assert not issubclass(DiffusersModelBackend, MilesModelBackend)
+
+    def test_diffusers_implements_model_lifecycle_hooks(self):
+        backend = DiffusersModelBackend(None)
+        model = _RecordingModel()
+
+        backend.enable_gradient_checkpointing(model)
+
+        assert model.gradient_checkpointing_enabled
+        assert backend.fsdp_no_split_modules(model) == ["TransformerBlock"]
 
 
 class TestSetAttentionBackend:
@@ -29,10 +54,7 @@ class TestSetAttentionBackend:
     def test_subclass_can_override(self):
         seen = {}
 
-        class _CustomBackend(ModelBackend):
-            def load_models_and_scheduler(self, args, *, master_dtype):
-                raise NotImplementedError
-
+        class _CustomBackend(DiffusersModelBackend):
             def set_attention_backend(self, model, backend):
                 seen["backend"] = backend
 
@@ -48,9 +70,9 @@ class TestSetAttentionBackend:
         class _NoAttnModel(torch.nn.Module):
             pass  # no set_attention_backend, like a native ltx_core transformer
 
-        class _OptOutBackend(ModelBackend):
-            def load_models_and_scheduler(self, args, *, master_dtype):
-                raise NotImplementedError
+        class _OptOutBackend(MilesModelBackend):
+            def __init__(self, train_pipeline_config):
+                self.config = train_pipeline_config
 
             def set_attention_backend(self, model, backend):
                 pass  # this family selects attention its own way
