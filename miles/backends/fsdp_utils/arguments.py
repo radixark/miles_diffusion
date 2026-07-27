@@ -189,13 +189,11 @@ def validate_hybrid_shard_args(args) -> None:
 
 
 def validate_sp_args(args) -> None:
-    """Validate the finalized train topology and SP/backend combination on the driver.
+    """Validate finalized SP topology and ring-kernel arguments on the driver.
 
     Model-instance constraints such as ``_cp_plan`` availability and attention
     dispatch compatibility are checked later, after the model is loaded.
     """
-    from miles.utils.misc import load_function
-
     from .sequence_parallel.attention import RING_KERNELS
 
     validate_sp_config(
@@ -213,9 +211,6 @@ def validate_sp_args(args) -> None:
             f"--fsdp-attention-backend {args.fsdp_attention_backend!r} cannot drive ring attention; "
             f"supported: {sorted(k for k in RING_KERNELS if k is not None)}"
         )
-    backend_cls = load_function(args.model_backend_path)
-    if not backend_cls.supports_sequence_parallelism:
-        raise ValueError(f"{backend_cls.__name__} does not support sequence parallelism")
 
 
 def load_fsdp_args(extra_args_provider=None):

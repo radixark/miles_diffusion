@@ -1,13 +1,8 @@
-"""LTX-2 native modeling behind the diffusers interface protocol.
-
-Reference implementation for onboarding a self-built model: checkpoint
-resolution + ltx_core loading, returning UNMODIFIED ltx_core models — the
-model-behavior adaptation (grad-ckpt API, FSDP wrap classes) lives on
-``LTXModelBackend``, not grafted onto instances.
-"""
+"""LTX-2 checkpoint resolution, materialization, and component loading."""
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from pathlib import Path
@@ -16,6 +11,8 @@ from typing import Any
 import torch
 
 logger = logging.getLogger(__name__)
+
+TRAIN_COMPONENT = "transformer"
 
 
 def _is_hf_model_id(ref: str | None) -> bool:
@@ -45,17 +42,18 @@ def _find_cached_materialized_dir(hf_model_id: str) -> Path | None:
         reverse=True,
     )
     for directory in candidates:
-        checkpoint = directory / "transformer" / "model.safetensors"
+        checkpoint = directory / TRAIN_COMPONENT / "model.safetensors"
         if checkpoint.is_file():
             return directory
     return None
 
 
 def _transformer_checkpoint_in_dir(materialized_dir: Path) -> Path:
-    checkpoint = materialized_dir / "transformer" / "model.safetensors"
+    checkpoint = materialized_dir / TRAIN_COMPONENT / "model.safetensors"
     if not checkpoint.is_file():
         raise FileNotFoundError(
-            f"Materialized LTX model at {materialized_dir} is missing " f"transformer/model.safetensors"
+            f"Materialized LTX model at {materialized_dir} is missing "
+            f"{TRAIN_COMPONENT}/model.safetensors"
         )
     return checkpoint
 
@@ -71,29 +69,21 @@ def _is_materialized_diffusers_checkpoint(checkpoint: Path) -> bool:
 
 
 def _read_materialized_transformer_config(checkpoint: Path) -> dict:
-    import json
-
     config_json = _materialized_config_path(checkpoint)
     if config_json is None:
         raise FileNotFoundError(f"Materialized LTX checkpoint {checkpoint} is missing sibling config.json")
     transformer_cfg = json.loads(config_json.read_text())
-    return {"transformer": transformer_cfg}
+    return {TRAIN_COMPONENT: transformer_cfg}
 
 
-def load_ltx_transformer_for_train(
+def load_transformer_for_train(
     checkpoint_path: str | Path,
     *,
     device: str = "cpu",
     dtype: Any = None,
     materialize_weights: bool = True,
 ):
-    """Load LTX DiT for FSDP train from materialized diffusers or comfy safetensors.
-
-    Materialized overlay weights (``transformer/model.safetensors`` + ``config.json``)
-    use the same key layout as ltx_core / sglang and do not embed config in safetensors
-    metadata. Comfy-style single-file checkpoints keep using safetensors metadata.
-    """
-    import torch
+    """Load LTX DiT for FSDP train from materialized diffusers or comfy safetensors."""
     from ltx_core.loader.helpers import create_meta_model, load_state_dict
     from ltx_core.loader.registry import DummyRegistry
     from ltx_core.loader.sft_loader import SafetensorsModelStateDictLoader
@@ -142,11 +132,7 @@ def load_ltx_transformer_for_train(
 
 
 def ensure_materialized_model(hf_model_id: str) -> Path:
-    """Materialize the overlay model via sglang (same pipeline as rollout).
-
-    Downloads HF source weights + overlay metadata on first use, then caches
-    under ``SGLANG_DIFFUSION_CACHE_ROOT/materialized_models/``.
-    """
+    """Materialize the overlay model via sglang (same pipeline as rollout)."""
     cached = _find_cached_materialized_dir(hf_model_id)
     if cached is not None:
         return cached
@@ -185,13 +171,7 @@ def resolve_transformer_checkpoint(
     *,
     materialize: bool = True,
 ) -> str:
-    """Resolve the single-file DiT checkpoint used by FSDP train.
-
-    Resolution order:
-    1. ``--diffusion-model`` pointing at a ``.safetensors`` file
-    2. Overlay materialized ``transformer/model.safetensors`` for a HF model id
-       (materializes via sglang on cache miss when ``materialize=True``)
-    """
+    """Resolve the single-file DiT checkpoint used by FSDP train."""
     if diffusion_model:
         path = Path(str(diffusion_model)).expanduser()
         if path.is_file() and path.suffix == ".safetensors":
@@ -217,35 +197,21 @@ def resolve_transformer_checkpoint(
     )
 
 
-def build_ltx_train_scheduler(args):
-    """Sigma/timestep holder mirroring the diffusers scheduler surface the trainer touches."""
-    from dataclasses import dataclass, field
-
-    from ltx_core.components.schedulers import LTX2Scheduler
-
-    @dataclass
-    class _SchedulerConfig:
-        # LTX rollout timesteps are σ×1000, so σ = timestep / num_train_timesteps needs 1000.
-        num_train_timesteps: int = 1000
-
-    @dataclass
-    class _LTXSchedulerHolder:
-        sigmas: torch.Tensor = field(default_factory=lambda: torch.tensor([]))
-        timesteps: torch.Tensor = field(default_factory=lambda: torch.tensor([]))
-        num_inference_steps: int = 0
-        _step_index: int | None = None
-        _begin_index: int | None = None
-        config: _SchedulerConfig = field(default_factory=_SchedulerConfig)
-
-        def to(self, device):
-            self.sigmas = self.sigmas.to(device)
-            self.timesteps = self.timesteps.to(device)
-            return self
-
-    num_steps = int(getattr(args, "diffusion_num_steps", 24))
-    sigmas = LTX2Scheduler().execute(steps=num_steps).float()
-    return _LTXSchedulerHolder(
-        sigmas=sigmas,
-        timesteps=sigmas[:num_steps],
-        num_inference_steps=num_steps,
+def load_component(
+    component: str,
+    args,
+    *,
+    master_dtype: torch.dtype,
+    materialize_weights: bool,
+):
+    if component != TRAIN_COMPONENT:
+        raise ValueError(
+            f"LTX trains the single DiT ({TRAIN_COMPONENT!r}); got {component!r}"
+        )
+    checkpoint = resolve_transformer_checkpoint(str(args.diffusion_model))
+    return load_transformer_for_train(
+        checkpoint,
+        device="cpu",
+        dtype=master_dtype,
+        materialize_weights=materialize_weights,
     )

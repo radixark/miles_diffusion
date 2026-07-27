@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from itertools import chain
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,55 @@ from torch.distributed.checkpoint.state_dict import StateDictOptions, get_state_
 from torch.distributed.checkpoint.stateful import Stateful
 
 logger = logging.getLogger(__name__)
+
+
+def sync_model_dtypes(model: torch.nn.Module) -> None:
+    """Match meta parameter and buffer dtypes to rank 0 before FSDP sharding."""
+    rank = dist.get_rank()
+    tensors = list(chain(model.parameters(), model.buffers()))
+    dtypes = [tensor.dtype for tensor in tensors] if rank == 0 else None
+    objects = [dtypes]
+    dist.broadcast_object_list(objects, src=0)
+    if rank != 0:
+        for tensor, dtype in zip(tensors, objects[0], strict=True):
+            tensor.data = tensor.data.to(dtype)
+
+
+def broadcast_full_state_to_fsdp(
+    model: torch.nn.Module,
+    full_state: dict,
+    *,
+    cpu_offload: bool,
+) -> None:
+    """Materialize FSDP2 shards from rank 0's full initial state dict."""
+    from torch.distributed.checkpoint.state_dict import set_model_state_dict
+
+    if dist.get_rank() == 0:
+        # Rank 0 was sharded on real CPU weights; move them (and real buffers) along.
+        model.to(device=torch.cuda.current_device(), non_blocking=True)
+    else:
+        # to_empty creates tensors on device without initializing memory.
+        model.to_empty(device=torch.cuda.current_device())
+
+    set_model_state_dict(
+        model,
+        full_state,
+        options=StateDictOptions(
+            full_state_dict=True,
+            cpu_offload=cpu_offload,
+            broadcast_from_rank0=True,
+        ),
+    )
+    # State dict loading does not cover non-persistent buffers (e.g. Wan rope
+    # tables), so broadcast rank 0's real values explicitly.
+    for buffer in model.buffers():
+        dist.broadcast(buffer, src=0)
+
+    if cpu_offload:
+        model.to("cpu", non_blocking=True)
+        # CPUOffloadPolicy manages params only; buffers must live on GPU for forward.
+        for buffer in model.buffers():
+            buffer.data = buffer.data.to(torch.cuda.current_device())
 
 
 def _is_lora_param_name(name: str) -> bool:

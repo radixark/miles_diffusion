@@ -84,6 +84,8 @@ class TrainPipelineConfig(abc.ABC):
     rollout_patch_group: str | None = None
     # Default component paths (miles custom-function style); CLI args override.
     model_backend_path: str = "miles.backends.fsdp_utils.model_backend.DiffusersModelBackend"
+    # Native model package import path; required when model_backend_path is MilesModelBackend.
+    model_package: str | None = None
 
     @classmethod  # noqa: B027 — optional hook, deliberately non-abstract
     def validate_args(cls, args) -> None:

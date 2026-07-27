@@ -2,7 +2,6 @@ import logging
 import warnings
 from argparse import Namespace
 from contextlib import contextmanager, nullcontext
-from itertools import chain
 
 import ray
 import torch
@@ -105,26 +104,35 @@ class FSDPTrainRayActor(TrainRayActor):
             self.model_backend.enable_deterministic_attention(args.fsdp_attention_backend)
         self.scheduler = self.model_backend.load_scheduler(args)
         rank = dist.get_rank()
+        materialize_weights = rank == 0
 
         self.models: dict[str, torch.nn.Module] = {}
         for component in args.update_weight_target_modules:
             # per raw component (wan2.2 has two transformers), before LoRA/FSDP wrap
-            with self._init_weight_context():
-                model = self.model_backend.load_component(component, args, master_dtype=self._master_dtype)
+            with self._model_init_context(materialize_weights=materialize_weights):
+                model = self.model_backend.load_component(
+                    component,
+                    args,
+                    master_dtype=self._master_dtype,
+                    materialize_weights=materialize_weights,
+                )
             if args.fsdp_attention_backend is not None:
                 self.model_backend.set_attention_backend(model, args.fsdp_attention_backend)
+
+            # Enable checkpointing on the raw model before PEFT wraps it. The flag
+            # is consumed when transformer blocks run, so LoRA layers inserted
+            # below remain inside the checkpointed block forward.
+            if args.gradient_checkpointing:
+                self.model_backend.enable_gradient_checkpointing(model)
 
             if args.use_lora:
                 model = apply_lora(model, args, self.train_pipeline_config)
 
             model.train()
 
-            if args.gradient_checkpointing:
-                self.model_backend.enable_gradient_checkpointing(model)
-
             if rank != 0 and any(not parameter.is_meta for parameter in model.parameters()):
                 raise RuntimeError(f"{component} did not honor meta initialization")
-            sync_model_dtypes(model)
+            checkpoint.sync_model_dtypes(model)
             full_state = model.state_dict() if rank == 0 else {}
             model = apply_fsdp2(
                 model,
@@ -133,7 +141,11 @@ class FSDPTrainRayActor(TrainRayActor):
                 args=self.args,
                 no_split_modules=self.model_backend.fsdp_no_split_modules(model),
             )
-            load_sharded_model(model, full_state, cpu_offload=self.args.fsdp_cpu_offload)
+            checkpoint.broadcast_full_state_to_fsdp(
+                model,
+                full_state,
+                cpu_offload=self.args.fsdp_cpu_offload,
+            )
             del full_state
             self.train_pipeline_config.postprocess_model_after_materialize(model)
             self.models[component] = model
@@ -210,9 +222,9 @@ class FSDPTrainRayActor(TrainRayActor):
         return self.args.start_rollout_id
 
     @contextmanager
-    def _init_weight_context(self):
-        """Build real weights on rank0 and allocation-free meta weights elsewhere."""
-        if dist.get_rank() == 0:
+    def _model_init_context(self, *, materialize_weights: bool):
+        """Build real CPU weights on rank 0 and meta weights elsewhere."""
+        if materialize_weights:
             with torch.device("cpu"):
                 yield
             return
@@ -746,51 +758,6 @@ def apply_lora(model: torch.nn.Module, args: Namespace, train_pipeline_config) -
     if dist.get_rank() == 0:
         model.print_trainable_parameters()
     return model
-
-
-def load_sharded_model(model: torch.nn.Module, full_state: dict, cpu_offload: bool) -> None:
-    """Materialize FSDP2 shards from rank0's full state dict."""
-    from torch.distributed.checkpoint.state_dict import StateDictOptions, set_model_state_dict
-
-    if dist.get_rank() == 0:
-        # Rank 0 was sharded on real CPU weights; move them (and real buffers) along.
-        model.to(device=torch.cuda.current_device(), non_blocking=True)
-    else:
-        # to_empty creates tensors on device without initializing memory.
-        model.to_empty(device=torch.cuda.current_device())
-
-    set_model_state_dict(
-        model,
-        full_state,
-        options=StateDictOptions(
-            full_state_dict=True,
-            cpu_offload=cpu_offload,
-            broadcast_from_rank0=True,
-        ),
-    )
-    # set_model_state_dict only covers state_dict entries; non-persistent buffers
-    # (e.g. Wan's rope tables) exist in no state_dict and were wiped by to_empty
-    # on non-rank0 ranks — take rank0's real values for every buffer.
-    for buffer in model.buffers():
-        dist.broadcast(buffer, src=0)
-
-    if cpu_offload:
-        model.to("cpu", non_blocking=True)
-        # CPUOffloadPolicy manages params only; buffers must live on GPU for forward.
-        for buffer in model.buffers():
-            buffer.data = buffer.data.to(torch.cuda.current_device())
-
-
-def sync_model_dtypes(model: torch.nn.Module) -> None:
-    """Match meta parameter and buffer dtypes to rank0 before sharding."""
-    rank = dist.get_rank()
-    tensors = list(chain(model.parameters(), model.buffers()))
-    dtypes = [tensor.dtype for tensor in tensors] if rank == 0 else None
-    objects = [dtypes]
-    dist.broadcast_object_list(objects, src=0)
-    if rank != 0:
-        for tensor, dtype in zip(tensors, objects[0], strict=True):
-            tensor.data = tensor.data.to(dtype)
 
 
 def apply_fsdp2(model, mesh=None, cpu_offload=False, args=None, no_split_modules=None):

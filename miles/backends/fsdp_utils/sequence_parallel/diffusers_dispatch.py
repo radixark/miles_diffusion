@@ -106,7 +106,7 @@ def install_diffusers_usp_patch(transformer, parallel_state):
     if module is None:
         raise ValueError(
             f"{type(base).__name__} does not route attention through diffusers' "
-            "dispatch_attention_fn; its ModelBackend must override install_sequence_parallel_attention"
+            "dispatch_attention_fn; its ModelPackage must override install_sequence_parallel_attention"
         )
     _wrap_dispatch(module)
     config = _USPDispatchConfig(parallel_state)
