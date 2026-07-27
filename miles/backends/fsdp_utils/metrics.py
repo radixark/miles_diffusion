@@ -47,8 +47,8 @@ def record_rollout_train_abs_diff(
     reference = rollout.reshape(bsz, -1).float()
     diff = (train.reshape(bsz, -1).float() - reference).abs()
     total, worst, count = diff.sum(), diff.max(), diff.numel()
-    metrics.add(f"{prefix}_max_abs_diff", worst)
-    metrics.add(f"{prefix}_mean_abs_diff", total, count)
-    metrics.add(f"{prefix}_rel_max", worst / (reference.abs().max() + 1e-30))
+    metrics.emit_max(f"{prefix}_max_abs_diff", worst)
+    metrics.emit_mean(f"{prefix}_mean_abs_diff", total, count=count)
+    metrics.emit_max(f"{prefix}_rel_max", worst / (reference.abs().max() + 1e-30))
     if component is not None:
-        metrics.add(f"{prefix}_mean_abs_diff_{component}", total, count)
+        metrics.emit_mean(f"{prefix}_mean_abs_diff_{component}", total, count=count)

@@ -46,17 +46,23 @@ class MetricBuffer:
         # reshape(()) rejects a non-scalar instead of silently reducing it.
         return value.detach().reshape(()).to(device=self._device, dtype=torch.float64)
 
-    def add(self, key: str, value: torch.Tensor, count: int | None = None) -> None:
-        op = self._schema[key]
-        if op is MetricReduce.MEAN:
-            if count is None:
-                raise ValueError(f"metric {key!r} reduces as MEAN and needs the item count behind its sum")
-            self._sums[key] = self._sums[key] + self._scalar(value)
-            self._counts[key] += float(count)
-        elif op is MetricReduce.MAX:
-            self._maxes[key] = torch.maximum(self._maxes[key], self._scalar(value))
-        else:
-            self._replicated[key] = self._scalar(value)
+    def _check_reduce(self, key: str, expected: MetricReduce) -> None:
+        actual = self._schema[key]
+        if actual is not expected:
+            raise ValueError(f"metric {key!r} reduces as {actual.name}, not {expected.name}")
+
+    def emit_mean(self, key: str, total: torch.Tensor, *, count: int) -> None:
+        self._check_reduce(key, MetricReduce.MEAN)
+        self._sums[key] = self._sums[key] + self._scalar(total)
+        self._counts[key] += float(count)
+
+    def emit_max(self, key: str, value: torch.Tensor) -> None:
+        self._check_reduce(key, MetricReduce.MAX)
+        self._maxes[key] = torch.maximum(self._maxes[key], self._scalar(value))
+
+    def emit_replicated(self, key: str, value: torch.Tensor) -> None:
+        self._check_reduce(key, MetricReduce.REPLICATED)
+        self._replicated[key] = self._scalar(value)
 
     def reduce(self) -> dict[str, float]:
         """Combine across `group` and materialize; every rank in it must call this."""
