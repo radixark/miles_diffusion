@@ -23,6 +23,14 @@ SCHEMA = {
     "model_output_max_abs_diff": MetricReduce.MAX,
     "model_output_rel_max": MetricReduce.MAX,
     "grad_norm": MetricReduce.REPLICATED,
+    "nft_loss": MetricReduce.MEAN,
+    "nft_loss_per_pair": MetricReduce.MEAN,
+    "nft_r_mean": MetricReduce.MEAN,
+    "nft_pos_loss": MetricReduce.MEAN,
+    "nft_neg_loss": MetricReduce.MEAN,
+    "nft_adv_mean": MetricReduce.MEAN,
+    "nft_t_mean": MetricReduce.MEAN,
+    "nft_num_timesteps": MetricReduce.MEAN,
 }
 
 

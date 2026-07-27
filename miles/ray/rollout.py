@@ -363,9 +363,6 @@ class RolloutManager:
         """
         Convert inference generated samples to training data.
         """
-        if self.custom_convert_samples_to_train_data_func is not None:
-            return self.custom_convert_samples_to_train_data_func(self.args, samples)
-
         raw_rewards, rewards = self._post_process_rewards(samples)
 
         assert len(raw_rewards) == len(samples)
@@ -375,6 +372,7 @@ class RolloutManager:
         norm_t = torch.tensor(rewards, dtype=torch.float)
 
         # Emit reward distribution stats (raw + normalized) to stdout + wandb.
+        # Runs for both default SDE-pair expand and custom converts (e.g. NFT).
         reward_stats = {
             **_reward_stats_dict(raw_t, "rollout/reward/raw_"),
             **_reward_stats_dict(norm_t, "rollout/reward/norm_"),
@@ -405,6 +403,9 @@ class RolloutManager:
                 step_value=compute_rollout_step(self.args, self.rollout_id),
                 reward_key=self.args.reward_key,
             )
+
+        if self.custom_convert_samples_to_train_data_func is not None:
+            return self.custom_convert_samples_to_train_data_func(self.args, samples)
 
         return self.train_data_converter.convert_samples(samples, rewards, raw_rewards)
 

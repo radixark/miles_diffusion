@@ -1,7 +1,7 @@
 import logging
 import warnings
 from argparse import Namespace
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 
 import ray
 import torch
@@ -24,8 +24,8 @@ from miles.utils.tracking_utils import init_tracking
 from miles.utils.train_data_utils import (
     build_microbatch_schedule,
     scheduler_meta_from_rollout,
-    stack_train_pair_rollout_debug,
     validate_same_microbatch_counts_across_train_ranks,
+    validate_sample_aligned_windows,
 )
 from . import checkpoint
 from .diffusion_update_weight_utils import (
@@ -33,6 +33,8 @@ from .diffusion_update_weight_utils import (
     DiffusionUpdateWeightFromTensorLoRA,
     DiffusionUpdateWeightFromTensorLoRAIPC,
 )
+from .loss_hub import DiffusionLossContext, resolve_loss_formula_fn, resolve_prepare_fn
+from .lora_ema import LoraEmaShadow, lora_ema_rollout_policy, lora_ema_shadow_enabled, resolve_lora_ema_kwargs
 from .lr_scheduler import get_lr_scheduler
 from .metrics import new_metric_buffer, record_rollout_train_abs_diff
 from .parallel import create_fsdp_parallel_state
@@ -176,6 +178,10 @@ class FSDPTrainRayActor(TrainRayActor):
             sde_timestep_divisor=self.train_pipeline_config.sde_timestep_divisor,
         )
 
+        # Replaceable parts (defaults = Flow-GRPO). DiT forward stays in this actor.
+        self.prepare_fn = resolve_prepare_fn(args)
+        self.loss_formula_fn = resolve_loss_formula_fn(args)
+
         if args.optimizer == "adam":
             self.optimizer = torch.optim.AdamW(
                 (p for p in self.model.parameters() if p.requires_grad),
@@ -201,6 +207,15 @@ class FSDPTrainRayActor(TrainRayActor):
         self.micro_step = 0
 
         checkpoint_payload = checkpoint.load(self)
+
+        # Optional LoRA EMA shadow (pi_old). Loss formulas that set ref_mode="ema"
+        # consume it via actor reference forward.
+        self.ema_shadow = None
+        if lora_ema_shadow_enabled(self.args):
+            self.ema_shadow = LoraEmaShadow(
+                (p for m in self.models.values() for p in m.parameters()),
+                **resolve_lora_ema_kwargs(self.args),
+            )
 
         # sglang-d now supports /update_weights_from_tensor (PR #20464).
         if self.args.debug_train_only:
@@ -288,7 +303,17 @@ class FSDPTrainRayActor(TrainRayActor):
             if dist.get_rank() == 0:
                 ray.get(self.rollout_manager.clear_num_new_engines.remote())
 
-        self.weight_updater.update_weights()
+        if self.ema_shadow is not None:
+            delta = self.ema_shadow.update()
+            if dist.get_rank() == 0:
+                logger.info("LoRA EMA shadow updated (decay=%.4f step=%d)", delta, self.ema_shadow.step)
+            if lora_ema_rollout_policy(self.args) == "ema":
+                with self.ema_shadow.swap_in():
+                    self.weight_updater.update_weights()
+            else:
+                self.weight_updater.update_weights()
+        else:
+            self.weight_updater.update_weights()
         clear_memory()
 
     def _log_metrics(self, rollout_id: int, log_dict: dict[str, float], step: int) -> None:
@@ -327,11 +352,10 @@ class FSDPTrainRayActor(TrainRayActor):
         )
 
     def _train_core(self, rollout_id: int, rollout_data) -> None:
-        """Diffusion GRPO: ``rollout_data[train_data]`` is a flat list of train-pair dicts.
+        """Shared train loop: schedule → prepare → DiT forward → loss formula → backward.
 
-        Optimizer windows are contiguous groups of train pairs. Within a window, consecutive microbatches of
-        size ``--micro-batch-size`` drive one forward+backward each; gradients
-        scale as mean over all train pairs in the window (``loss_chunk / num_local_pairs``).
+        ``prepare_fn`` / ``loss_formula_fn`` are the replaceable parts (defaults =
+        Flow-GRPO). DiT forward always runs here.
         """
         device = torch.cuda.current_device()
 
@@ -340,19 +364,9 @@ class FSDPTrainRayActor(TrainRayActor):
             raise ValueError("rollout_data['train_data'] is empty")
 
         num_pairs = len(train_pairs)
-
-        # ------------- CFG Scale -------------
-        guidance_scale = self.args.diffusion_guidance_scale
-        true_cfg_scale = self.args.diffusion_true_cfg_scale
-        cfg_scale = true_cfg_scale if true_cfg_scale is not None else guidance_scale
-        use_cfg = cfg_scale > 0
-
-        # ------------- Loss / SDE Parameters -------------
-        clip_range = self.args.diffusion_clip_range
-        noise_level = self.args.diffusion_noise_level
         num_train_timesteps = self.scheduler.config.num_train_timesteps
 
-        # ------------- KL loss -------------
+        # ------------- KL precondition (Flow-GRPO formula may request ref forward) -------------
         kl_beta = float(self.args.diffusion_kl_beta)
         if kl_beta > 0 and not self.args.use_lora:
             raise ValueError(
@@ -391,6 +405,23 @@ class FSDPTrainRayActor(TrainRayActor):
             microbatch_schedule=microbatch_schedule,
             parallel_state=self.parallel_state,
         )
+        if getattr(self.loss_formula_fn, "requires_sample_aligned_windows", False):
+            validate_sample_aligned_windows(
+                train_pairs=train_pairs,
+                microbatch_schedule=microbatch_schedule,
+            )
+
+        loss_ctx = DiffusionLossContext(
+            models=self.models,
+            model=self.model,
+            train_pipeline_config=self.train_pipeline_config,
+            sde_backend=self.sde_backend,
+            scheduler=self.scheduler,
+            args=self.args,
+            forward_dtype=self._forward_dtype,
+            device=device,
+            ema_shadow=self.ema_shadow,
+        )
 
         # ------------- Recompute old log-probs (impl-consistent PPO ratio) -------------
         if self.args.diffusion_recompute_old_log_prob:
@@ -402,15 +433,9 @@ class FSDPTrainRayActor(TrainRayActor):
                     legacy_pad_to_len = self._maybe_legacy_window_pad_len(train_pairs, microbatch_ranges)
                     for pair_lo, pair_hi in microbatch_ranges:
                         self._forward_train_pair_batch(
+                            loss_ctx,
                             train_pairs[pair_lo:pair_hi],
-                            use_cfg=use_cfg,
-                            guidance_scale=guidance_scale,
-                            true_cfg_scale=true_cfg_scale,
-                            clip_range=clip_range,
-                            noise_level=noise_level,
-                            num_train_timesteps=num_train_timesteps,
                             metrics=unused_metrics,
-                            device=device,
                             pad_to_len=legacy_pad_to_len,
                             write_old_log_prob=True,
                         )
@@ -432,16 +457,9 @@ class FSDPTrainRayActor(TrainRayActor):
                 for pair_lo, pair_hi in microbatch_ranges:
                     chunk = train_pairs[pair_lo:pair_hi]
                     loss_sum = self._forward_train_pair_batch(
+                        loss_ctx,
                         chunk,
-                        use_cfg=use_cfg,
-                        guidance_scale=guidance_scale,
-                        true_cfg_scale=true_cfg_scale,
-                        clip_range=clip_range,
-                        noise_level=noise_level,
-                        num_train_timesteps=num_train_timesteps,
                         metrics=metrics,
-                        device=device,
-                        kl_beta=kl_beta,
                         pad_to_len=legacy_pad_to_len,
                         old_log_prob_from_new=old_log_prob_from_new,
                     )
@@ -483,236 +501,89 @@ class FSDPTrainRayActor(TrainRayActor):
                     conds.append(env.neg_cond_kwargs)
         return self.train_pipeline_config.maybe_legacy_window_pad_len(conds)
 
+    def _resolve_ref_mode(self) -> str | None:
+        """Whether the actor should run a no-grad reference DiT forward.
+
+        Loss formulas may set ``ref_mode`` to ``"ema"`` / ``"lora_base"``.
+        Flow-GRPO defaults to ``lora_base`` when ``--diffusion-kl-beta > 0``.
+        """
+        explicit = getattr(self.loss_formula_fn, "ref_mode", None)
+        if explicit == "ema" and getattr(self.args, "diffusion_nft_ref_mode", "ema") == "base":
+            explicit = "lora_base"
+        if explicit in ("ema", "lora_base"):
+            if explicit == "ema" and self.ema_shadow is None:
+                return "lora_base"
+            return explicit
+        if float(self.args.diffusion_kl_beta) > 0:
+            return "lora_base"
+        return None
+
     def _forward_train_pair_batch(
         self,
+        ctx: DiffusionLossContext,
         batch: list,
         *,
-        use_cfg: bool,
-        guidance_scale: float,
-        true_cfg_scale: float | None,
-        clip_range: float,
-        noise_level: float,
-        num_train_timesteps: int,
         metrics: MetricBuffer,
-        device: torch.device,
-        kl_beta: float = 0.0,
         pad_to_len: int | None = None,
         write_old_log_prob: bool = False,
         old_log_prob_from_new: bool = False,
     ) -> torch.Tensor | None:
-        """One DiT forward + PPO loss over ``len(batch)`` train pairs. Returns sum of per-pair losses.
+        """Shared micro-batch path: prepare → DiT forward → [ref] → loss formula.
 
-        With ``write_old_log_prob``, the computed log-prob overwrites each pair's
-        ``log_prob_old`` and no loss is returned (caller wraps in ``no_grad``).
+        Only ``prepare_fn`` / ``loss_formula_fn`` are swappable; DiT forward stays here.
+        """
+        if not batch:
+            raise ValueError("_forward_train_pair_batch received empty batch")
 
-        With ``old_log_prob_from_new``, the PPO ratio uses this forward's detached
-        log-prob as old (valid only under pre-update weights)."""
-        forward_dtype = self._forward_dtype
+        prepared = self.prepare_fn(ctx, batch, pad_to_len=pad_to_len)
         train_pipeline_config = self.train_pipeline_config
-        bsz = len(batch)
+        forward_dtype = self._forward_dtype
 
-        def _stack(key):
-            return torch.stack([pair[key] for pair in batch]).to(device=device, dtype=torch.float32)
+        latents_input = prepared.latents.to(forward_dtype)
+        timesteps_input = prepared.timesteps_for_model.to(forward_dtype)
 
-        latents_microbatch = _stack("latent")  # (bsz, *latent_dims)
-        next_latents_microbatch = _stack("next_latent")  # (bsz, *latent_dims)
-        timesteps_microbatch = _stack("timestep")  # (bsz,) -- per-pair timestep is scalar
-        next_timesteps_microbatch = _stack("next_timestep")  # (bsz,) -- next rollout timestep (0 at terminal)
-        log_prob_old_microbatch = _stack("log_prob_old")  # (bsz,) -- per-pair log_prob is scalar
-
-        advantage = torch.tensor(  # (bsz,)
-            [float(pair["advantage"]) for pair in batch],
-            device=device,
-            dtype=torch.float32,
-        )
-        advantage = torch.clamp(advantage, -self.args.diffusion_adv_clip_max, self.args.diffusion_adv_clip_max)
-
-        if len(self.models) == 1:
-            component, model = next(iter(self.models.items()))
-        else:
-            components = {
-                train_pipeline_config.component_for_timestep(t, num_train_timesteps)
-                for t in timesteps_microbatch.tolist()
-            }
-            # to prevent mixing denoising phases in a single micro-batch
-            # Just in case when some customized step strategy is used that
-            # may violate the assumption of one phase per micro-batch, we raise an error here
-            if len(components) > 1:
-                raise ValueError(
-                    f"Micro-batch mixes denoising phases {sorted(components)}; set "
-                    "--micro-batch-size 1 so each forward is phase-pure (one DiT, one CFG scale)."
-                )
-            component = components.pop()
-            model = self.models[component]
-            guidance_scale = train_pipeline_config.select_guidance_scale(
-                float(timesteps_microbatch[0]),
-                num_train_timesteps,
-                guidance_scale,
-                self.args.diffusion_guidance_scale_2,
+        def _compute_noise_pred() -> torch.Tensor:
+            return train_pipeline_config.compute_noise_pred(
+                model=prepared.model,
+                latents_input=latents_input,
+                timesteps_input=timesteps_input,
+                pos_cond=prepared.pos_cond,
+                neg_cond=prepared.neg_cond,
+                joint_cond=prepared.joint_cond,
+                use_cfg=prepared.use_cfg,
+                cfg_batching=prepared.cfg_batching,
+                guidance_scale=prepared.guidance_scale,
+                true_cfg_scale=prepared.true_cfg_scale,
             )
 
-        # sgl-d's Qwen DiT divides timestep by num_train_timesteps inside
-        # forward; diffusers' does not. SD3 already expects raw timesteps.
-        if train_pipeline_config.needs_timestep_scaling:
-            timesteps_for_model = timesteps_microbatch / float(num_train_timesteps)
-        else:
-            timesteps_for_model = timesteps_microbatch
+        new_pred = _compute_noise_pred()
 
-        pos_list = [
-            train_pipeline_config.prepare_cond_kwargs(batch[i]["denoising_env"].pos_cond_kwargs, device)
-            for i in range(bsz)
-        ]
-        neg_list = (
-            [
-                train_pipeline_config.prepare_cond_kwargs(batch[i]["denoising_env"].neg_cond_kwargs, device)
-                for i in range(bsz)
-            ]
-            if use_cfg
-            else None
+        ref_pred = None
+        ref_mode = self._resolve_ref_mode()
+        if ref_mode is not None:
+            if ref_mode == "ema":
+                if self.ema_shadow is None:
+                    raise ValueError("ref_mode=ema requires --lora-ema-shadow")
+                ref_ctx = self.ema_shadow.swap_in()
+            elif ref_mode == "lora_base":
+                if not hasattr(prepared.model, "disable_adapter"):
+                    raise ValueError("ref_mode=lora_base requires a LoRA model exposing disable_adapter()")
+                ref_ctx = prepared.model.disable_adapter()
+            else:
+                raise ValueError(f"unknown ref_mode {ref_mode!r}")
+            with torch.no_grad(), ref_ctx:
+                ref_pred = _compute_noise_pred().detach()
+
+        return self.loss_formula_fn(
+            ctx,
+            batch,
+            prepared,
+            new_pred=new_pred,
+            ref_pred=ref_pred,
+            metrics=metrics,
+            write_old_log_prob=write_old_log_prob,
+            old_log_prob_from_new=old_log_prob_from_new,
         )
-
-        # Collate cond once, up front. With CFG batching, pos+neg must share one
-        # padded width and go through a single joint forward, so build that joint cond
-        # directly; otherwise build pos (and neg) separately. (A single-sample
-        # timestep-stacked micro-batch is just collate of bsz copies of one sample --
-        # bitwise-equivalent to the old expand_cond_for_timestep_batch path; the
-        # all-True mask qwen adds is a verified forward no-op, see
-        # tests/manual/check_mask_equivalence.py.)
-        cfg_batching = use_cfg and bool(self.args.fsdp_cfg_batching)
-        joint_cond = None
-        pos_cond_microbatch = None
-        neg_cond_microbatch = None
-        if cfg_batching:
-            joint_cond = _cast_cond_to_dtype(
-                train_pipeline_config.collate_cond_for_sample_batch(
-                    pos_list + neg_list, device, pad_to_len=pad_to_len
-                ),
-                forward_dtype,
-            )
-        else:
-            pos_cond_microbatch = _cast_cond_to_dtype(
-                train_pipeline_config.collate_cond_for_sample_batch(pos_list, device, pad_to_len=pad_to_len),
-                forward_dtype,
-            )
-            if use_cfg and neg_list is not None:
-                neg_cond_microbatch = _cast_cond_to_dtype(
-                    train_pipeline_config.collate_cond_for_sample_batch(neg_list, device, pad_to_len=pad_to_len),
-                    forward_dtype,
-                )
-
-        # Cast inputs explicitly: FSDP MixedPrecisionPolicy casts params but
-        # leaves fp32 inputs, which would run first matmul at higher precision
-        # than rollout → systematic noise_pred drift.
-        latents_input = latents_microbatch.to(forward_dtype)
-        timesteps_input = timesteps_for_model.to(forward_dtype)
-
-        def _compute_noise_pred(disable_adapter: bool = False) -> torch.Tensor:
-            adapter_ctx = model.disable_adapter() if disable_adapter else nullcontext()
-            with adapter_ctx:
-                return train_pipeline_config.compute_noise_pred(
-                    model=model,
-                    latents_input=latents_input,
-                    timesteps_input=timesteps_input,
-                    pos_cond=pos_cond_microbatch,
-                    neg_cond=neg_cond_microbatch,
-                    joint_cond=joint_cond,
-                    use_cfg=use_cfg,
-                    cfg_batching=cfg_batching,
-                    guidance_scale=guidance_scale,
-                    true_cfg_scale=true_cfg_scale,
-                )
-
-        noise_pred_microbatch = _compute_noise_pred()
-
-        _, log_prob_new_microbatch, prev_sample_mean_new, std_dev_t_new = self.sde_backend.sde_step_logprob(
-            noise_pred_microbatch.float(),
-            timesteps_microbatch,
-            next_timesteps_microbatch,
-            latents_microbatch.float(),
-            prev_sample=next_latents_microbatch.float(),
-            noise_level=noise_level,
-        )
-
-        if write_old_log_prob:
-            for pair, log_prob in zip(batch, log_prob_new_microbatch, strict=True):
-                pair["log_prob_old"] = log_prob.cpu()
-            return None
-
-        log_prob_new = log_prob_new_microbatch  # (bsz,) -- sde_step_with_logprob means over non-batch dims
-        log_prob_old = log_prob_new.detach() if old_log_prob_from_new else log_prob_old_microbatch  # (bsz,)
-        ratio = torch.exp(log_prob_new - log_prob_old)  # (bsz,)
-        unclipped = -advantage * ratio
-        clipped = -advantage * torch.clamp(ratio, 1.0 - clip_range, 1.0 + clip_range)
-        per_pair_loss = torch.maximum(unclipped, clipped)
-        loss_sum = per_pair_loss.sum()
-
-        # ------------- KL loss (vs LoRA base model as reference) -------------
-        kl_sum = loss_sum.new_zeros(())
-        if kl_beta > 0:
-            with torch.no_grad():
-                ref_noise_pred_microbatch = _compute_noise_pred(disable_adapter=True)
-                # TODO: unify sde_step_with_logprob with rollout and trainer forward paths.
-                _, _, prev_sample_mean_ref, _ = self.sde_backend.sde_step_logprob(
-                    ref_noise_pred_microbatch.float(),
-                    timesteps_microbatch,
-                    next_timesteps_microbatch,
-                    latents_microbatch.float(),
-                    prev_sample=next_latents_microbatch.float(),
-                    noise_level=noise_level,
-                )
-            kl_per_pair = ((prev_sample_mean_new - prev_sample_mean_ref) ** 2).mean(
-                dim=tuple(range(1, prev_sample_mean_new.ndim)),
-                keepdim=True,
-            ) / (2 * std_dev_t_new**2)
-            loss_sum = loss_sum + kl_beta * kl_per_pair.sum()
-            kl_sum = kl_per_pair.sum()
-
-        with torch.no_grad():
-            # Sums, not means: the flush divides by the globally summed pair count.
-            metrics.emit_mean("loss", total=loss_sum, count=bsz)
-            metrics.emit_mean("policy_loss", total=per_pair_loss.sum(), count=bsz)
-            metrics.emit_mean("kl_loss", total=kl_sum, count=bsz)
-            metrics.emit_mean("loss_abs_mean", total=per_pair_loss.abs().sum(), count=bsz)
-            metrics.emit_mean("adv_abs_mean", total=advantage.abs().sum(), count=bsz)
-            metrics.emit_mean("ratio_abs_minus_1", total=(ratio - 1.0).abs().sum(), count=bsz)
-            metrics.emit_mean("approx_kl", total=0.5 * ((log_prob_new - log_prob_old) ** 2).sum(), count=bsz)
-            metrics.emit_mean("clipfrac", total=(torch.abs(ratio - 1.0) > clip_range).float().sum(), count=bsz)
-            # Single-pair probes: one observation per micro-batch, not a batch statistic.
-            metrics.emit_mean("log_prob_new_idx_0", total=log_prob_new[0], count=1)
-            metrics.emit_mean("log_prob_old_idx_0", total=log_prob_old[0], count=1)
-            log_prob_abs_diff_sum = torch.abs(log_prob_new - log_prob_old).sum()
-            metrics.emit_mean("log_prob_mean_abs_diff", total=log_prob_abs_diff_sum, count=bsz)
-            if len(self.models) > 1:
-                metrics.emit_mean(f"log_prob_mean_abs_diff_{component}", total=log_prob_abs_diff_sum, count=bsz)
-
-            # model_output_* checks the train forward reproduces the rollout forward -- the only
-            # model-dependent consistency metric (std_dev/prev_sample_mean are deterministic
-            # functions of it). Matches the legacy actor metric name.
-            rollout_model_output = stack_train_pair_rollout_debug(batch, "rollout_step_model_output")
-            if rollout_model_output is not None:
-                record_rollout_train_abs_diff(
-                    metrics,
-                    "model_output",
-                    noise_pred_microbatch.float(),
-                    rollout_model_output.to(device=device, dtype=torch.float32),
-                    component=component if len(self.models) > 1 else None,
-                )
-
-        return loss_sum
-
-
-def _cast_cond_to_dtype(cond: dict, dtype: torch.dtype) -> dict:
-    """Cast floating-point tensors to the model's compute dtype; leave bool
-    masks / int / list / scalar values untouched. The bool
-    encoder_hidden_states_mask must NOT be cast.
-    """
-    out: dict = {}
-    for k, v in cond.items():
-        if isinstance(v, torch.Tensor) and v.dtype.is_floating_point:
-            out[k] = v.to(dtype)
-        else:
-            out[k] = v
-    return out
 
 
 @torch.no_grad()

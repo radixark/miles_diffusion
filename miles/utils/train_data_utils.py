@@ -429,6 +429,40 @@ def reorder_train_pairs_for_tiling(
     return [train_data[i] for step in schedule for micro_batch in step for i in micro_batch]
 
 
+def validate_sample_aligned_windows(
+    *,
+    train_pairs: list[dict[str, Any]],
+    microbatch_schedule: list[list[tuple[int, int]]],
+) -> None:
+    """Ensure every optimizer window holds whole samples.
+
+    Objectives whose gradient math sums one sample's pairs within a single
+    optimizer step (e.g. NFT's K timestep pairs) opt in via the loss-function
+    attribute ``requires_sample_aligned_windows``.
+    """
+    group_sizes: OrderedDict[Any, int] = OrderedDict()
+    for pair in train_pairs:
+        key = pair["sample_index"]
+        group_sizes[key] = group_sizes.get(key, 0) + 1
+    sizes = set(group_sizes.values())
+    if len(sizes) > 1:
+        raise ValueError(
+            f"loss requires sample-aligned optimizer windows, but samples contribute unequal "
+            f"pair counts on this rank ({sorted(sizes)}); a sample was likely split across "
+            "DP ranks — make the sample count divisible by the DP size"
+        )
+    for step_ranges in microbatch_schedule:
+        window_lo = step_ranges[0][0]
+        if window_lo == 0:
+            continue
+        if train_pairs[window_lo - 1]["sample_index"] == train_pairs[window_lo]["sample_index"]:
+            raise ValueError(
+                f"loss requires sample-aligned optimizer windows, but the window starting at "
+                f"pair {window_lo} splits sample_index={train_pairs[window_lo]['sample_index']}; "
+                "make samples-per-rank divisible by --num-steps-per-rollout"
+            )
+
+
 def validate_same_microbatch_counts_across_train_ranks(
     *,
     microbatch_schedule: list[list[tuple[int, int]]],

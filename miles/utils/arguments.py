@@ -859,12 +859,82 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--loss-type",
                 type=str,
-                choices=["policy_loss", "sft_loss", "custom_loss"],
+                choices=["policy_loss", "sft_loss", "custom_loss", "nft", "diffusion_nft"],
                 default="policy_loss",
                 help=(
-                    "Choose loss type, currently support ppo policy_loss or sft_loss, "
-                    "if custom_loss is set, we will use the function path from `--custom-loss-function-path`."
+                    "Train objective shortcut. Diffusion default policy_loss = Flow-GRPO prepare+formula. "
+                    "nft auto-fills convert / prepare / loss-formula custom paths. "
+                    "DiT forward always stays in the FSDP actor."
                 ),
+            )
+            parser.add_argument(
+                "--custom-prepare-train-batch-path",
+                type=str,
+                default=None,
+                help=(
+                    "Dotted path to prepare hook "
+                    "`fn(ctx, batch, *, pad_to_len=None) -> PreparedBatch`. "
+                    "Builds DiT inputs; default is Flow-GRPO SDE-pair stacking."
+                ),
+            )
+            parser.add_argument(
+                "--custom-loss-function-path",
+                type=str,
+                default=None,
+                help=(
+                    "Dotted path to a loss *formula* only: "
+                    "`fn(ctx, batch, prepared, *, new_pred, ref_pred, metrics, ...) -> Tensor`. "
+                    "DiT forward is owned by the actor; this hook only computes the objective."
+                ),
+            )
+            parser.add_argument(
+                "--diffusion-nft-beta",
+                type=float,
+                default=1.0,
+                help="DiffusionNFT dual-prediction blend coefficient (UniRL beta).",
+            )
+            parser.add_argument(
+                "--diffusion-nft-adv-clip-max",
+                type=float,
+                default=5.0,
+                help="DiffusionNFT advantage clip before remap to r in [0, 1].",
+            )
+            parser.add_argument(
+                "--diffusion-nft-adaptive-weight",
+                action="store_true",
+                default=True,
+                help="DiffusionNFT adaptive MSE weight (default on; UniRL use_adaptive_weight).",
+            )
+            parser.add_argument(
+                "--no-diffusion-nft-adaptive-weight",
+                action="store_false",
+                dest="diffusion_nft_adaptive_weight",
+                help="Disable DiffusionNFT adaptive MSE weight.",
+            )
+            parser.add_argument(
+                "--diffusion-nft-timestep-fraction",
+                type=float,
+                default=0.99,
+                help="Fraction of rollout schedule sigmas kept for NFT loss (drop terminal 0 first).",
+            )
+            parser.add_argument(
+                "--diffusion-nft-shuffle-timesteps",
+                action="store_true",
+                default=True,
+                help="Shuffle NFT training timesteps per sample at convert time (default on).",
+            )
+            parser.add_argument(
+                "--no-diffusion-nft-shuffle-timesteps",
+                action="store_false",
+                dest="diffusion_nft_shuffle_timesteps",
+                help="Disable NFT timestep shuffle.",
+            )
+            parser.add_argument(
+                "--diffusion-nft-ref-mode",
+                type=str,
+                choices=["ema", "base"],
+                default="ema",
+                help="NFT reference policy: EMA shadow of the LoRA weights ('ema') or LoRA-base ('base').",
             )
             parser.add_argument(
                 "--advantage-estimator",
@@ -1067,6 +1137,50 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "Sync only lora_A/lora_B to rollout via IPC with weight_update_mode=lora_merge "
                     "(requires matching sglang-d LoRAPipeline support)."
                 ),
+            )
+            parser.add_argument(
+                "--lora-ema-shadow",
+                action="store_true",
+                default=False,
+                help=(
+                    "Maintain an EMA shadow of trainable LoRA weights (pi_old). Custom losses "
+                    "read it via ``ctx.ema_shadow.swap_in()``; combine with "
+                    "--lora-ema-rollout-policy ema to sample under pi_old."
+                ),
+            )
+            parser.add_argument(
+                "--lora-ema-rollout-policy",
+                type=str,
+                choices=["live", "ema"],
+                default="live",
+                help=(
+                    "Which LoRA weights to push to rollout after each rollout_end when "
+                    "--lora-ema-shadow is set: live trainable weights, or EMA shadow (pi_old)."
+                ),
+            )
+            parser.add_argument(
+                "--lora-ema-decay",
+                type=float,
+                default=0.001,
+                help="LoRA EMA decay while step <= flat_steps.",
+            )
+            parser.add_argument(
+                "--lora-ema-uprate",
+                type=float,
+                default=0.001,
+                help="LoRA EMA warmup rate after flat_steps.",
+            )
+            parser.add_argument(
+                "--lora-ema-uphold",
+                type=float,
+                default=0.5,
+                help="LoRA EMA warmup cap.",
+            )
+            parser.add_argument(
+                "--lora-ema-flat-steps",
+                type=int,
+                default=0,
+                help="LoRA EMA flat steps before warmup begins.",
             )
             parser.add_argument(
                 "--diffusion-init-lora-weight",
@@ -1444,6 +1558,45 @@ def miles_validate_args(args):
                 "set --diffusion-model (for per-model defaults) or --lora-target-modules."
             )
 
+    ema_enabled = bool(getattr(args, "lora_ema_shadow", False))
+    if ema_enabled and not args.use_lora:
+        raise ValueError("--lora-ema-shadow requires --use-lora")
+
+    if getattr(args, "loss_type", None) in ("nft", "diffusion_nft"):
+        # DiffusionNFT: swap convert + prepare + loss formula; DiT forward stays in actor.
+        if getattr(args, "custom_loss_function_path", None) is None:
+            args.custom_loss_function_path = "miles.backends.fsdp_utils.loss_hub.nft.nft_loss_formula"
+        if getattr(args, "custom_prepare_train_batch_path", None) is None:
+            args.custom_prepare_train_batch_path = "miles.backends.fsdp_utils.loss_hub.nft.prepare_nft_batch"
+        if args.custom_convert_samples_to_train_data_path is None:
+            args.custom_convert_samples_to_train_data_path = (
+                "miles.backends.fsdp_utils.loss_hub.nft.convert_samples_to_nft_train_data"
+            )
+        if (
+            getattr(args, "diffusion_sde_type", "sde") == "sde"
+            and float(getattr(args, "diffusion_noise_level", 0.7) or 0.0) == 0.0
+        ):
+            logger.info(
+                "NFT: auto-setting --diffusion-sde-type ode because noise_level=0 "
+                "(forward-process needs clean x0 only)."
+            )
+            args.diffusion_sde_type = "ode"
+        if getattr(args, "diffusion_nft_ref_mode", "ema") == "ema" and not ema_enabled:
+            logger.warning(
+                "--loss-type nft with --diffusion-nft-ref-mode ema but without --lora-ema-shadow; "
+                "NFT loss will fall back to LoRA-base (disable_adapter) as the reference."
+            )
+        beta = float(getattr(args, "diffusion_nft_beta", 1.0) or 1.0)
+        if beta <= 0:
+            raise ValueError(f"--diffusion-nft-beta must be > 0, got {beta}")
+        frac = float(getattr(args, "diffusion_nft_timestep_fraction", 0.99) or 0.99)
+        if not (0.0 < frac <= 1.0):
+            raise ValueError(f"--diffusion-nft-timestep-fraction must be in (0, 1], got {frac}")
+        if args.diffusion_recompute_old_log_prob:
+            raise ValueError(
+                "--diffusion-recompute-old-log-prob is only supported for policy_loss / Flow-GRPO, not NFT"
+            )
+
     if args.dump_details is not None:
         args.save_debug_rollout_data = f"{args.dump_details}/rollout_data/{{rollout_id}}.pt"
         args.save_debug_train_data = f"{args.dump_details}/train_data/{{rollout_id}}_{{rank}}.pt"
@@ -1521,6 +1674,9 @@ def miles_validate_args(args):
         sde_step_backends = {
             "sde": "miles.backends.fsdp_utils.sde_step_backend.DiffusersSdeStepBackend",
             "cps": "miles.backends.fsdp_utils.sde_step_backend.CpsSdeStepBackend",
+            # ODE rollouts (DiffusionNFT) do not score logπ on the train path; Diffusers backend
+            # is a harmless placeholder so actor init can still construct sde_backend.
+            "ode": "miles.backends.fsdp_utils.sde_step_backend.DiffusersSdeStepBackend",
         }
         if args.diffusion_sde_type not in sde_step_backends:
             raise ValueError(
