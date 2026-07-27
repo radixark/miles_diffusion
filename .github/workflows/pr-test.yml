@@ -55,18 +55,20 @@ jobs:
   docker-paths:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
     outputs:
       changed: ${{ steps.diff.outputs.changed }}
     steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
       - id: diff
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          git fetch --depth 1 origin "${{ github.event.pull_request.base.sha }}"
-          # Assigned outside the `if` so a failed diff fails the step instead of reading as no change.
-          CHANGED_FILES=$(git diff --name-only "${{ github.event.pull_request.base.sha }}" HEAD)
+          # The PR's own files: a base..HEAD diff also flags paths the branch is merely behind the base on.
+          # Assigned outside the `if` so a failed lookup fails the step instead of reading as no change.
+          CHANGED_FILES=$(gh api --paginate -q '.[].filename' \
+            "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files")
           # Same paths as docker-build.yml's post-merge filter.
           if printf '%s\n' "$CHANGED_FILES" | grep -qE '^(docker/Dockerfile|requirements\.txt)$'; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
