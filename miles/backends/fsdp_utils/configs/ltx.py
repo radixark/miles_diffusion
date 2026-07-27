@@ -127,7 +127,9 @@ class LTXTrainPipelineConfig(TrainPipelineConfig):
         cond: dict,
     ) -> torch.Tensor:
         from ltx_core.model.transformer.modality import Modality
+        from ltx_core.utils import to_denoised
 
+        device = latents_input.device
         dtype = latents_input.dtype
         B = latents_input.shape[0]
 
@@ -135,19 +137,27 @@ class LTXTrainPipelineConfig(TrainPipelineConfig):
         # multiplies by timestep_scale_multiplier (1000) internally.
         sigma_scaled = timesteps_input.to(latents_input.dtype)
         sigma_unit = sigma_scaled / float(self.sde_timestep_divisor)
+        per_token_t = sigma_unit.view(B, 1).to(dtype)
 
         video_modality = Modality(
             enabled=True,
             latent=latents_input,
             sigma=sigma_unit.reshape(B),
-            timesteps=sigma_unit.reshape(B, 1),
+            timesteps=per_token_t,
             positions=cond["positions"].to(dtype),
             context=cond["context"].to(dtype),
             context_mask=None,
         )
-        velocity, _ = model(video=video_modality, audio=None, perturbations=None)
+        # FSDP mixed precision casts parameters but does not replace LTX's
+        # operation-level autocast semantics.
+        with torch.autocast(device_type=str(device).split(":")[0], dtype=dtype):
+            velocity, _ = model(video=video_modality, audio=None, perturbations=None)
 
-        return velocity
+        # Keep the original fp32 denoised reconstruction path: although this is
+        # algebraically an identity for T2V, strict e2e metrics depend on its rounding.
+        x0_pred = to_denoised(latents_input, velocity, per_token_t.unsqueeze(-1)).float()
+        sigma_safe = torch.clamp(sigma_unit, min=1e-8).view(B, 1, 1)
+        return ((latents_input.float() - x0_pred) / sigma_safe).to(dtype)
 
     def cfg_combine(
         self,
