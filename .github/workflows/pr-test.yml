@@ -208,7 +208,9 @@ jobs:
       always() && !cancelled() &&
       needs.resolve-ci-image.result == 'success' &&
       needs.stage-b.result == 'success' &&
-      ((github.event_name == 'workflow_dispatch') || (github.event.pull_request))
+      (github.event_name == 'workflow_dispatch' ||
+        (github.event.pull_request &&
+          !contains(github.event.pull_request.labels.*.name, 'skip-ci-stage-c')))
     uses: ./.github/workflows/_run-ci.yml
     with:
       runs_on: '["h200", "3gpu"]'
@@ -226,7 +228,9 @@ jobs:
       always() && !cancelled() &&
       needs.resolve-ci-image.result == 'success' &&
       needs.stage-b.result == 'success' &&
-      ((github.event_name == 'workflow_dispatch') || (github.event.pull_request))
+      (github.event_name == 'workflow_dispatch' ||
+        (github.event.pull_request &&
+          !contains(github.event.pull_request.labels.*.name, 'skip-ci-stage-c')))
     uses: ./.github/workflows/_run-ci.yml
     with:
       runs_on: '["h200", "5gpu"]'
