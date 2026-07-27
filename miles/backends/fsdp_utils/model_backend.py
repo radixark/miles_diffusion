@@ -136,8 +136,7 @@ class MilesModelBackend(BaseModelBackend):
         install = getattr(self._pkg.parallel_plan, "install_sequence_parallel_attention", None)
         if install is None:
             raise NotImplementedError(
-                f"{self._pkg.root.__name__}.parallel_plan does not provide "
-                f"install_sequence_parallel_attention"
+                f"{self._pkg.root.__name__}.parallel_plan does not provide " f"install_sequence_parallel_attention"
             )
         install(model, parallel_state)
 
@@ -157,9 +156,7 @@ class DiffusersModelBackend(BaseModelBackend):
     def fsdp_no_split_modules(self, model: torch.nn.Module) -> list[str]:
         no_split_modules = getattr(model, "_no_split_modules", None)
         if not no_split_modules:
-            raise ValueError(
-                f"{model.__class__.__name__} declares no _no_split_modules for FSDP wrapping"
-            )
+            raise ValueError(f"{model.__class__.__name__} declares no _no_split_modules for FSDP wrapping")
         return list(no_split_modules)
 
     def install_sequence_parallel_attention(self, model: torch.nn.Module, parallel_state) -> None:

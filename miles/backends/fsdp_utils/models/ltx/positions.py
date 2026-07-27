@@ -90,8 +90,6 @@ def prepare_video_positions(
     broadcast_shape = [1] * latent_coords.ndim
     broadcast_shape[1] = -1
     pixel_coords = latent_coords * scale_tensor.view(*broadcast_shape)
-    pixel_coords[:, 0, ...] = (
-        pixel_coords[:, 0, ...] + _LTX_CAUSAL_OFFSET - _LTX_SCALE_FACTORS[0]
-    ).clamp(min=0)
+    pixel_coords[:, 0, ...] = (pixel_coords[:, 0, ...] + _LTX_CAUSAL_OFFSET - _LTX_SCALE_FACTORS[0]).clamp(min=0)
     pixel_coords[:, 0, ...] = pixel_coords[:, 0, ...] / float(fps)
     return pixel_coords.to(dtype)

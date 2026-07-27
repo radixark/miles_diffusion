@@ -52,8 +52,7 @@ def _transformer_checkpoint_in_dir(materialized_dir: Path) -> Path:
     checkpoint = materialized_dir / TRAIN_COMPONENT / "model.safetensors"
     if not checkpoint.is_file():
         raise FileNotFoundError(
-            f"Materialized LTX model at {materialized_dir} is missing "
-            f"{TRAIN_COMPONENT}/model.safetensors"
+            f"Materialized LTX model at {materialized_dir} is missing " f"{TRAIN_COMPONENT}/model.safetensors"
         )
     return checkpoint
 
@@ -205,9 +204,7 @@ def load_component(
     materialize_weights: bool,
 ):
     if component != TRAIN_COMPONENT:
-        raise ValueError(
-            f"LTX trains the single DiT ({TRAIN_COMPONENT!r}); got {component!r}"
-        )
+        raise ValueError(f"LTX trains the single DiT ({TRAIN_COMPONENT!r}); got {component!r}")
     checkpoint = resolve_transformer_checkpoint(str(args.diffusion_model))
     return load_transformer_for_train(
         checkpoint,

@@ -4,11 +4,7 @@ register_cpu_ci(est_time=15, suite="stage-a-cpu", labels=[])
 
 import torch
 
-from miles.backends.fsdp_utils.model_backend import (
-    BaseModelBackend,
-    DiffusersModelBackend,
-    MilesModelBackend,
-)
+from miles.backends.fsdp_utils.model_backend import BaseModelBackend, DiffusersModelBackend, MilesModelBackend
 
 
 class _RecordingModel(torch.nn.Module):
