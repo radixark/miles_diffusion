@@ -9,6 +9,7 @@ import torch
 import torch.distributed as dist
 import torch.distributed.checkpoint as dcp
 import torch.nn as nn
+from diffusers.models._modeling_parallel import ContextParallelInput, ContextParallelOutput
 from torch.distributed.fsdp import MixedPrecisionPolicy, fully_shard
 from torch.distributed.fsdp._fully_shard._fsdp_common import HSDPMeshInfo
 from torch.distributed.tensor import DTensor, Replicate
@@ -16,10 +17,20 @@ from torch.distributed.tensor import DTensor, Replicate
 from miles.backends.fsdp_utils.actor import load_sharded_model
 from miles.backends.fsdp_utils.checkpoint import ModelState
 from miles.backends.fsdp_utils.parallel import create_fsdp_parallel_state
+from miles.backends.fsdp_utils.sequence_parallel.plan import SequenceParallelPlan, apply_sequence_parallel
 from miles.utils.distributed_utils import init_gloo_group
 
 DIM = 64
 OPTIMIZER_STEPS = 5
+SEQUENCE_LENGTH = 8
+
+MINIMAL_SP_PLAN = SequenceParallelPlan(
+    boundaries={
+        "input": {"input": ContextParallelInput(split_dim=1, expected_dims=3)},
+        "output": ContextParallelOutput(gather_dim=1, expected_dims=3),
+    },
+    num_attention_heads=4,
+)
 
 
 class Block(nn.Module):
@@ -34,12 +45,15 @@ class Block(nn.Module):
 class Tiny(nn.Module):
     def __init__(self, depth=4):
         super().__init__()
+        self.input = nn.Identity()
         self.blocks = nn.ModuleList(Block() for _ in range(depth))
+        self.output = nn.Identity()
 
     def forward(self, x):
+        x = self.input(x)
         for block in self.blocks:
             x = block(x)
-        return x
+        return self.output(x)
 
 
 def check_fully_shard_topology(model, dp_replicate, world_size):
@@ -96,14 +110,15 @@ def check_dcp_round_trip(model, reference, rank):
             shutil.rmtree(ckpt_dir, ignore_errors=True)
 
 
-def check_replicas_do_not_drift(model, state, rank):
+def check_replicas_do_not_drift(model, state):
     """full_tensor() would agree by construction, so compare raw local shards after steps."""
     replicate_mesh = state.get_mesh("fsdp")["dp_replicate"]
+    data_rank = state.get_mesh("dp").get_local_rank()
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-2)
     for step in range(OPTIMIZER_STEPS):
         optimizer.zero_grad()
-        torch.manual_seed(1000 * step + rank)
-        model(torch.randn(4, DIM, device="cuda")).sum().backward()
+        torch.manual_seed(1000 * step + data_rank)
+        model(torch.randn(4, SEQUENCE_LENGTH, DIM, device="cuda")).sum().backward()
         optimizer.step()
         for name, param in model.named_parameters():
             shard = param.to_local().contiguous()
@@ -136,6 +151,8 @@ def main():
     for block in model.blocks:
         fully_shard(block, mesh=state.get_mesh("fsdp"), mp_policy=mp_policy)
     fully_shard(model, mesh=state.get_mesh("fsdp"), mp_policy=mp_policy)
+    if state.get_optional_mesh("sp") is not None:
+        apply_sequence_parallel(model, state, MINIMAL_SP_PLAN, lambda *_: None)
 
     check_fully_shard_topology(model, args.dp_replicate_size, world_size)
 
@@ -144,12 +161,17 @@ def main():
     for name, param in model.named_parameters():
         torch.testing.assert_close(param.full_tensor().cpu(), reference[name])
 
-    torch.manual_seed(100 + rank)
-    check_gradient_is_world_mean(model, reference, torch.randn(4, DIM, device="cuda"), world_size)
+    torch.manual_seed(100 + state.get_mesh("dp").get_local_rank())
+    check_gradient_is_world_mean(
+        model,
+        reference,
+        torch.randn(4, SEQUENCE_LENGTH, DIM, device="cuda"),
+        world_size,
+    )
     check_weight_sync_gather(model, reference)
     check_dcp_round_trip(model, reference, rank)
     if args.dp_replicate_size > 1:
-        check_replicas_do_not_drift(model, state, rank)
+        check_replicas_do_not_drift(model, state)
 
     dist.barrier()
     dist.destroy_process_group()

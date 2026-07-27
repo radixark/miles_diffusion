@@ -45,10 +45,11 @@ def _run_worker(*worker_args):
     "worker_args",
     [
         ["--dp-replicate-size", "1"],
+        ["--dp-replicate-size", "1", "--sequence-parallel-size", "2"],
         ["--dp-replicate-size", "2"],
         ["--dp-replicate-size", "2", "--sequence-parallel-size", "2"],
     ],
-    ids=["flat-dp4", "hybrid-shard-r2s2", "hybrid-shard-r2s1-sp2"],
+    ids=["flat-dp4", "flat-dp2-sp2", "hybrid-shard-r2s2", "hybrid-shard-r2s1-sp2"],
 )
 def test_hybrid_shard(worker_args):
     _run_worker(*worker_args)
