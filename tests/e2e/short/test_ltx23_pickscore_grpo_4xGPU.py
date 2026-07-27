@@ -10,10 +10,7 @@ register_e2e_ci(
     est_time=1800,
     suite="stage-c-5-gpu-h200",
     script="scripts/run-diffusion-grpo-ltx23-sglang.sh",
-    env={
-        "NUM_ROLLOUT": "2",
-        "CUDA_VISIBLE_DEVICES": "0,1,2,3,4",
-    },
+    env={"NUM_ROLLOUT": "2"},
     metrics=[
         "rollout/reward/raw_num_samples",
         "rollout/reward/raw_mean",
