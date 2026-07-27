@@ -33,8 +33,8 @@ must not be saved while ``swap_in()`` is active. Prefer a side file such as
 from __future__ import annotations
 
 from argparse import Namespace
+from collections.abc import Iterable
 from contextlib import contextmanager
-from typing import Iterable
 
 import torch
 import torch.nn as nn
@@ -104,7 +104,7 @@ class LoraEmaShadow:
             raise RuntimeError("LoraEmaShadow.update called while swapped in")
         self.step += 1
         delta = self.decay_at(self.step)
-        for live, sh in zip(self.params, self.shadow):
+        for live, sh in zip(self.params, self.shadow, strict=True):
             sh.mul_(delta).add_(_local(live.detach()).to(sh.device), alpha=1.0 - delta)
         return delta
 
@@ -121,7 +121,7 @@ class LoraEmaShadow:
 
     @torch.no_grad()
     def _swap(self) -> None:
-        for live, sh in zip(self.params, self.shadow):
+        for live, sh in zip(self.params, self.shadow, strict=True):
             live_local = _local(live.data)
             tmp = live_local.clone()
             live_local.copy_(sh)
