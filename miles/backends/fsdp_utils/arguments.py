@@ -4,8 +4,6 @@ from dataclasses import dataclass
 
 import yaml
 
-from .sequence_parallel.topology import validate_sp_config
-
 
 @dataclass
 class FSDPArgs:
@@ -53,6 +51,8 @@ class FSDPArgs:
     fsdp_cpu_backend: str | None = (
         "gloo"  # CPU backend for FSDP CPU offload (e.g., "gloo"). Set to None to disable hybrid backend.
     )
+    # Hybrid sharding: parameter replica count; dp_shard uses the ranks left by this and SP.
+    dp_replicate_size: int = 1
 
     # Train-actor deterministic mode; see validate_attention_args for the backend
     # support matrix. Name kept identical to Megatron's.
@@ -158,6 +158,36 @@ def validate_attention_args(args):
     )
 
 
+def validate_sp_config(world_size, sequence_parallel_size, ulysses_degree=0):
+    if sequence_parallel_size < 1:
+        raise ValueError(f"sequence_parallel_size must be positive, got {sequence_parallel_size}")
+    if ulysses_degree < 0:
+        raise ValueError(f"ulysses_degree must be non-negative, got {ulysses_degree}")
+    resolved_ulysses_degree = ulysses_degree or sequence_parallel_size
+    if sequence_parallel_size % resolved_ulysses_degree:
+        raise ValueError(
+            f"sequence_parallel_size({sequence_parallel_size}) is not divisible by "
+            f"ulysses_degree({resolved_ulysses_degree})"
+        )
+    if world_size % sequence_parallel_size:
+        raise ValueError(
+            f"world_size({world_size}) is not divisible by sequence_parallel_size({sequence_parallel_size})"
+        )
+
+
+def validate_hybrid_shard_args(args) -> None:
+    """Fail fast on a dp_replicate_size the world size or SP degree cannot honor."""
+    world_size = args.actor_num_gpus_per_node * args.actor_num_nodes
+    validate_sp_config(world_size, args.sequence_parallel_size, args.ulysses_degree)
+    if args.dp_replicate_size < 1:
+        raise ValueError(f"dp_replicate_size must be at least 1, got {args.dp_replicate_size}")
+    if world_size % (args.dp_replicate_size * args.sequence_parallel_size):
+        raise ValueError(
+            f"world_size({world_size}) is not divisible by dp_replicate_size({args.dp_replicate_size}) "
+            f"* sequence_parallel_size({args.sequence_parallel_size})"
+        )
+
+
 def validate_sp_args(args) -> None:
     """Validate the finalized train topology and SP/backend combination on the driver.
 
@@ -168,13 +198,16 @@ def validate_sp_args(args) -> None:
 
     from .sequence_parallel.attention import RING_KERNELS
 
-    sp_size, _, ring_degree = validate_sp_config(
+    validate_sp_config(
         args.actor_num_gpus_per_node * args.actor_num_nodes,
         args.sequence_parallel_size,
         args.ulysses_degree,
     )
-    if sp_size == 1:
+    if args.sequence_parallel_size == 1:
         return
+    # ulysses SP by default
+    ulysses_degree = args.ulysses_degree or args.sequence_parallel_size
+    ring_degree = args.sequence_parallel_size // ulysses_degree
     if ring_degree > 1 and args.fsdp_attention_backend not in RING_KERNELS:
         raise ValueError(
             f"--fsdp-attention-backend {args.fsdp_attention_backend!r} cannot drive ring attention; "

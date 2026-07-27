@@ -11,10 +11,11 @@ import os
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
+from torch.distributed.device_mesh import init_device_mesh
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
+from miles.backends.fsdp_utils.parallel import build_sp_groups
 from miles.backends.fsdp_utils.sequence_parallel.attention import usp_attention
-from miles.backends.fsdp_utils.sequence_parallel.topology import sp_subgroups
 
 
 SP_SIZE = 4
@@ -62,24 +63,9 @@ def _make_full_inputs(device):
 
 
 def _create_usp_groups(ulysses_degree):
-    rank = dist.get_rank()
-    _, _, _, ulysses_ranks, ring_ranks = sp_subgroups(SP_SIZE, SP_SIZE, ulysses_degree)
-
-    ulysses_group = None
-    if ulysses_degree > 1:
-        for ranks in ulysses_ranks:
-            group = dist.new_group(ranks)
-            if rank in ranks:
-                ulysses_group = group
-
+    sp_mesh = init_device_mesh("cuda", (SP_SIZE,), mesh_dim_names=("sp",))
     ring_degree = SP_SIZE // ulysses_degree
-    ring_group = None
-    if ring_degree > 1:
-        for ranks in ring_ranks:
-            group = dist.new_group(ranks)
-            if rank in ranks:
-                ring_group = group
-    return ulysses_group, ring_group
+    return build_sp_groups(sp_mesh, ring_degree, ulysses_degree)
 
 
 def _run_reference(query, key, value, grad_output):

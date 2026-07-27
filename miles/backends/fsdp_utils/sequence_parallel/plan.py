@@ -47,7 +47,8 @@ def _split_if_expected(x, spec, parallel_state):
         return x
     if spec.expected_dims is not None and x.ndim != spec.expected_dims:
         return x
-    return shard_sequence(x, parallel_state.sp_rank, parallel_state.sp_size, dim=spec.split_dim)
+    sp_mesh = parallel_state.get_mesh("sp")
+    return shard_sequence(x, sp_mesh.get_local_rank(), sp_mesh.size(), dim=spec.split_dim)
 
 
 def _resolve_submodule(root, path):
@@ -66,6 +67,7 @@ def _install_boundary_hooks(transformer, boundaries, parallel_state):
     split_output=True); ContextParallelOutput entries gather module outputs.
     The gather's backward sums across SP, pairing with FSDP's 1/(dp*sp) mean.
     """
+    sp_mesh = parallel_state.get_mesh("sp")
     for path, spec in boundaries.items():
         module = _resolve_submodule(transformer, path) if path else transformer
 
@@ -75,9 +77,9 @@ def _install_boundary_hooks(transformer, boundaries, parallel_state):
                 assert isinstance(output, torch.Tensor)
                 return gather_sequence(
                     output,
-                    parallel_state.sp_group,
-                    parallel_state.sp_rank,
-                    parallel_state.sp_size,
+                    sp_mesh.get_group(),
+                    sp_mesh.get_local_rank(),
+                    sp_mesh.size(),
                     dim=_spec.gather_dim,
                 )
 

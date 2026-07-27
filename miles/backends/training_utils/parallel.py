@@ -1,6 +1,7 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import torch.distributed as dist
+from torch.distributed.device_mesh import DeviceMesh
 
 
 @dataclass
@@ -31,3 +32,10 @@ class ParallelState:
     is_pp_last_stage: bool = True
     vpp_size: int | None = 1
     microbatch_group_size_per_vp_stage: int | None = None
+    meshes: dict[str, DeviceMesh] = field(default_factory=dict)
+
+    def get_mesh(self, name: str) -> DeviceMesh:
+        return self.meshes[name]
+
+    def get_optional_mesh(self, name: str) -> DeviceMesh | None:
+        return self.meshes.get(name)

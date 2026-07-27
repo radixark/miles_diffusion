@@ -75,7 +75,7 @@ class FSDPTrainRayActor(TrainRayActor):
         hooks.register_train_actor(args, role)
 
         self.train_parallel_config = {
-            "dp_size": self.parallel_state.dp_size,
+            "dp_size": self.parallel_state.get_mesh("dp").size(),
         }
 
         if self.args.debug_rollout_only:
@@ -128,7 +128,7 @@ class FSDPTrainRayActor(TrainRayActor):
             full_state = model.state_dict() if rank == 0 else {}
             model = apply_fsdp2(
                 model,
-                mesh=self.parallel_state.fsdp_mesh,
+                mesh=self.parallel_state.get_mesh("fsdp"),
                 cpu_offload=self.args.fsdp_cpu_offload,
                 args=self.args,
                 no_split_modules=self.model_backend.fsdp_no_split_modules(model),
@@ -138,7 +138,7 @@ class FSDPTrainRayActor(TrainRayActor):
             self.train_pipeline_config.postprocess_model_after_materialize(model)
             self.models[component] = model
 
-        if self.parallel_state.sp_size > 1:
+        if self.parallel_state.get_optional_mesh("sp") is not None:
             for model in self.models.values():
                 plan = self.model_backend.sequence_parallel_plan(model)
                 apply_sequence_parallel(
@@ -303,7 +303,7 @@ class FSDPTrainRayActor(TrainRayActor):
             self.wake_up()
 
         with inverse_timer("train_wait"), timer("train"):
-            rollout_data = ray.get(rollout_data_ref[self.parallel_state.dp_rank].inner)
+            rollout_data = ray.get(rollout_data_ref[self.parallel_state.get_mesh("dp").get_local_rank()].inner)
             if self.args.debug_rollout_only:
                 return
             self._train_core(rollout_id=rollout_id, rollout_data=rollout_data)
