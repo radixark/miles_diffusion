@@ -51,7 +51,7 @@ class MetricBuffer:
         if actual is not expected:
             raise ValueError(f"metric {key!r} reduces as {actual.name}, not {expected.name}")
 
-    def emit_mean(self, key: str, total: torch.Tensor, *, count: int) -> None:
+    def emit_mean(self, key: str, total: torch.Tensor, count: int) -> None:
         self._check_reduce(key, MetricReduce.MEAN)
         self._sums[key] = self._sums[key] + self._scalar(total)
         self._counts[key] += float(count)
