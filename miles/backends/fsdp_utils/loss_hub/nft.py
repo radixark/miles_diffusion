@@ -1,7 +1,7 @@
-"""DiffusionNFT plugin: custom convert + prepare + loss *formula*.
+"""DiffusionNFT plugin: custom convert + loss *formula*.
 
-Actor still owns DiT forward (+ EMA/LoRA-base reference forward). This module
-only swaps the replaceable parts via stock customization hooks.
+Prepare hook lives in ``prepare.py`` (``prepare_nft_batch``). Actor still owns
+DiT forward (+ EMA/LoRA-base reference forward).
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from miles.utils.metric_buffer import MetricBuffer
 from miles.utils.types import Sample
 
 # ---------------------------------------------------------------------------
-# Forward-process math
+# Forward-process math (used by prepare_nft_batch in prepare.py)
 # ---------------------------------------------------------------------------
 
 
@@ -96,16 +96,6 @@ def nft_branch_losses(
     return pos_loss, neg_loss
 
 
-def _cast_cond_to_dtype(cond: dict, dtype: torch.dtype) -> dict:
-    out = {}
-    for k, v in cond.items():
-        if isinstance(v, torch.Tensor) and v.dtype.is_floating_point:
-            out[k] = v.to(dtype=dtype)
-        else:
-            out[k] = v
-    return out
-
-
 # ---------------------------------------------------------------------------
 # Convert (K-expanded pairs)
 # ---------------------------------------------------------------------------
@@ -167,59 +157,6 @@ def convert_samples_to_nft_train_data(args: Namespace, samples: list[Sample]) ->
                 }
             )
     return {"train_data": train_data, **scheduler_meta}
-
-
-# ---------------------------------------------------------------------------
-# Prepare (actor still runs DiT forward on the result)
-# ---------------------------------------------------------------------------
-
-
-def prepare_nft_batch(
-    ctx: DiffusionLossContext,
-    batch: list[dict],
-    *,
-    pad_to_len: int | None = None,
-) -> PreparedBatch:
-    """Corrupt clean x0 at each pair's sigma; CFG-free cond."""
-    if len(ctx.models) != 1:
-        raise ValueError("DiffusionNFT currently supports a single DiT component (SD3)")
-    device = ctx.device
-    config = ctx.train_pipeline_config
-    bsz = len(batch)
-    x0 = torch.stack([pair["x0"] for pair in batch]).to(device=device, dtype=torch.float32)
-    t = torch.tensor([float(pair["timestep"]) for pair in batch], device=device, dtype=torch.float32)
-    advantage = torch.tensor([float(pair["advantage"]) for pair in batch], device=device, dtype=torch.float32)
-
-    component_name, model = next(iter(ctx.models.items()))
-    pos_list = [config.prepare_cond_kwargs(batch[i]["denoising_env"].pos_cond_kwargs, device) for i in range(bsz)]
-    pos_cond = _cast_cond_to_dtype(
-        config.collate_cond_for_sample_batch(pos_list, device, pad_to_len=pad_to_len),
-        ctx.forward_dtype,
-    )
-
-    num_train_timesteps = int(getattr(ctx.scheduler.config, "num_train_timesteps", 1000))
-    if config.needs_timestep_scaling:
-        timesteps_for_model = t.to(dtype=torch.float32)
-    else:
-        timesteps_for_model = t * float(num_train_timesteps)
-
-    xt = corrupt(x0, t, sample_noise(x0))
-    return PreparedBatch(
-        latents=xt,
-        timesteps=t,
-        timesteps_for_model=timesteps_for_model,
-        model=model,
-        component_name=component_name,
-        guidance_scale=0.0,
-        use_cfg=False,
-        cfg_batching=False,
-        true_cfg_scale=None,
-        pos_cond=pos_cond,
-        neg_cond=None,
-        joint_cond=None,
-        advantage=advantage,
-        extras={"x0": x0},
-    )
 
 
 # ---------------------------------------------------------------------------

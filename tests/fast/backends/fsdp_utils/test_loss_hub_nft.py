@@ -14,15 +14,15 @@ from miles.backends.fsdp_utils.lora_ema import (
     lora_ema_shadow_enabled,
     resolve_lora_ema_kwargs,
 )
-from miles.backends.fsdp_utils.loss_hub.losses import resolve_loss_formula_fn, resolve_prepare_fn
+from miles.backends.fsdp_utils.loss_hub.losses import flow_grpo_loss_formula, resolve_loss_formula_fn
 from miles.backends.fsdp_utils.loss_hub.nft import (
     convert_samples_to_nft_train_data,
     corrupt,
     nft_loss_formula,
     nft_r_from_advantages,
-    prepare_nft_batch,
     resolve_nft_sigmas,
 )
+from miles.backends.fsdp_utils.loss_hub.prepare import prepare_flow_grpo_batch, prepare_nft_batch, resolve_prepare_fn
 from miles.backends.fsdp_utils.metrics import new_metric_buffer
 from miles.utils.types import Sample
 
@@ -103,14 +103,12 @@ class TestNftHooks:
         assert getattr(nft_loss_formula, "requires_sample_aligned_windows", False) is True
 
     def test_resolve_defaults_are_flow_grpo(self):
-        from miles.backends.fsdp_utils.loss_hub.losses import flow_grpo_loss_formula, prepare_flow_grpo_batch
-
         assert resolve_prepare_fn(_args()) is prepare_flow_grpo_batch
         assert resolve_loss_formula_fn(_args()) is flow_grpo_loss_formula
 
     def test_resolve_custom_paths(self):
         args = _args(
-            custom_prepare_train_batch_path="miles.backends.fsdp_utils.loss_hub.nft.prepare_nft_batch",
+            custom_prepare_train_batch_path="miles.backends.fsdp_utils.loss_hub.prepare.prepare_nft_batch",
             custom_loss_function_path="miles.backends.fsdp_utils.loss_hub.nft.nft_loss_formula",
         )
         assert resolve_prepare_fn(args) is prepare_nft_batch

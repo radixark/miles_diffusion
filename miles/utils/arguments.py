@@ -1567,7 +1567,7 @@ def miles_validate_args(args):
         if getattr(args, "custom_loss_function_path", None) is None:
             args.custom_loss_function_path = "miles.backends.fsdp_utils.loss_hub.nft.nft_loss_formula"
         if getattr(args, "custom_prepare_train_batch_path", None) is None:
-            args.custom_prepare_train_batch_path = "miles.backends.fsdp_utils.loss_hub.nft.prepare_nft_batch"
+            args.custom_prepare_train_batch_path = "miles.backends.fsdp_utils.loss_hub.prepare.prepare_nft_batch"
         if args.custom_convert_samples_to_train_data_path is None:
             args.custom_convert_samples_to_train_data_path = (
                 "miles.backends.fsdp_utils.loss_hub.nft.convert_samples_to_nft_train_data"
