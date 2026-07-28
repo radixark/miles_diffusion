@@ -6,9 +6,14 @@ register_cpu_ci(est_time=30, suite="stage-a-cpu", labels=[])
 
 from argparse import Namespace
 
-import pytest
 import torch
 
+from miles.backends.fsdp_utils.lora_ema import (
+    LoraEmaShadow,
+    lora_ema_rollout_policy,
+    lora_ema_shadow_enabled,
+    resolve_lora_ema_kwargs,
+)
 from miles.backends.fsdp_utils.loss_hub.losses import resolve_loss_formula_fn, resolve_prepare_fn
 from miles.backends.fsdp_utils.loss_hub.nft import (
     convert_samples_to_nft_train_data,
@@ -17,12 +22,6 @@ from miles.backends.fsdp_utils.loss_hub.nft import (
     nft_r_from_advantages,
     prepare_nft_batch,
     resolve_nft_sigmas,
-)
-from miles.backends.fsdp_utils.lora_ema import (
-    LoraEmaShadow,
-    lora_ema_rollout_policy,
-    lora_ema_shadow_enabled,
-    resolve_lora_ema_kwargs,
 )
 from miles.backends.fsdp_utils.metrics import new_metric_buffer
 from miles.utils.types import Sample

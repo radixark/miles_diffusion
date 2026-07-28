@@ -7,7 +7,7 @@ Custom algorithms swap ``--custom-prepare-train-batch-path`` and/or
 from __future__ import annotations
 
 from argparse import Namespace
-from typing import Callable
+from collections.abc import Callable
 
 import torch
 

@@ -37,7 +37,7 @@ from .diffusion_update_weight_utils import (
 from .lora_ema import LoraEmaShadow, lora_ema_rollout_policy, lora_ema_shadow_enabled, resolve_lora_ema_kwargs
 from .loss_hub import DiffusionLossContext, resolve_loss_formula_fn, resolve_prepare_fn
 from .lr_scheduler import get_lr_scheduler
-from .metrics import new_metric_buffer, record_rollout_train_abs_diff
+from .metrics import new_metric_buffer
 from .parallel import create_fsdp_parallel_state
 from .sequence_parallel.plan import apply_sequence_parallel
 
