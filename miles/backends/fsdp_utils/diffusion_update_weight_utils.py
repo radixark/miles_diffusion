@@ -483,14 +483,34 @@ class DiffusionUpdateWeightFromTensorLoRAIPC(DiffusionUpdateWeightFromTensor):
         self.weight_version += 1
         for target_module, model in self.models.items():
             layer_groups, unmapped_keys, num_lora_keys = collect_lora_layer_groups(model.state_dict())
-            raw_buckets = bucket_lora_layer_groups(layer_groups, self.args.update_weight_buffer_size)
-            for raw_bucket in raw_buckets:
-                prepared_bucket = [(sgld_name, self._prepare_lora_param(param)) for sgld_name, param in raw_bucket]
+            bucket: list[tuple[str, torch.Tensor]] = []
+            bucket_size = 0
+            num_buckets = 0
+            buffer_size = self.args.update_weight_buffer_size
+
+            for group in layer_groups:
+                group_size = sum(_tensor_nbytes(param) for _, param in group)
+                if bucket and bucket_size + group_size >= buffer_size:
+                    self.wait_and_update_bucket_weights(
+                        bucket,
+                        target_module,
+                        weight_update_mode=LORA_IPC_WEIGHT_UPDATE_MODE,
+                    )
+                    num_buckets += 1
+                    bucket = []
+                    bucket_size = 0
+
+                for sgld_name, param in group:
+                    bucket.append((sgld_name, self._prepare_lora_param(param)))
+                bucket_size += group_size
+
+            if bucket:
                 self.wait_and_update_bucket_weights(
-                    prepared_bucket,
+                    bucket,
                     target_module,
                     weight_update_mode=LORA_IPC_WEIGHT_UPDATE_MODE,
                 )
+                num_buckets += 1
 
             if self.weight_version <= 2 and dist.is_initialized() and dist.get_rank() == 0:
                 _, num_layers, sample_layers, _ = PeftLoRAKeyMapper.summarize_mapping(model.state_dict())
@@ -501,7 +521,7 @@ class DiffusionUpdateWeightFromTensorLoRAIPC(DiffusionUpdateWeightFromTensor):
                     target_module,
                     num_lora_keys,
                     num_layers,
-                    len(raw_buckets),
+                    num_buckets,
                     len(unmapped_keys),
                 )
                 if sample_layers:
