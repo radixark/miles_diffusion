@@ -484,8 +484,7 @@ class DiffusionUpdateWeightFromTensorLoRAIPC(DiffusionUpdateWeightFromTensor):
         for target_module, model in self.models.items():
             layer_groups, unmapped_keys, num_lora_keys = collect_lora_layer_groups(model.state_dict())
             prepared_groups = [
-                [(sgld_name, self._prepare_lora_param(param)) for sgld_name, param in group]
-                for group in layer_groups
+                [(sgld_name, self._prepare_lora_param(param)) for sgld_name, param in group] for group in layer_groups
             ]
             buckets = bucket_lora_layer_groups(prepared_groups, self.args.update_weight_buffer_size)
             for bucket in buckets:
