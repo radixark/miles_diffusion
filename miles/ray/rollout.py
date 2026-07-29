@@ -26,7 +26,7 @@ from miles.utils.misc import load_function
 from miles.utils.ray_utils import Box
 from miles.utils.timer import timer
 from miles.utils.tracking_utils import init_tracking
-from miles.utils.train_data_utils import RolloutTrainDataConverter, TrainDataDPSplitter, reorder_train_pairs_for_tiling
+from miles.utils.train_data_utils import TrainDataDPSplitter, reorder_train_pairs_for_tiling, resolve_train_data_converter
 from miles.utils.train_metric_utils import log_perf_data_raw
 from miles.utils.types import Sample
 
@@ -77,7 +77,9 @@ class RolloutManager:
             if self.args.custom_convert_samples_to_train_data_path is not None
             else None
         )
-        self.train_data_converter = RolloutTrainDataConverter()
+        # Algorithm-specific converters share the default reward post-process path.
+        # Full convert overrides use --custom-convert-samples-to-train-data-path instead.
+        self.train_data_converter = resolve_train_data_converter(self.args)
         self.train_data_dp_splitter = TrainDataDPSplitter()
         logger.info(f"import {self.args.rollout_function_path} as generate_rollout function.")
         logger.info(f"import {self.args.eval_function_path} as eval_generate_rollout function.")
@@ -335,34 +337,19 @@ class RolloutManager:
         if self.custom_reward_post_process_func is not None:
             return self.custom_reward_post_process_func(self.args, samples)
 
-        raw_rewards = [sample.get_reward_value(self.args) for sample in samples]
+        from miles.backends.fsdp_utils.loss_hub.advantages import grpo_normalize_rewards
 
-        # --globalize-reward-mean / --globalize-reward-std are orthogonal. flow_grpo
-        # pickscore_qwenimage uses per-prompt mean + global std (PerPromptStatTracker
-        # with global_std=True), which is --globalize-reward-std alone.
-        rewards_flat = torch.tensor(raw_rewards, dtype=torch.float)
-        rewards = rewards_flat.view(-1, self.args.n_samples_per_prompt)
-
-        if self.args.globalize_reward_mean:
-            mean = rewards_flat.mean()
-        else:
-            mean = rewards.mean(dim=-1, keepdim=True)
-        rewards = rewards - mean
-
-        if self.args.grpo_std_normalization:
-            if self.args.globalize_reward_std:
-                std = rewards_flat.std()
-            else:
-                std = rewards.std(dim=-1, keepdim=True)
-            # matches flow_grpo's `+ 1e-4` in both stat_tracking branches
-            rewards = rewards / (std + 1e-4)
-
-        return raw_rewards, rewards.flatten().tolist()
+        return grpo_normalize_rewards(self.args, samples)
 
     def _convert_samples_to_train_data(self, samples: list[Sample] | list[list[Sample]]):
         """
         Convert inference generated samples to training data.
         """
+        # Full override (Miles-LLM style): covers this entire method, including
+        # reward post-process. Algorithm converters (e.g. NFT) use the path below.
+        if self.custom_convert_samples_to_train_data_func is not None:
+            return self.custom_convert_samples_to_train_data_func(self.args, samples)
+
         raw_rewards, rewards = self._post_process_rewards(samples)
 
         assert len(raw_rewards) == len(samples)
@@ -372,7 +359,7 @@ class RolloutManager:
         norm_t = torch.tensor(rewards, dtype=torch.float)
 
         # Emit reward distribution stats (raw + normalized) to stdout + wandb.
-        # Runs for both default SDE-pair expand and custom converts (e.g. NFT).
+        # Runs for both default SDE-pair expand and NFT converter.
         reward_stats = {
             **_reward_stats_dict(raw_t, "rollout/reward/raw_"),
             **_reward_stats_dict(norm_t, "rollout/reward/norm_"),
@@ -403,9 +390,6 @@ class RolloutManager:
                 step_value=compute_rollout_step(self.args, self.rollout_id),
                 reward_key=self.args.reward_key,
             )
-
-        if self.custom_convert_samples_to_train_data_func is not None:
-            return self.custom_convert_samples_to_train_data_func(self.args, samples)
 
         return self.train_data_converter.convert_samples(samples, rewards, raw_rewards)
 

@@ -45,18 +45,13 @@ def _local(t: torch.Tensor) -> torch.Tensor:
     return t._local_tensor if hasattr(t, "_local_tensor") else t
 
 
-def lora_ema_shadow_enabled(args: Namespace) -> bool:
-    """True when a LoRA EMA shadow should be constructed."""
-    return bool(getattr(args, "lora_ema_shadow", False))
-
-
-def lora_ema_rollout_policy(args: Namespace) -> str:
-    """Which LoRA weights to push to rollout engines after each rollout ('live' or 'ema')."""
-    return getattr(args, "lora_ema_rollout_policy", "live")
-
-
 def resolve_lora_ema_kwargs(args: Namespace) -> dict[str, float | int]:
-    """Read normalized ``lora_ema_*`` fields from ``args`` (see ``miles_validate_args``)."""
+    """Read normalized ``lora_ema_*`` fields from ``args`` (see ``miles_validate_args``).
+
+    Enablement (``args.lora_ema_shadow``) and rollout policy
+    (``args.lora_ema_rollout_policy``) are plain args — inferred/validated in
+    ``arguments.py``, not re-wrapped here.
+    """
     return {
         "decay": float(getattr(args, "lora_ema_decay", 0.001)),
         "uprate": float(getattr(args, "lora_ema_uprate", 0.001)),

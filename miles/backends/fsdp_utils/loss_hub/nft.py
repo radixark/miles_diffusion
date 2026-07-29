@@ -1,7 +1,11 @@
-"""DiffusionNFT plugin: custom convert + loss *formula*.
+"""DiffusionNFT plugin: train-data converter + loss *formula*.
 
 Prepare hook lives in ``prepare.py`` (``prepare_nft_batch``). Actor still owns
-DiT forward (+ EMA/LoRA-base reference forward).
+DiT forward (+ EMA/LoRA-base reference forward via ``--ref-mode``).
+
+Reward / advantage normalisation stays in ``RolloutManager._post_process_rewards``
+(default: ``grpo_normalize_rewards``). This module only expands samples into
+K ``(x0, t)`` train pairs.
 """
 
 from __future__ import annotations
@@ -11,7 +15,6 @@ from typing import Any
 
 import torch
 
-from miles.backends.fsdp_utils.loss_hub.advantages import grpo_normalize_rewards
 from miles.backends.fsdp_utils.loss_hub.context import DiffusionLossContext, PreparedBatch
 from miles.utils.metric_buffer import MetricBuffer
 from miles.utils.types import Sample
@@ -97,7 +100,7 @@ def nft_branch_losses(
 
 
 # ---------------------------------------------------------------------------
-# Convert (K-expanded pairs)
+# Converter (K-expanded pairs; rewards already post-processed by rollout)
 # ---------------------------------------------------------------------------
 
 
@@ -111,52 +114,71 @@ def _clean_x0_from_sample(sample: Sample) -> torch.Tensor:
     return traj.latents[-1].detach().cpu().float()
 
 
-def convert_samples_to_nft_train_data(args: Namespace, samples: list[Sample]) -> dict[str, Any]:
-    """Expand every sample into K ``(x0, t)`` train pairs (sample-major)."""
-    raw_rewards, advantages = grpo_normalize_rewards(args, samples)
-    if not samples:
-        raise ValueError("NFT convert received empty samples")
-    first_traj = samples[0].dit_trajectory
-    if first_traj is None:
-        raise ValueError("sample 0 missing dit_trajectory")
-    if first_traj.timesteps is None:
-        raise ValueError("NFT needs dit_trajectory.timesteps from rollout")
-    num_train_timesteps = int(getattr(args, "diffusion_num_train_timesteps", 1000) or 1000)
-    if first_traj.sigmas is not None:
-        scheduler_sigmas = first_traj.sigmas.detach().cpu().float()
-    else:
-        # Match scheduler_meta_from_rollout when sglang omits sigmas (e.g. ODE rollout).
-        ts = first_traj.timesteps.detach().cpu().float()
-        scheduler_sigmas = torch.cat([ts / float(num_train_timesteps), ts.new_zeros(1)])
-    scheduler_meta = {
-        "scheduler_timesteps": first_traj.timesteps.detach().cpu().float(),
-        "scheduler_sigmas": scheduler_sigmas,
-    }
-    frac = float(getattr(args, "diffusion_nft_timestep_fraction", 0.99) or 0.99)
-    shuffle_t = bool(getattr(args, "diffusion_nft_shuffle_timesteps", True))
-    sigmas = resolve_nft_sigmas(scheduler_meta["scheduler_sigmas"], training_timestep_fraction=frac)
-    num_timesteps = int(sigmas.numel())
+class NftTrainDataConverter:
+    """Expand rollout samples into K ``(x0, t)`` train pairs (sample-major).
 
-    train_data: list[dict[str, Any]] = []
-    for sample, adv, raw in zip(samples, advantages, raw_rewards, strict=True):
-        if sample.denoising_env is None:
-            raise ValueError(f"sample {sample.index} missing denoising_env")
-        x0 = _clean_x0_from_sample(sample)
-        sample_sigmas = sigmas[torch.randperm(num_timesteps)] if shuffle_t else sigmas
-        for t in sample_sigmas.tolist():
-            train_data.append(
-                {
-                    "x0": x0,
-                    "timestep": float(t),
-                    "denoising_env": sample.denoising_env,
-                    "advantage": float(adv),
-                    "raw_reward": float(raw),
-                    "sample_index": sample.index,
-                    "prompt": sample.prompt,
-                    "nft_num_timesteps": num_timesteps,
-                }
+    Same interface as ``RolloutTrainDataConverter``: receives already-normalized
+    rewards from ``_post_process_rewards``. Selected by ``--loss-type nft``.
+    """
+
+    def __init__(self, args: Namespace) -> None:
+        self.args = args
+
+    def convert_samples(
+        self,
+        samples: list[Sample],
+        rewards: list[float],
+        raw_rewards: list[float],
+    ) -> dict[str, Any]:
+        if not samples:
+            raise ValueError("NFT convert received empty samples")
+        if len(samples) != len(rewards) or len(samples) != len(raw_rewards):
+            raise ValueError(
+                f"NFT convert length mismatch: samples={len(samples)} "
+                f"rewards={len(rewards)} raw_rewards={len(raw_rewards)}"
             )
-    return {"train_data": train_data, **scheduler_meta}
+        first_traj = samples[0].dit_trajectory
+        if first_traj is None:
+            raise ValueError("sample 0 missing dit_trajectory")
+        if first_traj.timesteps is None:
+            raise ValueError("NFT needs dit_trajectory.timesteps from rollout")
+        args = self.args
+        num_train_timesteps = int(getattr(args, "diffusion_num_train_timesteps", 1000) or 1000)
+        if first_traj.sigmas is not None:
+            scheduler_sigmas = first_traj.sigmas.detach().cpu().float()
+        else:
+            # Match scheduler_meta_from_rollout when sglang omits sigmas (e.g. ODE rollout).
+            ts = first_traj.timesteps.detach().cpu().float()
+            scheduler_sigmas = torch.cat([ts / float(num_train_timesteps), ts.new_zeros(1)])
+        scheduler_meta = {
+            "scheduler_timesteps": first_traj.timesteps.detach().cpu().float(),
+            "scheduler_sigmas": scheduler_sigmas,
+        }
+        frac = float(getattr(args, "diffusion_nft_timestep_fraction", 0.99) or 0.99)
+        shuffle_t = bool(getattr(args, "diffusion_nft_shuffle_timesteps", True))
+        sigmas = resolve_nft_sigmas(scheduler_meta["scheduler_sigmas"], training_timestep_fraction=frac)
+        num_timesteps = int(sigmas.numel())
+
+        train_data: list[dict[str, Any]] = []
+        for sample, adv, raw in zip(samples, rewards, raw_rewards, strict=True):
+            if sample.denoising_env is None:
+                raise ValueError(f"sample {sample.index} missing denoising_env")
+            x0 = _clean_x0_from_sample(sample)
+            sample_sigmas = sigmas[torch.randperm(num_timesteps)] if shuffle_t else sigmas
+            for t in sample_sigmas.tolist():
+                train_data.append(
+                    {
+                        "x0": x0,
+                        "timestep": float(t),
+                        "denoising_env": sample.denoising_env,
+                        "advantage": float(adv),
+                        "raw_reward": float(raw),
+                        "sample_index": sample.index,
+                        "prompt": sample.prompt,
+                        "nft_num_timesteps": num_timesteps,
+                    }
+                )
+        return {"train_data": train_data, **scheduler_meta}
 
 
 # ---------------------------------------------------------------------------
@@ -229,7 +251,6 @@ def nft_loss_formula(
     return loss_sum
 
 
-# Actor: always run a reference DiT forward for NFT (EMA preferred).
-nft_loss_formula.ref_mode = "ema"
 # Same-sample K pairs must stay in one optimizer window.
+# Reference forward is selected via --ref-mode (auto-filled for --loss-type nft).
 nft_loss_formula.requires_sample_aligned_windows = True

@@ -8,15 +8,11 @@ from argparse import Namespace
 
 import torch
 
-from miles.backends.fsdp_utils.lora_ema import (
-    LoraEmaShadow,
-    lora_ema_rollout_policy,
-    lora_ema_shadow_enabled,
-    resolve_lora_ema_kwargs,
-)
+from miles.backends.fsdp_utils.lora_ema import LoraEmaShadow, resolve_lora_ema_kwargs
+from miles.backends.fsdp_utils.loss_hub.advantages import grpo_normalize_rewards
 from miles.backends.fsdp_utils.loss_hub.losses import flow_grpo_loss_formula, resolve_loss_formula_fn
 from miles.backends.fsdp_utils.loss_hub.nft import (
-    convert_samples_to_nft_train_data,
+    NftTrainDataConverter,
     corrupt,
     nft_loss_formula,
     nft_r_from_advantages,
@@ -80,10 +76,15 @@ class TestNftHooks:
             Sample(index=0, prompt="a", reward=1.0, dit_trajectory=_Traj(), denoising_env=_Env()),
             Sample(index=1, prompt="b", reward=3.0, dit_trajectory=_Traj(), denoising_env=_Env()),
         ]
-        out = convert_samples_to_nft_train_data(_args(), samples)
+        args = _args()
+        raw_rewards, rewards = grpo_normalize_rewards(args, samples)
+        out = NftTrainDataConverter(args).convert_samples(samples, rewards, raw_rewards)
         assert len(out["train_data"]) == 4
         assert {p["timestep"] for p in out["train_data"]} == {1.0, 0.5}
         assert out["train_data"][0]["x0"] is out["train_data"][1]["x0"]
+        # Advantages come from post-process, not from the converter.
+        assert out["train_data"][0]["advantage"] == rewards[0]
+        assert out["train_data"][2]["advantage"] == rewards[1]
 
     def test_formula_write_old_log_prob_is_noop(self):
         metrics = new_metric_buffer(None, torch.device("cpu"), ())
@@ -98,9 +99,9 @@ class TestNftHooks:
         )
         assert loss is None
 
-    def test_formula_declares_ref_and_window_attrs(self):
-        assert getattr(nft_loss_formula, "ref_mode", None) == "ema"
+    def test_formula_declares_window_attr(self):
         assert getattr(nft_loss_formula, "requires_sample_aligned_windows", False) is True
+        assert not hasattr(nft_loss_formula, "ref_mode")
 
     def test_resolve_defaults_are_flow_grpo(self):
         assert resolve_prepare_fn(_args()) is prepare_flow_grpo_batch
@@ -141,14 +142,6 @@ class TestLoraEmaShadow:
 
 
 class TestLoraEmaArgs:
-    def test_shadow_enabled(self):
-        assert lora_ema_shadow_enabled(Namespace(lora_ema_shadow=True))
-        assert not lora_ema_shadow_enabled(Namespace())
-
-    def test_rollout_policy(self):
-        assert lora_ema_rollout_policy(Namespace(lora_ema_rollout_policy="ema")) == "ema"
-        assert lora_ema_rollout_policy(Namespace()) == "live"
-
     def test_resolve_kwargs(self):
         kwargs = resolve_lora_ema_kwargs(
             Namespace(lora_ema_decay=0.01, lora_ema_uprate=0.02, lora_ema_uphold=0.3, lora_ema_flat_steps=5)

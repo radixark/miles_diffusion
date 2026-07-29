@@ -41,6 +41,15 @@ def scheduler_meta_from_rollout(
     return timesteps, sigmas
 
 
+def resolve_train_data_converter(args):
+    """Pick the algorithm train-data converter (not a full ``custom_convert`` override)."""
+    if getattr(args, "loss_type", None) in ("nft", "diffusion_nft"):
+        from miles.backends.fsdp_utils.loss_hub.nft import NftTrainDataConverter
+
+        return NftTrainDataConverter(args)
+    return RolloutTrainDataConverter()
+
+
 class RolloutTrainDataConverter:
     """Convert rollout samples into the flat train-pair payload."""
 

@@ -1,8 +1,9 @@
-"""Reward → train-signal helpers for diffusion (customization building blocks).
+"""Reward → train-signal helpers for diffusion.
 
-Default GRPO group normalization. Override with
+``grpo_normalize_rewards`` is the default implementation of
+``RolloutManager._post_process_rewards``. Override with
 ``--custom-reward-post-process-path`` pointing at a function with the same
-signature as ``grpo_normalize_rewards``.
+signature.
 """
 
 from __future__ import annotations

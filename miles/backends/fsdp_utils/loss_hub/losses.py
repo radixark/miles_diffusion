@@ -116,7 +116,11 @@ def flow_grpo_loss_formula(
 
 
 def resolve_loss_formula_fn(args: Namespace) -> LossFormulaFn:
-    """Loss *formula* only — DiT forward stays in the actor."""
+    """Loss *formula* only — DiT forward stays in the actor.
+
+    Custom path defaults (e.g. NFT) are assigned in ``arguments.py``. When the
+    path is unset, Flow-GRPO is the default implementation.
+    """
     path = getattr(args, "custom_loss_function_path", None)
     if path:
         fn = load_function(path)

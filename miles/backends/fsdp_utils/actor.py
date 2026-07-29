@@ -34,7 +34,7 @@ from .diffusion_update_weight_utils import (
     DiffusionUpdateWeightFromTensorLoRA,
     DiffusionUpdateWeightFromTensorLoRAIPC,
 )
-from .lora_ema import LoraEmaShadow, lora_ema_rollout_policy, lora_ema_shadow_enabled, resolve_lora_ema_kwargs
+from .lora_ema import LoraEmaShadow, resolve_lora_ema_kwargs
 from .loss_hub import DiffusionLossContext, resolve_loss_formula_fn, resolve_prepare_fn
 from .lr_scheduler import get_lr_scheduler
 from .metrics import new_metric_buffer
@@ -209,10 +209,10 @@ class FSDPTrainRayActor(TrainRayActor):
 
         checkpoint_payload = checkpoint.load(self)
 
-        # Optional LoRA EMA shadow (pi_old). Loss formulas that set ref_mode="ema"
-        # consume it via actor reference forward.
+        # Optional LoRA EMA shadow (pi_old). Enabled via --lora-ema-shadow (parsed in arguments.py).
+        # Consumed when --ref-mode ema runs the no-grad reference DiT forward.
         self.ema_shadow = None
-        if lora_ema_shadow_enabled(self.args):
+        if getattr(self.args, "lora_ema_shadow", False):
             self.ema_shadow = LoraEmaShadow(
                 (p for m in self.models.values() for p in m.parameters()),
                 **resolve_lora_ema_kwargs(self.args),
@@ -308,7 +308,7 @@ class FSDPTrainRayActor(TrainRayActor):
             delta = self.ema_shadow.update()
             if dist.get_rank() == 0:
                 logger.info("LoRA EMA shadow updated (decay=%.4f step=%d)", delta, self.ema_shadow.step)
-            if lora_ema_rollout_policy(self.args) == "ema":
+            if getattr(self.args, "lora_ema_rollout_policy", "live") == "ema":
                 with self.ema_shadow.swap_in():
                     self.weight_updater.update_weights()
             else:
@@ -367,14 +367,14 @@ class FSDPTrainRayActor(TrainRayActor):
         num_pairs = len(train_pairs)
         num_train_timesteps = self.scheduler.config.num_train_timesteps
 
-        # ------------- KL precondition (Flow-GRPO formula may request ref forward) -------------
-        kl_beta = float(self.args.diffusion_kl_beta)
-        if kl_beta > 0 and not self.args.use_lora:
-            raise ValueError(
-                "--diffusion-kl-beta currently requires --use-lora so the base model can be used as reference."
+        # ------------- Reference forward precondition (--ref-mode resolved in arguments.py) -------------
+        ref_mode = getattr(self.args, "ref_mode", "none")
+        if ref_mode == "lora_base" and not all(hasattr(m, "disable_adapter") for m in self.models.values()):
+            raise RuntimeError(
+                "--ref-mode lora_base requires PEFT models exposing disable_adapter() after FSDP wrapping."
             )
-        if kl_beta > 0 and not all(hasattr(m, "disable_adapter") for m in self.models.values()):
-            raise RuntimeError("Diffusion KL requires PEFT models exposing disable_adapter() after FSDP wrapping.")
+        if ref_mode == "ema" and self.ema_shadow is None:
+            raise RuntimeError("--ref-mode ema requires a constructed LoRA EMA shadow")
 
         # ------------- Rollout Scheduler Metadata -------------
         scheduler_timesteps, scheduler_sigmas = scheduler_meta_from_rollout(
@@ -502,23 +502,6 @@ class FSDPTrainRayActor(TrainRayActor):
                     conds.append(env.neg_cond_kwargs)
         return self.train_pipeline_config.maybe_legacy_window_pad_len(conds)
 
-    def _resolve_ref_mode(self) -> str | None:
-        """Whether the actor should run a no-grad reference DiT forward.
-
-        Loss formulas may set ``ref_mode`` to ``"ema"`` / ``"lora_base"``.
-        Flow-GRPO defaults to ``lora_base`` when ``--diffusion-kl-beta > 0``.
-        """
-        explicit = getattr(self.loss_formula_fn, "ref_mode", None)
-        if explicit == "ema" and getattr(self.args, "diffusion_nft_ref_mode", "ema") == "base":
-            explicit = "lora_base"
-        if explicit in ("ema", "lora_base"):
-            if explicit == "ema" and self.ema_shadow is None:
-                return "lora_base"
-            return explicit
-        if float(self.args.diffusion_kl_beta) > 0:
-            return "lora_base"
-        return None
-
     def _forward_train_pair_batch(
         self,
         ctx: DiffusionLossContext,
@@ -560,15 +543,11 @@ class FSDPTrainRayActor(TrainRayActor):
         new_pred = _compute_noise_pred()
 
         ref_pred = None
-        ref_mode = self._resolve_ref_mode()
-        if ref_mode is not None:
+        ref_mode = getattr(self.args, "ref_mode", "none")
+        if ref_mode not in (None, "none"):
             if ref_mode == "ema":
-                if self.ema_shadow is None:
-                    raise ValueError("ref_mode=ema requires --lora-ema-shadow")
                 ref_ctx = self.ema_shadow.swap_in()
             elif ref_mode == "lora_base":
-                if not hasattr(prepared.model, "disable_adapter"):
-                    raise ValueError("ref_mode=lora_base requires a LoRA model exposing disable_adapter()")
                 ref_ctx = prepared.model.disable_adapter()
             else:
                 raise ValueError(f"unknown ref_mode {ref_mode!r}")

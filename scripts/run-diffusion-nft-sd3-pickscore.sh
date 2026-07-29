@@ -134,7 +134,7 @@ python -u "${ROOT_DIR}/train_diffusion.py" \
   --diffusion-nft-beta 1.0 \
   --diffusion-nft-adv-clip-max 5.0 \
   --diffusion-nft-timestep-fraction 0.99 \
-  --diffusion-nft-ref-mode ema \
+  --ref-mode ema \
   --lora-ema-shadow \
   --lora-ema-rollout-policy ema \
   --lora-ema-decay 0.001 \
