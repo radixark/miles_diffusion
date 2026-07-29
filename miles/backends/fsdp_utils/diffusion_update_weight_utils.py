@@ -483,13 +483,11 @@ class DiffusionUpdateWeightFromTensorLoRAIPC(DiffusionUpdateWeightFromTensor):
         self.weight_version += 1
         for target_module, model in self.models.items():
             layer_groups, unmapped_keys, num_lora_keys = collect_lora_layer_groups(model.state_dict())
-            prepared_groups = [
-                [(sgld_name, self._prepare_lora_param(param)) for sgld_name, param in group] for group in layer_groups
-            ]
-            buckets = bucket_lora_layer_groups(prepared_groups, self.args.update_weight_buffer_size)
-            for bucket in buckets:
+            raw_buckets = bucket_lora_layer_groups(layer_groups, self.args.update_weight_buffer_size)
+            for raw_bucket in raw_buckets:
+                prepared_bucket = [(sgld_name, self._prepare_lora_param(param)) for sgld_name, param in raw_bucket]
                 self.wait_and_update_bucket_weights(
-                    bucket,
+                    prepared_bucket,
                     target_module,
                     weight_update_mode=LORA_IPC_WEIGHT_UPDATE_MODE,
                 )
@@ -503,7 +501,7 @@ class DiffusionUpdateWeightFromTensorLoRAIPC(DiffusionUpdateWeightFromTensor):
                     target_module,
                     num_lora_keys,
                     num_layers,
-                    len(buckets),
+                    len(raw_buckets),
                     len(unmapped_keys),
                 )
                 if sample_layers:
