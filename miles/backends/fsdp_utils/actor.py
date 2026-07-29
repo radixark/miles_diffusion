@@ -34,7 +34,7 @@ from .diffusion_update_weight_utils import (
     DiffusionUpdateWeightFromTensorLoRA,
     DiffusionUpdateWeightFromTensorLoRAIPC,
 )
-from .lora_ema import LoraEmaShadow, resolve_lora_ema_kwargs
+from .ema import EmaShadow, resolve_ema_kwargs
 from .loss_hub import DiffusionLossContext, resolve_loss_formula_fn, resolve_prepare_fn
 from .lr_scheduler import get_lr_scheduler
 from .metrics import new_metric_buffer
@@ -209,13 +209,13 @@ class FSDPTrainRayActor(TrainRayActor):
 
         checkpoint_payload = checkpoint.load(self)
 
-        # Optional LoRA EMA shadow (pi_old). Enabled via --lora-ema-shadow (parsed in arguments.py).
+        # Optional EMA shadow of trainable params (pi_old). Enabled via --ema-shadow.
         # Consumed when --ref-mode ema runs the no-grad reference DiT forward.
         self.ema_shadow = None
-        if getattr(self.args, "lora_ema_shadow", False):
-            self.ema_shadow = LoraEmaShadow(
+        if getattr(self.args, "ema_shadow", False):
+            self.ema_shadow = EmaShadow(
                 (p for m in self.models.values() for p in m.parameters()),
-                **resolve_lora_ema_kwargs(self.args),
+                **resolve_ema_kwargs(self.args),
             )
 
         # sglang-d now supports /update_weights_from_tensor (PR #20464).
@@ -307,8 +307,8 @@ class FSDPTrainRayActor(TrainRayActor):
         if self.ema_shadow is not None:
             delta = self.ema_shadow.update()
             if dist.get_rank() == 0:
-                logger.info("LoRA EMA shadow updated (decay=%.4f step=%d)", delta, self.ema_shadow.step)
-            if getattr(self.args, "lora_ema_rollout_policy", "live") == "ema":
+                logger.info("EMA shadow updated (decay=%.4f step=%d)", delta, self.ema_shadow.step)
+            if getattr(self.args, "ema_rollout_policy", "live") == "ema":
                 with self.ema_shadow.swap_in():
                     self.weight_updater.update_weights()
             else:
@@ -374,7 +374,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 "--ref-mode lora_base requires PEFT models exposing disable_adapter() after FSDP wrapping."
             )
         if ref_mode == "ema" and self.ema_shadow is None:
-            raise RuntimeError("--ref-mode ema requires a constructed LoRA EMA shadow")
+            raise RuntimeError("--ref-mode ema requires a constructed EMA shadow")
 
         # ------------- Rollout Scheduler Metadata -------------
         scheduler_timesteps, scheduler_sigmas = scheduler_meta_from_rollout(

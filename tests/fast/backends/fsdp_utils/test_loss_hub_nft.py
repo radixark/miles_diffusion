@@ -8,7 +8,7 @@ from argparse import Namespace
 
 import torch
 
-from miles.backends.fsdp_utils.lora_ema import LoraEmaShadow, resolve_lora_ema_kwargs
+from miles.backends.fsdp_utils.ema import EmaShadow, resolve_ema_kwargs
 from miles.backends.fsdp_utils.loss_hub.advantages import grpo_normalize_rewards
 from miles.backends.fsdp_utils.loss_hub.losses import flow_grpo_loss_formula, resolve_loss_formula_fn
 from miles.backends.fsdp_utils.loss_hub.nft import (
@@ -116,13 +116,13 @@ class TestNftHooks:
         assert resolve_loss_formula_fn(args) is nft_loss_formula
 
 
-class TestLoraEmaShadow:
+class TestEmaShadow:
     def _model(self):
         return torch.nn.Linear(4, 4, bias=False)
 
     def test_snapshot_and_update(self):
         m = self._model()
-        ema = LoraEmaShadow(m.parameters(), decay=0.5, uprate=0.001, uphold=0.5, flat_steps=10)
+        ema = EmaShadow(m.parameters(), decay=0.5, uprate=0.001, uphold=0.5, flat_steps=10)
         init = m.weight.detach().clone()
         with torch.no_grad():
             m.weight.add_(1.0)
@@ -132,7 +132,7 @@ class TestLoraEmaShadow:
 
     def test_swap_in_restores_exactly(self):
         m = self._model()
-        ema = LoraEmaShadow(m.parameters(), decay=0.1)
+        ema = EmaShadow(m.parameters(), decay=0.1)
         live = m.weight.detach().clone()
         with torch.no_grad():
             m.weight.add_(2.0)
@@ -141,9 +141,7 @@ class TestLoraEmaShadow:
         assert torch.equal(m.weight.detach(), live + 2.0)
 
 
-class TestLoraEmaArgs:
+class TestEmaArgs:
     def test_resolve_kwargs(self):
-        kwargs = resolve_lora_ema_kwargs(
-            Namespace(lora_ema_decay=0.01, lora_ema_uprate=0.02, lora_ema_uphold=0.3, lora_ema_flat_steps=5)
-        )
+        kwargs = resolve_ema_kwargs(Namespace(ema_decay=0.01, ema_uprate=0.02, ema_uphold=0.3, ema_flat_steps=5))
         assert kwargs == {"decay": 0.01, "uprate": 0.02, "uphold": 0.3, "flat_steps": 5}

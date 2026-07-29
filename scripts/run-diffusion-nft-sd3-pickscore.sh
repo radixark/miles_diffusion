@@ -5,7 +5,7 @@
 #   8 prompts × 8 samples, lr=3e-4, wd=1e-4, LoRA r=32 α=64,
 #   guidance=1.0 (CFG-free), eta=0 / num_sde_steps=0 (ODE → clean x0),
 #   NFT beta=1, adv_clip=5, adaptive weight, schedule fraction=0.99,
-#   LoRA EMA shadow (pi_old) updated + synced at rollout_end (uprate=0.001, uphold=0.5).
+#   EMA shadow (pi_old) updated + synced at rollout_end (uprate=0.001, uphold=0.5).
 # Expected early metrics: reward ~0.73–0.82, train/loss ~280–360.
 #
 # GPU layout (default CUDA_VISIBLE_DEVICES=4,5,2):
@@ -135,12 +135,12 @@ python -u "${ROOT_DIR}/train_diffusion.py" \
   --diffusion-nft-adv-clip-max 5.0 \
   --diffusion-nft-timestep-fraction 0.99 \
   --ref-mode ema \
-  --lora-ema-shadow \
-  --lora-ema-rollout-policy ema \
-  --lora-ema-decay 0.001 \
-  --lora-ema-uprate 0.001 \
-  --lora-ema-uphold 0.5 \
-  --lora-ema-flat-steps 0 \
+  --ema-shadow \
+  --ema-rollout-policy ema \
+  --ema-decay 0.001 \
+  --ema-uprate 0.001 \
+  --ema-uphold 0.5 \
+  --ema-flat-steps 0 \
   --advantage-estimator grpo \
   --globalize-reward-std \
   --diffusion-model "${SD3_MODEL}" \

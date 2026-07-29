@@ -1,8 +1,8 @@
-"""Generic LoRA EMA shadow for diffusion (and future FSDP) training.
+"""EMA shadow of trainable parameters for diffusion FSDP training.
 
 Algorithms that need a slow-moving reference / sampling policy ``pi_old`` share
-``LoraEmaShadow``: trainable LoRA weights plus EMA buffers and ``swap_in()``
-for temporary in-place weight exchange.
+``EmaShadow``: tracks all ``requires_grad`` parameters (LoRA adapters or full
+finetune), plus ``swap_in()`` for temporary in-place weight exchange.
 
 Lifecycle (actor / weight sync)::
 
@@ -20,14 +20,14 @@ Works with FSDP2 DTensor shards (per-rank local swap) and colocate CPU offload.
 Checkpointing (intentionally not wired yet)
 -------------------------------------------
 ``shadow`` / ``step`` are **not** saved or restored by ``fsdp_utils.checkpoint``.
-On resume the actor rebuilds EMA from the loaded LoRA weights, so ``pi_old``
+On resume the actor rebuilds EMA from the loaded trainable weights, so ``pi_old``
 cold-starts (decay schedule restarts at step 0). Fine for single-shot runs;
 wrong for mid-run resume that must match UniRL's slow ``pi_old``.
 
 Wiring it later is non-trivial: buffers are per-rank plain clones (not in the
 FSDP/DCP model state), must stay aligned with the trainable-param order, and
 must not be saved while ``swap_in()`` is active. Prefer a side file such as
-``iter_*/lora_ema.pt`` over stuffing into the DCP model dict.
+``iter_*/ema.pt`` over stuffing into the DCP model dict.
 """
 
 from __future__ import annotations
@@ -45,23 +45,22 @@ def _local(t: torch.Tensor) -> torch.Tensor:
     return t._local_tensor if hasattr(t, "_local_tensor") else t
 
 
-def resolve_lora_ema_kwargs(args: Namespace) -> dict[str, float | int]:
-    """Read normalized ``lora_ema_*`` fields from ``args`` (see ``miles_validate_args``).
+def resolve_ema_kwargs(args: Namespace) -> dict[str, float | int]:
+    """Read normalized ``ema_*`` fields from ``args`` (see ``miles_validate_args``).
 
-    Enablement (``args.lora_ema_shadow``) and rollout policy
-    (``args.lora_ema_rollout_policy``) are plain args — inferred/validated in
-    ``arguments.py``, not re-wrapped here.
+    Enablement (``args.ema_shadow``) and rollout policy (``args.ema_rollout_policy``)
+    are plain args — inferred/validated in ``arguments.py``, not re-wrapped here.
     """
     return {
-        "decay": float(getattr(args, "lora_ema_decay", 0.001)),
-        "uprate": float(getattr(args, "lora_ema_uprate", 0.001)),
-        "uphold": float(getattr(args, "lora_ema_uphold", 0.5)),
-        "flat_steps": int(getattr(args, "lora_ema_flat_steps", 0)),
+        "decay": float(getattr(args, "ema_decay", 0.001)),
+        "uprate": float(getattr(args, "ema_uprate", 0.001)),
+        "uphold": float(getattr(args, "ema_uphold", 0.5)),
+        "flat_steps": int(getattr(args, "ema_flat_steps", 0)),
     }
 
 
-class LoraEmaShadow:
-    """EMA shadow of trainable (LoRA) parameters.
+class EmaShadow:
+    """EMA shadow of trainable parameters (LoRA or full finetune).
 
     Not part of the FSDP checkpoint payload today (see module docstring).
     """
@@ -84,7 +83,7 @@ class LoraEmaShadow:
 
         self.params = [p for p in parameters if p.requires_grad]
         if not self.params:
-            raise ValueError("LoraEmaShadow: model has no trainable parameters")
+            raise ValueError("EmaShadow: model has no trainable parameters")
         self.shadow = [_local(p.detach()).clone() for p in self.params]
 
     def decay_at(self, t: int) -> float:
@@ -96,7 +95,7 @@ class LoraEmaShadow:
     def update(self) -> float:
         """theta_old <- delta * theta_old + (1 - delta) * theta."""
         if self._swapped:
-            raise RuntimeError("LoraEmaShadow.update called while swapped in")
+            raise RuntimeError("EmaShadow.update called while swapped in")
         self.step += 1
         delta = self.decay_at(self.step)
         for live, sh in zip(self.params, self.shadow, strict=True):

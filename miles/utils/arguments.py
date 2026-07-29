@@ -157,7 +157,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "Which reference weights to use for the no-grad DiT forward. "
                     "Auto: lora_base when --diffusion-kl-beta > 0; for --loss-type nft, "
-                    "ema (or lora_base fallback). Explicit values skip auto inference."
+                    "ema if --ema-shadow else lora_base. Explicit values skip auto inference."
                 ),
             )
             parser.add_argument(
@@ -1153,48 +1153,48 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
-                "--lora-ema-shadow",
+                "--ema-shadow",
                 action="store_true",
                 default=False,
                 help=(
-                    "Maintain an EMA shadow of trainable LoRA weights (pi_old). Custom losses "
-                    "read it via ``ctx.ema_shadow.swap_in()``; combine with "
-                    "--lora-ema-rollout-policy ema to sample under pi_old."
+                    "Maintain an EMA shadow of trainable weights (pi_old; LoRA or full finetune). "
+                    "Consumed when --ref-mode ema; combine with --ema-rollout-policy ema to "
+                    "sample under pi_old."
                 ),
             )
             parser.add_argument(
-                "--lora-ema-rollout-policy",
+                "--ema-rollout-policy",
                 type=str,
                 choices=["live", "ema"],
                 default="live",
                 help=(
-                    "Which LoRA weights to push to rollout after each rollout_end when "
-                    "--lora-ema-shadow is set: live trainable weights, or EMA shadow (pi_old)."
+                    "Which trainable weights to push to rollout after each rollout_end when "
+                    "--ema-shadow is set: live weights, or EMA shadow (pi_old)."
                 ),
             )
             parser.add_argument(
-                "--lora-ema-decay",
+                "--ema-decay",
                 type=float,
                 default=0.001,
-                help="LoRA EMA decay while step <= flat_steps.",
+                help="EMA decay while step <= flat_steps.",
             )
             parser.add_argument(
-                "--lora-ema-uprate",
+                "--ema-uprate",
                 type=float,
                 default=0.001,
-                help="LoRA EMA warmup rate after flat_steps.",
+                help="EMA warmup rate after flat_steps.",
             )
             parser.add_argument(
-                "--lora-ema-uphold",
+                "--ema-uphold",
                 type=float,
                 default=0.5,
-                help="LoRA EMA warmup cap.",
+                help="EMA warmup cap.",
             )
             parser.add_argument(
-                "--lora-ema-flat-steps",
+                "--ema-flat-steps",
                 type=int,
                 default=0,
-                help="LoRA EMA flat steps before warmup begins.",
+                help="EMA flat steps before warmup begins.",
             )
             parser.add_argument(
                 "--diffusion-init-lora-weight",
@@ -1498,8 +1498,7 @@ def resolve_and_validate_ref_mode(args, *, is_nft: bool, ema_enabled: bool) -> N
             nft_pref = getattr(args, "diffusion_nft_ref_mode", "ema")
             if nft_pref == "ema" and not ema_enabled:
                 logger.warning(
-                    "--loss-type nft prefers EMA ref but --lora-ema-shadow is off; "
-                    "falling back to --ref-mode lora_base."
+                    "--loss-type nft prefers EMA ref but --ema-shadow is off; " "falling back to --ref-mode lora_base."
                 )
                 args.ref_mode = "lora_base"
             else:
@@ -1512,7 +1511,7 @@ def resolve_and_validate_ref_mode(args, *, is_nft: bool, ema_enabled: bool) -> N
     if is_nft and args.ref_mode == "none":
         raise ValueError("--loss-type nft requires a reference model; set --ref-mode ema or lora_base")
     if args.ref_mode == "ema" and not ema_enabled:
-        raise ValueError("--ref-mode ema requires --lora-ema-shadow")
+        raise ValueError("--ref-mode ema requires --ema-shadow")
     if args.ref_mode == "lora_base" and not args.use_lora:
         raise ValueError("--ref-mode lora_base requires --use-lora")
     if float(getattr(args, "diffusion_kl_beta", 0.0) or 0.0) > 0 and args.ref_mode == "none":
@@ -1600,9 +1599,7 @@ def miles_validate_args(args):
                 "set --diffusion-model (for per-model defaults) or --lora-target-modules."
             )
 
-    ema_enabled = bool(getattr(args, "lora_ema_shadow", False))
-    if ema_enabled and not args.use_lora:
-        raise ValueError("--lora-ema-shadow requires --use-lora")
+    ema_enabled = bool(getattr(args, "ema_shadow", False))
 
     is_nft = getattr(args, "loss_type", None) in ("nft", "diffusion_nft")
     if is_nft:

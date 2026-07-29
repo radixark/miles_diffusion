@@ -26,7 +26,7 @@ class DiffusionLossContext:
     args: Namespace
     forward_dtype: torch.dtype
     device: torch.device
-    # Optional LoRA EMA shadow handle; owned by actor (see ``fsdp_utils.lora_ema``).
+    # Optional EMA shadow handle; owned by actor (see ``fsdp_utils.ema``).
     ema_shadow: Any = None
 
 
