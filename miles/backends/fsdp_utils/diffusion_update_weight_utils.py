@@ -107,6 +107,12 @@ def _tensor_nbytes(tensor: torch.Tensor) -> int:
     return tensor.numel() * tensor.element_size()
 
 
+def _assert_lora_ab_pair(layer_prefix: str, tensors: list[tuple[str, torch.Tensor]]) -> None:
+    names = [name for name, _ in tensors]
+    expected = [f"{layer_prefix}.lora_A", f"{layer_prefix}.lora_B"]
+    assert names == expected, f"LoRA layer {layer_prefix!r} expected {expected}, got {names}"
+
+
 def collect_lora_layer_groups(
     state_dict: Mapping[str, torch.Tensor],
 ) -> tuple[list[list[tuple[str, torch.Tensor]]], list[str], int]:
@@ -129,31 +135,9 @@ def collect_lora_layer_groups(
     layer_groups: list[list[tuple[str, torch.Tensor]]] = []
     for layer_prefix in sorted(groups_by_layer):
         tensors = sorted(groups_by_layer[layer_prefix], key=lambda item: item[0])
+        _assert_lora_ab_pair(layer_prefix, tensors)
         layer_groups.append(tensors)
     return layer_groups, unmapped_keys, num_lora_keys
-
-
-def bucket_lora_layer_groups(
-    layer_groups: Sequence[Sequence[tuple[str, torch.Tensor]]],
-    buffer_size: int,
-) -> list[list[tuple[str, torch.Tensor]]]:
-    """Bucket LoRA tensors by whole layer groups; never split lora_A/lora_B across buckets."""
-    buckets: list[list[tuple[str, torch.Tensor]]] = []
-    bucket: list[tuple[str, torch.Tensor]] = []
-    bucket_size = 0
-
-    for group in layer_groups:
-        group_size = sum(_tensor_nbytes(tensor) for _, tensor in group)
-        if bucket and bucket_size + group_size >= buffer_size:
-            buckets.append(bucket)
-            bucket = []
-            bucket_size = 0
-        bucket.extend(group)
-        bucket_size += group_size
-
-    if bucket:
-        buckets.append(bucket)
-    return buckets
 
 
 class DiffusionUpdateWeight(abc.ABC):
