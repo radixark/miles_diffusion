@@ -66,6 +66,10 @@ class PeftLoRAKeyMapper:
         return f"{layer_prefix}.lora_{ab}"
 
     @classmethod
+    def layer_prefix(cls, sgld_name: str) -> str:
+        return sgld_name.rsplit(".lora_", 1)[0]
+
+    @classmethod
     def collect_sgld_names(cls, state_dict: Mapping[str, torch.Tensor]) -> set[str]:
         names: set[str] = set()
         for key in state_dict:
@@ -97,6 +101,59 @@ class PeftLoRAKeyMapper:
         layer_prefixes = {name.rsplit(".lora_", 1)[0] for name in sgld_names}
         sample = sorted(layer_prefixes)[:5]
         return len(sgld_names), len(layer_prefixes), sample, unmapped
+
+
+def _tensor_nbytes(tensor: torch.Tensor) -> int:
+    return tensor.numel() * tensor.element_size()
+
+
+def collect_lora_layer_groups(
+    state_dict: Mapping[str, torch.Tensor],
+) -> tuple[list[list[tuple[str, torch.Tensor]]], list[str], int]:
+    """Group LoRA state-dict entries by layer prefix so lora_A/lora_B stay together."""
+    groups_by_layer: dict[str, list[tuple[str, torch.Tensor]]] = {}
+    unmapped_keys: list[str] = []
+    num_lora_keys = 0
+
+    for name, param in state_dict.items():
+        if not PeftLoRAKeyMapper.is_lora_key(name):
+            continue
+        sgld_name = PeftLoRAKeyMapper.to_sgld_name(name)
+        if sgld_name is None:
+            unmapped_keys.append(name)
+            continue
+        layer_prefix = PeftLoRAKeyMapper.layer_prefix(sgld_name)
+        groups_by_layer.setdefault(layer_prefix, []).append((sgld_name, param))
+        num_lora_keys += 1
+
+    layer_groups: list[list[tuple[str, torch.Tensor]]] = []
+    for layer_prefix in sorted(groups_by_layer):
+        tensors = sorted(groups_by_layer[layer_prefix], key=lambda item: item[0])
+        layer_groups.append(tensors)
+    return layer_groups, unmapped_keys, num_lora_keys
+
+
+def bucket_lora_layer_groups(
+    layer_groups: Sequence[Sequence[tuple[str, torch.Tensor]]],
+    buffer_size: int,
+) -> list[list[tuple[str, torch.Tensor]]]:
+    """Bucket LoRA tensors by whole layer groups; never split lora_A/lora_B across buckets."""
+    buckets: list[list[tuple[str, torch.Tensor]]] = []
+    bucket: list[tuple[str, torch.Tensor]] = []
+    bucket_size = 0
+
+    for group in layer_groups:
+        group_size = sum(_tensor_nbytes(tensor) for _, tensor in group)
+        if bucket and bucket_size + group_size >= buffer_size:
+            buckets.append(bucket)
+            bucket = []
+            bucket_size = 0
+        bucket.extend(group)
+        bucket_size += group_size
+
+    if bucket:
+        buckets.append(bucket)
+    return buckets
 
 
 class DiffusionUpdateWeight(abc.ABC):
@@ -413,57 +470,41 @@ class DiffusionUpdateWeightFromTensorLoRA(DiffusionUpdateWeightFromTensor):
 class DiffusionUpdateWeightFromTensorLoRAIPC(DiffusionUpdateWeightFromTensor):
     """Push only lora_A/lora_B tensors; rollout merges locally via weight_update_mode=lora_merge."""
 
+    def _prepare_lora_param(self, param: torch.Tensor) -> torch.Tensor:
+        param = param.cuda()
+        if isinstance(param, DTensor):
+            param = param.redistribute(
+                placements=[Replicate()] * param.device_mesh.ndim,
+                async_op=True,
+            ).to_local()
+        return param
+
     def update_weights(self) -> None:
         self.weight_version += 1
         for target_module, model in self.models.items():
-            bucket: list[tuple[str, torch.Tensor]] = []
-            bucket_size = 0
-            num_lora_keys = 0
-            unmapped_keys: list[str] = []
-
-            for name, param in model.state_dict().items():
-                if not PeftLoRAKeyMapper.is_lora_key(name):
-                    continue
-                sgld_name = PeftLoRAKeyMapper.to_sgld_name(name)
-                if sgld_name is None:
-                    unmapped_keys.append(name)
-                    continue
-
-                param = param.cuda()
-                if isinstance(param, DTensor):
-                    param = param.redistribute(
-                        placements=[Replicate()] * param.device_mesh.ndim,
-                        async_op=True,
-                    ).to_local()
-
-                sz = param.numel() * param.element_size()
-                if bucket and bucket_size + sz >= self.args.update_weight_buffer_size:
-                    self.wait_and_update_bucket_weights(
-                        bucket,
-                        target_module,
-                        weight_update_mode=LORA_IPC_WEIGHT_UPDATE_MODE,
-                    )
-                    bucket, bucket_size = [], 0
-
-                bucket.append((sgld_name, param))
-                bucket_size += sz
-                num_lora_keys += 1
-
-            if bucket:
+            layer_groups, unmapped_keys, num_lora_keys = collect_lora_layer_groups(model.state_dict())
+            prepared_groups = [
+                [(sgld_name, self._prepare_lora_param(param)) for sgld_name, param in group]
+                for group in layer_groups
+            ]
+            buckets = bucket_lora_layer_groups(prepared_groups, self.args.update_weight_buffer_size)
+            for bucket in buckets:
                 self.wait_and_update_bucket_weights(
                     bucket,
                     target_module,
                     weight_update_mode=LORA_IPC_WEIGHT_UPDATE_MODE,
                 )
 
-            if self.weight_version <= 2 and dist.get_rank() == 0:
+            if self.weight_version <= 2 and dist.is_initialized() and dist.get_rank() == 0:
                 _, num_layers, sample_layers, _ = PeftLoRAKeyMapper.summarize_mapping(model.state_dict())
                 logger.info(
-                    "LoRA IPC weight sync v%s [%s]: pushed %d lora tensors, " "%d layer prefixes (unmapped=%d)",
+                    "LoRA IPC weight sync v%s [%s]: pushed %d lora tensors, "
+                    "%d layer prefixes in %d buckets (unmapped=%d)",
                     self.weight_version,
                     target_module,
                     num_lora_keys,
                     num_layers,
+                    len(buckets),
                     len(unmapped_keys),
                 )
                 if sample_layers:

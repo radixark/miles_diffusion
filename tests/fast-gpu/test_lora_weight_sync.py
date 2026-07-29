@@ -12,7 +12,11 @@ import pytest
 import torch
 from peft import LoraConfig, get_peft_model
 
-from miles.backends.fsdp_utils.diffusion_update_weight_utils import DiffusionUpdateWeightFromTensorLoRA
+from miles.backends.fsdp_utils.diffusion_update_weight_utils import (
+    DiffusionUpdateWeightFromTensorLoRA,
+    DiffusionUpdateWeightFromTensorLoRAIPC,
+    PeftLoRAKeyMapper,
+)
 
 
 class _TinyBlock(torch.nn.Module):
@@ -29,7 +33,18 @@ class _CaptureUpdater(DiffusionUpdateWeightFromTensorLoRA):
         super().__init__(*args, **kwargs)
         self.buckets: list[list[tuple[str, torch.Tensor]]] = []
 
-    def wait_and_update_bucket_weights(self, bucket, target_module):
+    def wait_and_update_bucket_weights(self, bucket, target_module, weight_update_mode=None):
+        self.buckets.append([(name, tensor.clone()) for name, tensor in bucket])
+
+
+class _CaptureLoRAIPCUpdater(DiffusionUpdateWeightFromTensorLoRAIPC):
+    """Capture LoRA IPC buckets without rollout engines."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.buckets: list[list[tuple[str, torch.Tensor]]] = []
+
+    def wait_and_update_bucket_weights(self, bucket, target_module, weight_update_mode=None):
         self.buckets.append([(name, tensor.clone()) for name, tensor in bucket])
 
 
@@ -50,6 +65,23 @@ def _run_update(peft_model, buffer_size):
     return updater.buckets
 
 
+def _run_lora_ipc_update(peft_model, buffer_size):
+    updater = _CaptureLoRAIPCUpdater(Namespace(update_weight_buffer_size=buffer_size), {"transformer": peft_model})
+    updater.update_weights()
+    return updater.buckets
+
+
+def _assert_buckets_have_complete_ab_pairs(buckets):
+    for bucket in buckets:
+        by_layer: dict[str, set[str]] = {}
+        for name, _ in bucket:
+            prefix = PeftLoRAKeyMapper.layer_prefix(name)
+            ab = "A" if ".lora_A" in name else "B"
+            by_layer.setdefault(prefix, set()).add(ab)
+        for prefix, abs_ in by_layer.items():
+            assert abs_ == {"A", "B"}, f"incomplete LoRA pair for {prefix} in bucket: {abs_}"
+
+
 def test_lora_merge_and_name_mapping():
     peft_model = _make_peft_model()
     synced = {name: tensor for bucket in _run_update(peft_model, 1 << 30) for name, tensor in bucket}
@@ -68,6 +100,22 @@ def test_bucket_flush_respects_buffer_size():
     buckets = _run_update(_make_peft_model(), buffer_size=1)
     assert all(len(bucket) == 1 for bucket in buckets)
     assert sum(len(bucket) for bucket in buckets) == 3
+
+
+def test_lora_ipc_bucket_keeps_ab_together():
+    peft_model = _make_peft_model()
+    lora_layer = peft_model.base_model.model.proj
+    pair_size = (
+        lora_layer.lora_A["default"].weight.numel() * lora_layer.lora_A["default"].weight.element_size()
+        + lora_layer.lora_B["default"].weight.numel() * lora_layer.lora_B["default"].weight.element_size()
+    )
+    buckets = _run_lora_ipc_update(peft_model, buffer_size=pair_size)
+    _assert_buckets_have_complete_ab_pairs(buckets)
+    synced = {name: tensor for bucket in buckets for name, tensor in bucket}
+    assert set(synced) == {"proj.lora_A", "proj.lora_B"}
+    A, B = lora_layer.lora_A["default"].weight, lora_layer.lora_B["default"].weight
+    torch.testing.assert_close(synced["proj.lora_A"], A)
+    torch.testing.assert_close(synced["proj.lora_B"], B)
 
 
 if __name__ == "__main__":
