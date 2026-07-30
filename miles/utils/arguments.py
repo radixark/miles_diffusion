@@ -1613,7 +1613,7 @@ def miles_validate_args(args):
 
     is_nft = getattr(args, "loss_type", None) in ("nft", "diffusion_nft")
     if is_nft:
-        # DiffusionNFT selects its rollout-to-train-pair expansion hook.
+        # DiffusionNFT swaps the train-pair conversion, preparation, and loss formula.
         if getattr(args, "custom_expand_samples_to_train_pairs_path", None) is None:
             args.custom_expand_samples_to_train_pairs_path = (
                 "miles.ray.data_conversion_hub.nft.expand_samples_to_train_pairs"
@@ -1621,7 +1621,7 @@ def miles_validate_args(args):
         if getattr(args, "custom_loss_function_path", None) is None:
             args.custom_loss_function_path = "miles.backends.fsdp_utils.loss_hub.nft.nft_loss_formula"
         if getattr(args, "custom_prepare_train_batch_path", None) is None:
-            args.custom_prepare_train_batch_path = "miles.backends.fsdp_utils.loss_hub.prepare.prepare_nft_batch"
+            args.custom_prepare_train_batch_path = "miles.backends.fsdp_utils.loss_hub.nft.prepare_nft_batch"
         if (
             getattr(args, "diffusion_sde_type", "sde") == "sde"
             and float(getattr(args, "diffusion_noise_level", 0.7) or 0.0) == 0.0

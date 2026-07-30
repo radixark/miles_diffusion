@@ -35,7 +35,7 @@ from .diffusion_update_weight_utils import (
     DiffusionUpdateWeightFromTensorLoRAIPC,
 )
 from .ema import EmaShadow, resolve_ema_kwargs
-from .loss_hub import DiffusionLossContext, resolve_loss_formula_fn, resolve_prepare_fn
+from .loss_hub import DiffusionLossContext, flow_grpo_loss_formula, prepare_flow_grpo_batch
 from .lr_scheduler import get_lr_scheduler
 from .metrics import new_metric_buffer
 from .parallel import create_fsdp_parallel_state
@@ -172,16 +172,20 @@ class FSDPTrainRayActor(TrainRayActor):
         else:
             self.model = torch.nn.ModuleDict(self.models)
 
-        from miles.utils.misc import load_function
-
         self.sde_backend = load_function(args.sde_step_backend_path)(
             self.scheduler,
             sde_timestep_divisor=self.train_pipeline_config.sde_timestep_divisor,
         )
 
         # Replaceable parts (defaults = Flow-GRPO). DiT forward stays in this actor.
-        self.prepare_fn = resolve_prepare_fn(args)
-        self.loss_formula_fn = resolve_loss_formula_fn(args)
+        self.custom_prepare_train_batch_func = (
+            load_function(args.custom_prepare_train_batch_path)
+            if args.custom_prepare_train_batch_path is not None
+            else None
+        )
+        self.custom_loss_formula_func = (
+            load_function(args.custom_loss_function_path) if args.custom_loss_function_path is not None else None
+        )
 
         if args.optimizer == "adam":
             self.optimizer = torch.optim.AdamW(
@@ -355,8 +359,8 @@ class FSDPTrainRayActor(TrainRayActor):
     def _train_core(self, rollout_id: int, rollout_data) -> None:
         """Shared train loop: schedule → prepare → DiT forward → loss formula → backward.
 
-        ``prepare_fn`` / ``loss_formula_fn`` are the replaceable parts (defaults =
-        Flow-GRPO). DiT forward always runs here.
+        ``prepare_fn`` and the custom loss hook are replaceable; Flow-GRPO is the
+        default loss. DiT forward always runs here.
         """
         device = torch.cuda.current_device()
 
@@ -406,7 +410,8 @@ class FSDPTrainRayActor(TrainRayActor):
             microbatch_schedule=microbatch_schedule,
             parallel_state=self.parallel_state,
         )
-        if getattr(self.loss_formula_fn, "requires_sample_aligned_windows", False):
+        loss_formula_func = self.custom_loss_formula_func or flow_grpo_loss_formula
+        if getattr(loss_formula_func, "requires_sample_aligned_windows", False):
             validate_sample_aligned_windows(
                 train_pairs=train_pairs,
                 microbatch_schedule=microbatch_schedule,
@@ -514,12 +519,15 @@ class FSDPTrainRayActor(TrainRayActor):
     ) -> torch.Tensor | None:
         """Shared micro-batch path: prepare → DiT forward → [ref] → loss formula.
 
-        Only ``prepare_fn`` / ``loss_formula_fn`` are swappable; DiT forward stays here.
+        Only ``prepare_fn`` and the custom loss hook are swappable; DiT forward stays here.
         """
         if not batch:
             raise ValueError("_forward_train_pair_batch received empty batch")
 
-        prepared = self.prepare_fn(ctx, batch, pad_to_len=pad_to_len)
+        if self.custom_prepare_train_batch_func is not None:
+            prepared = self.custom_prepare_train_batch_func(ctx, batch, pad_to_len=pad_to_len)
+        else:
+            prepared = prepare_flow_grpo_batch(ctx, batch, pad_to_len=pad_to_len)
         train_pipeline_config = self.train_pipeline_config
         forward_dtype = self._forward_dtype
 
@@ -554,7 +562,18 @@ class FSDPTrainRayActor(TrainRayActor):
             with torch.no_grad(), ref_ctx:
                 ref_pred = _compute_noise_pred().detach()
 
-        return self.loss_formula_fn(
+        if self.custom_loss_formula_func is not None:
+            return self.custom_loss_formula_func(
+                ctx,
+                batch,
+                prepared,
+                new_pred=new_pred,
+                ref_pred=ref_pred,
+                metrics=metrics,
+                write_old_log_prob=write_old_log_prob,
+                old_log_prob_from_new=old_log_prob_from_new,
+            )
+        return flow_grpo_loss_formula(
             ctx,
             batch,
             prepared,

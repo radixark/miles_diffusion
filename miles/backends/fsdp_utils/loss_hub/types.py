@@ -1,4 +1,4 @@
-"""Shared handles passed into diffusion prepare / loss-formula hooks."""
+"""Shared data types passed into diffusion prepare and loss hooks."""
 
 from __future__ import annotations
 
