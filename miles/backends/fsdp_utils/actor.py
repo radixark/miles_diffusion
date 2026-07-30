@@ -1,7 +1,7 @@
 import logging
 import warnings
 from argparse import Namespace
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 
 import ray
 import torch
@@ -308,16 +308,15 @@ class FSDPTrainRayActor(TrainRayActor):
             if dist.get_rank() == 0:
                 ray.get(self.rollout_manager.clear_num_new_engines.remote())
 
-        if self.ema_shadow is not None:
-            delta = self.ema_shadow.update()
+        ema_shadow = self.ema_shadow
+        if ema_shadow is not None:
+            delta = ema_shadow.update()
             if dist.get_rank() == 0:
-                logger.info("EMA shadow updated (decay=%.4f step=%d)", delta, self.ema_shadow.step)
-            if self.args.ema_rollout_policy == "ema":
-                with self.ema_shadow.swap_in():
-                    self.weight_updater.update_weights()
-            else:
-                self.weight_updater.update_weights()
-        else:
+                logger.info("EMA shadow updated (decay=%.4f step=%d)", delta, ema_shadow.step)
+        rollout_weight_context = (
+            ema_shadow.swap_in() if ema_shadow is not None and self.args.ema_rollout_policy == "ema" else nullcontext()
+        )
+        with rollout_weight_context:
             self.weight_updater.update_weights()
         clear_memory()
 
@@ -403,8 +402,7 @@ class FSDPTrainRayActor(TrainRayActor):
             microbatch_schedule=microbatch_schedule,
             parallel_state=self.parallel_state,
         )
-        loss_formula_func = self.custom_loss_formula_func or flow_grpo_loss_formula
-        if getattr(loss_formula_func, "requires_sample_aligned_windows", False):
+        if self.args.loss_type == "nft":
             validate_sample_aligned_windows(
                 train_pairs=train_pairs,
                 microbatch_schedule=microbatch_schedule,
@@ -509,9 +507,6 @@ class FSDPTrainRayActor(TrainRayActor):
         old_log_prob_from_new: bool = False,
     ) -> torch.Tensor | None:
         """Run one prepared diffusion micro-batch."""
-        if not batch:
-            raise ValueError("_forward_train_pair_batch received empty batch")
-
         if self.custom_prepare_train_batch_func is not None:
             prepared = self.custom_prepare_train_batch_func(ctx, batch, pad_to_len=pad_to_len)
         else:

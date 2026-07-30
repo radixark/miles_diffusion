@@ -9,8 +9,7 @@ from argparse import Namespace
 import torch
 
 from miles.backends.fsdp_utils.ema import EmaShadow
-from miles.backends.fsdp_utils.loss_hub.nft import corrupt, nft_loss_formula, nft_r_from_advantages
-from miles.backends.fsdp_utils.metrics import new_metric_buffer
+from miles.backends.fsdp_utils.loss_hub.nft import corrupt, nft_r_from_advantages
 from miles.ray.data_conversion_hub.nft import expand_samples_to_train_pairs, resolve_nft_sigmas
 from miles.utils.types import Sample
 
@@ -75,22 +74,6 @@ class TestNftHooks:
         assert out["train_data"][0]["x0"] is out["train_data"][1]["x0"]
         assert out["train_data"][0]["advantage"] == rewards[0]
         assert out["train_data"][2]["advantage"] == rewards[1]
-
-    def test_formula_write_old_log_prob_is_noop(self):
-        metrics = new_metric_buffer(None, torch.device("cpu"), ())
-        loss = nft_loss_formula(
-            None,  # type: ignore[arg-type]
-            [],
-            None,  # type: ignore[arg-type]
-            new_pred=None,  # type: ignore[arg-type]
-            ref_pred=None,
-            metrics=metrics,
-            write_old_log_prob=True,
-        )
-        assert loss is None
-
-    def test_formula_declares_window_attr(self):
-        assert nft_loss_formula.requires_sample_aligned_windows is True
 
 
 class TestEmaShadow:

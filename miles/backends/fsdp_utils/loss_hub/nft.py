@@ -5,6 +5,7 @@ from __future__ import annotations
 import torch
 
 from miles.backends.fsdp_utils.loss_hub.types import DiffusionLossContext, PreparedBatch
+from miles.backends.fsdp_utils.loss_hub.utils import cast_cond_to_dtype
 from miles.utils.metric_buffer import MetricBuffer
 
 
@@ -17,16 +18,6 @@ def corrupt(x0: torch.Tensor, t: torch.Tensor, eps: torch.Tensor) -> torch.Tenso
     while t.ndim < x0.ndim:
         t = t.unsqueeze(-1)
     return (1.0 - t) * x0 + t * eps
-
-
-def _cast_cond_to_dtype(cond: dict, dtype: torch.dtype) -> dict:
-    out = {}
-    for key, value in cond.items():
-        if isinstance(value, torch.Tensor) and value.dtype.is_floating_point:
-            out[key] = value.to(dtype=dtype)
-        else:
-            out[key] = value
-    return out
 
 
 def prepare_nft_batch(
@@ -47,7 +38,7 @@ def prepare_nft_batch(
 
     component_name, model = next(iter(ctx.models.items()))
     pos_list = [config.prepare_cond_kwargs(batch[i]["denoising_env"].pos_cond_kwargs, device) for i in range(bsz)]
-    pos_cond = _cast_cond_to_dtype(
+    pos_cond = cast_cond_to_dtype(
         config.collate_cond_for_sample_batch(pos_list, device, pad_to_len=pad_to_len),
         ctx.forward_dtype,
     )
@@ -126,12 +117,8 @@ def nft_loss_formula(
     metrics: MetricBuffer,
     write_old_log_prob: bool = False,
     old_log_prob_from_new: bool = False,
-) -> torch.Tensor | None:
+) -> torch.Tensor:
     """Dual-policy x0-MSE. Actor must supply ``ref_pred`` (EMA / LoRA-base)."""
-    if write_old_log_prob:
-        return None
-    if old_log_prob_from_new:
-        raise ValueError("DiffusionNFT has no PPO log-prob; old_log_prob_from_new is unsupported")
     if ref_pred is None:
         raise ValueError("NFT loss formula requires a reference prediction from the actor")
 
@@ -177,6 +164,3 @@ def nft_loss_formula(
         metrics.emit_mean("adv_abs_mean", total=prepared.advantage.abs().sum(), count=bsz)
 
     return loss_sum
-
-
-nft_loss_formula.requires_sample_aligned_windows = True

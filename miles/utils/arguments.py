@@ -146,8 +146,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help=(
                     "Which reference weights to use for the no-grad DiT forward. "
-                    "Auto: lora_base when --diffusion-kl-beta > 0; for --loss-type nft, "
-                    "ema if --ema-shadow else lora_base. Explicit values skip auto inference."
+                    "Auto: lora_base when --diffusion-kl-beta > 0 and ema for --loss-type nft. "
+                    "Explicit values skip auto inference."
                 ),
             )
             parser.add_argument(
@@ -1483,12 +1483,10 @@ def set_default_diffusion_args(args) -> None:
             args.custom_prepare_train_batch_path = "miles.backends.fsdp_utils.loss_hub.nft.prepare_nft_batch"
         if args.custom_loss_function_path is None:
             args.custom_loss_function_path = "miles.backends.fsdp_utils.loss_hub.nft.nft_loss_formula"
-        if args.diffusion_sde_type == "sde" and args.diffusion_noise_level == 0:
-            args.diffusion_sde_type = "ode"
 
     if args.ref_mode is None:
         if is_nft:
-            args.ref_mode = "ema" if args.ema_shadow else "lora_base"
+            args.ref_mode = "ema"
         elif args.diffusion_kl_beta > 0:
             args.ref_mode = "lora_base"
         else:
@@ -1589,6 +1587,8 @@ def miles_validate_args(args):
 
     is_nft = args.loss_type == "nft"
     if is_nft:
+        if args.diffusion_noise_level == 0 and args.diffusion_sde_type != "ode":
+            raise ValueError("--loss-type nft with --diffusion-noise-level 0 requires --diffusion-sde-type ode")
         if args.diffusion_nft_beta <= 0:
             raise ValueError(f"--diffusion-nft-beta must be > 0, got {args.diffusion_nft_beta}")
         if args.diffusion_nft_adv_clip_max <= 0:

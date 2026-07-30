@@ -5,19 +5,10 @@ from __future__ import annotations
 import torch
 
 from miles.backends.fsdp_utils.loss_hub.types import DiffusionLossContext, PreparedBatch
+from miles.backends.fsdp_utils.loss_hub.utils import cast_cond_to_dtype
 from miles.backends.fsdp_utils.metrics import record_rollout_train_abs_diff
 from miles.utils.metric_buffer import MetricBuffer
 from miles.utils.train_data_utils import stack_train_pair_rollout_debug
-
-
-def _cast_cond_to_dtype(cond: dict, dtype: torch.dtype) -> dict:
-    out = {}
-    for key, value in cond.items():
-        if isinstance(value, torch.Tensor) and value.dtype.is_floating_point:
-            out[key] = value.to(dtype=dtype)
-        else:
-            out[key] = value
-    return out
 
 
 def _stack_pair_field(batch: list[dict], key: str, device: torch.device) -> torch.Tensor:
@@ -86,17 +77,17 @@ def prepare_flow_grpo_batch(
     cfg_batching = use_cfg and bool(args.fsdp_cfg_batching)
     joint_cond = pos_cond = neg_cond = None
     if cfg_batching:
-        joint_cond = _cast_cond_to_dtype(
+        joint_cond = cast_cond_to_dtype(
             config.collate_cond_for_sample_batch(pos_list + neg_list, device, pad_to_len=pad_to_len),
             ctx.forward_dtype,
         )
     else:
-        pos_cond = _cast_cond_to_dtype(
+        pos_cond = cast_cond_to_dtype(
             config.collate_cond_for_sample_batch(pos_list, device, pad_to_len=pad_to_len),
             ctx.forward_dtype,
         )
         if use_cfg and neg_list is not None:
-            neg_cond = _cast_cond_to_dtype(
+            neg_cond = cast_cond_to_dtype(
                 config.collate_cond_for_sample_batch(neg_list, device, pad_to_len=pad_to_len),
                 ctx.forward_dtype,
             )
