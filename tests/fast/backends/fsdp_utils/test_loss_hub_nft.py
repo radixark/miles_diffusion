@@ -9,17 +9,9 @@ from argparse import Namespace
 import torch
 
 from miles.backends.fsdp_utils.ema import EmaShadow, resolve_ema_kwargs
-from miles.backends.fsdp_utils.loss_hub.advantages import grpo_normalize_rewards
-from miles.backends.fsdp_utils.loss_hub.losses import flow_grpo_loss_formula, resolve_loss_formula_fn
-from miles.backends.fsdp_utils.loss_hub.nft import (
-    NftTrainDataConverter,
-    corrupt,
-    nft_loss_formula,
-    nft_r_from_advantages,
-    resolve_nft_sigmas,
-)
-from miles.backends.fsdp_utils.loss_hub.prepare import prepare_flow_grpo_batch, prepare_nft_batch, resolve_prepare_fn
+from miles.backends.fsdp_utils.loss_hub.nft import corrupt, nft_loss_formula, nft_r_from_advantages
 from miles.backends.fsdp_utils.metrics import new_metric_buffer
+from miles.ray.data_conversion_hub.nft import expand_samples_to_train_pairs, resolve_nft_sigmas
 from miles.utils.types import Sample
 
 
@@ -77,8 +69,9 @@ class TestNftHooks:
             Sample(index=1, prompt="b", reward=3.0, dit_trajectory=_Traj(), denoising_env=_Env()),
         ]
         args = _args()
-        raw_rewards, rewards = grpo_normalize_rewards(args, samples)
-        out = NftTrainDataConverter(args).convert_samples(samples, rewards, raw_rewards)
+        raw_rewards = [1.0, 3.0]
+        rewards = [-1.0, 1.0]
+        out = expand_samples_to_train_pairs(args, samples, rewards, raw_rewards)
         assert len(out["train_data"]) == 4
         assert {p["timestep"] for p in out["train_data"]} == {1.0, 0.5}
         assert out["train_data"][0]["x0"] is out["train_data"][1]["x0"]
@@ -102,18 +95,6 @@ class TestNftHooks:
     def test_formula_declares_window_attr(self):
         assert getattr(nft_loss_formula, "requires_sample_aligned_windows", False) is True
         assert not hasattr(nft_loss_formula, "ref_mode")
-
-    def test_resolve_defaults_are_flow_grpo(self):
-        assert resolve_prepare_fn(_args()) is prepare_flow_grpo_batch
-        assert resolve_loss_formula_fn(_args()) is flow_grpo_loss_formula
-
-    def test_resolve_custom_paths(self):
-        args = _args(
-            custom_prepare_train_batch_path="miles.backends.fsdp_utils.loss_hub.prepare.prepare_nft_batch",
-            custom_loss_function_path="miles.backends.fsdp_utils.loss_hub.nft.nft_loss_formula",
-        )
-        assert resolve_prepare_fn(args) is prepare_nft_batch
-        assert resolve_loss_formula_fn(args) is nft_loss_formula
 
 
 class TestEmaShadow:

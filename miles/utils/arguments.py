@@ -581,6 +581,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--custom-expand-samples-to-train-pairs-path",
+                type=str,
+                default=None,
+                help=(
+                    "Expand post-processed rollout samples into train pairs. Signature: "
+                    "`def expand_samples_to_train_pairs(args, samples, rewards, raw_rewards) -> dict`. "
+                    "Defaults to the Flow-GRPO implementation."
+                ),
+            )
+            parser.add_argument(
                 "--rollout-sample-filter-path",
                 type=str,
                 default=None,
@@ -1603,8 +1613,11 @@ def miles_validate_args(args):
 
     is_nft = getattr(args, "loss_type", None) in ("nft", "diffusion_nft")
     if is_nft:
-        # DiffusionNFT: swap prepare + loss formula; NFT converter is selected in RolloutManager.
-        # Do not overwrite --custom-convert-samples-to-train-data-path (full-convert override).
+        # DiffusionNFT selects its rollout-to-train-pair expansion hook.
+        if getattr(args, "custom_expand_samples_to_train_pairs_path", None) is None:
+            args.custom_expand_samples_to_train_pairs_path = (
+                "miles.ray.data_conversion_hub.nft.expand_samples_to_train_pairs"
+            )
         if getattr(args, "custom_loss_function_path", None) is None:
             args.custom_loss_function_path = "miles.backends.fsdp_utils.loss_hub.nft.nft_loss_formula"
         if getattr(args, "custom_prepare_train_batch_path", None) is None:

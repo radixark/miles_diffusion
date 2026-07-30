@@ -7,7 +7,7 @@ train-pair dicts):
   - FSDP preprocess hooks
 
 Trajectory unpacking for train-pair construction lives in
-``miles.utils.train_data_utils.RolloutTrainDataConverter``.
+``miles.ray.data_conversion_hub.flow_grpo.expand_samples_to_train_pairs``.
 """
 
 from __future__ import annotations

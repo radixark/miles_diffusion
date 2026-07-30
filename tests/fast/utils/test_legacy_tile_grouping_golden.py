@@ -34,7 +34,7 @@ def _refactored_grouping(cfg: dict):
     - mb_counts: {(rank, optim_step): num_micro_batches}
     """
     # Flat, sample-major train pairs tagged with their real (sample, sde-step)
-    # identity — exactly what RolloutTrainDataConverter emits, minus the heavy
+    # identity — exactly what Flow-GRPO train-pair conversion emits, minus the heavy
     # per-cell tensors (irrelevant to *grouping*).
     pairs = [
         {"sample_index": s, "sde_step": sde} for s in range(cfg["num_samples"]) for sde in cfg["sde_step_indices"]

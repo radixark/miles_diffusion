@@ -31,7 +31,8 @@ from types import SimpleNamespace
 
 import torch
 
-from miles.utils.train_data_utils import RolloutTrainDataConverter, TrainDataDPSplitter
+from miles.ray.data_conversion_hub.flow_grpo import expand_samples_to_train_pairs
+from miles.utils.train_data_utils import TrainDataDPSplitter
 
 
 # --------------------------------------------------------------------------------------
@@ -115,7 +116,7 @@ def test_l2_converter_pairs_match_direct_indexing():
     rewards = [0.1, 0.2, 0.3]
     raw_rewards = [0.4, 0.5, 0.6]
 
-    out = RolloutTrainDataConverter().convert_samples(samples, rewards, raw_rewards)
+    out = expand_samples_to_train_pairs(None, samples, rewards, raw_rewards)
     pairs = out["train_data"]
 
     # count + sample-major ordering + scheduler meta from the first trajectory
@@ -156,7 +157,7 @@ def test_l2_converter_pairs_match_direct_indexing():
 def test_l2_converter_sigmas_optional():
     T, sde = 4, [0, 2]
     samples = [_mk_sample(i, T, sde, with_sigmas=False, with_debug=False) for i in range(2)]
-    out = RolloutTrainDataConverter().convert_samples(samples, [1.0, 2.0], [1.0, 2.0])
+    out = expand_samples_to_train_pairs(None, samples, [1.0, 2.0], [1.0, 2.0])
     assert "scheduler_sigmas" not in out
     assert len(out["train_data"]) == 2 * len(sde)
 
@@ -167,7 +168,7 @@ def test_l2_converter_rejects_mismatched_scheduler_timesteps():
     samples = [_mk_sample(i, 6, [1, 3, 4]) for i in range(3)]
     samples[2].dit_trajectory.timesteps = samples[2].dit_trajectory.timesteps + 1.0  # tamper
     try:
-        RolloutTrainDataConverter().convert_samples(samples, [0.1, 0.2, 0.3], [0.4, 0.5, 0.6])
+        expand_samples_to_train_pairs(None, samples, [0.1, 0.2, 0.3], [0.4, 0.5, 0.6])
     except ValueError:
         pass
     else:
@@ -178,7 +179,7 @@ def test_l2_converter_rejects_mismatched_scheduler_sigmas():
     samples = [_mk_sample(i, 4, [0, 2]) for i in range(2)]  # with_sigmas=True
     samples[1].dit_trajectory.sigmas = samples[1].dit_trajectory.sigmas + 1.0  # tamper
     try:
-        RolloutTrainDataConverter().convert_samples(samples, [1.0, 2.0], [1.0, 2.0])
+        expand_samples_to_train_pairs(None, samples, [1.0, 2.0], [1.0, 2.0])
     except ValueError:
         pass
     else:
