@@ -79,5 +79,12 @@ RUN git clone https://github.com/radixark/miles_diffusion.git /root/miles_diffus
 # =========================================== Pre-download ===============================================
 
 # Pre-download PaddleOCR (en) det+rec+cls models so the OCR-reward actors don't
-# race-download them from bcebos at runtime. 
+# race-download them from bcebos at runtime.
 RUN python -c "from paddleocr import PaddleOCR; PaddleOCR(use_angle_cls=False, lang='en', use_gpu=False, show_log=False)"
+
+# ========================================= Sanity checks ================================================
+
+# Fail the build if any requirements.txt entry ended up missing or stomped by a
+# later --no-deps install, or if the top-level package no longer imports.
+COPY docker/check_requirements.py /tmp/check_requirements.py
+RUN python /tmp/check_requirements.py /tmp/requirements.txt && python -c "import miles"

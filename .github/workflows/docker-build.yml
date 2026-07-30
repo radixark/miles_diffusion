@@ -25,6 +25,7 @@ on:
       - main
     paths:
       - 'docker/Dockerfile'
+      - 'docker/check_requirements.py'
       - 'requirements.txt'
 
 concurrency:
