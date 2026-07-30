@@ -368,8 +368,7 @@ class RolloutManager:
         """
         Convert inference generated samples to training data.
         """
-        # Full override (Miles-LLM style): covers this entire method, including
-        # reward post-process. Algorithm converters (e.g. NFT) use the path below.
+        # The full override also replaces reward post-processing.
         if self.custom_convert_samples_to_train_data_func is not None:
             return self.custom_convert_samples_to_train_data_func(self.args, samples)
 
@@ -381,8 +380,6 @@ class RolloutManager:
         raw_t = torch.tensor(raw_rewards, dtype=torch.float)
         norm_t = torch.tensor(rewards, dtype=torch.float)
 
-        # Emit reward distribution stats (raw + normalized) to stdout + wandb.
-        # Runs for both default SDE-pair expand and NFT converter.
         reward_stats = {
             **_reward_stats_dict(raw_t, "rollout/reward/raw_"),
             **_reward_stats_dict(norm_t, "rollout/reward/norm_"),

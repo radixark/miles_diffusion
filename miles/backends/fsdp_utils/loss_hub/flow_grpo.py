@@ -1,7 +1,4 @@
-"""Flow-GRPO batch preparation and loss formula.
-
-The actor owns the DiT forward between these two hooks.
-"""
+"""Flow-GRPO batch preparation and loss formula."""
 
 from __future__ import annotations
 

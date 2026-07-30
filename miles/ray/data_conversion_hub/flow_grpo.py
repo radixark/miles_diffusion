@@ -26,8 +26,6 @@ def _expand_samples_to_train_pairs(
     device = torch.device("cpu")
     train_data: list[dict[str, Any]] = []
     first_traj = samples[0].dit_trajectory
-    # Scheduler meta is taken from sample 0 and returned once for the whole batch;
-    # the per-sample loop below verifies every sample actually shares it.
     scheduler_meta: dict[str, torch.Tensor] = {"scheduler_timesteps": first_traj.timesteps.detach().cpu().float()}
 
     if first_traj.sigmas is not None:
@@ -35,8 +33,6 @@ def _expand_samples_to_train_pairs(
 
     for sample, rew, raw_r in zip(samples, rewards, raw_rewards, strict=True):
         traj, denoising_env, rollout_log_probs = _sample_required_inputs(sample)
-        # Nail down the shared-scheduler-meta assumption: every sample must carry the
-        # same timesteps/sigmas as sample 0, since one scheduler_meta is returned for all.
         if not torch.equal(traj.timesteps.detach().cpu().float(), scheduler_meta["scheduler_timesteps"]):
             raise ValueError(
                 f"sample {sample.index} has different scheduler_timesteps than sample 0; "
@@ -126,8 +122,7 @@ def _build_per_timestep_features(
     latents = all_latents[:-1]
     next_latents = all_latents[1:]
     timesteps = traj.timesteps.to(device, dtype=torch.float32)
-    # The step after the last has no recorded timestep -> terminal (σ=0, timestep 0),
-    # so the SDE step reads σ_next from the actual next rollout timestep, not a lookup.
+    # The terminal next timestep is zero.
     next_timesteps = torch.cat([timesteps[1:], timesteps.new_zeros(1)])
 
     sde_idx = (sample.train_metadata or {}).get("sde_step_indices")

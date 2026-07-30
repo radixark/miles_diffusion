@@ -1,11 +1,4 @@
-"""DiffusionNFT batch preparation, training math, and loss formula.
-
-The actor owns the DiT forward (+ EMA/LoRA-base reference forward via
-``--ref-mode``) between the prepare and loss hooks.
-
-Reward / advantage normalisation stays in ``RolloutManager._post_process_rewards``.
-Rollout-to-train conversion lives in ``miles.ray.data_conversion_hub.nft``.
-"""
+"""DiffusionNFT batch preparation and loss formula."""
 
 from __future__ import annotations
 
@@ -13,10 +6,6 @@ import torch
 
 from miles.backends.fsdp_utils.loss_hub.types import DiffusionLossContext, PreparedBatch
 from miles.utils.metric_buffer import MetricBuffer
-
-# ---------------------------------------------------------------------------
-# Forward-process math and batch preparation
-# ---------------------------------------------------------------------------
 
 
 def sample_noise(like: torch.Tensor, *, generator: torch.Generator | None = None) -> torch.Tensor:
@@ -63,7 +52,7 @@ def prepare_nft_batch(
         ctx.forward_dtype,
     )
 
-    num_train_timesteps = int(getattr(ctx.scheduler.config, "num_train_timesteps", 1000))
+    num_train_timesteps = ctx.scheduler.config.num_train_timesteps
     if config.needs_timestep_scaling:
         timesteps_for_model = t.to(dtype=torch.float32)
     else:
@@ -127,11 +116,6 @@ def nft_branch_losses(
     return pos_loss, neg_loss
 
 
-# ---------------------------------------------------------------------------
-# Loss formula (receives actor's new_pred / ref_pred)
-# ---------------------------------------------------------------------------
-
-
 def nft_loss_formula(
     ctx: DiffusionLossContext,
     batch: list[dict],
@@ -152,11 +136,9 @@ def nft_loss_formula(
         raise ValueError("NFT loss formula requires a reference prediction from the actor")
 
     args = ctx.args
-    beta = float(getattr(args, "diffusion_nft_beta", 1.0) or 1.0)
-    if beta <= 0:
-        raise ValueError(f"--diffusion-nft-beta must be > 0, got {beta}")
-    adv_clip_max = float(getattr(args, "diffusion_nft_adv_clip_max", 5.0) or 5.0)
-    use_adaptive = bool(getattr(args, "diffusion_nft_adaptive_weight", True))
+    beta = args.diffusion_nft_beta
+    adv_clip_max = args.diffusion_nft_adv_clip_max
+    use_adaptive = args.diffusion_nft_adaptive_weight
 
     x0 = prepared.extras["x0"]
     t = prepared.timesteps
@@ -176,11 +158,11 @@ def nft_loss_formula(
     loss_sum = per_pair.sum()
 
     with torch.no_grad():
-        num_timesteps = int(batch[0].get("nft_num_timesteps", 0) or 0)
+        num_timesteps = batch[0]["nft_num_timesteps"]
         per_pair_total = per_pair.sum()
         bsz = len(batch)
-        metrics.emit_mean("loss", total=per_pair_total * float(max(num_timesteps, 1)), count=bsz)
-        metrics.emit_mean("nft_loss", total=per_pair_total * float(max(num_timesteps, 1)), count=bsz)
+        metrics.emit_mean("loss", total=per_pair_total * num_timesteps, count=bsz)
+        metrics.emit_mean("nft_loss", total=per_pair_total * num_timesteps, count=bsz)
         metrics.emit_mean("nft_loss_per_pair", total=per_pair_total, count=bsz)
         metrics.emit_mean("nft_r_mean", total=r.sum(), count=bsz)
         metrics.emit_mean("nft_pos_loss", total=pos_loss.sum(), count=bsz)
@@ -197,6 +179,4 @@ def nft_loss_formula(
     return loss_sum
 
 
-# Same-sample K pairs must stay in one optimizer window.
-# Reference forward is selected via --ref-mode (auto-filled for --loss-type nft).
 nft_loss_formula.requires_sample_aligned_windows = True

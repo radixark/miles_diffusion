@@ -7,10 +7,6 @@ import torch
 
 from miles.utils.types import Sample
 
-# ---------------------------------------------------------------------------
-# Converter (K-expanded pairs; rewards already post-processed by rollout)
-# ---------------------------------------------------------------------------
-
 
 def _clean_x0_from_sample(sample: Sample) -> torch.Tensor:
     traj = sample.dit_trajectory
@@ -22,19 +18,12 @@ def _clean_x0_from_sample(sample: Sample) -> torch.Tensor:
     return traj.latents[-1].detach().cpu().float()
 
 
-# TODO: remove and replace sigmas by rollout results
 def resolve_nft_sigmas(
-    sigmas_or_scheduler,
+    sigmas: torch.Tensor,
     *,
     training_timestep_fraction: float = 0.99,
 ) -> torch.Tensor:
-    if torch.is_tensor(sigmas_or_scheduler):
-        ts = sigmas_or_scheduler.detach().float().flatten()
-    else:
-        raw = getattr(sigmas_or_scheduler, "sigmas", None)
-        if raw is None:
-            raise ValueError("NFT needs scheduler.sigmas (or a sigma tensor)")
-        ts = raw.detach().float().flatten()
+    ts = sigmas.detach().float().flatten()
     if ts.numel() == 0:
         raise ValueError("scheduler.sigmas is empty")
     if ts.numel() > 1 and torch.isclose(ts[-1], torch.zeros((), dtype=ts.dtype), atol=1e-8):
@@ -67,20 +56,19 @@ def expand_samples_to_train_pairs(
         raise ValueError("sample 0 missing dit_trajectory")
     if first_traj.timesteps is None:
         raise ValueError("NFT needs dit_trajectory.timesteps from rollout")
-    num_train_timesteps = int(getattr(args, "diffusion_num_train_timesteps", 1000) or 1000)
     if first_traj.sigmas is not None:
         scheduler_sigmas = first_traj.sigmas.detach().cpu().float()
     else:
-        # Match scheduler_meta_from_rollout when sglang omits sigmas (e.g. ODE rollout).
         ts = first_traj.timesteps.detach().cpu().float()
-        scheduler_sigmas = torch.cat([ts / float(num_train_timesteps), ts.new_zeros(1)])
+        scheduler_sigmas = torch.cat([ts / 1000.0, ts.new_zeros(1)])
     scheduler_meta = {
         "scheduler_timesteps": first_traj.timesteps.detach().cpu().float(),
         "scheduler_sigmas": scheduler_sigmas,
     }
-    frac = float(getattr(args, "diffusion_nft_timestep_fraction", 0.99) or 0.99)
-    shuffle_t = bool(getattr(args, "diffusion_nft_shuffle_timesteps", True))
-    sigmas = resolve_nft_sigmas(scheduler_meta["scheduler_sigmas"], training_timestep_fraction=frac)
+    sigmas = resolve_nft_sigmas(
+        scheduler_meta["scheduler_sigmas"],
+        training_timestep_fraction=args.diffusion_nft_timestep_fraction,
+    )
     num_timesteps = int(sigmas.numel())
 
     train_data: list[dict[str, Any]] = []
@@ -88,7 +76,7 @@ def expand_samples_to_train_pairs(
         if sample.denoising_env is None:
             raise ValueError(f"sample {sample.index} missing denoising_env")
         x0 = _clean_x0_from_sample(sample)
-        sample_sigmas = sigmas[torch.randperm(num_timesteps)] if shuffle_t else sigmas
+        sample_sigmas = sigmas[torch.randperm(num_timesteps)] if args.diffusion_nft_shuffle_timesteps else sigmas
         for t in sample_sigmas.tolist():
             train_data.append(
                 {

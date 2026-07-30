@@ -1,69 +1,21 @@
-"""EMA shadow of trainable parameters for diffusion FSDP training.
-
-Algorithms that need a slow-moving reference / sampling policy ``pi_old`` share
-``EmaShadow``: tracks all ``requires_grad`` parameters (LoRA adapters or full
-finetune), plus ``swap_in()`` for temporary in-place weight exchange.
-
-Lifecycle (actor / weight sync)::
-
-    ema.update()
-    with ema.swap_in():
-        weight_updater.update_weights()
-
-Loss-side reference forward (via ``DiffusionLossContext.ema_shadow``)::
-
-    with torch.no_grad(), ctx.ema_shadow.swap_in():
-        old_pred = forward(...)
-
-Works with FSDP2 DTensor shards (per-rank local swap) and colocate CPU offload.
-
-Checkpointing (intentionally not wired yet)
--------------------------------------------
-``shadow`` / ``step`` are **not** saved or restored by ``fsdp_utils.checkpoint``.
-On resume the actor rebuilds EMA from the loaded trainable weights, so ``pi_old``
-cold-starts (decay schedule restarts at step 0). Fine for single-shot runs;
-wrong for mid-run resume that must match UniRL's slow ``pi_old``.
-
-Wiring it later is non-trivial: buffers are per-rank plain clones (not in the
-FSDP/DCP model state), must stay aligned with the trainable-param order, and
-must not be saved while ``swap_in()`` is active. Prefer a side file such as
-``iter_*/ema.pt`` over stuffing into the DCP model dict.
-"""
+"""EMA shadow of trainable parameters for diffusion FSDP training."""
 
 from __future__ import annotations
 
-from argparse import Namespace
 from collections.abc import Iterable
 from contextlib import contextmanager
 
 import torch
 import torch.nn as nn
+from torch.distributed.tensor import DTensor
 
 
 def _local(t: torch.Tensor) -> torch.Tensor:
-    """Local shard of a (possibly DTensor) tensor; EMA/swap is per-rank, no comm."""
-    return t._local_tensor if hasattr(t, "_local_tensor") else t
-
-
-def resolve_ema_kwargs(args: Namespace) -> dict[str, float | int]:
-    """Read normalized ``ema_*`` fields from ``args`` (see ``miles_validate_args``).
-
-    Enablement (``args.ema_shadow``) and rollout policy (``args.ema_rollout_policy``)
-    are plain args — inferred/validated in ``arguments.py``, not re-wrapped here.
-    """
-    return {
-        "decay": float(getattr(args, "ema_decay", 0.001)),
-        "uprate": float(getattr(args, "ema_uprate", 0.001)),
-        "uphold": float(getattr(args, "ema_uphold", 0.5)),
-        "flat_steps": int(getattr(args, "ema_flat_steps", 0)),
-    }
+    return t.to_local() if isinstance(t, DTensor) else t
 
 
 class EmaShadow:
-    """EMA shadow of trainable parameters (LoRA or full finetune).
-
-    Not part of the FSDP checkpoint payload today (see module docstring).
-    """
+    """EMA shadow of trainable parameters."""
 
     def __init__(
         self,

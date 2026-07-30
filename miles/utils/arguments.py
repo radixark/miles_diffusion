@@ -108,16 +108,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default="fsdp",
                 help="The backend for training.",
             )
-            # Diffusion GRPO training (DiffusionFSDPTrainRayActor).
-            #
-            # Rollout produces ``train_data``: a flat list of train-pair dicts (one
-            # dict = one sample × one SDE step), sample-major order before DP split.
-            # DP ranks receive contiguous pair ranges; each optimizer window covers
-            # a contiguous slice of pairs.
-            #
-            # ``--micro-batch-size`` is the number of train-pair dicts per DiT
-            # forward/backward (contiguous within the window). Gradients match
-            # mean loss over all train pairs in the window.
             parser.add_argument(
                 "--diffusion-clip-range",
                 type=float,
@@ -880,7 +870,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--loss-type",
                 type=str,
-                choices=["policy_loss", "sft_loss", "custom_loss", "nft", "diffusion_nft"],
+                choices=["policy_loss", "sft_loss", "custom_loss", "nft"],
                 default="policy_loss",
                 help=(
                     "Train objective shortcut. Diffusion default policy_loss = Flow-GRPO prepare+formula. "
@@ -921,15 +911,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="DiffusionNFT advantage clip before remap to r in [0, 1].",
             )
             parser.add_argument(
-                "--diffusion-nft-adaptive-weight",
-                action="store_true",
-                default=True,
-                help="DiffusionNFT adaptive MSE weight (default on; UniRL use_adaptive_weight).",
-            )
-            parser.add_argument(
                 "--no-diffusion-nft-adaptive-weight",
                 action="store_false",
                 dest="diffusion_nft_adaptive_weight",
+                default=True,
                 help="Disable DiffusionNFT adaptive MSE weight.",
             )
             parser.add_argument(
@@ -939,26 +924,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Fraction of rollout schedule sigmas kept for NFT loss (drop terminal 0 first).",
             )
             parser.add_argument(
-                "--diffusion-nft-shuffle-timesteps",
-                action="store_true",
-                default=True,
-                help="Shuffle NFT training timesteps per sample at convert time (default on).",
-            )
-            parser.add_argument(
                 "--no-diffusion-nft-shuffle-timesteps",
                 action="store_false",
                 dest="diffusion_nft_shuffle_timesteps",
+                default=True,
                 help="Disable NFT timestep shuffle.",
-            )
-            parser.add_argument(
-                "--diffusion-nft-ref-mode",
-                type=str,
-                choices=["ema", "base"],
-                default="ema",
-                help=(
-                    "Deprecated alias for NFT auto --ref-mode: 'ema' or 'base' (lora_base). "
-                    "Prefer --ref-mode directly."
-                ),
             )
             parser.add_argument(
                 "--advantage-estimator",
@@ -1445,6 +1415,7 @@ def parse_args(add_custom_arguments=None):
     args.rank = 0  # Primary process rank for wandb initialization
     args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
 
+    set_default_diffusion_args(args)
     miles_validate_args(args)
     sglang_validate_args(args)
 
@@ -1501,31 +1472,27 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
     return eval_datasets
 
 
-def resolve_and_validate_ref_mode(args, *, is_nft: bool, ema_enabled: bool) -> None:
-    """Infer and validate ``args.ref_mode`` (fast-fail; actor only consumes the result)."""
-    if getattr(args, "ref_mode", None) is None:
+def set_default_diffusion_args(args) -> None:
+    is_nft = args.loss_type == "nft"
+    if is_nft:
+        if args.custom_expand_samples_to_train_pairs_path is None:
+            args.custom_expand_samples_to_train_pairs_path = (
+                "miles.ray.data_conversion_hub.nft.expand_samples_to_train_pairs"
+            )
+        if args.custom_prepare_train_batch_path is None:
+            args.custom_prepare_train_batch_path = "miles.backends.fsdp_utils.loss_hub.nft.prepare_nft_batch"
+        if args.custom_loss_function_path is None:
+            args.custom_loss_function_path = "miles.backends.fsdp_utils.loss_hub.nft.nft_loss_formula"
+        if args.diffusion_sde_type == "sde" and args.diffusion_noise_level == 0:
+            args.diffusion_sde_type = "ode"
+
+    if args.ref_mode is None:
         if is_nft:
-            nft_pref = getattr(args, "diffusion_nft_ref_mode", "ema")
-            if nft_pref == "ema" and not ema_enabled:
-                logger.warning(
-                    "--loss-type nft prefers EMA ref but --ema-shadow is off; " "falling back to --ref-mode lora_base."
-                )
-                args.ref_mode = "lora_base"
-            else:
-                args.ref_mode = "ema" if nft_pref == "ema" else "lora_base"
-        elif float(getattr(args, "diffusion_kl_beta", 0.0) or 0.0) > 0:
+            args.ref_mode = "ema" if args.ema_shadow else "lora_base"
+        elif args.diffusion_kl_beta > 0:
             args.ref_mode = "lora_base"
         else:
             args.ref_mode = "none"
-
-    if is_nft and args.ref_mode == "none":
-        raise ValueError("--loss-type nft requires a reference model; set --ref-mode ema or lora_base")
-    if args.ref_mode == "ema" and not ema_enabled:
-        raise ValueError("--ref-mode ema requires --ema-shadow")
-    if args.ref_mode == "lora_base" and not args.use_lora:
-        raise ValueError("--ref-mode lora_base requires --use-lora")
-    if float(getattr(args, "diffusion_kl_beta", 0.0) or 0.0) > 0 and args.ref_mode == "none":
-        raise ValueError("--diffusion-kl-beta > 0 requires a reference model; set --ref-mode lora_base or ema")
 
 
 def miles_validate_args(args):
@@ -1600,7 +1567,7 @@ def miles_validate_args(args):
         if args.use_lora and args.lora_target_modules is None:
             args.lora_target_modules = list(cfg_cls.lora_target_modules)
 
-    if getattr(args, "lora_ipc_weight_sync", False):
+    if args.lora_ipc_weight_sync:
         if not args.use_lora:
             raise ValueError("--lora-ipc-weight-sync requires --use-lora")
         if not args.lora_target_modules:
@@ -1609,41 +1576,40 @@ def miles_validate_args(args):
                 "set --diffusion-model (for per-model defaults) or --lora-target-modules."
             )
 
-    ema_enabled = bool(getattr(args, "ema_shadow", False))
+    if not 0.0 <= args.ema_decay <= 1.0:
+        raise ValueError(f"--ema-decay must be in [0, 1], got {args.ema_decay}")
+    if args.ema_uprate < 0.0:
+        raise ValueError(f"--ema-uprate must be non-negative, got {args.ema_uprate}")
+    if not 0.0 <= args.ema_uphold <= 1.0:
+        raise ValueError(f"--ema-uphold must be in [0, 1], got {args.ema_uphold}")
+    if args.ema_flat_steps < 0:
+        raise ValueError(f"--ema-flat-steps must be non-negative, got {args.ema_flat_steps}")
+    if args.ema_rollout_policy == "ema" and not args.ema_shadow:
+        raise ValueError("--ema-rollout-policy ema requires --ema-shadow")
 
-    is_nft = getattr(args, "loss_type", None) in ("nft", "diffusion_nft")
+    is_nft = args.loss_type == "nft"
     if is_nft:
-        # DiffusionNFT swaps the train-pair conversion, preparation, and loss formula.
-        if getattr(args, "custom_expand_samples_to_train_pairs_path", None) is None:
-            args.custom_expand_samples_to_train_pairs_path = (
-                "miles.ray.data_conversion_hub.nft.expand_samples_to_train_pairs"
+        if args.diffusion_nft_beta <= 0:
+            raise ValueError(f"--diffusion-nft-beta must be > 0, got {args.diffusion_nft_beta}")
+        if args.diffusion_nft_adv_clip_max <= 0:
+            raise ValueError(f"--diffusion-nft-adv-clip-max must be > 0, got {args.diffusion_nft_adv_clip_max}")
+        if not 0.0 < args.diffusion_nft_timestep_fraction <= 1.0:
+            raise ValueError(
+                f"--diffusion-nft-timestep-fraction must be in (0, 1], got {args.diffusion_nft_timestep_fraction}"
             )
-        if getattr(args, "custom_loss_function_path", None) is None:
-            args.custom_loss_function_path = "miles.backends.fsdp_utils.loss_hub.nft.nft_loss_formula"
-        if getattr(args, "custom_prepare_train_batch_path", None) is None:
-            args.custom_prepare_train_batch_path = "miles.backends.fsdp_utils.loss_hub.nft.prepare_nft_batch"
-        if (
-            getattr(args, "diffusion_sde_type", "sde") == "sde"
-            and float(getattr(args, "diffusion_noise_level", 0.7) or 0.0) == 0.0
-        ):
-            logger.info(
-                "NFT: auto-setting --diffusion-sde-type ode because noise_level=0 "
-                "(forward-process needs clean x0 only)."
-            )
-            args.diffusion_sde_type = "ode"
-        beta = float(getattr(args, "diffusion_nft_beta", 1.0) or 1.0)
-        if beta <= 0:
-            raise ValueError(f"--diffusion-nft-beta must be > 0, got {beta}")
-        frac = float(getattr(args, "diffusion_nft_timestep_fraction", 0.99) or 0.99)
-        if not (0.0 < frac <= 1.0):
-            raise ValueError(f"--diffusion-nft-timestep-fraction must be in (0, 1], got {frac}")
         if args.diffusion_recompute_old_log_prob:
             raise ValueError(
                 "--diffusion-recompute-old-log-prob is only supported for policy_loss / Flow-GRPO, not NFT"
             )
 
-    # Resolve --ref-mode once here (fast-fail); actor only consumes the final value.
-    resolve_and_validate_ref_mode(args, is_nft=is_nft, ema_enabled=ema_enabled)
+    if is_nft and args.ref_mode == "none":
+        raise ValueError("--loss-type nft requires a reference model; set --ref-mode ema or lora_base")
+    if args.ref_mode == "ema" and not args.ema_shadow:
+        raise ValueError("--ref-mode ema requires --ema-shadow")
+    if args.ref_mode == "lora_base" and not args.use_lora:
+        raise ValueError("--ref-mode lora_base requires --use-lora")
+    if args.diffusion_kl_beta > 0 and args.ref_mode == "none":
+        raise ValueError("--diffusion-kl-beta > 0 requires a reference model; set --ref-mode lora_base or ema")
 
     if args.dump_details is not None:
         args.save_debug_rollout_data = f"{args.dump_details}/rollout_data/{{rollout_id}}.pt"
@@ -1722,8 +1688,7 @@ def miles_validate_args(args):
         sde_step_backends = {
             "sde": "miles.backends.fsdp_utils.sde_step_backend.DiffusersSdeStepBackend",
             "cps": "miles.backends.fsdp_utils.sde_step_backend.CpsSdeStepBackend",
-            # ODE rollouts (DiffusionNFT) do not score logπ on the train path; Diffusers backend
-            # is a harmless placeholder so actor init can still construct sde_backend.
+            # NFT does not use the placeholder backend.
             "ode": "miles.backends.fsdp_utils.sde_step_backend.DiffusersSdeStepBackend",
         }
         if args.diffusion_sde_type not in sde_step_backends:

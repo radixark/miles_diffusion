@@ -12,31 +12,20 @@ import torch.nn as nn
 
 @dataclass
 class DiffusionLossContext:
-    """Train-side handles for prepare / loss-formula callables.
-
-    Owned by the FSDP actor; kept free of Ray / optim internals so hooks stay
-    unit-testable and swappable via ``--custom-*-path``.
-    """
+    """Train-side handles for prepare and loss hooks."""
 
     models: dict[str, torch.nn.Module]
-    model: torch.nn.Module
     train_pipeline_config: Any
     sde_backend: Any
     scheduler: Any
     args: Namespace
     forward_dtype: torch.dtype
     device: torch.device
-    # Optional EMA shadow handle; owned by actor (see ``fsdp_utils.ema``).
-    ema_shadow: Any = None
 
 
 @dataclass
 class PreparedBatch:
-    """Actor-owned DiT forward inputs produced by a prepare hook.
-
-    ``extras`` carries algorithm-specific tensors for the loss formula
-    (e.g. ``next_latents`` / ``log_prob_old`` for Flow-GRPO, ``x0`` for NFT).
-    """
+    """Actor-owned DiT forward inputs produced by a prepare hook."""
 
     latents: torch.Tensor
     timesteps: torch.Tensor

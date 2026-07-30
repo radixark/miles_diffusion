@@ -34,7 +34,7 @@ from .diffusion_update_weight_utils import (
     DiffusionUpdateWeightFromTensorLoRA,
     DiffusionUpdateWeightFromTensorLoRAIPC,
 )
-from .ema import EmaShadow, resolve_ema_kwargs
+from .ema import EmaShadow
 from .loss_hub import DiffusionLossContext, flow_grpo_loss_formula, prepare_flow_grpo_batch
 from .lr_scheduler import get_lr_scheduler
 from .metrics import new_metric_buffer
@@ -177,7 +177,6 @@ class FSDPTrainRayActor(TrainRayActor):
             sde_timestep_divisor=self.train_pipeline_config.sde_timestep_divisor,
         )
 
-        # Replaceable parts (defaults = Flow-GRPO). DiT forward stays in this actor.
         self.custom_prepare_train_batch_func = (
             load_function(args.custom_prepare_train_batch_path)
             if args.custom_prepare_train_batch_path is not None
@@ -213,13 +212,14 @@ class FSDPTrainRayActor(TrainRayActor):
 
         checkpoint_payload = checkpoint.load(self)
 
-        # Optional EMA shadow of trainable params (pi_old). Enabled via --ema-shadow.
-        # Consumed when --ref-mode ema runs the no-grad reference DiT forward.
         self.ema_shadow = None
-        if getattr(self.args, "ema_shadow", False):
+        if self.args.ema_shadow:
             self.ema_shadow = EmaShadow(
                 (p for m in self.models.values() for p in m.parameters()),
-                **resolve_ema_kwargs(self.args),
+                decay=self.args.ema_decay,
+                uprate=self.args.ema_uprate,
+                uphold=self.args.ema_uphold,
+                flat_steps=self.args.ema_flat_steps,
             )
 
         # sglang-d now supports /update_weights_from_tensor (PR #20464).
@@ -312,7 +312,7 @@ class FSDPTrainRayActor(TrainRayActor):
             delta = self.ema_shadow.update()
             if dist.get_rank() == 0:
                 logger.info("EMA shadow updated (decay=%.4f step=%d)", delta, self.ema_shadow.step)
-            if getattr(self.args, "ema_rollout_policy", "live") == "ema":
+            if self.args.ema_rollout_policy == "ema":
                 with self.ema_shadow.swap_in():
                     self.weight_updater.update_weights()
             else:
@@ -357,11 +357,7 @@ class FSDPTrainRayActor(TrainRayActor):
         )
 
     def _train_core(self, rollout_id: int, rollout_data) -> None:
-        """Shared train loop: schedule → prepare → DiT forward → loss formula → backward.
-
-        ``prepare_fn`` and the custom loss hook are replaceable; Flow-GRPO is the
-        default loss. DiT forward always runs here.
-        """
+        """Run the shared diffusion training loop."""
         device = torch.cuda.current_device()
 
         train_pairs: list = rollout_data["train_data"]
@@ -371,14 +367,11 @@ class FSDPTrainRayActor(TrainRayActor):
         num_pairs = len(train_pairs)
         num_train_timesteps = self.scheduler.config.num_train_timesteps
 
-        # ------------- Reference forward precondition (--ref-mode resolved in arguments.py) -------------
-        ref_mode = getattr(self.args, "ref_mode", "none")
+        ref_mode = self.args.ref_mode
         if ref_mode == "lora_base" and not all(hasattr(m, "disable_adapter") for m in self.models.values()):
             raise RuntimeError(
                 "--ref-mode lora_base requires PEFT models exposing disable_adapter() after FSDP wrapping."
             )
-        if ref_mode == "ema" and self.ema_shadow is None:
-            raise RuntimeError("--ref-mode ema requires a constructed EMA shadow")
 
         # ------------- Rollout Scheduler Metadata -------------
         scheduler_timesteps, scheduler_sigmas = scheduler_meta_from_rollout(
@@ -419,14 +412,12 @@ class FSDPTrainRayActor(TrainRayActor):
 
         loss_ctx = DiffusionLossContext(
             models=self.models,
-            model=self.model,
             train_pipeline_config=self.train_pipeline_config,
             sde_backend=self.sde_backend,
             scheduler=self.scheduler,
             args=self.args,
             forward_dtype=self._forward_dtype,
             device=device,
-            ema_shadow=self.ema_shadow,
         )
 
         # ------------- Recompute old log-probs (impl-consistent PPO ratio) -------------
@@ -517,10 +508,7 @@ class FSDPTrainRayActor(TrainRayActor):
         write_old_log_prob: bool = False,
         old_log_prob_from_new: bool = False,
     ) -> torch.Tensor | None:
-        """Shared micro-batch path: prepare → DiT forward → [ref] → loss formula.
-
-        Only ``prepare_fn`` and the custom loss hook are swappable; DiT forward stays here.
-        """
+        """Run one prepared diffusion micro-batch."""
         if not batch:
             raise ValueError("_forward_train_pair_batch received empty batch")
 
@@ -551,14 +539,12 @@ class FSDPTrainRayActor(TrainRayActor):
         new_pred = _compute_noise_pred()
 
         ref_pred = None
-        ref_mode = getattr(self.args, "ref_mode", "none")
-        if ref_mode not in (None, "none"):
+        ref_mode = self.args.ref_mode
+        if ref_mode != "none":
             if ref_mode == "ema":
                 ref_ctx = self.ema_shadow.swap_in()
-            elif ref_mode == "lora_base":
-                ref_ctx = prepared.model.disable_adapter()
             else:
-                raise ValueError(f"unknown ref_mode {ref_mode!r}")
+                ref_ctx = prepared.model.disable_adapter()
             with torch.no_grad(), ref_ctx:
                 ref_pred = _compute_noise_pred().detach()
 

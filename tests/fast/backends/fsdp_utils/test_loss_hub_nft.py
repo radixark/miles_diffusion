@@ -8,7 +8,7 @@ from argparse import Namespace
 
 import torch
 
-from miles.backends.fsdp_utils.ema import EmaShadow, resolve_ema_kwargs
+from miles.backends.fsdp_utils.ema import EmaShadow
 from miles.backends.fsdp_utils.loss_hub.nft import corrupt, nft_loss_formula, nft_r_from_advantages
 from miles.backends.fsdp_utils.metrics import new_metric_buffer
 from miles.ray.data_conversion_hub.nft import expand_samples_to_train_pairs, resolve_nft_sigmas
@@ -45,10 +45,8 @@ class TestNftMath:
         assert torch.allclose(xt[1], torch.full((4,), 0.25))
 
     def test_resolve_sigmas_drops_zero_and_fraction(self):
-        class _Sched:
-            sigmas = torch.tensor([1.0, 0.8, 0.6, 0.4, 0.2, 0.0])
-
-        ts = resolve_nft_sigmas(_Sched(), training_timestep_fraction=0.99)
+        sigmas = torch.tensor([1.0, 0.8, 0.6, 0.4, 0.2, 0.0])
+        ts = resolve_nft_sigmas(sigmas, training_timestep_fraction=0.99)
         assert torch.allclose(ts, torch.tensor([1.0, 0.8, 0.6, 0.4]))
 
 
@@ -75,7 +73,6 @@ class TestNftHooks:
         assert len(out["train_data"]) == 4
         assert {p["timestep"] for p in out["train_data"]} == {1.0, 0.5}
         assert out["train_data"][0]["x0"] is out["train_data"][1]["x0"]
-        # Advantages come from post-process, not from the converter.
         assert out["train_data"][0]["advantage"] == rewards[0]
         assert out["train_data"][2]["advantage"] == rewards[1]
 
@@ -93,8 +90,7 @@ class TestNftHooks:
         assert loss is None
 
     def test_formula_declares_window_attr(self):
-        assert getattr(nft_loss_formula, "requires_sample_aligned_windows", False) is True
-        assert not hasattr(nft_loss_formula, "ref_mode")
+        assert nft_loss_formula.requires_sample_aligned_windows is True
 
 
 class TestEmaShadow:
@@ -120,9 +116,3 @@ class TestEmaShadow:
         with ema.swap_in():
             assert torch.equal(m.weight.detach(), live)
         assert torch.equal(m.weight.detach(), live + 2.0)
-
-
-class TestEmaArgs:
-    def test_resolve_kwargs(self):
-        kwargs = resolve_ema_kwargs(Namespace(ema_decay=0.01, ema_uprate=0.02, ema_uphold=0.3, ema_flat_steps=5))
-        assert kwargs == {"decay": 0.01, "uprate": 0.02, "uphold": 0.3, "flat_steps": 5}

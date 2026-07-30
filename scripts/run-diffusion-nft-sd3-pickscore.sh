@@ -1,22 +1,5 @@
 #!/usr/bin/env bash
-# SD3.5 medium + DiffusionNFT + PickScore (UniRL sd3_nft / sd3_nft_100roll parity).
-#
-# UniRL reference (logs/sd3_nft_100roll.log, 1-GPU trainside smoke override):
-#   8 prompts × 8 samples, lr=3e-4, wd=1e-4, LoRA r=32 α=64,
-#   guidance=1.0 (CFG-free), eta=0 / num_sde_steps=0 (ODE → clean x0),
-#   NFT beta=1, adv_clip=5, adaptive weight, schedule fraction=0.99,
-#   EMA shadow (pi_old) updated + synced at rollout_end (uprate=0.001, uphold=0.5).
-# Expected early metrics: reward ~0.73–0.82, train/loss ~280–360.
-#
-# GPU layout (default CUDA_VISIBLE_DEVICES=4,5,2):
-#   first 2 = FSDP train + sglang colocate; 3rd = PickScore reward worker.
-#
-# Usage:
-#   NUM_ROLLOUT=5 CUDA_VISIBLE_DEVICES=4,5,2 \
-#     bash scripts/run-diffusion-nft-sd3-pickscore.sh
-#
-# Smoke (tiny batch, OCR, 2 GPU — set SMOKE=1):
-#   SMOKE=1 CUDA_VISIBLE_DEVICES=4,5 bash scripts/run-diffusion-nft-sd3-pickscore.sh
+# SD3.5 DiffusionNFT training with PickScore.
 
 MILES_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
