@@ -51,7 +51,6 @@ class FSDPArgs:
     fsdp_cpu_backend: str | None = (
         "gloo"  # CPU backend for FSDP CPU offload (e.g., "gloo"). Set to None to disable hybrid backend.
     )
-    # Hybrid sharding: parameter replica count; dp_shard uses the ranks left by this and SP.
     dp_replicate_size: int = 1
 
     # Train-actor deterministic mode; see validate_attention_args for the backend

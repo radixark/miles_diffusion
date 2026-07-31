@@ -75,7 +75,7 @@ class TrainPipelineConfig(abc.ABC):
     """Base class. Subclass per model family."""
 
     lora_target_modules: list[str] = ["to_q", "to_k", "to_v", "to_out.0"]
-    needs_timestep_scaling: bool = True
+    needs_timestep_scaling: bool = False
     optimizer_state_allowed_missing: list[str] = []
     # Case-insensitive substrings matched against the checkpoint name (--diffusion-model).
     hf_ckpt_name_patterns: tuple[str, ...] = ()

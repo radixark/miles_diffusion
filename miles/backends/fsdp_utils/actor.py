@@ -551,8 +551,6 @@ class FSDPTrainRayActor(TrainRayActor):
                 self.args.diffusion_guidance_scale_2,
             )
 
-        # sgl-d's Qwen DiT divides timestep by num_train_timesteps inside
-        # forward; diffusers' does not. SD3 already expects raw timesteps.
         if train_pipeline_config.needs_timestep_scaling:
             timesteps_for_model = timesteps_microbatch / float(num_train_timesteps)
         else:
@@ -600,11 +598,8 @@ class FSDPTrainRayActor(TrainRayActor):
                     forward_dtype,
                 )
 
-        # Cast inputs explicitly: FSDP MixedPrecisionPolicy casts params but
-        # leaves fp32 inputs, which would run first matmul at higher precision
-        # than rollout → systematic noise_pred drift.
         latents_input = latents_microbatch.to(forward_dtype)
-        timesteps_input = timesteps_for_model.to(forward_dtype)
+        timesteps_input = timesteps_for_model
 
         def _compute_noise_pred(disable_adapter: bool = False) -> torch.Tensor:
             adapter_ctx = model.disable_adapter() if disable_adapter else nullcontext()
@@ -780,19 +775,11 @@ def apply_fsdp2(model, mesh=None, cpu_offload=False, args=None, no_split_modules
         "mp_policy": MixedPrecisionPolicy(
             param_dtype=param_dtype,
             reduce_dtype=reduce_dtype,
+            cast_forward_inputs=False,
         ),
         "offload_policy": offload_policy,
         "mesh": mesh,
     }
-
-    if args.gradient_checkpointing:
-        # MixedPrecisionPolicy does not cast buffers; a buffer above param_dtype
-        # makes the ckpt recompute dtype-diverge from the forward and abort.
-        for module in model.modules():
-            for name, buf in module.named_buffers(recurse=False):
-                if buf.is_floating_point() and buf.dtype != param_dtype:
-                    persistent = name not in module._non_persistent_buffers_set
-                    module.register_buffer(name, buf.to(param_dtype), persistent=persistent)
 
     for module in modules:
         fully_shard(module, **fsdp_kwargs)

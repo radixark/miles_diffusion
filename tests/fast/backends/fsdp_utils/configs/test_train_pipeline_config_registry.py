@@ -5,7 +5,9 @@ register_cpu_ci(est_time=30, suite="stage-a-cpu", labels=[])
 import pytest
 import torch
 
+from miles.backends.fsdp_utils.configs.qwen_image import QwenImageTrainPipelineConfig
 from miles.backends.fsdp_utils.configs.train_pipeline_config import TrainPipelineConfig, resolve_diffusion_model_family
+from miles.backends.fsdp_utils.configs.wan2_2 import Wan2_2TrainPipelineConfig
 
 
 class TestFamilyResolution:
@@ -85,3 +87,9 @@ class TestComputeNoisePred:
     def test_joint_batch_matches_two_pass(self):
         joint = {"bias": torch.cat([self.pos["bias"], self.neg["bias"]], dim=0)}
         torch.testing.assert_close(self._call(cfg_batching=True, joint_cond=joint), self._call())
+
+
+def test_timestep_scaling_is_qwen_image_specific():
+    assert QwenImageTrainPipelineConfig.needs_timestep_scaling
+    assert not Wan2_2TrainPipelineConfig.needs_timestep_scaling
+    assert not _MinimalConfig.needs_timestep_scaling
