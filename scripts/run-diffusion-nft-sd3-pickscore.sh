@@ -100,6 +100,7 @@ python -u "${ROOT_DIR}/train_diffusion.py" \
   --prompt-data "${PROMPT_DATA}" \
   --input-key input \
   "${BATCH_ARGS[@]}" \
+  --deterministic-mode \
   --gradient-checkpointing \
   --colocate \
   --use-miles-router \
