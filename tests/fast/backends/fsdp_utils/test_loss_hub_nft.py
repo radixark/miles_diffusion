@@ -75,6 +75,35 @@ class TestNftHooks:
         assert out["train_data"][0]["advantage"] == rewards[0]
         assert out["train_data"][2]["advantage"] == rewards[1]
 
+    def test_shuffled_timesteps_reproduce_under_a_seed(self):
+        # The shuffle draws from the global RNG, so RolloutManager seeds it; without that seed
+        # the pair order differs per run and no bitwise e2e standard is possible.
+        class _Traj:
+            def __init__(self):
+                self.timesteps = torch.tensor([999.0, 750.0, 500.0, 250.0, 0.0])
+                self.sigmas = torch.tensor([1.0, 0.75, 0.5, 0.25, 0.0])
+                self.latents = torch.zeros(5, 2, 2)
+
+        class _Env:
+            pos_cond_kwargs = {}
+            neg_cond_kwargs = None
+
+        def order():
+            samples = [
+                Sample(index=i, prompt="p", reward=1.0, dit_trajectory=_Traj(), denoising_env=_Env()) for i in range(4)
+            ]
+            out = expand_samples_to_train_pairs(
+                _args(diffusion_nft_shuffle_timesteps=True), samples, [0.0] * 4, [1.0] * 4
+            )
+            return [p["timestep"] for p in out["train_data"]]
+
+        torch.manual_seed(1234)
+        first = order()
+        torch.manual_seed(1234)
+        assert order() == first
+        # Guard the test itself: an unshuffled schedule would pass trivially.
+        assert first != sorted(first, reverse=True)
+
 
 class TestEmaShadow:
     def _model(self):

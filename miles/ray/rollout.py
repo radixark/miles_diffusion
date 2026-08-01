@@ -51,6 +51,7 @@ class RolloutManager:
         logger.info("RolloutManager init start")
         self.args = args
         self.pg = pg
+        torch.manual_seed(args.seed)
         from miles.dashboard import hooks
 
         hooks.register_rollout_manager(args)
