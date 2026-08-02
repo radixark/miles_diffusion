@@ -26,6 +26,11 @@ def _expand_samples_to_train_pairs(
     device = torch.device("cpu")
     train_data: list[dict[str, Any]] = []
     first_traj = samples[0].dit_trajectory
+    # EXPERIMENT: drop the rollout sigmas snapshot so this behaves exactly as before sglang 585a7d05e
+    for _s in samples:
+        if _s.dit_trajectory is not None:
+            _s.dit_trajectory.sigmas = None
+
     scheduler_meta: dict[str, torch.Tensor] = {"scheduler_timesteps": first_traj.timesteps.detach().cpu().float()}
 
     if first_traj.sigmas is not None:
