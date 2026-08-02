@@ -72,6 +72,23 @@ def expand_samples_to_train_pairs(
     for sample, adv, raw in zip(samples, rewards, raw_rewards, strict=True):
         if sample.denoising_env is None:
             raise ValueError(f"sample {sample.index} missing denoising_env")
+        traj = sample.dit_trajectory
+        if (
+            traj is None
+            or traj.timesteps is None
+            or not torch.equal(traj.timesteps.detach().cpu().float(), scheduler_meta["scheduler_timesteps"])
+        ):
+            raise ValueError(
+                f"sample {sample.index} has different scheduler_timesteps than sample 0; "
+                "the converter assumes one shared schedule across the batch"
+            )
+        if traj.sigmas is None or not torch.equal(
+            traj.sigmas.detach().cpu().float(), scheduler_meta["scheduler_sigmas"]
+        ):
+            raise ValueError(
+                f"sample {sample.index} has different scheduler_sigmas than sample 0; "
+                "the converter assumes one shared schedule across the batch"
+            )
         x0 = _clean_x0_from_sample(sample)
         sample_sigmas = sigmas[torch.randperm(num_timesteps)] if args.diffusion_nft_shuffle_timesteps else sigmas
         for t in sample_sigmas.tolist():
