@@ -26,16 +26,14 @@ def scheduler_meta_from_rollout(
     rollout_data: dict,
     *,
     device: torch.device,
-    num_train_timesteps: int,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Use rollout-side scheduler metadata for train/rollout alignment."""
     if "scheduler_timesteps" not in rollout_data:
         raise ValueError("rollout_data missing scheduler_timesteps")
+    if "scheduler_sigmas" not in rollout_data:
+        raise ValueError("rollout_data missing scheduler_sigmas; rollout engine must return the sigmas snapshot")
     timesteps = rollout_data["scheduler_timesteps"].to(device=device, dtype=torch.float32)
-    if "scheduler_sigmas" in rollout_data:
-        sigmas = rollout_data["scheduler_sigmas"].to(device=device, dtype=torch.float32)
-    else:
-        sigmas = torch.cat([timesteps / float(num_train_timesteps), timesteps.new_zeros(1)])
+    sigmas = rollout_data["scheduler_sigmas"].to(device=device, dtype=torch.float32)
     return timesteps, sigmas
 
 

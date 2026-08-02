@@ -364,7 +364,6 @@ class FSDPTrainRayActor(TrainRayActor):
             raise ValueError("rollout_data['train_data'] is empty")
 
         num_pairs = len(train_pairs)
-        num_train_timesteps = self.scheduler.config.num_train_timesteps
 
         ref_mode = self.args.ref_mode
         if ref_mode == "lora_base" and not all(hasattr(m, "disable_adapter") for m in self.models.values()):
@@ -376,7 +375,6 @@ class FSDPTrainRayActor(TrainRayActor):
         scheduler_timesteps, scheduler_sigmas = scheduler_meta_from_rollout(
             rollout_data,
             device=device,
-            num_train_timesteps=num_train_timesteps,
         )
         self.scheduler.timesteps = scheduler_timesteps
         self.scheduler.sigmas = scheduler_sigmas

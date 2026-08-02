@@ -56,14 +56,11 @@ def expand_samples_to_train_pairs(
         raise ValueError("sample 0 missing dit_trajectory")
     if first_traj.timesteps is None:
         raise ValueError("NFT needs dit_trajectory.timesteps from rollout")
-    if first_traj.sigmas is not None:
-        scheduler_sigmas = first_traj.sigmas.detach().cpu().float()
-    else:
-        ts = first_traj.timesteps.detach().cpu().float()
-        scheduler_sigmas = torch.cat([ts / 1000.0, ts.new_zeros(1)])
+    if first_traj.sigmas is None:
+        raise ValueError("NFT needs dit_trajectory.sigmas from rollout; no timesteps-derived fallback")
     scheduler_meta = {
         "scheduler_timesteps": first_traj.timesteps.detach().cpu().float(),
-        "scheduler_sigmas": scheduler_sigmas,
+        "scheduler_sigmas": first_traj.sigmas.detach().cpu().float(),
     }
     sigmas = resolve_nft_sigmas(
         scheduler_meta["scheduler_sigmas"],

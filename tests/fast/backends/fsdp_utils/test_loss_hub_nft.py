@@ -75,6 +75,26 @@ class TestNftHooks:
         assert out["train_data"][0]["advantage"] == rewards[0]
         assert out["train_data"][2]["advantage"] == rewards[1]
 
+    def test_convert_requires_rollout_sigmas(self):
+        # Sigmas come from the rollout scheduler snapshot; no timesteps/1000 fallback.
+        class _Traj:
+            def __init__(self):
+                self.timesteps = torch.tensor([999.0, 500.0, 0.0])
+                self.sigmas = None
+                self.latents = torch.zeros(3, 2, 2)
+
+        class _Env:
+            pos_cond_kwargs = {}
+            neg_cond_kwargs = None
+
+        samples = [Sample(index=0, prompt="a", reward=1.0, dit_trajectory=_Traj(), denoising_env=_Env())]
+        try:
+            expand_samples_to_train_pairs(_args(), samples, [1.0], [1.0])
+        except ValueError as e:
+            assert "sigmas" in str(e)
+        else:
+            raise AssertionError("expected ValueError for missing dit_trajectory.sigmas")
+
 
 class TestEmaShadow:
     def _model(self):

@@ -32,7 +32,7 @@ from types import SimpleNamespace
 import torch
 
 from miles.ray.data_conversion_hub.flow_grpo import expand_samples_to_train_pairs
-from miles.utils.train_data_utils import TrainDataDPSplitter
+from miles.utils.train_data_utils import TrainDataDPSplitter, scheduler_meta_from_rollout
 
 
 # --------------------------------------------------------------------------------------
@@ -154,12 +154,16 @@ def test_l2_converter_pairs_match_direct_indexing():
             assert torch.equal(d["rollout_step_noise_std_dev"], s.rollout_debug_tensors.rollout_noise_std_devs[idx])
 
 
-def test_l2_converter_sigmas_optional():
+def test_l2_converter_requires_sigmas():
+    """A trajectory without the rollout sigmas snapshot must raise (no derived fallback)."""
     T, sde = 4, [0, 2]
     samples = [_mk_sample(i, T, sde, with_sigmas=False, with_debug=False) for i in range(2)]
-    out = expand_samples_to_train_pairs(None, samples, [1.0, 2.0], [1.0, 2.0])
-    assert "scheduler_sigmas" not in out
-    assert len(out["train_data"]) == 2 * len(sde)
+    try:
+        expand_samples_to_train_pairs(None, samples, [1.0, 2.0], [1.0, 2.0])
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError for missing dit_trajectory.sigmas")
 
 
 def test_l2_converter_rejects_mismatched_scheduler_timesteps():
@@ -184,6 +188,22 @@ def test_l2_converter_rejects_mismatched_scheduler_sigmas():
         pass
     else:
         raise AssertionError("expected ValueError for mismatched scheduler_sigmas")
+
+
+def test_scheduler_meta_from_rollout_requires_sigmas():
+    """The train actor consumes the rollout sigmas snapshot verbatim; no timesteps/N fallback."""
+    ts = torch.tensor([999.0, 500.0, 1.0])
+    sig = torch.tensor([1.0, 0.5, 0.001, 0.0])
+    out_ts, out_sig = scheduler_meta_from_rollout(
+        {"scheduler_timesteps": ts, "scheduler_sigmas": sig}, device=torch.device("cpu")
+    )
+    assert torch.equal(out_ts, ts) and torch.equal(out_sig, sig)
+    try:
+        scheduler_meta_from_rollout({"scheduler_timesteps": ts}, device=torch.device("cpu"))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError for missing scheduler_sigmas")
 
 
 # --------------------------------------------------------------------------------------
