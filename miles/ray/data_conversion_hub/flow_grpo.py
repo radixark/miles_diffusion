@@ -28,6 +28,22 @@ def _expand_samples_to_train_pairs(
     first_traj = samples[0].dit_trajectory
     scheduler_meta: dict[str, torch.Tensor] = {"scheduler_timesteps": first_traj.timesteps.detach().cpu().float()}
 
+    # PROBE (experiment only): ground-truth shapes/values of what sgl-d returns.
+    _ts = first_traj.timesteps.detach().cpu().float()
+    _sg = None if first_traj.sigmas is None else first_traj.sigmas.detach().cpu().float()
+    _fb = torch.cat([_ts / 1000.0, _ts.new_zeros(1)])
+    print("PROBE timesteps: n=%d last3=%r" % (_ts.numel(), _ts[-3:].tolist()), flush=True)
+    if _sg is None:
+        print("PROBE sigmas: None", flush=True)
+    else:
+        print("PROBE sigmas   : n=%d last3=%r" % (_sg.numel(), _sg[-3:].tolist()), flush=True)
+        print("PROBE fallback : n=%d last3=%r" % (_fb.numel(), _fb[-3:].tolist()), flush=True)
+        same = _fb.numel() == _sg.numel() and bool(torch.equal(_fb, _sg))
+        print("PROBE fallback==sigmas bitwise: %s" % same, flush=True)
+        if _fb.numel() == _sg.numel():
+            print("PROBE max|fb-sg| = %.3e" % (_fb - _sg).abs().max().item(), flush=True)
+
+
     if first_traj.sigmas is not None:
         scheduler_meta["scheduler_sigmas"] = first_traj.sigmas.detach().cpu().float()
 
