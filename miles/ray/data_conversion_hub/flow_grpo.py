@@ -4,6 +4,7 @@ from typing import Any
 
 import torch
 
+from miles.utils.train_data_utils import scheduler_meta_from_samples
 from miles.utils.types import RolloutDebugTensors, Sample
 
 
@@ -25,28 +26,10 @@ def _expand_samples_to_train_pairs(
     """Flat train pairs in sample-major order (all pairs for sample 0, then sample 1, ...)."""
     device = torch.device("cpu")
     train_data: list[dict[str, Any]] = []
-    first_traj = samples[0].dit_trajectory
-    if first_traj.sigmas is None:
-        raise ValueError("sample 0 missing dit_trajectory.sigmas; rollout engine must return the sigmas snapshot")
-    scheduler_meta: dict[str, torch.Tensor] = {
-        "scheduler_timesteps": first_traj.timesteps.detach().cpu().float(),
-        "scheduler_sigmas": first_traj.sigmas.detach().cpu().float(),
-    }
+    scheduler_meta = scheduler_meta_from_samples(samples)
 
     for sample, rew, raw_r in zip(samples, rewards, raw_rewards, strict=True):
         traj, denoising_env, rollout_log_probs = _sample_required_inputs(sample)
-        if not torch.equal(traj.timesteps.detach().cpu().float(), scheduler_meta["scheduler_timesteps"]):
-            raise ValueError(
-                f"sample {sample.index} has different scheduler_timesteps than sample 0; "
-                "the converter assumes one shared schedule across the batch"
-            )
-        if traj.sigmas is None or not torch.equal(
-            traj.sigmas.detach().cpu().float(), scheduler_meta["scheduler_sigmas"]
-        ):
-            raise ValueError(
-                f"sample {sample.index} has different scheduler_sigmas than sample 0; "
-                "the converter assumes one shared schedule across the batch"
-            )
         per_sample_features = _build_per_sample_features(
             sample,
             reward=rew,

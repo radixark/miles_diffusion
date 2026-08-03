@@ -22,6 +22,38 @@ def stack_train_pair_rollout_debug(
     return torch.stack([item["rollout_debug_tensors"][key] for item in batch], dim=0)
 
 
+def scheduler_meta_from_samples(samples: list) -> dict[str, torch.Tensor]:
+    """Build the batch scheduler meta from sample 0's trajectory, enforcing one shared schedule."""
+    first = samples[0].dit_trajectory
+    if first is None:
+        raise ValueError("sample 0 missing dit_trajectory")
+    if first.timesteps is None:
+        raise ValueError("sample 0 missing dit_trajectory.timesteps")
+    if first.sigmas is None:
+        raise ValueError("sample 0 missing dit_trajectory.sigmas; rollout engine must return the sigmas snapshot")
+    meta = {
+        "scheduler_timesteps": first.timesteps.detach().cpu().float(),
+        "scheduler_sigmas": first.sigmas.detach().cpu().float(),
+    }
+    for sample in samples[1:]:
+        traj = sample.dit_trajectory
+        if (
+            traj is None
+            or traj.timesteps is None
+            or not torch.equal(traj.timesteps.detach().cpu().float(), meta["scheduler_timesteps"])
+        ):
+            raise ValueError(
+                f"sample {sample.index} has different scheduler_timesteps than sample 0; "
+                "the converter assumes one shared schedule across the batch"
+            )
+        if traj.sigmas is None or not torch.equal(traj.sigmas.detach().cpu().float(), meta["scheduler_sigmas"]):
+            raise ValueError(
+                f"sample {sample.index} has different scheduler_sigmas than sample 0; "
+                "the converter assumes one shared schedule across the batch"
+            )
+    return meta
+
+
 def scheduler_meta_from_rollout(
     rollout_data: dict,
     *,
