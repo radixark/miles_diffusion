@@ -5,6 +5,7 @@ from typing import Any
 
 import torch
 
+from miles.utils.train_data_utils import scheduler_meta_from_samples
 from miles.utils.types import Sample
 
 
@@ -51,20 +52,7 @@ def expand_samples_to_train_pairs(
             f"NFT convert length mismatch: samples={len(samples)} "
             f"rewards={len(rewards)} raw_rewards={len(raw_rewards)}"
         )
-    first_traj = samples[0].dit_trajectory
-    if first_traj is None:
-        raise ValueError("sample 0 missing dit_trajectory")
-    if first_traj.timesteps is None:
-        raise ValueError("NFT needs dit_trajectory.timesteps from rollout")
-    if first_traj.sigmas is not None:
-        scheduler_sigmas = first_traj.sigmas.detach().cpu().float()
-    else:
-        ts = first_traj.timesteps.detach().cpu().float()
-        scheduler_sigmas = torch.cat([ts / 1000.0, ts.new_zeros(1)])
-    scheduler_meta = {
-        "scheduler_timesteps": first_traj.timesteps.detach().cpu().float(),
-        "scheduler_sigmas": scheduler_sigmas,
-    }
+    scheduler_meta = scheduler_meta_from_samples(samples)
     sigmas = resolve_nft_sigmas(
         scheduler_meta["scheduler_sigmas"],
         training_timestep_fraction=args.diffusion_nft_timestep_fraction,
