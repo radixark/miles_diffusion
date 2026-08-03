@@ -13,14 +13,15 @@ import ray
 import torch
 
 
-def read_video_clip(path: str, *, height: int, width: int, num_frames: int) -> torch.Tensor:
+def read_video_clip(path: str, *, height: int, width: int, num_frames: int, frame_stride: int) -> torch.Tensor:
     import torchvision
 
     frames, _, _ = torchvision.io.read_video(path, pts_unit="sec", output_format="TCHW")
-    if frames.shape[0] < num_frames:
-        raise ValueError(f"{path} has {frames.shape[0]} frames, need {num_frames}")
-    start = (frames.shape[0] - num_frames) // 2
-    frames = frames[start : start + num_frames].float() / 127.5 - 1.0
+    span = (num_frames - 1) * frame_stride + 1
+    if frames.shape[0] < span:
+        raise ValueError(f"{path} has {frames.shape[0]} frames, need {span}")
+    start = (frames.shape[0] - span) // 2
+    frames = frames[start : start + span : frame_stride].float() / 127.5 - 1.0
 
     scale = max(height / frames.shape[2], width / frames.shape[3])
     new_h = max(height, round(frames.shape[2] * scale))
@@ -50,7 +51,9 @@ class WanEncodeActor:
         self.latents_std = torch.tensor(self.vae.config.latents_std).view(view).to(self.device)
 
     @torch.no_grad()
-    def encode(self, items: list[dict], output_dir: str, height: int, width: int, num_frames: int) -> int:
+    def encode(
+        self, items: list[dict], output_dir: str, height: int, width: int, num_frames: int, frame_stride: int
+    ) -> int:
         from diffusers.pipelines.wan.pipeline_wan import prompt_clean
 
         done = 0
@@ -58,7 +61,9 @@ class WanEncodeActor:
             out_path = Path(output_dir) / f"{item['index']:08d}.pt"
             if out_path.exists():
                 continue
-            video = read_video_clip(item["video"], height=height, width=width, num_frames=num_frames)
+            video = read_video_clip(
+                item["video"], height=height, width=width, num_frames=num_frames, frame_stride=frame_stride
+            )
             latent = self.vae.encode(video.unsqueeze(0).to(self.device)).latent_dist.sample()
             latent = (latent - self.latents_mean) / self.latents_std
 
@@ -98,6 +103,7 @@ def main():
     parser.add_argument("--height", type=int, required=True)
     parser.add_argument("--width", type=int, required=True)
     parser.add_argument("--num-frames", type=int, required=True)
+    parser.add_argument("--frame-stride", type=int, default=1)
     parser.add_argument("--num-gpus", type=int, default=1)
     args = parser.parse_args()
 
@@ -115,7 +121,9 @@ def main():
     actors = [WanEncodeActor.remote(args.hf_checkpoint) for _ in range(args.num_gpus)]
     done = ray.get(
         [
-            actor.encode.remote(items[i :: args.num_gpus], args.output_dir, args.height, args.width, args.num_frames)
+            actor.encode.remote(
+                items[i :: args.num_gpus], args.output_dir, args.height, args.width, args.num_frames, args.frame_stride
+            )
             for i, actor in enumerate(actors)
         ]
     )
