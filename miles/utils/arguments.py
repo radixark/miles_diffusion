@@ -690,6 +690,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument("--input-key", type=str, default="input", help="JSON dataset key")
             parser.add_argument("--metadata-key", type=str, default="metadata", help="JSON dataset key")
+            parser.add_argument(
+                "--sft-data-path",
+                type=str,
+                default=None,
+                help=(
+                    "Directory of pre-encoded SFT samples (one .pt per sample holding latent + "
+                    "cond_kwargs, see scripts/sft_encode_wan.py) for --loss-type sft_loss."
+                ),
+            )
 
             parser.add_argument(
                 "--start-rollout-id",
@@ -1473,6 +1482,14 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
 
 
 def set_default_diffusion_args(args) -> None:
+    if args.loss_type == "sft_loss":
+        if args.custom_prepare_train_batch_path is None:
+            args.custom_prepare_train_batch_path = "miles.backends.fsdp_utils.loss_hub.sft.prepare_sft_batch"
+        if args.custom_loss_function_path is None:
+            args.custom_loss_function_path = "miles.backends.fsdp_utils.loss_hub.sft.sft_loss_formula"
+        # SFT needs no sglang engines; reuse the train-only wiring end to end.
+        args.debug_train_only = True
+
     is_nft = args.loss_type == "nft"
     if is_nft:
         if args.custom_expand_samples_to_train_pairs_path is None:
@@ -1584,6 +1601,24 @@ def miles_validate_args(args):
         raise ValueError(f"--ema-flat-steps must be non-negative, got {args.ema_flat_steps}")
     if args.ema_rollout_policy == "ema" and not args.ema_shadow:
         raise ValueError("--ema-rollout-policy ema requires --ema-shadow")
+
+    if args.loss_type == "sft_loss":
+        if args.sft_data_path is None:
+            raise ValueError("--loss-type sft_loss requires --sft-data-path")
+        if args.diffusion_flow_shift is None:
+            raise ValueError("--loss-type sft_loss requires --diffusion-flow-shift for the training sigma grid")
+        if args.n_samples_per_prompt != 1:
+            raise ValueError("--loss-type sft_loss requires --n-samples-per-prompt 1")
+        if args.eval_interval is not None:
+            raise ValueError("--loss-type sft_loss does not support --eval-interval (no rollout engines)")
+        if args.diffusion_kl_beta > 0:
+            raise ValueError("--loss-type sft_loss does not support --diffusion-kl-beta")
+        if args.diffusion_recompute_old_log_prob:
+            raise ValueError("--loss-type sft_loss does not support --diffusion-recompute-old-log-prob")
+        if args.ref_mode != "none":
+            raise ValueError("--loss-type sft_loss does not use a reference model; drop --ref-mode")
+        if args.ema_shadow:
+            raise ValueError("--loss-type sft_loss does not support --ema-shadow (EMA updates run in weight sync)")
 
     is_nft = args.loss_type == "nft"
     if is_nft:

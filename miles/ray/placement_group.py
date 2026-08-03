@@ -7,6 +7,7 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from .actor_group import RayTrainGroup
 from .rollout import RolloutManager
+from .sft_data_manager import SftDataManager
 
 logger = logging.getLogger(__name__)
 
@@ -151,8 +152,9 @@ def create_training_models(args, pgs, rollout_manager):
 
 
 def create_rollout_manager(args, pg):
-    logger.info("Creating rollout manager (num_gpus=%s)", 0)
-    rollout_manager = RolloutManager.options(
+    manager_cls = SftDataManager if args.loss_type == "sft_loss" else RolloutManager
+    logger.info("Creating rollout manager (%s, num_gpus=%s)", manager_cls.__ray_metadata__.class_name, 0)
+    rollout_manager = manager_cls.options(
         num_cpus=1,
         num_gpus=0,
     ).remote(args, pg)

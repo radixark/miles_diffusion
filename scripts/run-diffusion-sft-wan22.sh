@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# 4-GPU Wan2.2-T2V-A14B dual-expert LoRA SFT on a pre-encoded dataset.
+# No sglang engines: the SftDataManager serves cached (latent, cond) pairs.
+#
+# Encode the raw (video, prompt) jsonl once before training, e.g.:
+#   python scripts/sft_encode_wan.py \
+#     --hf-checkpoint Wan-AI/Wan2.2-T2V-A14B-Diffusers \
+#     --data-path /path/to/train.jsonl --output-dir "${SFT_DATA_DIR}" \
+#     --height 480 --width 832 --num-frames 81 --num-gpus 4
+#
+# Per rollout step: 64 samples, num_steps_per_rollout=4
+#   -> 16 samples/optim step / 4 dp ranks = 4 samples/rank at mbs=1.
+
+set -euo pipefail
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
+RUN_NAME="${RUN_NAME:-diffusion_sft_wan22_$(date +%Y%m%d_%H%M%S)}"
+SAVE_DIR="${ROOT_DIR}/logs/${RUN_NAME}/ckpt"
+
+SFT_DATA_DIR="${SFT_DATA_DIR:?set SFT_DATA_DIR to the sft_encode_wan.py output dir}"
+
+WANDB_ARGS=()
+if [[ -n "${WANDB_API_KEY:-}" ]]; then
+  WANDB_ARGS+=(
+    --use-wandb
+    --wandb-project miles-diffusion-sft
+    --wandb-group "${RUN_NAME}"
+    --wandb-key "${WANDB_API_KEY}"
+    --disable-wandb-random-suffix
+  )
+fi
+
+PYTHON_BIN="${PYTHON_BIN:-python}"
+
+RESUME_ARGS=()
+if [[ -n "${RESUME_CKPT:-}" ]]; then
+  RESUME_ARGS+=(--load "${RESUME_CKPT}")
+  [[ -n "${START_ROLLOUT:-}" ]] && RESUME_ARGS+=(--start-rollout-id "${START_ROLLOUT}")
+fi
+
+WAN_LORA_TARGET_MODULES=(
+  attn1.to_q attn1.to_k attn1.to_v attn1.to_out.0
+  attn2.to_q attn2.to_k attn2.to_v attn2.to_out.0
+  ffn.net.0.proj ffn.net.2
+)
+
+"${PYTHON_BIN}" -u "${ROOT_DIR}/train_diffusion.py" \
+  --train-backend fsdp \
+  --loss-type sft_loss \
+  --hf-checkpoint Wan-AI/Wan2.2-T2V-A14B-Diffusers \
+  --diffusion-model Wan-AI/Wan2.2-T2V-A14B-Diffusers \
+  --sft-data-path "${SFT_DATA_DIR}" \
+  --rollout-batch-size 64 \
+  --num-epoch 3 \
+  --num-steps-per-rollout 4 \
+  --micro-batch-size 1 \
+  --actor-num-gpus-per-node 4 \
+  --num-gpus-per-node 4 \
+  --use-lora \
+  --lora-rank 64 \
+  --lora-alpha 128 \
+  --lora-target-modules "${WAN_LORA_TARGET_MODULES[@]}" \
+  --diffusion-init-lora-weight gaussian \
+  --lr 1e-4 \
+  --adam-beta2 0.999 \
+  --weight-decay 1e-4 \
+  --update-weight-target-module transformer,transformer_2 \
+  --fsdp-master-dtype fp32 \
+  --fsdp-reduce-dtype fp32 \
+  --diffusion-forward-dtype bf16 \
+  --diffusion-flow-shift 3.0 \
+  --save "${SAVE_DIR}" \
+  --save-interval 20 \
+  "${RESUME_ARGS[@]}" \
+  "${WANDB_ARGS[@]}"
