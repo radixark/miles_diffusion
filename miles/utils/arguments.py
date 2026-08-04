@@ -695,10 +695,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help=(
-                    "Directory of pre-encoded SFT samples (one .pt per sample holding latent + "
-                    "cond_kwargs, see scripts/sft_encode_wan.py) for --loss-type sft_loss."
+                    "SFT dataset jsonl for --loss-type sft_loss, one object per line with the video "
+                    "path and prompt. Encoded pairs are cached next to it under .sft_cache/<hash> and "
+                    "rebuilt automatically whenever the data or encode settings change."
                 ),
             )
+            parser.add_argument("--sft-video-key", type=str, default="video", help="SFT jsonl video path key")
+            parser.add_argument("--sft-prompt-key", type=str, default="prompt", help="SFT jsonl prompt key")
+            parser.add_argument("--sft-height", type=int, default=None, help="SFT encode height (center crop)")
+            parser.add_argument("--sft-width", type=int, default=None, help="SFT encode width (center crop)")
+            parser.add_argument("--sft-num-frames", type=int, default=None, help="SFT encode frames per clip")
+            parser.add_argument("--sft-frame-stride", type=int, default=1, help="SFT encode temporal stride")
 
             parser.add_argument(
                 "--start-rollout-id",
@@ -1605,6 +1612,17 @@ def miles_validate_args(args):
     if args.loss_type == "sft_loss":
         if args.sft_data_path is None:
             raise ValueError("--loss-type sft_loss requires --sft-data-path")
+        if args.sft_height is None or args.sft_width is None or args.sft_num_frames is None:
+            raise ValueError("--loss-type sft_loss requires --sft-height, --sft-width and --sft-num-frames")
+        from miles.backends.fsdp_utils.configs.train_pipeline_config import TrainPipelineConfig
+        from miles.utils.misc import load_function
+
+        sft_cfg_cls = load_function(args.train_pipeline_config_path)
+        if sft_cfg_cls.encode_sft_sample is TrainPipelineConfig.encode_sft_sample:
+            raise ValueError(
+                f"--loss-type sft_loss is not supported for {sft_cfg_cls.__name__}: "
+                "it does not implement load_sft_encoder/encode_sft_sample"
+            )
         if args.diffusion_flow_shift is None:
             raise ValueError("--loss-type sft_loss requires --diffusion-flow-shift for the training sigma grid")
         if args.n_samples_per_prompt != 1:

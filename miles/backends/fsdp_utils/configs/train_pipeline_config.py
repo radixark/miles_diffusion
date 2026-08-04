@@ -189,3 +189,11 @@ class TrainPipelineConfig(abc.ABC):
     def postprocess_model_after_materialize(self, model: torch.nn.Module) -> None:
         """Postprocess the model after FSDP wrap + weight materialization (default: no-op)."""
         return None
+
+    def load_sft_encoder(self, args, device: torch.device):
+        """Load this family's frozen encode components (tokenizer/text encoder/VAE) for SFT caching."""
+        raise NotImplementedError(f"{type(self).__name__} does not implement SFT encoding")
+
+    def encode_sft_sample(self, encoder, pixels: torch.Tensor, prompt: str) -> dict:
+        """Encode one (pixels [C,T,H,W] in [-1,1], prompt) into the train-pair dict for prepare_sft_batch."""
+        raise NotImplementedError(f"{type(self).__name__} does not implement SFT encoding")

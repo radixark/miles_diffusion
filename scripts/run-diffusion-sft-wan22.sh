@@ -1,12 +1,8 @@
 #!/usr/bin/env bash
-# 4-GPU Wan2.2-T2V-A14B dual-expert LoRA SFT on a pre-encoded dataset.
-# No sglang engines: the SftDataManager serves cached (latent, cond) pairs.
-#
-# Encode the raw (video, prompt) jsonl once before training, e.g.:
-#   python scripts/sft_encode_wan.py \
-#     --hf-checkpoint Wan-AI/Wan2.2-T2V-A14B-Diffusers \
-#     --data-path /path/to/train.jsonl --output-dir "${SFT_DATA_DIR}" \
-#     --height 480 --width 832 --num-frames 81 --num-gpus 4
+# 4-GPU Wan2.2-T2V-A14B dual-expert LoRA SFT on a (video, prompt) jsonl dataset.
+# No sglang engines: the SftDataManager encodes the dataset into .sft_cache/<hash>
+# next to the jsonl on first run (re-encoding automatically when data or encode
+# settings change), then serves cached (latent, cond) pairs.
 #
 # Per rollout step: 64 samples, num_steps_per_rollout=4
 #   -> 16 samples/optim step / 4 dp ranks = 4 samples/rank at mbs=1.
@@ -17,7 +13,7 @@ export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
 RUN_NAME="${RUN_NAME:-diffusion_sft_wan22_$(date +%Y%m%d_%H%M%S)}"
 SAVE_DIR="${ROOT_DIR}/logs/${RUN_NAME}/ckpt"
 
-SFT_DATA_DIR="${SFT_DATA_DIR:?set SFT_DATA_DIR to the sft_encode_wan.py output dir}"
+SFT_DATA_JSONL="${SFT_DATA_JSONL:?set SFT_DATA_JSONL to a jsonl with one {video, prompt} object per line}"
 
 WANDB_ARGS=()
 if [[ -n "${WANDB_API_KEY:-}" ]]; then
@@ -49,7 +45,11 @@ WAN_LORA_TARGET_MODULES=(
   --loss-type sft_loss \
   --hf-checkpoint Wan-AI/Wan2.2-T2V-A14B-Diffusers \
   --diffusion-model Wan-AI/Wan2.2-T2V-A14B-Diffusers \
-  --sft-data-path "${SFT_DATA_DIR}" \
+  --sft-data-path "${SFT_DATA_JSONL}" \
+  --sft-height 480 \
+  --sft-width 832 \
+  --sft-num-frames 81 \
+  --sft-frame-stride 2 \
   --rollout-batch-size 64 \
   --num-epoch 3 \
   --num-steps-per-rollout 4 \

@@ -1,11 +1,14 @@
-"""Serves pre-encoded SFT samples through the RolloutManager driver interface."""
+"""Serves auto-cached SFT samples through the RolloutManager driver interface."""
 
+import hashlib
+import json
 import logging
 from pathlib import Path
 
 import ray
 import torch
 
+from miles.ray.sft_encode import build_sft_cache
 from miles.utils.logging_utils import configure_logger
 from miles.utils.misc import load_function
 from miles.utils.ray_utils import Box
@@ -14,19 +17,38 @@ from miles.utils.train_data_utils import TrainDataDPSplitter
 logger = logging.getLogger(__name__)
 
 
+def sft_cache_dir(args, data_path: Path) -> Path:
+    key = hashlib.sha256(
+        f"{args.hf_checkpoint}|{args.sft_height}x{args.sft_width}"
+        f"|{args.sft_num_frames}s{args.sft_frame_stride}".encode() + data_path.read_bytes()
+    ).hexdigest()[:12]
+    return data_path.parent / ".sft_cache" / key
+
+
 @ray.remote
 class SftDataManager:
-    """Deterministically shuffles --sft-data-path pairs per epoch; generate() is stateless in rollout_id."""
+    """Encodes --sft-data-path (jsonl) into a content-addressed cache on first run,
+    then serves per-epoch shuffled pairs; generate() is stateless in rollout_id."""
 
     def __init__(self, args, pg):
         configure_logger()
         self.args = args
-        self.files = sorted(Path(args.sft_data_path).glob("*.pt"))
-        if len(self.files) < args.rollout_batch_size:
+        data_path = Path(args.sft_data_path)
+        items = [
+            {"index": i, "video": row[args.sft_video_key], "prompt": row[args.sft_prompt_key]}
+            for i, row in enumerate(json.loads(line) for line in data_path.read_text().splitlines() if line.strip())
+        ]
+        if len(items) < args.rollout_batch_size:
             raise ValueError(
-                f"--sft-data-path holds {len(self.files)} samples, "
-                f"fewer than rollout_batch_size={args.rollout_batch_size}"
+                f"--sft-data-path holds {len(items)} samples, fewer than rollout_batch_size={args.rollout_batch_size}"
             )
+
+        cache_dir = sft_cache_dir(args, data_path)
+        if len(list(cache_dir.glob("*.pt"))) < len(items):
+            logger.info("SftDataManager: building cache %s for %d samples", cache_dir, len(items))
+            build_sft_cache(args, items, cache_dir, pg[0])
+        self.files = sorted(cache_dir.glob("*.pt"))
+        assert len(self.files) == len(items)
         self.train_data_dp_splitter = TrainDataDPSplitter()
 
         train_pipeline_config = load_function(args.train_pipeline_config_path)()
@@ -38,8 +60,9 @@ class SftDataManager:
         self.scheduler_timesteps = (sigmas * num_train_timesteps).to(torch.float32)
         self.scheduler_sigmas = torch.cat([sigmas, torch.zeros(1, dtype=torch.float64)]).to(torch.float32)
         logger.info(
-            "SftDataManager: %d samples, flow_shift=%s, num_train_timesteps=%d",
+            "SftDataManager: %d samples, cache=%s, flow_shift=%s, num_train_timesteps=%d",
             len(self.files),
+            cache_dir,
             shift,
             num_train_timesteps,
         )
