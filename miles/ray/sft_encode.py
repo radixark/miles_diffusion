@@ -1,6 +1,7 @@
 """Family-generic SFT cache building: encode actors driven by TrainPipelineConfig hooks."""
 
 import logging
+import os
 from pathlib import Path
 
 import ray
@@ -40,11 +41,7 @@ class SftEncodeActor:
 
     def encode(self, items: list[dict], cache_dir: str) -> int:
         args = self.args
-        done = 0
         for item in items:
-            out_path = Path(cache_dir) / f"{item['index']:08d}.pt"
-            if out_path.exists():
-                continue
             pixels = read_video_clip(
                 item["video"],
                 height=args.sft_height,
@@ -52,9 +49,14 @@ class SftEncodeActor:
                 num_frames=args.sft_num_frames,
                 frame_stride=args.sft_frame_stride,
             )
-            torch.save(self.config.encode_sft_sample(self.encoder, pixels, item["prompt"]), out_path)
-            done += 1
-        return done
+            generator = torch.Generator().manual_seed(item["latent_seed"])
+            pair = self.config.encode_sft_sample(self.encoder, pixels, item["prompt"], generator)
+            out_path = Path(cache_dir) / item["cache_name"]
+            # Temp-then-rename so an interrupted write never leaves a loadable-looking cache entry.
+            tmp_path = out_path.with_name(out_path.name + ".tmp")
+            torch.save(pair, tmp_path)
+            os.replace(tmp_path, out_path)
+        return len(items)
 
 
 def build_sft_cache(args, items: list[dict], cache_dir: Path, pg) -> None:

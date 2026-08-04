@@ -17,12 +17,14 @@ from miles.utils.train_data_utils import TrainDataDPSplitter
 logger = logging.getLogger(__name__)
 
 
-def sft_cache_dir(args, data_path: Path) -> Path:
-    key = hashlib.sha256(
-        f"{args.hf_checkpoint}|{args.sft_height}x{args.sft_width}"
-        f"|{args.sft_num_frames}s{args.sft_frame_stride}".encode() + data_path.read_bytes()
-    ).hexdigest()[:12]
-    return data_path.parent / ".sft_cache" / key
+def sft_sample_key(args, item: dict) -> tuple[str, int]:
+    """Content-addressed cache filename and latent-sampling seed for one (video, prompt) item."""
+    stat = Path(item["video"]).stat()
+    digest = hashlib.sha256(
+        f"{args.hf_checkpoint}|{args.sft_height}x{args.sft_width}|{args.sft_num_frames}s{args.sft_frame_stride}"
+        f"|{item['video']}|{stat.st_size}|{stat.st_mtime_ns}|{item['prompt']}".encode()
+    ).digest()
+    return digest.hex()[:16] + ".pt", int.from_bytes(digest[8:16], "big") % 2**63
 
 
 @ray.remote
@@ -35,20 +37,32 @@ class SftDataManager:
         self.args = args
         data_path = Path(args.sft_data_path)
         items = [
-            {"index": i, "video": row[args.sft_video_key], "prompt": row[args.sft_prompt_key]}
-            for i, row in enumerate(json.loads(line) for line in data_path.read_text().splitlines() if line.strip())
+            {"video": row[args.sft_video_key], "prompt": row[args.sft_prompt_key]}
+            for row in (json.loads(line) for line in data_path.read_text().splitlines() if line.strip())
         ]
         if len(items) < args.rollout_batch_size:
             raise ValueError(
                 f"--sft-data-path holds {len(items)} samples, fewer than rollout_batch_size={args.rollout_batch_size}"
             )
+        dropped = len(items) % args.rollout_batch_size
+        if dropped:
+            logger.warning(
+                "SFT drop-last: %d of %d samples unused per epoch (rollout_batch_size=%d); "
+                "the per-epoch reshuffle rotates which samples are dropped",
+                dropped,
+                len(items),
+                args.rollout_batch_size,
+            )
 
-        cache_dir = sft_cache_dir(args, data_path)
-        if len(list(cache_dir.glob("*.pt"))) < len(items):
-            logger.info("SftDataManager: building cache %s for %d samples", cache_dir, len(items))
-            build_sft_cache(args, items, cache_dir, pg[0])
-        self.files = sorted(cache_dir.glob("*.pt"))
-        assert len(self.files) == len(items)
+        cache_dir = data_path.parent / ".sft_cache"
+        for item in items:
+            item["cache_name"], item["latent_seed"] = sft_sample_key(args, item)
+        self.files = [cache_dir / item["cache_name"] for item in items]
+        missing = [item for item in items if not (cache_dir / item["cache_name"]).exists()]
+        if missing:
+            logger.info("SftDataManager: encoding %d of %d samples into %s", len(missing), len(items), cache_dir)
+            build_sft_cache(args, missing, cache_dir, pg[0])
+        assert all(f.exists() for f in self.files)
         self.train_data_dp_splitter = TrainDataDPSplitter()
 
         train_pipeline_config = load_function(args.train_pipeline_config_path)()

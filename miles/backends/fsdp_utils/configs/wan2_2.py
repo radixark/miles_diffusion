@@ -94,11 +94,11 @@ class Wan2_2TrainPipelineConfig(TrainPipelineConfig):
         }
 
     @torch.no_grad()
-    def encode_sft_sample(self, encoder, pixels: torch.Tensor, prompt: str) -> dict:
+    def encode_sft_sample(self, encoder, pixels: torch.Tensor, prompt: str, generator: torch.Generator) -> dict:
         from diffusers.pipelines.wan.pipeline_wan import prompt_clean
 
         device = encoder["device"]
-        latent = encoder["vae"].encode(pixels.unsqueeze(0).to(device, torch.float32)).latent_dist.sample()
+        latent = encoder["vae"].encode(pixels.unsqueeze(0).to(device, torch.float32)).latent_dist.sample(generator)
         latent = (latent - encoder["latents_mean"]) / encoder["latents_std"]
 
         inputs = encoder["tokenizer"](

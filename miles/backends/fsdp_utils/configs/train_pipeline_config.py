@@ -194,6 +194,9 @@ class TrainPipelineConfig(abc.ABC):
         """Load this family's frozen encode components (tokenizer/text encoder/VAE) for SFT caching."""
         raise NotImplementedError(f"{type(self).__name__} does not implement SFT encoding")
 
-    def encode_sft_sample(self, encoder, pixels: torch.Tensor, prompt: str) -> dict:
-        """Encode one (pixels [C,T,H,W] in [-1,1], prompt) into the train-pair dict for prepare_sft_batch."""
+    def encode_sft_sample(self, encoder, pixels: torch.Tensor, prompt: str, generator: torch.Generator) -> dict:
+        """Encode one (pixels [C,T,H,W] in [-1,1], prompt) into the train-pair dict for prepare_sft_batch.
+
+        ``generator`` seeds any stochastic encode step (e.g. VAE posterior sampling) so a cache
+        entry's content is a deterministic function of its cache key."""
         raise NotImplementedError(f"{type(self).__name__} does not implement SFT encoding")
