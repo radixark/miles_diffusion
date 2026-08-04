@@ -7,7 +7,7 @@ register_cpu_ci(est_time=30, suite="stage-a-cpu", labels=[])
 import os
 from argparse import Namespace
 
-from miles.ray.sft_data_manager import sft_sample_key
+from miles.rollout.sft_rollout import sft_sample_key
 
 
 def _args(**overrides):

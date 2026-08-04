@@ -223,7 +223,7 @@ class FSDPTrainRayActor(TrainRayActor):
             )
 
         # sglang-d now supports /update_weights_from_tensor (PR #20464).
-        if self.args.debug_train_only:
+        if self.args.train_only:
             self.weight_updater = None
         elif self.args.use_lora and self.args.lora_ipc_weight_sync:
             self.weight_updater = DiffusionUpdateWeightFromTensorLoRAIPC(self.args, self.models)
@@ -292,7 +292,7 @@ class FSDPTrainRayActor(TrainRayActor):
 
     @timer
     def update_weights(self) -> None:  # type: ignore[override]
-        if self.args.debug_train_only or self.args.debug_rollout_only:
+        if self.args.train_only or self.args.debug_rollout_only:
             return
 
         if self.weight_updater is None:

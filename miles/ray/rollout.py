@@ -17,7 +17,7 @@ from miles.ray.data_conversion_hub.flow_grpo import (
     expand_samples_to_train_pairs as flow_grpo_expand_samples_to_train_pairs,
 )
 from miles.rollout.base_types import call_rollout_fn
-from miles.rollout.rm_hub.core import set_reward_placement_group
+from miles.rollout.rm_hub.core import set_manager_placement_group
 from miles.utils import tracking_utils
 from miles.utils.health_monitor import RolloutHealthMonitor
 from miles.utils.http_utils import _wrap_ipv6, find_available_port, get_host_info, init_http_client
@@ -54,9 +54,10 @@ class RolloutManager:
         from miles.dashboard import hooks
 
         hooks.register_rollout_manager(args)
-        set_reward_placement_group(pg)
-        logger.info("RolloutManager: starting router...")
-        _start_router(args)
+        set_manager_placement_group(pg)
+        if not args.train_only:
+            logger.info("RolloutManager: starting router...")
+            _start_router(args)
         logger.info("RolloutManager: router started, init tracking...")
         # TODO make args immutable
         init_tracking(args, primary=False, router_addr=f"http://{args.sglang_router_ip}:{args.sglang_router_port}")
@@ -91,10 +92,10 @@ class RolloutManager:
 
         logger.info("RolloutManager rollout_num_gpus=%s", self.args.rollout_num_gpus)
 
-        if self.args.debug_train_only:
+        if self.args.train_only:
             self.all_rollout_engines = []
             self.num_new_engines = 0
-            logger.info("RolloutManager using no sglang engines (debug_train_only).")
+            logger.info("RolloutManager using no sglang engines (train_only).")
         else:
             num_gpu_per_engine = min(args.rollout_num_gpus_per_engine, args.num_gpus_per_node)
             num_engines = args.rollout_num_gpus // num_gpu_per_engine
@@ -200,7 +201,7 @@ class RolloutManager:
         return [Box(ray.put(shard)) for shard in shards]
 
     def eval(self, rollout_id):
-        if self.args.debug_train_only:
+        if self.args.train_only:
             # if debug train only, we don't generate evaluation data
             return
         self.health_monitoring_resume()
@@ -474,7 +475,7 @@ class RolloutManager:
 
 
 def init_rollout_engines(args, pg, all_rollout_engines):
-    if args.debug_train_only:
+    if args.train_only:
         return 0
 
     num_gpu_per_engine = min(args.rollout_num_gpus_per_engine, args.num_gpus_per_node)

@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # 4-GPU Wan2.2-T2V-A14B dual-expert LoRA SFT on a (video, prompt) jsonl dataset.
-# No sglang engines: the SftDataManager encodes the dataset into .sft_cache/<hash>
-# next to the jsonl on first run (re-encoding automatically when data or encode
-# settings change), then serves cached (latent, cond) pairs.
+# No sglang engines: the sft_rollout plugin lazily encodes each round's cache
+# misses via a colocated encoder actor pool, writing one content-addressed file
+# per sample into .sft_cache/ next to the jsonl. Epoch 2+ is all cache hits.
+#
+# Dataset rows: {"prompt": "...", "metadata": {"video": "/abs/path.mp4"}}
 #
 # Per rollout step: 64 samples, num_steps_per_rollout=4
 #   -> 16 samples/optim step / 4 dp ranks = 4 samples/rank at mbs=1.
@@ -13,7 +15,7 @@ export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
 RUN_NAME="${RUN_NAME:-diffusion_sft_wan22_$(date +%Y%m%d_%H%M%S)}"
 SAVE_DIR="${ROOT_DIR}/logs/${RUN_NAME}/ckpt"
 
-SFT_DATA_JSONL="${SFT_DATA_JSONL:?set SFT_DATA_JSONL to a jsonl with one {video, prompt} object per line}"
+SFT_DATA_JSONL="${SFT_DATA_JSONL:?set SFT_DATA_JSONL to a jsonl with prompt + metadata.video per line}"
 
 WANDB_ARGS=()
 if [[ -n "${WANDB_API_KEY:-}" ]]; then
@@ -45,7 +47,8 @@ WAN_LORA_TARGET_MODULES=(
   --loss-type sft_loss \
   --hf-checkpoint Wan-AI/Wan2.2-T2V-A14B-Diffusers \
   --diffusion-model Wan-AI/Wan2.2-T2V-A14B-Diffusers \
-  --sft-data-path "${SFT_DATA_JSONL}" \
+  --prompt-data "${SFT_DATA_JSONL}" \
+  --input-key prompt \
   --sft-height 480 \
   --sft-width 832 \
   --sft-num-frames 81 \

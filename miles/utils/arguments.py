@@ -690,18 +690,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument("--input-key", type=str, default="input", help="JSON dataset key")
             parser.add_argument("--metadata-key", type=str, default="metadata", help="JSON dataset key")
-            parser.add_argument(
-                "--sft-data-path",
-                type=str,
-                default=None,
-                help=(
-                    "SFT dataset jsonl for --loss-type sft_loss, one object per line with the video "
-                    "path and prompt. Encoded pairs are cached next to it under .sft_cache/<hash> and "
-                    "rebuilt automatically whenever the data or encode settings change."
-                ),
-            )
-            parser.add_argument("--sft-video-key", type=str, default="video", help="SFT jsonl video path key")
-            parser.add_argument("--sft-prompt-key", type=str, default="prompt", help="SFT jsonl prompt key")
+            # SFT (--loss-type sft_loss) reads --prompt-data/--input-key like RL; the video path
+            # lives in each row's metadata dict under "video". Encoded pairs are cached next to
+            # the jsonl under .sft_cache/, one content-addressed file per sample.
             parser.add_argument("--sft-height", type=int, default=None, help="SFT encode height (center crop)")
             parser.add_argument("--sft-width", type=int, default=None, help="SFT encode width (center crop)")
             parser.add_argument("--sft-num-frames", type=int, default=None, help="SFT encode frames per clip")
@@ -1490,12 +1481,16 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
 
 def set_default_diffusion_args(args) -> None:
     if args.loss_type == "sft_loss":
+        if args.rollout_function_path == "miles.rollout.sglang_rollout.generate_rollout":
+            args.rollout_function_path = "miles.rollout.sft_rollout.generate_rollout"
+        if args.custom_convert_samples_to_train_data_path is None:
+            args.custom_convert_samples_to_train_data_path = "miles.rollout.sft_rollout.convert_samples_to_train_data"
+        if args.custom_rollout_log_function_path is None:
+            args.custom_rollout_log_function_path = "miles.rollout.sft_rollout.log_rollout_data"
         if args.custom_prepare_train_batch_path is None:
             args.custom_prepare_train_batch_path = "miles.backends.fsdp_utils.loss_hub.sft.prepare_sft_batch"
         if args.custom_loss_function_path is None:
             args.custom_loss_function_path = "miles.backends.fsdp_utils.loss_hub.sft.sft_loss_formula"
-        # SFT needs no sglang engines; reuse the train-only wiring end to end.
-        args.debug_train_only = True
 
     is_nft = args.loss_type == "nft"
     if is_nft:
@@ -1610,8 +1605,8 @@ def miles_validate_args(args):
         raise ValueError("--ema-rollout-policy ema requires --ema-shadow")
 
     if args.loss_type == "sft_loss":
-        if args.sft_data_path is None:
-            raise ValueError("--loss-type sft_loss requires --sft-data-path")
+        if args.prompt_data is None:
+            raise ValueError("--loss-type sft_loss requires --prompt-data (jsonl with prompt + metadata.video)")
         if args.sft_height is None or args.sft_width is None or args.sft_num_frames is None:
             raise ValueError("--loss-type sft_loss requires --sft-height, --sft-width and --sft-num-frames")
         from miles.backends.fsdp_utils.configs.train_pipeline_config import TrainPipelineConfig
@@ -1679,6 +1674,10 @@ def miles_validate_args(args):
         args.offload_train = True
         args.offload_rollout = True
     del args.offload
+
+    # Formal "no rollout engines" mode: skips engine/router startup, weight sync, and
+    # the rollout placement view. Implied by debug_train_only and by SFT.
+    args.train_only = args.debug_train_only or args.loss_type == "sft_loss"
 
     if args.debug_rollout_only:
         if args.colocate and (not args.rollout_num_gpus):

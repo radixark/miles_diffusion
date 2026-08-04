@@ -83,6 +83,14 @@ class TestPrepareSftBatch:
         prepared = prepare_sft_batch(ctx, _batch())
         assert torch.allclose(prepared.timesteps_for_model, prepared.timesteps / NUM_TRAIN_TIMESTEPS)
 
+    def test_single_model_indices_cover_grid_uniformly(self):
+        torch.manual_seed(0)
+        ctx = _ctx({"transformer": nn.Identity()})
+        _, _, idx = sample_grid_indices(ctx, bsz=20000)
+        counts = torch.bincount(idx, minlength=NUM_GRID).float()
+        assert counts.min() > 0
+        assert ((counts / 20000) - 1 / NUM_GRID).abs().max() < 0.02
+
     def test_dual_expert_micro_batch_is_phase_pure(self):
         torch.manual_seed(0)
         models = {"transformer": nn.Identity(), "transformer_2": nn.Identity()}
@@ -127,4 +135,3 @@ class TestSftLossFormula:
         )
         assert torch.allclose(loss, torch.tensor(float(len(batch))))
         assert metrics.seen["loss"] == (float(len(batch)), len(batch))
-        assert "sft_t_mean" in metrics.seen

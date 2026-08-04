@@ -8,17 +8,22 @@ import logging
 import ray
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
-_reward_placement_group = None
+_manager_placement_group = None
 logger = logging.getLogger(__name__)
 
 
-def set_reward_placement_group(pg) -> None:
-    global _reward_placement_group
-    _reward_placement_group = pg
+def set_manager_placement_group(pg) -> None:
+    """Publish the manager's (pg, bundle_indices, gpu_ids) for colocated actor pools."""
+    global _manager_placement_group
+    _manager_placement_group = pg
 
 
-def get_reward_placement_group():
-    return _reward_placement_group
+def get_manager_placement_group():
+    return _manager_placement_group
+
+
+set_reward_placement_group = set_manager_placement_group
+get_reward_placement_group = get_manager_placement_group
 
 
 class AsyncRewardActorPool:

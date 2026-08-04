@@ -31,7 +31,6 @@ SCHEMA = {
     "nft_adv_mean": MetricReduce.MEAN,
     "nft_t_mean": MetricReduce.MEAN,
     "nft_num_timesteps": MetricReduce.MEAN,
-    "sft_t_mean": MetricReduce.MEAN,
 }
 
 

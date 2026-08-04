@@ -7,7 +7,6 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from .actor_group import RayTrainGroup
 from .rollout import RolloutManager
-from .sft_data_manager import SftDataManager
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +88,7 @@ def create_placement_groups(args):
       train and rollout each own a disjoint GPU pool — avoids bundle
       overlap / scheduling deadlock when running side-by-side.
     """
-    if not args.colocate and not args.debug_train_only and not args.debug_rollout_only:
+    if not args.colocate and not args.train_only and not args.debug_rollout_only:
         logger.info("Creating placement groups (separate actor/rollout)...")
         actor_gpus = args.actor_num_nodes * args.actor_num_gpus_per_node
         rollout_gpus = args.rollout_num_gpus
@@ -110,8 +109,8 @@ def create_placement_groups(args):
 
     actor_pg_reordered_bundle_indices = all_reordered_bundle_indices
     actor_pg_reordered_gpu_ids = all_reordered_gpu_ids
-    rollout_pg_reordered_bundle_indices = all_reordered_bundle_indices if not args.debug_train_only else []
-    rollout_pg_reordered_gpu_ids = all_reordered_gpu_ids if not args.debug_train_only else []
+    rollout_pg_reordered_bundle_indices = all_reordered_bundle_indices if not args.train_only else []
+    rollout_pg_reordered_gpu_ids = all_reordered_gpu_ids if not args.train_only else []
 
     return {
         "actor": (pg, actor_pg_reordered_bundle_indices, actor_pg_reordered_gpu_ids),
@@ -152,9 +151,8 @@ def create_training_models(args, pgs, rollout_manager):
 
 
 def create_rollout_manager(args, pg):
-    manager_cls = SftDataManager if args.loss_type == "sft_loss" else RolloutManager
-    logger.info("Creating rollout manager (%s, num_gpus=%s)", manager_cls.__ray_metadata__.class_name, 0)
-    rollout_manager = manager_cls.options(
+    logger.info("Creating rollout manager (num_gpus=%s)", 0)
+    rollout_manager = RolloutManager.options(
         num_cpus=1,
         num_gpus=0,
     ).remote(args, pg)

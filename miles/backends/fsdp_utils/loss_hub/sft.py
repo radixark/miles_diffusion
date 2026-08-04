@@ -94,8 +94,6 @@ def sft_loss_formula(
     per_pair = ((new_pred.float() - target) ** 2).mean(dim=tuple(range(1, target.ndim)))
     loss_sum = per_pair.sum()
 
-    bsz = len(batch)
     with torch.no_grad():
-        metrics.emit_mean("loss", total=loss_sum, count=bsz)
-        metrics.emit_mean("sft_t_mean", total=prepared.timesteps.sum(), count=bsz)
+        metrics.emit_mean("loss", total=loss_sum, count=len(batch))
     return loss_sum
