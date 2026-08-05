@@ -104,7 +104,8 @@ _scheduler_grid: tuple[torch.Tensor, torch.Tensor] | None = None
 def _encode_pool(args) -> list:
     global _encode_actors
     if _encode_actors is None:
-        pg, _, _ = get_manager_placement_group()
+        # Encode is SFT's rollout: the pool takes the rollout placement seats sglang engines use in RL.
+        pg, bundle_indices, _ = get_manager_placement_group()
         _encode_actors = [
             SftEncodeActor.options(
                 num_cpus=ENCODE_GPU_FRACTION,
@@ -114,7 +115,7 @@ def _encode_pool(args) -> list:
                     placement_group_bundle_index=i,
                 ),
             ).remote(args)
-            for i in range(len(pg.bundle_specs))
+            for i in bundle_indices
         ]
         logger.info("SFT encode pool: %d workers at %.2f GPU each", len(_encode_actors), ENCODE_GPU_FRACTION)
     return _encode_actors

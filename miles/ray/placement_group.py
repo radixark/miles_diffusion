@@ -109,8 +109,9 @@ def create_placement_groups(args):
 
     actor_pg_reordered_bundle_indices = all_reordered_bundle_indices
     actor_pg_reordered_gpu_ids = all_reordered_gpu_ids
-    rollout_pg_reordered_bundle_indices = all_reordered_bundle_indices if not args.train_only else []
-    rollout_pg_reordered_gpu_ids = all_reordered_gpu_ids if not args.train_only else []
+    # SFT keeps the rollout seats: its encoder pool is the rollout-side producer.
+    rollout_pg_reordered_bundle_indices = all_reordered_bundle_indices if not args.debug_train_only else []
+    rollout_pg_reordered_gpu_ids = all_reordered_gpu_ids if not args.debug_train_only else []
 
     return {
         "actor": (pg, actor_pg_reordered_bundle_indices, actor_pg_reordered_gpu_ids),
