@@ -20,9 +20,9 @@ def build_fsdp_meshes(
     """Build the FSDP hybrid-shard and DP/SP views."""
     world_mesh = init_device_mesh(device_type, (world_size,), mesh_dim_names=("world",))
 
-    shard_view = world_mesh._unflatten(0, (dp_replicate, world_size // dp_replicate), ("dp_replicate", "fsdp"))
+    shard_view = world_mesh._unflatten(0, (dp_replicate, world_size // dp_replicate), ("dp_replicate", "dp_shard"))
     # A degree-1 replicate axis would all-reduce over a single rank every bucket.
-    fsdp_mesh = shard_view if dp_replicate > 1 else shard_view["fsdp"]
+    fsdp_mesh = shard_view if dp_replicate > 1 else shard_view["dp_shard"]
     meshes = {"world": world_mesh, "fsdp": fsdp_mesh, "dp": world_mesh}
 
     if sp_size > 1:

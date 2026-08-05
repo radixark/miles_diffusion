@@ -82,7 +82,6 @@ fi
   --diffusion-forward-dtype bf16 \
   --fsdp-master-dtype bf16 \
   --fsdp-reduce-dtype bf16 \
-  --sglang-dit-precision bf16 \
   --advantage-estimator grpo \
   --globalize-reward-std \
   --rm-type pickscore \

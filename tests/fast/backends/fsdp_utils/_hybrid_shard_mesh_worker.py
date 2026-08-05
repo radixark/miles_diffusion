@@ -61,11 +61,11 @@ def check(rank, world_size, dp_replicate, dp_shard, ring_degree, ulysses_degree)
     fsdp = meshes["fsdp"]
     if dp_replicate > 1:
         assert fsdp.ndim == 2, fsdp
-        assert fsdp.mesh_dim_names == ("dp_replicate", "fsdp")
+        assert fsdp.mesh_dim_names == ("dp_replicate", "dp_shard")
         assert fsdp["dp_replicate"].size() == dp_replicate
-        assert fsdp["fsdp"].size() == dp_shard * sp_size
+        assert fsdp["dp_shard"].size() == dp_shard * sp_size
         # dp_replicate outermost makes a shard group a contiguous rank run, i.e. one node.
-        shard_ranks = mesh_group_ranks(fsdp["fsdp"])
+        shard_ranks = mesh_group_ranks(fsdp["dp_shard"])
         assert shard_ranks == list(range(shard_ranks[0], shard_ranks[0] + len(shard_ranks)))
     else:
         assert fsdp.ndim == 1, fsdp

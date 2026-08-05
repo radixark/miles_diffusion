@@ -5,7 +5,6 @@ from __future__ import annotations
 import torch
 
 from miles.backends.fsdp_utils.loss_hub.types import DiffusionLossContext, PreparedBatch
-from miles.backends.fsdp_utils.loss_hub.utils import cast_cond_to_dtype
 from miles.utils.metric_buffer import MetricBuffer
 
 
@@ -38,10 +37,8 @@ def prepare_nft_batch(
 
     component_name, model = next(iter(ctx.models.items()))
     pos_list = [config.prepare_cond_kwargs(batch[i]["denoising_env"].pos_cond_kwargs, device) for i in range(bsz)]
-    pos_cond = cast_cond_to_dtype(
-        config.collate_cond_for_sample_batch(pos_list, device, pad_to_len=pad_to_len),
-        ctx.forward_dtype,
-    )
+    # Cond dtypes are set at the model boundary by the family input_dtype_policy (see actor).
+    pos_cond = config.collate_cond_for_sample_batch(pos_list, device, pad_to_len=pad_to_len)
 
     num_train_timesteps = ctx.scheduler.config.num_train_timesteps
     if config.needs_timestep_scaling:

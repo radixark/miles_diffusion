@@ -190,16 +190,27 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
-                "--diffusion-forward-dtype",
+                "--precision-default-dtype",
                 type=str,
-                default="bf16",
+                default=None,
                 choices=["fp16", "bf16", "fp32"],
                 help=(
-                    "dtype for the DiT forward compute. Used in three places "
-                    "with the same value: sglang-d rollout engine, FSDP "
-                    "MixedPrecisionPolicy.param_dtype on the training side, "
-                    "and the training-side input cast that matches rollout "
-                    "for log-prob alignment."
+                    "Default dtype for every module the family PrecisionSpec does not pin "
+                    "explicitly. One knob for both sides: it sets the training forward/gather dtype "
+                    "and the rollout engine's --sglang-dit-precision. Leave it unset to tune each "
+                    "side on its own, which is what the shipped recipes do."
+                ),
+            )
+            parser.add_argument(
+                "--diffusion-forward-dtype",
+                type=str,
+                default=None,
+                choices=["fp16", "bf16", "fp32"],
+                help=(
+                    "dtype for the DiT forward on the training side: FSDP "
+                    "MixedPrecisionPolicy.param_dtype and the torch.autocast the "
+                    "trainer wraps the forward in. Defaults to "
+                    "--precision-default-dtype, else bf16."
                 ),
             )
             parser.add_argument(
@@ -1396,6 +1407,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         )
 
         parser.set_defaults(sglang_tensor_parallel_size=add_sglang_tp_size())
+        # None means unset: the engine then forwards nothing and sglang keeps its per-pipeline dtype.
+        parser.set_defaults(sglang_dit_precision=None)
+        parser.set_defaults(sglang_text_encoder_precisions=None)
         return parser
 
     return add_miles_arguments
@@ -1492,6 +1506,12 @@ def set_default_diffusion_args(args) -> None:
         else:
             args.ref_mode = "none"
 
+    # --precision-default-dtype fills whichever side was left unset; validate rejects disagreements.
+    if args.diffusion_forward_dtype is None:
+        args.diffusion_forward_dtype = args.precision_default_dtype or "bf16"
+    if args.sglang_dit_precision is None:
+        args.sglang_dit_precision = args.precision_default_dtype
+
 
 def miles_validate_args(args):
     args.eval_datasets = _resolve_eval_datasets(args)
@@ -1518,6 +1538,17 @@ def miles_validate_args(args):
 
     if args.eval_reward_key is None:
         args.eval_reward_key = args.reward_key
+
+    if args.precision_default_dtype is not None:
+        for flag, value in (
+            ("--diffusion-forward-dtype", args.diffusion_forward_dtype),
+            ("--sglang-dit-precision", args.sglang_dit_precision),
+        ):
+            if value != args.precision_default_dtype:
+                raise ValueError(
+                    f"{flag} {value} disagrees with --precision-default-dtype "
+                    f"{args.precision_default_dtype}; leave it unset or pass the same value"
+                )
 
     args.update_weight_target_modules = [
         name.strip() for name in args.update_weight_target_module.split(",") if name.strip()

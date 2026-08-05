@@ -39,6 +39,7 @@ from .loss_hub import DiffusionLossContext, flow_grpo_loss_formula, prepare_flow
 from .lr_scheduler import get_lr_scheduler
 from .metrics import new_metric_buffer
 from .parallel import create_fsdp_parallel_state
+from .precision import apply_input_dtype_policy, compile_precision, log_precision_summary, resolve_dtype
 from .sequence_parallel.plan import apply_sequence_parallel
 
 logger = logging.getLogger(__name__)
@@ -94,8 +95,8 @@ class FSDPTrainRayActor(TrainRayActor):
 
         self.prof = TrainProfiler(args)
 
-        self._master_dtype = _resolve_dtype(args.fsdp_master_dtype)
-        self._forward_dtype = _resolve_dtype(args.diffusion_forward_dtype)
+        self._master_dtype = resolve_dtype(args.fsdp_master_dtype)
+        self._forward_dtype = resolve_dtype(args.diffusion_forward_dtype)
 
         from miles.utils.misc import load_function
 
@@ -128,6 +129,15 @@ class FSDPTrainRayActor(TrainRayActor):
             if args.gradient_checkpointing:
                 self.model_backend.enable_gradient_checkpointing(model)
 
+            # Resolve the family precision spec on clean FQNs (pre-LoRA, pre-FSDP).
+            compiled_precision = compile_precision(
+                model,
+                self.train_pipeline_config.precision_spec,
+                default_dtype=self._forward_dtype,
+            )
+            if rank == 0:
+                log_precision_summary(component, compiled_precision, default_dtype=self._forward_dtype)
+
             if args.use_lora:
                 model = apply_lora(model, args, self.train_pipeline_config)
 
@@ -143,6 +153,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 cpu_offload=self.args.fsdp_cpu_offload,
                 args=self.args,
                 no_split_modules=self.model_backend.fsdp_no_split_modules(model),
+                compiled_precision=compiled_precision,
             )
             checkpoint.broadcast_full_state_to_fsdp(
                 model,
@@ -512,22 +523,29 @@ class FSDPTrainRayActor(TrainRayActor):
         train_pipeline_config = self.train_pipeline_config
         forward_dtype = self._forward_dtype
 
-        latents_input = prepared.latents.to(forward_dtype)
-        timesteps_input = prepared.timesteps_for_model.to(forward_dtype)
+        # Boundary dtypes are family policy; op interiors stay autocast-managed.
+        latents_in, timesteps_in, (pos_cond_in, neg_cond_in, joint_cond_in) = apply_input_dtype_policy(
+            train_pipeline_config.input_dtype_policy,
+            latents=prepared.latents,
+            timesteps=prepared.timesteps_for_model,
+            conds=(prepared.pos_cond, prepared.neg_cond, prepared.joint_cond),
+            default_dtype=forward_dtype,
+        )
 
         def _compute_noise_pred() -> torch.Tensor:
-            return train_pipeline_config.compute_noise_pred(
-                model=prepared.model,
-                latents_input=latents_input,
-                timesteps_input=timesteps_input,
-                pos_cond=prepared.pos_cond,
-                neg_cond=prepared.neg_cond,
-                joint_cond=prepared.joint_cond,
-                use_cfg=prepared.use_cfg,
-                cfg_batching=prepared.cfg_batching,
-                guidance_scale=prepared.guidance_scale,
-                true_cfg_scale=prepared.true_cfg_scale,
-            )
+            with torch.autocast("cuda", dtype=forward_dtype, enabled=forward_dtype != torch.float32):
+                return train_pipeline_config.compute_noise_pred(
+                    model=prepared.model,
+                    latents_input=latents_in,
+                    timesteps_input=timesteps_in,
+                    pos_cond=pos_cond_in,
+                    neg_cond=neg_cond_in,
+                    joint_cond=joint_cond_in,
+                    use_cfg=prepared.use_cfg,
+                    cfg_batching=prepared.cfg_batching,
+                    guidance_scale=prepared.guidance_scale,
+                    true_cfg_scale=prepared.true_cfg_scale,
+                )
 
         new_pred = _compute_noise_pred()
 
@@ -580,10 +598,6 @@ def move_torch_optimizer(optimizer, device):
     torch.cuda.synchronize()
 
 
-def _resolve_dtype(name: str) -> torch.dtype:
-    return {"fp32": torch.float32, "bf16": torch.bfloat16, "fp16": torch.float16}[name]
-
-
 def apply_lora(model: torch.nn.Module, args: Namespace, train_pipeline_config) -> torch.nn.Module:
     """Apply PEFT LoRA, leaving non-rank0 adapters uninitialized on meta."""
     from peft import LoraConfig, get_peft_model
@@ -609,7 +623,14 @@ def apply_lora(model: torch.nn.Module, args: Namespace, train_pipeline_config) -
     return model
 
 
-def apply_fsdp2(model, mesh=None, cpu_offload=False, args=None, no_split_modules=None):
+def apply_fsdp2(
+    model,
+    mesh=None,
+    cpu_offload=False,
+    args=None,
+    no_split_modules=None,
+    compiled_precision=None,
+):
     from torch.distributed.fsdp import CPUOffloadPolicy, MixedPrecisionPolicy, fully_shard
 
     offload_policy = CPUOffloadPolicy() if cpu_offload else None
@@ -619,33 +640,28 @@ def apply_fsdp2(model, mesh=None, cpu_offload=False, args=None, no_split_modules
 
     modules = [module for name, module in model.named_modules() if module.__class__.__name__ in layer_cls_to_wrap]
 
-    param_dtype = _resolve_dtype(args.diffusion_forward_dtype)
-    reduce_dtype = _resolve_dtype(args.fsdp_reduce_dtype)
+    param_dtype = resolve_dtype(args.diffusion_forward_dtype)
+    reduce_dtype = resolve_dtype(args.fsdp_reduce_dtype)
     logger.info(
-        f"FSDP: wrapping {len(modules)} modules of type {layer_cls_to_wrap}, param_dtype={param_dtype}, reduce_dtype={reduce_dtype}"
+        f"FSDP: wrapping {len(modules)} modules of type {layer_cls_to_wrap}, param_dtype={param_dtype}, "
+        f"reduce_dtype={reduce_dtype}, precision wrap units={len(compiled_precision.wrap_units)}"
     )
 
-    fsdp_kwargs = {
-        "mp_policy": MixedPrecisionPolicy(
-            param_dtype=param_dtype,
-            reduce_dtype=reduce_dtype,
-        ),
-        "offload_policy": offload_policy,
-        "mesh": mesh,
-    }
+    def _fsdp_kwargs(policy_param_dtype):
+        return {
+            # input_dtype_policy owns boundary casts; autocast owns compute and keeps grad-ckpt recompute consistent.
+            "mp_policy": MixedPrecisionPolicy(
+                param_dtype=policy_param_dtype,
+                reduce_dtype=reduce_dtype,
+                cast_forward_inputs=False,
+            ),
+            "offload_policy": offload_policy,
+            "mesh": mesh,
+        }
 
-    if args.gradient_checkpointing:
-        # MixedPrecisionPolicy does not cast buffers; a buffer above param_dtype
-        # makes the ckpt recompute dtype-diverge from the forward and abort.
-        for module in model.modules():
-            for name, buf in module.named_buffers(recurse=False):
-                if buf.is_floating_point() and buf.dtype != param_dtype:
-                    persistent = name not in module._non_persistent_buffers_set
-                    module.register_buffer(name, buf.to(param_dtype), persistent=persistent)
+    for unit in compiled_precision.wrap_plan(model, modules):
+        fully_shard(unit.module, **_fsdp_kwargs(unit.param_dtype))
 
-    for module in modules:
-        fully_shard(module, **fsdp_kwargs)
-
-    fully_shard(model, **fsdp_kwargs)
+    fully_shard(model, **_fsdp_kwargs(param_dtype))
 
     return model

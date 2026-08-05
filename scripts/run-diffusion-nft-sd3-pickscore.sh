@@ -128,8 +128,7 @@ python -u "${ROOT_DIR}/train_diffusion.py" \
   --globalize-reward-std \
   --diffusion-model "${SD3_MODEL}" \
   "${REWARD_ARGS[@]}" \
-  --diffusion-forward-dtype fp16 \
-  --sglang-dit-precision fp16 \
+  --precision-default-dtype fp16 \
   --sglang-vae-slicing \
   --diffusion-num-steps 10 \
   --diffusion-eval-num-steps 50 \

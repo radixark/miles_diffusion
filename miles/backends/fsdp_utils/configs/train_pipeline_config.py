@@ -18,6 +18,7 @@ import os
 import torch
 from miles.utils.types import CondKwargs
 
+from ..precision import PrecisionSpec
 
 _REGISTRY: dict[str, type[TrainPipelineConfig]] = {}
 
@@ -82,6 +83,10 @@ class TrainPipelineConfig(abc.ABC):
     supports_cfg_training: bool = True
     # Rollout parity patch group applied by the engine (see monkey_patches; None = none).
     rollout_patch_group: str | None = None
+    # Gather-dtype rules compiled onto FSDP2 wrap units; see precision.py.
+    precision_spec: PrecisionSpec = PrecisionSpec()
+    # Model-boundary input dtypes (see precision.apply_input_dtype_policy); families opt into casts explicitly.
+    input_dtype_policy: dict = {"latents": None, "cond": None, "timestep": None}
     # Default component paths (miles custom-function style); CLI args override.
     model_backend_path: str = "miles.backends.fsdp_utils.model_backend.DiffusersModelBackend"
     # Native model package import path; required when model_backend_path is MilesModelBackend.

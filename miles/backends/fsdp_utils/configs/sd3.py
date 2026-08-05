@@ -27,6 +27,9 @@ class SD3TrainPipelineConfig(TrainPipelineConfig):
     ]
     needs_timestep_scaling = False
 
+    # Dump-verified SD3 rollout boundary: latents in dit precision, timestep pinned fp32, cond uncast.
+    input_dtype_policy = {"latents": "default", "cond": None, "timestep": "fp32"}
+
     def prepare_cond_kwargs(self, cond: CondKwargs | None, device: torch.device) -> dict:
         if cond is None:
             return {}
