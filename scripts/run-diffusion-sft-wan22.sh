@@ -45,6 +45,11 @@ WAN_LORA_TARGET_MODULES=(
 "${PYTHON_BIN}" -u "${ROOT_DIR}/train_diffusion.py" \
   --train-backend fsdp \
   --loss-type sft_loss \
+  --rollout-function-path miles.rollout.sft_rollout.generate_rollout \
+  --custom-convert-samples-to-train-data-path miles.rollout.sft_rollout.convert_samples_to_train_data \
+  --custom-rollout-log-function-path miles.rollout.sft_rollout.log_rollout_data \
+  --custom-prepare-train-batch-path miles.backends.fsdp_utils.loss_hub.sft.prepare_sft_batch \
+  --custom-loss-function-path miles.backends.fsdp_utils.loss_hub.sft.sft_loss_formula \
   --hf-checkpoint Wan-AI/Wan2.2-T2V-A14B-Diffusers \
   --diffusion-model Wan-AI/Wan2.2-T2V-A14B-Diffusers \
   --prompt-data "${SFT_DATA_JSONL}" \

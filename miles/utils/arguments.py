@@ -1489,18 +1489,6 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
 
 
 def set_default_diffusion_args(args) -> None:
-    if args.loss_type == "sft_loss":
-        if args.rollout_function_path == "miles.rollout.sglang_rollout.generate_rollout":
-            args.rollout_function_path = "miles.rollout.sft_rollout.generate_rollout"
-        if args.custom_convert_samples_to_train_data_path is None:
-            args.custom_convert_samples_to_train_data_path = "miles.rollout.sft_rollout.convert_samples_to_train_data"
-        if args.custom_rollout_log_function_path is None:
-            args.custom_rollout_log_function_path = "miles.rollout.sft_rollout.log_rollout_data"
-        if args.custom_prepare_train_batch_path is None:
-            args.custom_prepare_train_batch_path = "miles.backends.fsdp_utils.loss_hub.sft.prepare_sft_batch"
-        if args.custom_loss_function_path is None:
-            args.custom_loss_function_path = "miles.backends.fsdp_utils.loss_hub.sft.sft_loss_formula"
-
     is_nft = args.loss_type == "nft"
     if is_nft:
         if args.custom_expand_samples_to_train_pairs_path is None:
@@ -1614,6 +1602,22 @@ def miles_validate_args(args):
         raise ValueError("--ema-rollout-policy ema requires --ema-shadow")
 
     if args.loss_type == "sft_loss":
+        if args.rollout_function_path == "miles.rollout.sglang_rollout.generate_rollout":
+            raise ValueError(
+                "--loss-type sft_loss does not run rollout engines; pass "
+                "--rollout-function-path miles.rollout.sft_rollout.generate_rollout (or your own)"
+            )
+        for name in (
+            "custom_convert_samples_to_train_data_path",
+            "custom_rollout_log_function_path",
+            "custom_prepare_train_batch_path",
+            "custom_loss_function_path",
+        ):
+            if getattr(args, name) is None:
+                raise ValueError(
+                    f"--loss-type sft_loss requires --{name.replace('_', '-')}; "
+                    "see scripts/run-diffusion-sft-wan22.sh"
+                )
         if args.prompt_data is None:
             raise ValueError("--loss-type sft_loss requires --prompt-data (jsonl with prompt + metadata.video)")
         from miles.backends.fsdp_utils.configs.train_pipeline_config import TrainPipelineConfig
