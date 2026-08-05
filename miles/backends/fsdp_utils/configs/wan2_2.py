@@ -69,8 +69,8 @@ class Wan2_2TrainPipelineConfig(TrainPipelineConfig):
 
     @classmethod
     def validate_args(cls, args) -> None:
-        if args.loss_type == "sft_loss" and (args.sft_num_frames - 1) % 4 != 0:
-            raise ValueError("--sft-num-frames must be 4k+1 for the Wan VAE temporal stride")
+        if args.loss_type == "sft_loss" and (args.diffusion_output_num_frames - 1) % 4 != 0:
+            raise ValueError("--diffusion-output-num-frames must be 4k+1 for the Wan VAE temporal stride")
 
     def load_sft_encoder(self, args, device: torch.device):
         from diffusers import AutoencoderKLWan

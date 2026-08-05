@@ -28,7 +28,7 @@ def test_image_reads_as_single_frame(tmp_path):
 def test_image_rejects_multi_frame(tmp_path):
     path = tmp_path / "a.png"
     _write_png(path, 64, 64)
-    with pytest.raises(ValueError, match="requires --sft-num-frames 1"):
+    with pytest.raises(ValueError, match="requires --diffusion-output-num-frames 1"):
         read_media_clip(str(path), height=64, width=64, num_frames=5, frame_stride=1)
 
 

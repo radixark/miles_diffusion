@@ -33,7 +33,8 @@ def sft_sample_key(args, item: dict) -> tuple[str, int]:
     """Content-addressed cache filename and latent-sampling seed for one (media, prompt) item."""
     stat = Path(item["media"]).stat()
     digest = hashlib.sha256(
-        f"{args.hf_checkpoint}|{args.sft_height}x{args.sft_width}|{args.sft_num_frames}s{args.sft_frame_stride}"
+        f"{args.hf_checkpoint}|{args.diffusion_height}x{args.diffusion_width}"
+        f"|{args.diffusion_output_num_frames}s{args.sft_frame_stride}"
         f"|{item['media']}|{stat.st_size}|{stat.st_mtime_ns}|{item['prompt']}".encode()
     ).digest()
     return digest.hex()[:16] + ".pt", int.from_bytes(digest[8:16], "big") % 2**63
@@ -45,7 +46,7 @@ IMAGE_EXTENSIONS = {".bmp", ".jpeg", ".jpg", ".png", ".webp"}
 def read_media_clip(path: str, *, height: int, width: int, num_frames: int, frame_stride: int) -> torch.Tensor:
     if Path(path).suffix.lower() in IMAGE_EXTENSIONS:
         if num_frames != 1:
-            raise ValueError(f"{path} is an image, which requires --sft-num-frames 1")
+            raise ValueError(f"{path} is an image, which requires --diffusion-output-num-frames 1")
         import numpy as np
         from PIL import Image
 
@@ -82,9 +83,9 @@ class SftEncodeActor:
         for item in items:
             pixels = read_media_clip(
                 item["media"],
-                height=args.sft_height,
-                width=args.sft_width,
-                num_frames=args.sft_num_frames,
+                height=args.diffusion_height,
+                width=args.diffusion_width,
+                num_frames=args.diffusion_output_num_frames,
                 frame_stride=args.sft_frame_stride,
             )
             generator = torch.Generator().manual_seed(item["latent_seed"])
@@ -127,7 +128,7 @@ def _get_scheduler_grid(args) -> tuple[torch.Tensor, torch.Tensor]:
         config = load_function(args.train_pipeline_config_path)()
         scheduler = load_function(args.model_backend_path)(config).load_scheduler(args)
         num_train_timesteps = int(scheduler.config.num_train_timesteps)
-        shift = args.diffusion_flow_shift
+        shift = args.fsdp_flow_shift
         sigmas = torch.linspace(1.0, 1.0 / num_train_timesteps, num_train_timesteps, dtype=torch.float64)
         sigmas = shift * sigmas / (1.0 + (shift - 1.0) * sigmas)
         _scheduler_grid = (

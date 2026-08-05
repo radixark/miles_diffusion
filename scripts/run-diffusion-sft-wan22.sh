@@ -49,9 +49,9 @@ WAN_LORA_TARGET_MODULES=(
   --diffusion-model Wan-AI/Wan2.2-T2V-A14B-Diffusers \
   --prompt-data "${SFT_DATA_JSONL}" \
   --input-key prompt \
-  --sft-height 480 \
-  --sft-width 832 \
-  --sft-num-frames 81 \
+  --diffusion-height 480 \
+  --diffusion-width 832 \
+  --diffusion-output-num-frames 81 \
   --sft-frame-stride 2 \
   --rollout-batch-size 64 \
   --num-epoch 3 \
@@ -71,7 +71,7 @@ WAN_LORA_TARGET_MODULES=(
   --fsdp-master-dtype fp32 \
   --fsdp-reduce-dtype fp32 \
   --diffusion-forward-dtype bf16 \
-  --diffusion-flow-shift 3.0 \
+  --fsdp-flow-shift 3.0 \
   --save "${SAVE_DIR}" \
   --save-interval 20 \
   "${RESUME_ARGS[@]}" \

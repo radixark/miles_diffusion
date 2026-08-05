@@ -11,7 +11,13 @@ from miles.rollout.sft_rollout import sft_sample_key
 
 
 def _args(**overrides):
-    base = dict(hf_checkpoint="ckpt", sft_height=480, sft_width=832, sft_num_frames=81, sft_frame_stride=2)
+    base = dict(
+        hf_checkpoint="ckpt",
+        diffusion_height=480,
+        diffusion_width=832,
+        diffusion_output_num_frames=81,
+        sft_frame_stride=2,
+    )
     base.update(overrides)
     return Namespace(**base)
 
@@ -33,7 +39,7 @@ def test_key_invalidates_per_axis(tmp_path):
     item = {"media": str(video), "prompt": "p"}
     base_name, base_seed = sft_sample_key(_args(), item)
 
-    assert sft_sample_key(_args(sft_height=512), item)[0] != base_name
+    assert sft_sample_key(_args(diffusion_height=512), item)[0] != base_name
     assert sft_sample_key(_args(sft_frame_stride=1), item)[0] != base_name
     assert sft_sample_key(_args(hf_checkpoint="other"), item)[0] != base_name
     assert sft_sample_key(_args(), {"media": str(video), "prompt": "q"})[0] != base_name
