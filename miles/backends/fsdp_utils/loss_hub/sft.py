@@ -17,12 +17,12 @@ def sample_grid_indices(ctx: DiffusionLossContext, bsz: int) -> tuple[str, nn.Mo
         component_name, model = next(iter(ctx.models.items()))
         return component_name, model, torch.randint(num_grid, (bsz,))
 
+    # A uniform anchor index picks each expert with probability equal to its share of the
+    # grid, keeping the marginal over indices uniform while the micro-batch stays single-expert.
     num_train_timesteps = int(ctx.scheduler.config.num_train_timesteps)
     config = ctx.train_pipeline_config
     components = [config.component_for_timestep(float(t), num_train_timesteps) for t in ctx.scheduler.timesteps]
-    names = sorted(set(components))
-    counts = torch.tensor([components.count(name) for name in names], dtype=torch.float32)
-    component_name = names[int(torch.multinomial(counts, 1))]
+    component_name = components[int(torch.randint(num_grid, (1,)))]
     pool = torch.tensor([i for i, name in enumerate(components) if name == component_name])
     return component_name, ctx.models[component_name], pool[torch.randint(len(pool), (bsz,))]
 
