@@ -35,6 +35,7 @@ fi
   --deterministic-mode \
   --rollout-function-path miles.rollout.sglang_diffusion_rollout.generate_rollout \
   --diffusion-model Lightricks/LTX-2.3 \
+  --rollout-patch-group ltx \
   --hf-checkpoint gpt2 \
   --prompt-data "${DATASETS_DIR}/flowgrpo_pickscore/train.jsonl" \
   --input-key input \

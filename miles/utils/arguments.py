@@ -436,15 +436,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Set rollout_log_prob_no_const=true on POST /rollout/generate.",
             )
             parser.add_argument(
-                "--apply-sgld-monkey-patches",
-                action="store_true",
-                default=False,
+                "--rollout-patch-group",
+                type=str,
+                default=None,
                 help=(
-                    "Apply miles.backends.sglang_diffusion_utils.monkey_patches at "
-                    "sglang-d startup so its DiT forward is bit-exact with diffusers' "
-                    "implementation. Makes rollout (sglang-d path) and training-side "
-                    "log-prob agree on noise_pred down to bf16 ULPs. Small perf hit on "
-                    "the rollout engine."
+                    "Comma-separated rollout patch groups applied at sglang-d startup so its "
+                    "forward is numerically aligned with the training side, e.g. 'sgld' "
+                    "(diffusers op parity, small rollout perf hit) or 'ltx' "
+                    "(see sglang_diffusion_utils/monkey_patches)."
                 ),
             )
             parser.add_argument(
@@ -1557,7 +1556,7 @@ def miles_validate_args(args):
     if args.diffusion_log_image_interval < 1:
         raise ValueError(f"diffusion_log_image_interval must be >= 1, got {args.diffusion_log_image_interval}")
 
-    args.rollout_patch_groups = ["sgld"] if args.apply_sgld_monkey_patches else []
+    args.rollout_patch_groups = [name for name in (args.rollout_patch_group or "").split(",") if name]
 
     if getattr(args, "diffusion_model", None):
         from miles.utils.misc import load_function
@@ -1577,8 +1576,6 @@ def miles_validate_args(args):
             args.train_pipeline_config_path = f"{cfg_cls.__module__}.{cfg_cls.__qualname__}"
         if args.model_backend_path is None:
             args.model_backend_path = cfg_cls.model_backend_path
-        if cfg_cls.rollout_patch_group:
-            args.rollout_patch_groups.append(cfg_cls.rollout_patch_group)
         if not cfg_cls.supports_cfg_training and (
             args.diffusion_guidance_scale != 1.0 or args.diffusion_negative_prompt is not None
         ):
@@ -1589,6 +1586,11 @@ def miles_validate_args(args):
         cfg_cls.validate_args(args)
         if args.use_lora and args.lora_target_modules is None:
             args.lora_target_modules = list(cfg_cls.lora_target_modules)
+
+    if args.rollout_patch_groups:
+        from miles.backends.sglang_diffusion_utils.monkey_patches import validate_rollout_patch_groups
+
+        validate_rollout_patch_groups(args.rollout_patch_groups)
 
     if args.lora_ipc_weight_sync:
         if not args.use_lora:

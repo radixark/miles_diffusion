@@ -44,3 +44,13 @@ class TestRolloutPatchGroups:
     def test_builtin_group_registered(self):
         # The decorator ran at import time for the in-repo group.
         assert "sgld" in mp._ROLLOUT_PATCH_APPLIERS
+
+
+class TestValidateRolloutPatchGroups:
+    # The arg-validation entry point behind --rollout-patch-group:
+    #   --rollout-patch-group "sgld,ltx"  ──► registered appliers ──► pass
+    #   --rollout-patch-group "sgld,bogus" ─► "bogus" unregistered ─► ValueError
+    def test_known_pass_unknown_raises(self):
+        mp.validate_rollout_patch_groups(["sgld", "ltx"])
+        with pytest.raises(ValueError, match="Unknown rollout patch group"):
+            mp.validate_rollout_patch_groups(["sgld", "bogus"])

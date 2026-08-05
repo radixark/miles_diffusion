@@ -102,7 +102,7 @@ hf download --repo-type dataset rockdu/miles-diffusion-datasets \
   --diffusion-step-strategy-path miles.rollout.step_strategy_hub.sde_window \
   --diffusion-num-sde-steps 2 \
   --diffusion-sde-window-range 3,5 \
-  --apply-sgld-monkey-patches \
+  --rollout-patch-group sgld \
   --diffusion-height 512 \
   --diffusion-width 512 \
   --save "${SAVE_DIR}" \

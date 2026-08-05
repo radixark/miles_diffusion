@@ -19,7 +19,6 @@ class LTXTrainPipelineConfig(TrainPipelineConfig):
     supports_cfg_training = False
     # Rollout stores σ×1000 in trajectory timesteps; ltx_core AdaLN uses σ∈[0,1].
     sde_timestep_divisor = 1000.0
-    rollout_patch_group = "ltx"
     hf_ckpt_name_patterns = ("ltx",)
     model_backend_path = "miles.backends.fsdp_utils.model_backend.MilesModelBackend"
     model_package = "miles.backends.fsdp_utils.models.ltx"

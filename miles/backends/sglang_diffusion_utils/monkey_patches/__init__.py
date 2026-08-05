@@ -66,10 +66,19 @@ def apply_ltx2_rollout_patches() -> None:
     patch_ltx2_disable_av_cross.apply()
 
 
+def validate_rollout_patch_groups(names: list[str]) -> None:
+    """Reject group names with no registered applier; shared by arg validation and env selection."""
+    unknown = [name for name in names if name not in _ROLLOUT_PATCH_APPLIERS]
+    if unknown:
+        raise ValueError(
+            f"Unknown rollout patch group(s) {unknown}; known: {list(_ROLLOUT_PATCH_APPLIERS)}. "
+            "Each group must be registered here via @register_rollout_patch_group."
+        )
+
+
 def apply_env_selected_rollout_patches() -> None:
     """Apply every group named in the env list (runs in the scheduler grandchild)."""
-    for name in filter(None, os.environ.get(ROLLOUT_PATCH_GROUPS_ENV, "").split(",")):
-        applier = _ROLLOUT_PATCH_APPLIERS.get(name)
-        if applier is None:
-            raise ValueError(f"Unknown rollout patch group {name!r}; known: {list(_ROLLOUT_PATCH_APPLIERS)}")
-        applier()
+    names = [name for name in os.environ.get(ROLLOUT_PATCH_GROUPS_ENV, "").split(",") if name]
+    validate_rollout_patch_groups(names)
+    for name in names:
+        _ROLLOUT_PATCH_APPLIERS[name]()
