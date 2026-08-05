@@ -30,24 +30,36 @@ ENCODE_GPU_FRACTION = 0.2
 
 
 def sft_sample_key(args, item: dict) -> tuple[str, int]:
-    """Content-addressed cache filename and latent-sampling seed for one (video, prompt) item."""
-    stat = Path(item["video"]).stat()
+    """Content-addressed cache filename and latent-sampling seed for one (media, prompt) item."""
+    stat = Path(item["media"]).stat()
     digest = hashlib.sha256(
         f"{args.hf_checkpoint}|{args.sft_height}x{args.sft_width}|{args.sft_num_frames}s{args.sft_frame_stride}"
-        f"|{item['video']}|{stat.st_size}|{stat.st_mtime_ns}|{item['prompt']}".encode()
+        f"|{item['media']}|{stat.st_size}|{stat.st_mtime_ns}|{item['prompt']}".encode()
     ).digest()
     return digest.hex()[:16] + ".pt", int.from_bytes(digest[8:16], "big") % 2**63
 
 
-def read_video_clip(path: str, *, height: int, width: int, num_frames: int, frame_stride: int) -> torch.Tensor:
-    import torchvision
+IMAGE_EXTENSIONS = {".bmp", ".jpeg", ".jpg", ".png", ".webp"}
 
-    frames, _, _ = torchvision.io.read_video(path, pts_unit="sec", output_format="TCHW")
-    span = (num_frames - 1) * frame_stride + 1
-    if frames.shape[0] < span:
-        raise ValueError(f"{path} has {frames.shape[0]} frames, need {span}")
-    start = (frames.shape[0] - span) // 2
-    frames = frames[start : start + span : frame_stride].float() / 127.5 - 1.0
+
+def read_media_clip(path: str, *, height: int, width: int, num_frames: int, frame_stride: int) -> torch.Tensor:
+    if Path(path).suffix.lower() in IMAGE_EXTENSIONS:
+        if num_frames != 1:
+            raise ValueError(f"{path} is an image, which requires --sft-num-frames 1")
+        import numpy as np
+        from PIL import Image
+
+        frames = torch.from_numpy(np.asarray(Image.open(path).convert("RGB"))).permute(2, 0, 1)[None].float()
+    else:
+        import torchvision
+
+        video, _, _ = torchvision.io.read_video(path, pts_unit="sec", output_format="TCHW")
+        span = (num_frames - 1) * frame_stride + 1
+        if video.shape[0] < span:
+            raise ValueError(f"{path} has {video.shape[0]} frames, need {span}")
+        start = (video.shape[0] - span) // 2
+        frames = video[start : start + span : frame_stride].float()
+    frames = frames / 127.5 - 1.0
 
     scale = max(height / frames.shape[2], width / frames.shape[3])
     new_h = max(height, round(frames.shape[2] * scale))
@@ -68,8 +80,8 @@ class SftEncodeActor:
     def encode(self, items: list[dict], cache_dir: str) -> int:
         args = self.args
         for item in items:
-            pixels = read_video_clip(
-                item["video"],
+            pixels = read_media_clip(
+                item["media"],
                 height=args.sft_height,
                 width=args.sft_width,
                 num_frames=args.sft_num_frames,
@@ -135,7 +147,10 @@ def generate_rollout(args, rollout_id, data_source, evaluation: bool = False) ->
     cache_dir = Path(args.prompt_data).parent / ".sft_cache"
     items = []
     for sample in samples:
-        item = {"video": sample.metadata["video"], "prompt": sample.prompt}
+        media = sample.metadata.get("video") or sample.metadata.get("image")
+        if media is None:
+            raise ValueError(f"sample {sample.index} metadata has neither 'video' nor 'image': {sample.metadata}")
+        item = {"media": media, "prompt": sample.prompt}
         item["cache_name"], item["latent_seed"] = sft_sample_key(args, item)
         items.append(item)
 

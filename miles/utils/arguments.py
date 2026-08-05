@@ -690,9 +690,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument("--input-key", type=str, default="input", help="JSON dataset key")
             parser.add_argument("--metadata-key", type=str, default="metadata", help="JSON dataset key")
-            # SFT (--loss-type sft_loss) reads --prompt-data/--input-key like RL; the video path
-            # lives in each row's metadata dict under "video". Encoded pairs are cached next to
-            # the jsonl under .sft_cache/, one content-addressed file per sample.
+            # SFT (--loss-type sft_loss) reads --prompt-data/--input-key like RL; the media path
+            # lives in each row's metadata dict under "video" or "image" (images train as single
+            # frames and require --sft-num-frames 1). Encoded pairs are cached next to the jsonl
+            # under .sft_cache/, one content-addressed file per sample.
             parser.add_argument("--sft-height", type=int, default=None, help="SFT encode height (center crop)")
             parser.add_argument("--sft-width", type=int, default=None, help="SFT encode width (center crop)")
             parser.add_argument("--sft-num-frames", type=int, default=None, help="SFT encode frames per clip")

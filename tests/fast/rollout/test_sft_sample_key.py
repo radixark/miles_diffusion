@@ -19,7 +19,7 @@ def _args(**overrides):
 def test_key_is_deterministic_with_seed(tmp_path):
     video = tmp_path / "a.mp4"
     video.write_bytes(b"x" * 100)
-    item = {"video": str(video), "prompt": "p"}
+    item = {"media": str(video), "prompt": "p"}
 
     name, seed = sft_sample_key(_args(), item)
     assert (name, seed) == sft_sample_key(_args(), item)
@@ -30,13 +30,13 @@ def test_key_is_deterministic_with_seed(tmp_path):
 def test_key_invalidates_per_axis(tmp_path):
     video = tmp_path / "a.mp4"
     video.write_bytes(b"x" * 100)
-    item = {"video": str(video), "prompt": "p"}
+    item = {"media": str(video), "prompt": "p"}
     base_name, base_seed = sft_sample_key(_args(), item)
 
     assert sft_sample_key(_args(sft_height=512), item)[0] != base_name
     assert sft_sample_key(_args(sft_frame_stride=1), item)[0] != base_name
     assert sft_sample_key(_args(hf_checkpoint="other"), item)[0] != base_name
-    assert sft_sample_key(_args(), {"video": str(video), "prompt": "q"})[0] != base_name
+    assert sft_sample_key(_args(), {"media": str(video), "prompt": "q"})[0] != base_name
 
     video.write_bytes(b"y" * 101)
     assert sft_sample_key(_args(), item)[0] != base_name
@@ -52,6 +52,6 @@ def test_key_is_per_sample(tmp_path):
     a, b = tmp_path / "a.mp4", tmp_path / "b.mp4"
     a.write_bytes(b"x" * 100)
     b.write_bytes(b"x" * 100)
-    name_a, _ = sft_sample_key(_args(), {"video": str(a), "prompt": "p"})
-    name_b, _ = sft_sample_key(_args(), {"video": str(b), "prompt": "p"})
+    name_a, _ = sft_sample_key(_args(), {"media": str(a), "prompt": "p"})
+    name_b, _ = sft_sample_key(_args(), {"media": str(b), "prompt": "p"})
     assert name_a != name_b
