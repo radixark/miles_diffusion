@@ -26,7 +26,7 @@ from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
 
-ENCODE_GPU_FRACTION = 0.2
+ENCODE_GPU_FRACTION = 0.3
 
 
 def sft_sample_key(args, item: dict) -> tuple[str, int]:
