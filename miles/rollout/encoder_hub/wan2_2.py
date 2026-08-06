@@ -16,7 +16,7 @@ def load_encoder(args, device: torch.device) -> dict:
 
     ckpt = args.sft_encoder_checkpoint
     tokenizer = AutoTokenizer.from_pretrained(ckpt, subfolder="tokenizer")
-    text_encoder = UMT5EncoderModel.from_pretrained(ckpt, subfolder="text_encoder", torch_dtype=torch.bfloat16).to(
+    text_encoder = UMT5EncoderModel.from_pretrained(ckpt, subfolder="text_encoder", torch_dtype=torch.float32).to(
         device
     )
     vae = AutoencoderKLWan.from_pretrained(ckpt, subfolder="vae", torch_dtype=torch.float32).to(device)
@@ -51,12 +51,8 @@ def encode_sample(encoder: dict, pixels: torch.Tensor, prompt: str, generator: t
     embeds = encoder["text_encoder"](inputs.input_ids.to(device), inputs.attention_mask.to(device)).last_hidden_state
     embeds[:, int(inputs.attention_mask[0].sum()) :] = 0
 
-    # Storage dtypes: the normalized latent is unit-scale (std ~0.8, max|x| ~4 on real
-    # clips), where fp16's 10-bit mantissa stores ~8x tighter than bf16 (measured rms
-    # rel err 2e-4 vs 1.7e-3) with no range risk; the embeds are a bf16 model's output,
-    # so bf16 keeps them bit-exact. The trainer upcasts both before use.
     return {
-        "latent": latent[0].to(torch.float16).cpu(),
+        "latent": latent[0].to(torch.bfloat16).cpu(),
         "cond_kwargs": {"encoder_hidden_states": embeds.to(torch.bfloat16).cpu()},
         "prompt": prompt,
     }
