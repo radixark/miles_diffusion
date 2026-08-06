@@ -82,7 +82,7 @@ def create_placement_groups(args):
     """Create placement groups for actor and rollout engines.
 
     Two topologies:
-    - Colocate (or --debug-{train,rollout}-only): one combined placement
+    - Colocate (or --train-only / --debug-rollout-only): one combined placement
       group; both roles see the same bundle list.
     - Disaggregate (the else branch): two separate placement groups so
       train and rollout each own a disjoint GPU pool — avoids bundle
@@ -107,15 +107,11 @@ def create_placement_groups(args):
     logger.info(f"Creating placement group with {num_gpus} GPUs...")
     pg, all_reordered_bundle_indices, all_reordered_gpu_ids = _create_placement_group(num_gpus)
 
-    actor_pg_reordered_bundle_indices = all_reordered_bundle_indices
-    actor_pg_reordered_gpu_ids = all_reordered_gpu_ids
-    # SFT keeps the rollout seats: its encoder pool is the rollout-side producer.
-    rollout_pg_reordered_bundle_indices = all_reordered_bundle_indices if not args.debug_train_only else []
-    rollout_pg_reordered_gpu_ids = all_reordered_gpu_ids if not args.debug_train_only else []
-
+    # The rollout view keeps its seats under train_only: engine startup is gated by
+    # args.train_only, and rollout-side actor pools (e.g. the SFT encoder pool) seat here.
     return {
-        "actor": (pg, actor_pg_reordered_bundle_indices, actor_pg_reordered_gpu_ids),
-        "rollout": (pg, rollout_pg_reordered_bundle_indices, rollout_pg_reordered_gpu_ids),
+        "actor": (pg, all_reordered_bundle_indices, all_reordered_gpu_ids),
+        "rollout": (pg, all_reordered_bundle_indices, all_reordered_gpu_ids),
     }
 
 

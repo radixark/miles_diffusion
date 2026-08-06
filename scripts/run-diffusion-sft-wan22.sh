@@ -45,6 +45,7 @@ WAN_LORA_TARGET_MODULES=(
 "${PYTHON_BIN}" -u "${ROOT_DIR}/train_diffusion.py" \
   --train-backend fsdp \
   --loss-type sft_loss \
+  --train-only \
   --rollout-function-path miles.rollout.sft_rollout.generate_rollout \
   --custom-convert-samples-to-train-data-path miles.rollout.sft_rollout.convert_samples_to_train_data \
   --custom-rollout-log-function-path miles.rollout.sft_rollout.log_rollout_data \

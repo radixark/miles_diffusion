@@ -1101,12 +1101,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--train-only",
                 "--debug-train-only",
+                dest="train_only",
                 action="store_true",
                 default=False,
                 help=(
-                    "Whether to only run the training without sglang servers. "
-                    "This is useful for debugging the rollout generation function."
+                    "Run without rollout engines: skips engine/router startup, weight sync, "
+                    "and eval. Used by SFT and for debugging the training side. "
+                    "--debug-train-only is a legacy alias."
                 ),
             )
             parser.add_argument(
@@ -1602,6 +1605,8 @@ def miles_validate_args(args):
         raise ValueError("--ema-rollout-policy ema requires --ema-shadow")
 
     if args.loss_type == "sft_loss":
+        if not args.train_only:
+            raise ValueError("--loss-type sft_loss runs no rollout engines; pass --train-only")
         if args.rollout_function_path == "miles.rollout.sglang_rollout.generate_rollout":
             raise ValueError(
                 "--loss-type sft_loss does not run rollout engines; pass "
@@ -1679,16 +1684,16 @@ def miles_validate_args(args):
             f"load_debug_rollout_data {args.load_debug_rollout_data} is set, "
             "will not instantiate sglang servers and will only run the training process."
         )
-        args.debug_train_only = True
+        args.train_only = True
 
     if args.offload:
         args.offload_train = True
         args.offload_rollout = True
     del args.offload
 
-    # Formal "no rollout engines" mode: skips engine/router startup, weight sync, and
-    # the rollout placement view. Implied by debug_train_only and by SFT.
-    args.train_only = args.debug_train_only or args.loss_type == "sft_loss"
+    assert not (args.debug_rollout_only and args.train_only), (
+        "debug_rollout_only and train_only cannot be set at the same time, please set only one of them."
+    )
 
     if args.debug_rollout_only:
         if args.colocate and (not args.rollout_num_gpus):
@@ -1701,10 +1706,6 @@ def miles_validate_args(args):
         if args.train_memory_margin_bytes > 0:
             logger.warning("Force train_memory_margin_bytes=0 since debug_rollout_only does not support it")
             args.train_memory_margin_bytes = 0
-
-    assert not (args.debug_rollout_only and args.debug_train_only), (
-        "debug_rollout_only and debug_train_only cannot be set at the same time, " "please set only one of them."
-    )
 
     if getattr(args, "diffusion_model", None):
         from miles.backends.fsdp_utils.arguments import validate_hybrid_shard_args, validate_sp_args
