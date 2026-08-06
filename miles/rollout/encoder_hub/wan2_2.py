@@ -51,6 +51,10 @@ def encode_sample(encoder: dict, pixels: torch.Tensor, prompt: str, generator: t
     embeds = encoder["text_encoder"](inputs.input_ids.to(device), inputs.attention_mask.to(device)).last_hidden_state
     embeds[:, int(inputs.attention_mask[0].sum()) :] = 0
 
+    # Storage dtypes: the normalized latent is unit-scale (std ~0.8, max|x| ~4 on real
+    # clips), where fp16's 10-bit mantissa stores ~8x tighter than bf16 (measured rms
+    # rel err 2e-4 vs 1.7e-3) with no range risk; the embeds are a bf16 model's output,
+    # so bf16 keeps them bit-exact. The trainer upcasts both before use.
     return {
         "latent": latent[0].to(torch.float16).cpu(),
         "cond_kwargs": {"encoder_hidden_states": embeds.to(torch.bfloat16).cpu()},
