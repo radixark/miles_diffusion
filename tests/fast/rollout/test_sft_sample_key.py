@@ -12,7 +12,7 @@ from miles.rollout.sft_rollout import sft_sample_key
 
 def _args(**overrides):
     base = dict(
-        hf_checkpoint="ckpt",
+        sft_encoder_checkpoint="ckpt",
         diffusion_height=480,
         diffusion_width=832,
         diffusion_output_num_frames=81,
@@ -41,7 +41,7 @@ def test_key_invalidates_per_axis(tmp_path):
 
     assert sft_sample_key(_args(diffusion_height=512), item)[0] != base_name
     assert sft_sample_key(_args(sft_frame_stride=1), item)[0] != base_name
-    assert sft_sample_key(_args(hf_checkpoint="other"), item)[0] != base_name
+    assert sft_sample_key(_args(sft_encoder_checkpoint="other"), item)[0] != base_name
     assert sft_sample_key(_args(), {"media": str(video), "prompt": "q"})[0] != base_name
 
     video.write_bytes(b"y" * 101)

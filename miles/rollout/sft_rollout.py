@@ -33,7 +33,7 @@ def sft_sample_key(args, item: dict) -> tuple[str, int]:
     """Content-addressed cache filename and latent-sampling seed for one (media, prompt) item."""
     stat = Path(item["media"]).stat()
     digest = hashlib.sha256(
-        f"{args.hf_checkpoint}|{args.diffusion_height}x{args.diffusion_width}"
+        f"{args.sft_encoder_checkpoint}|{args.diffusion_height}x{args.diffusion_width}"
         f"|{args.diffusion_output_num_frames}s{args.sft_frame_stride}"
         f"|{item['media']}|{stat.st_size}|{stat.st_mtime_ns}|{item['prompt']}".encode()
     ).digest()
@@ -74,9 +74,11 @@ def read_media_clip(path: str, *, height: int, width: int, num_frames: int, fram
 @ray.remote
 class SftEncodeActor:
     def __init__(self, args):
+        from miles.rollout.encoder_hub import get_encoder
+
         self.args = args
-        self.config = load_function(args.train_pipeline_config_path)()
-        self.encoder = self.config.load_sft_encoder(args, torch.device("cuda"))
+        self.encoder_module = get_encoder(args.diffusion_model_family)
+        self.encoder = self.encoder_module.load_encoder(args, torch.device("cuda"))
 
     def encode(self, items: list[dict], cache_dir: str) -> int:
         args = self.args
@@ -89,7 +91,7 @@ class SftEncodeActor:
                 frame_stride=args.sft_frame_stride,
             )
             generator = torch.Generator().manual_seed(item["latent_seed"])
-            pair = self.config.encode_sft_sample(self.encoder, pixels, item["prompt"], generator)
+            pair = self.encoder_module.encode_sample(self.encoder, pixels, item["prompt"], generator)
             out_path = Path(cache_dir) / item["cache_name"]
             # Temp-then-rename so an interrupted write never leaves a loadable-looking cache entry.
             tmp_path = out_path.with_name(out_path.name + ".tmp")

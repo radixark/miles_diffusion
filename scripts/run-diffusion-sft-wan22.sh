@@ -53,6 +53,7 @@ WAN_LORA_TARGET_MODULES=(
   --custom-loss-function-path miles.backends.fsdp_utils.loss_hub.sft.sft_loss_formula \
   --hf-checkpoint Wan-AI/Wan2.2-T2V-A14B-Diffusers \
   --diffusion-model Wan-AI/Wan2.2-T2V-A14B-Diffusers \
+  --sft-encoder-checkpoint Wan-AI/Wan2.2-T2V-A14B-Diffusers \
   --prompt-data "${SFT_DATA_JSONL}" \
   --input-key prompt \
   --diffusion-height 480 \

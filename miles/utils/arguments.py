@@ -706,6 +706,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             # --diffusion-height/--diffusion-width/--diffusion-output-num-frames. Encoded pairs are
             # cached next to the jsonl under .sft_cache/, one content-addressed file per sample.
             parser.add_argument("--sft-frame-stride", type=int, default=1, help="SFT encode temporal stride")
+            parser.add_argument(
+                "--sft-encoder-checkpoint",
+                type=str,
+                default=None,
+                help="HF name or path for the frozen SFT encoders (tokenizer/text_encoder/vae subfolders).",
+            )
 
             parser.add_argument(
                 "--start-rollout-id",
@@ -1625,15 +1631,14 @@ def miles_validate_args(args):
                 )
         if args.prompt_data is None:
             raise ValueError("--loss-type sft_loss requires --prompt-data (jsonl with prompt + metadata.video)")
-        from miles.backends.fsdp_utils.configs.train_pipeline_config import TrainPipelineConfig
-        from miles.utils.misc import load_function
-
-        sft_cfg_cls = load_function(args.train_pipeline_config_path)
-        if sft_cfg_cls.encode_sft_sample is TrainPipelineConfig.encode_sft_sample:
+        if args.sft_encoder_checkpoint is None:
             raise ValueError(
-                f"--loss-type sft_loss is not supported for {sft_cfg_cls.__name__}: "
-                "it does not implement load_sft_encoder/encode_sft_sample"
+                "--loss-type sft_loss requires --sft-encoder-checkpoint "
+                "(HF name or path holding the family's tokenizer/text_encoder/vae)"
             )
+        from miles.rollout.encoder_hub import get_encoder
+
+        get_encoder(args.diffusion_model_family).validate_args(args)
         if args.fsdp_flow_shift is None:
             raise ValueError("--loss-type sft_loss requires --fsdp-flow-shift for the training sigma grid")
         if args.n_samples_per_prompt != 1:
