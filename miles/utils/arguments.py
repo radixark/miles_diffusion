@@ -1696,9 +1696,9 @@ def miles_validate_args(args):
         args.offload_rollout = True
     del args.offload
 
-    assert not (args.debug_rollout_only and args.train_only), (
-        "debug_rollout_only and train_only cannot be set at the same time, please set only one of them."
-    )
+    assert not (
+        args.debug_rollout_only and args.train_only
+    ), "debug_rollout_only and train_only cannot be set at the same time, please set only one of them."
 
     if args.debug_rollout_only:
         if args.colocate and (not args.rollout_num_gpus):
