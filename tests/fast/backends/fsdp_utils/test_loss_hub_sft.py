@@ -40,7 +40,7 @@ def _scheduler():
     )
 
 
-def _ctx(models, rollout_id=3, microbatch_id=0, dp_rank=0, config=None):
+def _ctx(models, rollout_id=3, optim_step_idx=0, microbatch_idx=0, dp_rank=0, config=None):
     return DiffusionLossContext(
         models=models,
         train_pipeline_config=config if config is not None else _Config(),
@@ -50,7 +50,8 @@ def _ctx(models, rollout_id=3, microbatch_id=0, dp_rank=0, config=None):
         forward_dtype=torch.float32,
         device=torch.device("cpu"),
         rollout_id=rollout_id,
-        microbatch_id=microbatch_id,
+        optim_step_idx=optim_step_idx,
+        microbatch_idx=microbatch_idx,
         dp_rank=dp_rank,
     )
 
@@ -126,7 +127,7 @@ class TestPrepareSftBatch:
         config = ctx.train_pipeline_config
         picked = set()
         for call in range(20):
-            ctx.microbatch_id = call
+            ctx.microbatch_idx = call
             name, model, idx = sample_grid_indices(
                 ctx,
                 bsz=4,
@@ -164,9 +165,11 @@ class TestPrepareSftBatch:
         batch = _batch()
         base = prepare_sft_batch(_ctx({"transformer": nn.Identity()}), batch)
         other_rollout = prepare_sft_batch(_ctx({"transformer": nn.Identity()}, rollout_id=4), batch)
-        other_slot = prepare_sft_batch(_ctx({"transformer": nn.Identity()}, microbatch_id=1), batch)
+        other_step = prepare_sft_batch(_ctx({"transformer": nn.Identity()}, optim_step_idx=1), batch)
+        other_slot = prepare_sft_batch(_ctx({"transformer": nn.Identity()}, microbatch_idx=1), batch)
         other_dp_rank = prepare_sft_batch(_ctx({"transformer": nn.Identity()}, dp_rank=1), batch)
         assert not torch.equal(base.extras["target"], other_rollout.extras["target"])
+        assert not torch.equal(base.extras["target"], other_step.extras["target"])
         assert not torch.equal(base.extras["target"], other_slot.extras["target"])
         assert not torch.equal(base.extras["target"], other_dp_rank.extras["target"])
 
@@ -174,8 +177,8 @@ class TestPrepareSftBatch:
         models = {"transformer": nn.Identity(), "transformer_2": nn.Identity()}
         for slot in range(10):
             # Different DP ranks choose the same expert but use independent sample RNG.
-            a = prepare_sft_batch(_ctx(models, microbatch_id=slot, dp_rank=0), _batch())
-            b = prepare_sft_batch(_ctx(models, microbatch_id=slot, dp_rank=1), _batch())
+            a = prepare_sft_batch(_ctx(models, microbatch_idx=slot, dp_rank=0), _batch())
+            b = prepare_sft_batch(_ctx(models, microbatch_idx=slot, dp_rank=1), _batch())
             assert a.component_name == b.component_name
             assert not torch.equal(a.extras["target"], b.extras["target"])
 

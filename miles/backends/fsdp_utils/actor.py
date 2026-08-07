@@ -424,10 +424,13 @@ class FSDPTrainRayActor(TrainRayActor):
                 # write_old_log_prob returns before recording; this is never reduced.
                 unused_metrics = new_metric_buffer(self.parallel_state.dp_group, device, self.models)
                 # Skip window 0: its training forward runs on the same pre-update weights and doubles as the recompute.
-                for microbatch_ranges in microbatch_schedule[1:]:
+                # (optim_step_idx, microbatch_idx) must match the training loop below so both
+                # passes seed identical noise/timestep draws for the same micro-batch.
+                for optim_step_idx, microbatch_ranges in enumerate(microbatch_schedule[1:], start=1):
                     legacy_pad_to_len = self._maybe_legacy_window_pad_len(train_pairs, microbatch_ranges)
-                    for pair_lo, pair_hi in microbatch_ranges:
-                        loss_ctx.microbatch_id = pair_lo // micro_bs
+                    for microbatch_idx, (pair_lo, pair_hi) in enumerate(microbatch_ranges):
+                        loss_ctx.optim_step_idx = optim_step_idx
+                        loss_ctx.microbatch_idx = microbatch_idx
                         self._forward_train_pair_batch(
                             loss_ctx,
                             train_pairs[pair_lo:pair_hi],
@@ -450,9 +453,10 @@ class FSDPTrainRayActor(TrainRayActor):
 
                 metrics = new_metric_buffer(self.parallel_state.dp_group, device, self.models)
 
-                for pair_lo, pair_hi in microbatch_ranges:
+                for microbatch_idx, (pair_lo, pair_hi) in enumerate(microbatch_ranges):
                     chunk = train_pairs[pair_lo:pair_hi]
-                    loss_ctx.microbatch_id = pair_lo // micro_bs
+                    loss_ctx.optim_step_idx = optim_step_idx
+                    loss_ctx.microbatch_idx = microbatch_idx
                     loss_sum = self._forward_train_pair_batch(
                         loss_ctx,
                         chunk,
