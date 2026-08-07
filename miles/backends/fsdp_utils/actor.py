@@ -357,7 +357,7 @@ class FSDPTrainRayActor(TrainRayActor):
 
     def _train_core(self, rollout_id: int, rollout_data) -> None:
         """Run the shared diffusion training loop."""
-        device = torch.cuda.current_device()
+        device = torch.device("cuda", torch.cuda.current_device())
 
         train_pairs: list = rollout_data["train_data"]
         if not train_pairs:
@@ -414,6 +414,8 @@ class FSDPTrainRayActor(TrainRayActor):
             args=self.args,
             forward_dtype=self._forward_dtype,
             device=device,
+            rollout_id=rollout_id,
+            dp_rank=self.parallel_state.dp_rank,
         )
 
         # ------------- Recompute old log-probs (impl-consistent PPO ratio) -------------
@@ -425,6 +427,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 for microbatch_ranges in microbatch_schedule[1:]:
                     legacy_pad_to_len = self._maybe_legacy_window_pad_len(train_pairs, microbatch_ranges)
                     for pair_lo, pair_hi in microbatch_ranges:
+                        loss_ctx.microbatch_id = pair_lo // micro_bs
                         self._forward_train_pair_batch(
                             loss_ctx,
                             train_pairs[pair_lo:pair_hi],
@@ -449,6 +452,7 @@ class FSDPTrainRayActor(TrainRayActor):
 
                 for pair_lo, pair_hi in microbatch_ranges:
                     chunk = train_pairs[pair_lo:pair_hi]
+                    loss_ctx.microbatch_id = pair_lo // micro_bs
                     loss_sum = self._forward_train_pair_batch(
                         loss_ctx,
                         chunk,

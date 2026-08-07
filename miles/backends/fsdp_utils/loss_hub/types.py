@@ -21,6 +21,9 @@ class DiffusionLossContext:
     args: Namespace
     forward_dtype: torch.dtype
     device: torch.device
+    rollout_id: int = 0
+    microbatch_id: int = 0
+    dp_rank: int = 0
 
 
 @dataclass
