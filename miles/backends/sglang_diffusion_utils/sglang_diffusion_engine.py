@@ -1,16 +1,21 @@
+from __future__ import annotations
+
 import dataclasses
 import ipaddress
 import logging
 import multiprocessing
 import os
 import time
+from typing import TYPE_CHECKING
 
 import requests
-from sglang.multimodal_gen.runtime.launch_server import kill_process_tree
-from sglang.multimodal_gen.runtime.server_args import ServerArgs
+from sglang.srt.utils.common import kill_process_tree
 
 from miles.ray.ray_actor import RayActor
 from miles.utils.http_utils import get_host_info
+
+if TYPE_CHECKING:
+    from sglang.multimodal_gen.runtime.server_args import ServerArgs
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +144,8 @@ class SGLangDiffusionEngine(RayActor):
         self._init_normal(server_args_dict)
 
     def _init_normal(self, server_args_dict):
+        from sglang.multimodal_gen.runtime.server_args import ServerArgs
+
         logger.info(f"Launch HttpServerEngineAdapter at: {self.server_host}:{self.server_port}")
         self._pin_to_assigned_gpu()
         from miles.backends.sglang_diffusion_utils.monkey_patches import ROLLOUT_PATCH_GROUPS_ENV
@@ -300,6 +307,8 @@ class SGLangDiffusionEngine(RayActor):
 
 
 def _compute_server_args(args, host, port, nccl_port):
+    from sglang.multimodal_gen.runtime.server_args import ServerArgs
+
     # Only set fields SGL-D's ServerArgs actually accepts. GPU pinning is done
     # in `_init_normal` via CUDA_VISIBLE_DEVICES — SGL-D has no base_gpu_id arg.
     kwargs = {
