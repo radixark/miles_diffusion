@@ -43,9 +43,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=int,
                 default=None,
                 help=(
-                    "Number of GPUs for inference. Note that when using --colocate, "
-                    "i.e. the training and the inference engines are on the same gpus, this param will be ignored and will be set as "
-                    "actor_num_gpus_per_node * actor_num_nodes."
+                    "Number of GPUs for rollout-side work. For train-only SFT, leave unset to colocate encoders "
+                    "with training or set it to reserve dedicated encoder GPUs. Under --colocate this is overridden "
+                    "to actor_num_gpus_per_node * actor_num_nodes."
                 ),
             )
             parser.add_argument(

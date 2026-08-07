@@ -82,13 +82,16 @@ def create_placement_groups(args):
     """Create placement groups for actor and rollout engines.
 
     Two topologies:
-    - Colocate (or --train-only / --debug-rollout-only): one combined placement
-      group; both roles see the same bundle list.
-    - Disaggregate (the else branch): two separate placement groups so
-      train and rollout each own a disjoint GPU pool — avoids bundle
-      overlap / scheduling deadlock when running side-by-side.
+    - Colocate: one combined placement group; both roles see the same bundles.
+      Train-only jobs use this by default.
+    - Disaggregate: separate actor and rollout placement groups. A train-only
+      job opts into this by setting --rollout-num-gpus, reserving those GPUs for
+      its rollout-side producer (for example, the SFT encoder pool).
     """
-    if not args.colocate and not args.train_only and not args.debug_rollout_only:
+    disaggregate = (
+        not args.colocate and not args.debug_rollout_only and (not args.train_only or bool(args.rollout_num_gpus))
+    )
+    if disaggregate:
         logger.info("Creating placement groups (separate actor/rollout)...")
         actor_gpus = args.actor_num_nodes * args.actor_num_gpus_per_node
         rollout_gpus = args.rollout_num_gpus
