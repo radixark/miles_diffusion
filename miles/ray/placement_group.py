@@ -6,6 +6,7 @@ from ray.util.placement_group import placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from .actor_group import RayTrainGroup
+from .rollout import RolloutManager
 
 logger = logging.getLogger(__name__)
 
@@ -150,8 +151,6 @@ def create_training_models(args, pgs, rollout_manager):
 
 
 def create_rollout_manager(args, pg):
-    from .rollout import RolloutManager
-
     logger.info("Creating rollout manager (num_gpus=%s)", 0)
     rollout_manager = RolloutManager.options(
         num_cpus=1,
