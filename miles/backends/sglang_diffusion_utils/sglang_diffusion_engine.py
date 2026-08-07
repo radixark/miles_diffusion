@@ -315,7 +315,7 @@ def _compute_server_args(args, host, port, nccl_port):
         "sp_degree": args.sglang_sp_degree,
         "enable_cfg_parallel": args.sglang_enable_cfg_parallel,
         # Skip warmup to avoid timeout during RL rollouts.
-        "warmup": False,
+        "warmup_mode": "off",
     }
 
     if getattr(args, "diffusion_flow_shift", None) is not None:
