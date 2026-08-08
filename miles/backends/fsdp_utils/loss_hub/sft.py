@@ -47,7 +47,7 @@ def sample_grid_indices(
         num_train_timesteps = int(ctx.scheduler.config.num_train_timesteps)
         components = [config.component_for_timestep(float(t), num_train_timesteps) for t in ctx.scheduler.timesteps]
         expert_generator = torch.Generator().manual_seed(
-            _seed("expert", int(ctx.args.seed), ctx.rollout_id, ctx.optim_step_idx, ctx.microbatch_idx)
+            _seed("expert", int(ctx.args.seed), ctx.rollout_id, ctx.microbatch_id)
         )
         component_name = components[int(torch.randint(num_grid, (1,), generator=expert_generator))]
         model = ctx.models[component_name]
@@ -73,7 +73,7 @@ def prepare_sft_batch(
 
     x0 = torch.stack([pair["latent"] for pair in batch]).to(device=device, dtype=torch.float32)
     sample_generator = torch.Generator(device=device).manual_seed(
-        _seed("sample", int(ctx.args.seed), ctx.rollout_id, ctx.optim_step_idx, ctx.microbatch_idx, ctx.dp_rank)
+        _seed("sample", int(ctx.args.seed), ctx.rollout_id, ctx.microbatch_id, ctx.dp_rank)
     )
     component_name, model, idx = sample_grid_indices(ctx, bsz, generator=sample_generator)
     timesteps = ctx.scheduler.timesteps[idx].to(dtype=torch.float32)
