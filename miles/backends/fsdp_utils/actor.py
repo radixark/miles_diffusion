@@ -406,13 +406,6 @@ class FSDPTrainRayActor(TrainRayActor):
                 microbatch_schedule=microbatch_schedule,
             )
 
-        # Globally unique micro-batch ordinal per (optim step, micro-batch index), built from
-        # cumulative per-step counts so it stays collision-free even with dynamic micro-batch
-        # sizes. Seeds RNG streams; recompute and train loops must agree on it per micro-batch.
-        microbatch_id_base = [0]
-        for step_ranges in microbatch_schedule:
-            microbatch_id_base.append(microbatch_id_base[-1] + len(step_ranges))
-
         loss_ctx = DiffusionLossContext(
             models=self.models,
             train_pipeline_config=self.train_pipeline_config,
@@ -431,10 +424,13 @@ class FSDPTrainRayActor(TrainRayActor):
                 # write_old_log_prob returns before recording; this is never reduced.
                 unused_metrics = new_metric_buffer(self.parallel_state.dp_group, device, self.models)
                 # Skip window 0: its training forward runs on the same pre-update weights and doubles as the recompute.
-                for optim_step_idx, microbatch_ranges in enumerate(microbatch_schedule[1:], start=1):
+                # Start the id after window 0's micro-batches to stay aligned with the training loop.
+                microbatch_id = len(microbatch_schedule[0])
+                for microbatch_ranges in microbatch_schedule[1:]:
                     legacy_pad_to_len = self._maybe_legacy_window_pad_len(train_pairs, microbatch_ranges)
-                    for microbatch_idx, (pair_lo, pair_hi) in enumerate(microbatch_ranges):
-                        loss_ctx.microbatch_id = microbatch_id_base[optim_step_idx] + microbatch_idx
+                    for pair_lo, pair_hi in microbatch_ranges:
+                        loss_ctx.microbatch_id = microbatch_id
+                        microbatch_id += 1
                         self._forward_train_pair_batch(
                             loss_ctx,
                             train_pairs[pair_lo:pair_hi],
@@ -445,6 +441,7 @@ class FSDPTrainRayActor(TrainRayActor):
 
         # ------------- Forward / Backward -------------
         with timer("actor_train"):
+            microbatch_id = 0
             for optim_step_idx, microbatch_ranges in enumerate(microbatch_schedule):
                 self.optimizer.zero_grad(set_to_none=True)
 
@@ -457,9 +454,10 @@ class FSDPTrainRayActor(TrainRayActor):
 
                 metrics = new_metric_buffer(self.parallel_state.dp_group, device, self.models)
 
-                for microbatch_idx, (pair_lo, pair_hi) in enumerate(microbatch_ranges):
+                for pair_lo, pair_hi in microbatch_ranges:
                     chunk = train_pairs[pair_lo:pair_hi]
-                    loss_ctx.microbatch_id = microbatch_id_base[optim_step_idx] + microbatch_idx
+                    loss_ctx.microbatch_id = microbatch_id
+                    microbatch_id += 1
                     loss_sum = self._forward_train_pair_batch(
                         loss_ctx,
                         chunk,
