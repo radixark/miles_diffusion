@@ -286,6 +286,9 @@ class DiffusionUpdateWeightFromTensor(DiffusionUpdateWeight):
             # TODO: here we assume all ranks have the same number of dtypes.
             num_dtypes = len(gathered_serialized_batches[0])
             assert num_dtypes > 0
+            # Each rank's payload is the full (all-gathered) weights, so the
+            # copies are identical. Send exactly one; the engine shards or
+            # replicates internally per its own parallelism (size-1 contract).
             for i in range(num_dtypes):
                 kwargs = {
                     "serialized_named_tensors": [tensors[i] for tensors in gathered_serialized_batches],

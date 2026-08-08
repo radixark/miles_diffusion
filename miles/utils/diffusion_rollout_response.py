@@ -107,6 +107,9 @@ def _parse_cond_kwargs(
             data.get("audio_encoder_attention_mask"), deserialize_func=deserialize_func
         ),
         pooled_projections=_parse_tensor_or_list(data.get("pooled_projections"), deserialize_func=deserialize_func),
+        text_ids=deserialize_func(data.get("text_ids")),
+        text_mask=deserialize_func(data.get("text_mask")),
+        fps=data.get("fps"),
     )
 
 

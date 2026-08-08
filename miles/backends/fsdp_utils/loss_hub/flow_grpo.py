@@ -42,7 +42,7 @@ def prepare_flow_grpo_batch(
     guidance_scale = args.diffusion_guidance_scale
     true_cfg_scale = args.diffusion_true_cfg_scale
     cfg_scale = true_cfg_scale if true_cfg_scale is not None else guidance_scale
-    use_cfg = cfg_scale > 0
+    use_cfg = cfg_scale > 1.0  # matches sglang do_cfg: guidance<=1 runs single-branch
 
     if len(ctx.models) == 1:
         component_name, model = next(iter(ctx.models.items()))

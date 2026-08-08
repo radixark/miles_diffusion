@@ -33,6 +33,10 @@ class CondKwargs:
     encoder_attention_mask: list[torch.Tensor] | None = None
     audio_encoder_attention_mask: list[torch.Tensor] | None = None
     pooled_projections: list[torch.Tensor] | None = None
+    # Cosmos3: token-level conditioning (no separate text encoder).
+    text_ids: torch.Tensor | None = None
+    text_mask: torch.Tensor | None = None
+    fps: float | None = None
 
 
 @dataclass
