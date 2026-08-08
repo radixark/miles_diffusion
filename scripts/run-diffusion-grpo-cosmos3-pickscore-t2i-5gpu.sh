@@ -93,6 +93,7 @@ fi
   --use-miles-router \
   --sglang-server-concurrency 8 \
   --sglang-attention-backend fa \
+  --rollout-patch-group cosmos3_bitwise \
   --update-weight-buffer-size 2147483648 \
   --update-weight-target-module transformer \
   --diffusion-reward pickscore:1.0 \

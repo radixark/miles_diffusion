@@ -51,6 +51,9 @@ class Cosmos3TrainPipelineConfig(TrainPipelineConfig):
     # asserts it); never batch the CFG branches.
     cfg_batching = False
     lora_target_modules = ["add_q_proj", "add_k_proj", "add_v_proj", "to_add_out"]
+    # time_embedder gathers at fp32 via the family FSDPParallelPlan
+    # (models/diffusers/cosmos3/parallel_plan.py); rollout parity patches ship
+    # as the `cosmos3_bitwise` group, selected with --rollout-patch-group.
 
     @classmethod
     def validate_args(cls, args) -> None:
@@ -181,10 +184,65 @@ class Cosmos3TrainPipelineConfig(TrainPipelineConfig):
                 param.requires_grad_(False)
 
         # sglang-d casts the fp32 timestep sinusoid to the MLP weight dtype
-        # before linear_1; diffusers feeds it through as-is, which crashes on
-        # the fp32/bf16 mismatch under FSDP mixed precision.
+        # before linear_1 (`t_freq.to(w_dtype)`); mirror that exactly. With the
+        # fp32 pattern in the family FSDPParallelPlan the weights gather at
+        # fp32, so this keeps the sinusoid at fp32 like sglang-d's time_embedder.
         def _cast_to_weight_dtype(module, args):
             dtype = module.linear_1.weight.dtype
             return tuple(a.to(dtype) if torch.is_tensor(a) else a for a in args)
 
         model.time_embedder.register_forward_pre_hook(_cast_to_weight_dtype)
+        _wrap_time_embedder_row_dedup(model.time_embedder)
+        _patch_diffusers_rmsnorm_fp32_through_mul()
+
+
+def _wrap_time_embedder_row_dedup(time_embedder: torch.nn.Module) -> None:
+    """Collapse identical sinusoid rows before the timestep MLP, expand after.
+
+    sglang-d runs the timestep MLP once per request (GEMM M=1) and broadcasts
+    the embedding over tokens; diffusers expands the timestep per token first
+    (M=390 for a 480x480 clip). cuBLAS fp32 GEMMs are not bitwise M-invariant
+    (measured: linear_2 4096->4096 differs between M=1 and M=2), so per-token
+    rows can never bit-match the rollout engine. Deduplicating is numerically
+    exact — the rows are byte-identical copies — and reproduces sglang-d's
+    compute shape. Gradients are unchanged up to the usual expand/sum autograd.
+    """
+    orig_forward = time_embedder.forward
+
+    def forward(x, *args, **kwargs):
+        # Autocast off: the trainer's bf16 autocast would cast the fp32-gathered
+        # weights back to bf16 at the matmul boundary, undoing the parallel
+        # plan's fp32 island. sgl-d runs this MLP at plain fp32 with no autocast.
+        with torch.autocast("cuda", enabled=False):
+            if torch.is_tensor(x) and x.ndim == 2 and x.shape[0] > 1 and torch.equal(x, x[:1].expand_as(x)):
+                out = orig_forward(x[:1], *args, **kwargs)
+                return out.expand(x.shape[0], *out.shape[1:])
+            return orig_forward(x, *args, **kwargs)
+
+    time_embedder.forward = forward
+
+
+def _patch_diffusers_rmsnorm_fp32_through_mul() -> None:
+    """Raise diffusers RMSNorm to fp32-through-the-weight-mul via F.rms_norm.
+
+    diffusers' eager RMSNorm rounds the normalized activations to bf16 BEFORE
+    multiplying the weight (two bf16 roundings); sglang-d keeps fp32 through
+    the weight mul and rounds once. Following the "never downgrade" rule the
+    train side comes up: route through torch's fused F.rms_norm (fp32
+    accumulation, single rounding). The rollout patch group routes sglang-d's
+    RMSNorm through the same op, so both sides run identical kernels.
+    """
+    from diffusers.models import normalization
+
+    if getattr(normalization.RMSNorm, "_miles_fp32_through_mul", False):
+        return
+
+    orig_forward = normalization.RMSNorm.forward
+
+    def forward(self, hidden_states):
+        if self.weight is not None and self.bias is None:
+            return torch.nn.functional.rms_norm(hidden_states, self.dim, self.weight, self.eps)
+        return orig_forward(self, hidden_states)
+
+    normalization.RMSNorm.forward = forward
+    normalization.RMSNorm._miles_fp32_through_mul = True
