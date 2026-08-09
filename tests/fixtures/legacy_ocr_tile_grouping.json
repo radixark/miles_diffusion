@@ -1,6 +1,6 @@
 {
   "meta": {
-    "description": "Real legacy TrainRayActor grid-tile group-batch membership, produced by executing origin/main _run_optim_window verbatim with the 2-GPU OCR baseline config. Each cell is [sample_index, sde_step]. The refactored compat pipeline (baseline_stride DP split + build_microbatch_schedule, micro_batch_size=8) must reproduce every tile exactly.",
+    "description": "Real legacy TrainRayActor grid-tile group-batch membership, produced by executing origin/main _run_optim_window verbatim with the 2-GPU OCR baseline config. Each cell is [sample_index, sde_step]. The refactored compat pipeline (stride DP split + build_microbatch_schedule, micro_batch_size=8) must reproduce every tile exactly.",
     "legacy_provenance": {
       "ref": "radixark/miles_diffusion@a48476c (origin/main)",
       "dp_stride": "miles/ray/rollout.py:433",

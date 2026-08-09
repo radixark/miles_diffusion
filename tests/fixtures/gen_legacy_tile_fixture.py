@@ -1,10 +1,10 @@
 """Golden fixture for the REAL 2-GPU OCR pipeline -> legacy_ocr_tile_grouping.json.
 
 Distinct from gen_legacy_tile_2d_fixture: this is the ONLY golden that exercises the DP
-split. It runs the full legacy dispatch end-to-end -- baseline_stride rank partition
+split. It runs the full legacy dispatch end-to-end -- stride rank partition
 (range(rank, N, dp)) + per-optim-step slice + tiling -- for the one real OCR config
 (512 samples, dp=2, window=2, sample_mb=4, tstep_mb=2), replayed by
-test_legacy_tile_grouping_golden.py via TrainDataDPSplitter("baseline_stride") +
+test_legacy_tile_grouping_golden.py via TrainDataDPSplitter("stride") +
 build_microbatch_schedule (the 1D path). The 2D fixture instead cross-checks the
 build_tiled_microbatch_schedule function across tiling shapes but never splits by rank.
 
@@ -172,7 +172,7 @@ def main() -> None:
                 "Real legacy TrainRayActor grid-tile group-batch membership, produced by "
                 "executing origin/main _run_optim_window verbatim with the 2-GPU OCR baseline "
                 "config. Each cell is [sample_index, sde_step]. The refactored compat pipeline "
-                "(baseline_stride DP split + build_microbatch_schedule, micro_batch_size="
+                "(stride DP split + build_microbatch_schedule, micro_batch_size="
                 f"{MICRO_BATCH_SIZE}) must reproduce every tile exactly."
             ),
             "legacy_provenance": {

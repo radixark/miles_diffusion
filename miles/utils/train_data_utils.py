@@ -77,9 +77,9 @@ class TrainDataDPSplitter:
     - ``contiguous`` (default): rank r gets one contiguous block of train pairs
       ``[r*pairs_per_rank : (r+1)*pairs_per_rank]``. Since pairs are sample-major,
       this gives rank r a contiguous block of samples.
-    - ``baseline_stride``: reproduces the legacy TrainRayActor dispatch, which
-      partitioned *samples* by stride ``range(r, num_samples, dp_size)`` and then
-      tiled them. Used by the ``verify/baseline-batch-parity`` check to confirm the
+    - ``stride``: reproduces the legacy TrainRayActor dispatch, which partitioned
+      *samples* by stride ``range(r, num_samples, dp_size)`` and then tiled them.
+      Used by the ``verify/baseline-batch-parity`` check to confirm the
       refactored rollout-side dispatch can feed each DP rank the exact same
       sample set (in the same order) as the old code path, so any residual
       train-curve difference is attributable to grouping policy, not a bug.
@@ -94,7 +94,7 @@ class TrainDataDPSplitter:
         """Split train data across DP ranks into equal-sized shards."""
         if dp_size <= 0:
             raise ValueError(f"dp_size must be positive, got {dp_size}")
-        if mode not in ("contiguous", "baseline_stride"):
+        if mode not in ("contiguous", "stride"):
             raise ValueError(f"unknown dp split mode {mode!r}")
         train_data = data["train_data"]
         scheduler_timesteps = data.get("scheduler_timesteps")
@@ -106,7 +106,7 @@ class TrainDataDPSplitter:
                 "would drop all pairs when enforcing equal DP shards"
             )
 
-        if mode == "baseline_stride":
+        if mode == "stride":
             rank_pairs = self._stride_partition_by_sample(train_data, dp_size)
         else:
             dropped_pairs = num_pairs % dp_size
@@ -153,12 +153,12 @@ class TrainDataDPSplitter:
         per_sample_counts = {len(g) for g in sample_groups}
         if len(per_sample_counts) != 1:
             raise ValueError(
-                f"baseline_stride split requires every sample to contribute the same number of "
+                f"stride split requires every sample to contribute the same number of "
                 f"train pairs, got counts {sorted(per_sample_counts)}"
             )
         if len(sample_groups) % dp_size != 0:
             raise ValueError(
-                f"baseline_stride split requires num_samples ({len(sample_groups)}) divisible by "
+                f"stride split requires num_samples ({len(sample_groups)}) divisible by "
                 f"dp_size ({dp_size}) for equal shards"
             )
 

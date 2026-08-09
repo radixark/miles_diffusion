@@ -43,6 +43,7 @@ fi
   --n-samples-per-prompt 8 \
   --num-steps-per-rollout 2 \
   --num-rollout "${NUM_ROLLOUT:-200}" \
+  --train-dp-split-mode stride \
   --micro-batch-size-sample 1 \
   --micro-batch-size-tstep 1 \
   --diffusion-train-iter-order sample_major \

@@ -1,8 +1,8 @@
-"""Golden CI: baseline_stride + 1D schedule reproduce the REAL legacy OCR tiles.
+"""Golden CI: stride + 1D schedule reproduce the REAL legacy OCR tiles.
 
 The distinctive axis here is the DP split: this replays the one real 2-GPU OCR config
 (legacy_ocr_tile_grouping.json, see gen_legacy_tile_fixture.py) through
-TrainDataDPSplitter("baseline_stride")  # == legacy range(rank, N, dp)
+TrainDataDPSplitter("stride")  # == legacy range(rank, N, dp)
     -> build_microbatch_schedule(...)    # contiguous micro-batches
 and asserts every legacy tile is reproduced cell-for-cell. The 2D tiling function is
 covered separately by test_tiled_microbatch_schedule.py (no DP split there).
@@ -39,7 +39,7 @@ def _refactored_grouping(cfg: dict):
     pairs = [
         {"sample_index": s, "sde_step": sde} for s in range(cfg["num_samples"]) for sde in cfg["sde_step_indices"]
     ]
-    shards = TrainDataDPSplitter().split_by_dp({"train_data": pairs}, cfg["dp_size"], mode="baseline_stride")
+    shards = TrainDataDPSplitter().split_by_dp({"train_data": pairs}, cfg["dp_size"], mode="stride")
 
     grouping: dict[tuple[int, int, int], list[list[int]]] = {}
     mb_counts: dict[tuple[int, int], int] = {}
@@ -88,10 +88,10 @@ def test_refactored_microbatch_count_matches_legacy_window():
         assert n == expected, f"rank={rank} optim_step={step}: {n} micro-batches, expected {expected}"
 
 
-def test_baseline_stride_is_what_makes_it_match():
+def test_stride_is_what_makes_it_match():
     """Sanity: with the *default* contiguous DP split (parity knob off) the very
-    first pinned tile no longer matches — proving the match is due to
-    baseline_stride, not a trivial identity."""
+    first pinned tile no longer matches — proving the match is due to stride,
+    not a trivial identity."""
     fx = _load_fixture()
     cfg = fx["meta"]["config"]
     tile = fx["tiles"][0]

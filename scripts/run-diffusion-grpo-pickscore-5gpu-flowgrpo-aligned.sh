@@ -58,6 +58,7 @@ hf download --repo-type dataset rockdu/miles-diffusion-datasets \
   --num-rollout 400 \
   --deterministic-mode \
   --diffusion-microgroup-size 8 \
+  --train-dp-split-mode stride \
   --micro-batch-size-sample 8 \
   --micro-batch-size-tstep 1 \
   --diffusion-train-iter-order sample_major \
