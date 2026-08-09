@@ -73,7 +73,7 @@ def prepare_flow_grpo_batch(
         if use_cfg
         else None
     )
-    cfg_batching = use_cfg and bool(args.fsdp_cfg_batching)
+    cfg_batching = use_cfg and config.cfg_batching
     joint_cond = pos_cond = neg_cond = None
     if cfg_batching:
         joint_cond = config.collate_cond_for_sample_batch(pos_list + neg_list, device, pad_to_len=pad_to_len)

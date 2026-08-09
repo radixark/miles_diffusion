@@ -11,6 +11,7 @@ from .train_pipeline_config import TrainPipelineConfig, register_train_pipeline_
 @register_train_pipeline_config("wan2_2")
 class Wan2_2TrainPipelineConfig(TrainPipelineConfig):
     hf_ckpt_name_patterns = ("wan2.2", "wan-2.2")
+    cfg_batching = False
     # High-noise expert ("transformer") handles t >= boundary, low-noise expert
     # ("transformer_2") the rest.
     boundary_ratio = 0.875

@@ -14,6 +14,7 @@ class SD3TrainPipelineConfig(TrainPipelineConfig):
     """Training-side adapters for diffusers SD3Transformer2DModel."""
 
     hf_ckpt_name_patterns = ("stable-diffusion-3", "sd3")
+    cfg_batching = False
 
     lora_target_modules = [
         "attn.to_q",
