@@ -86,7 +86,7 @@ WAN_LORA_TARGET_MODULES=(
   --lora-rank 64 \
   --lora-alpha 128 \
   --lora-target-modules "${WAN_LORA_TARGET_MODULES[@]}" \
-  --diffusion-init-lora-weight gaussian \
+  --lora-init-weights gaussian \
   --lr 1e-4 \
   --adam-beta2 0.999 \
   --diffusion-clip-range 1e-4 \

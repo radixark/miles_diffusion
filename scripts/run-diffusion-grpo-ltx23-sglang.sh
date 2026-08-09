@@ -62,7 +62,7 @@ fi
   --use-lora \
   --lora-rank 64 \
   --lora-alpha 128 \
-  --diffusion-init-lora-weight gaussian \
+  --lora-init-weights gaussian \
   --lr 2e-4 \
   --adam-beta2 0.999 \
   --weight-decay 1e-4 \

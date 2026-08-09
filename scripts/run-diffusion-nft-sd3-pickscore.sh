@@ -106,7 +106,7 @@ python -u "${ROOT_DIR}/train_diffusion.py" \
   --lora-ipc-weight-sync \
   --lora-rank 32 \
   --lora-alpha 64 \
-  --diffusion-init-lora-weight gaussian \
+  --lora-init-weights gaussian \
   --lr 3e-4 \
   --adam-beta2 0.999 \
   --weight-decay 1e-4 \

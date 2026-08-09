@@ -978,6 +978,41 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument("--wandb-run-id", type=str, default=None)
             return parser
 
+        def add_lora_arguments(parser):
+            parser.add_argument(
+                "--use-lora", action="store_true", default=False, help="Use LoRA adapters instead of full finetune."
+            )
+            parser.add_argument("--lora-rank", type=int, default=64)
+            parser.add_argument("--lora-alpha", type=int, default=64)
+            parser.add_argument(
+                "--lora-target-modules",
+                type=str,
+                nargs="+",
+                default=None,
+                help="Override LoRA target modules. Default: per-model from TrainPipelineConfig.",
+            )
+            parser.add_argument(
+                "--lora-init-weights",
+                type=str,
+                default="gaussian",
+                help=(
+                    "PEFT LoraConfig.init_lora_weights. flow_grpo's Qwen-Image uses 'gaussian' "
+                    "(N(0, 1/r) for lora_A, 0 for lora_B). 'kaiming-uniform' maps to PEFT's "
+                    "default Kaiming-uniform init. Other PEFT schemes ('olora', 'pissa', "
+                    "'pissa_niter_N', 'loftq', ...) pass through unchanged."
+                ),
+            )
+            parser.add_argument(
+                "--lora-ipc-weight-sync",
+                action="store_true",
+                default=False,
+                help=(
+                    "Sync only lora_A/lora_B to rollout via IPC with weight_update_mode=lora_merge "
+                    "(requires matching sglang-d LoRAPipeline support)."
+                ),
+            )
+            return parser
+
         # debug
         def add_debug_arguments(parser):
             parser.add_argument(
@@ -1037,28 +1072,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
 
-            # LoRA
-            parser.add_argument(
-                "--use-lora", action="store_true", default=False, help="Use LoRA adapters instead of full finetune."
-            )
-            parser.add_argument("--lora-rank", type=int, default=64)
-            parser.add_argument("--lora-alpha", type=int, default=64)
-            parser.add_argument(
-                "--lora-target-modules",
-                type=str,
-                nargs="+",
-                default=None,
-                help="Override LoRA target modules. Default: per-model from TrainPipelineConfig.",
-            )
-            parser.add_argument(
-                "--lora-ipc-weight-sync",
-                action="store_true",
-                default=False,
-                help=(
-                    "Sync only lora_A/lora_B to rollout via IPC with weight_update_mode=lora_merge "
-                    "(requires matching sglang-d LoRAPipeline support)."
-                ),
-            )
+            # EMA
             parser.add_argument(
                 "--ema-shadow",
                 action="store_true",
@@ -1102,17 +1116,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=int,
                 default=0,
                 help="EMA flat steps before warmup begins.",
-            )
-            parser.add_argument(
-                "--diffusion-init-lora-weight",
-                type=str,
-                default="gaussian",
-                help=(
-                    "PEFT LoraConfig.init_lora_weights. flow_grpo's Qwen-Image uses 'gaussian' "
-                    "(N(0, 1/r) for lora_A, 0 for lora_B). 'kaiming-uniform' maps to PEFT's "
-                    "default Kaiming-uniform init. Other PEFT schemes ('olora', 'pissa', "
-                    "'pissa_niter_N', 'loftq', ...) pass through unchanged."
-                ),
             )
 
             parser.add_argument(
@@ -1301,6 +1304,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         parser = add_data_arguments(parser)
         parser = add_eval_arguments(parser)
         parser = add_algo_arguments(parser)
+        parser = add_lora_arguments(parser)
         parser = add_wandb_arguments(parser)
         parser = add_router_arguments(parser)
         parser = add_debug_arguments(parser)

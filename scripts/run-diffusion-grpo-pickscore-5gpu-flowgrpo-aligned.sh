@@ -71,7 +71,7 @@ hf download --repo-type dataset rockdu/miles-diffusion-datasets \
   --lora-ipc-weight-sync \
   --lora-rank 64 \
   --lora-alpha 128 \
-  --diffusion-init-lora-weight gaussian \
+  --lora-init-weights gaussian \
   --lr 3e-4 \
   --adam-beta2 0.999 \
   --diffusion-clip-range 1e-4 \

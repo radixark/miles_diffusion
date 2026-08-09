@@ -605,7 +605,7 @@ def apply_lora(model: torch.nn.Module, args: Namespace, train_pipeline_config) -
     on_meta = dist.get_rank() != 0
     # Per-model fallback when --lora-target-modules is unset (runtime inference: depends on loaded pipeline).
     targets = args.lora_target_modules or train_pipeline_config.lora_target_modules
-    init_lora_weight = args.diffusion_init_lora_weight
+    init_lora_weight = args.lora_init_weights
     if init_lora_weight == "kaiming-uniform":
         init_lora_weight = True  # namely kaiming-uniform
     model = get_peft_model(
