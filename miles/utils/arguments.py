@@ -410,18 +410,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Set rollout_debug_mode=true on POST /rollout/generate.",
             )
             parser.add_argument(
-                "--diffusion-log-images",
-                type=int,
-                default=0,
-                help="Number of diffusion images to log to W&B per rollout (0 disables).",
-            )
-            parser.add_argument(
-                "--diffusion-log-image-interval",
-                type=int,
-                default=1,
-                help="Log diffusion images every N rollouts. Only used when diffusion-log-images > 0.",
-            )
-            parser.add_argument(
                 "--update-weight-target-module",
                 type=str,
                 default="transformer",
@@ -976,6 +964,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument("--wandb-run-id", type=str, default=None)
+            parser.add_argument(
+                "--wandb-log-num-images",
+                type=int,
+                default=0,
+                help="Images or videos sent to W&B per rollout (0 disables).",
+            )
+            parser.add_argument(
+                "--wandb-log-image-interval",
+                type=int,
+                default=1,
+                help="Send media every N rollouts. Only used when --wandb-log-num-images > 0.",
+            )
             return parser
 
         def add_lora_arguments(parser):
@@ -1063,6 +1063,21 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             return parser
 
+        def add_dashboard_arguments(parser):
+            parser.add_argument(
+                "--use-miles-dashboard",
+                action="store_true",
+                default=False,
+                help="Collect phase and trajectory telemetry asynchronously.",
+            )
+            parser.add_argument(
+                "--miles-dashboard-workspace",
+                type=str,
+                default="./miles_dashboard",
+                help="Base directory for miles dashboard telemetry; each launch writes to its own run_<ts> subdir.",
+            )
+            return parser
+
         # debug
         def add_debug_arguments(parser):
             parser.add_argument(
@@ -1136,18 +1151,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help=("Dump all details of training for post-hoc analysis and visualization."),
-            )
-            parser.add_argument(
-                "--use-miles-dashboard",
-                action="store_true",
-                default=False,
-                help="Collect phase and trajectory telemetry asynchronously.",
-            )
-            parser.add_argument(
-                "--miles-dashboard-workspace",
-                type=str,
-                default="./miles_dashboard",
-                help="Base directory for miles dashboard telemetry; each launch writes to its own run_<ts> subdir.",
             )
             return parser
 
@@ -1311,6 +1314,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         parser = add_lora_arguments(parser)
         parser = add_ema_arguments(parser)
         parser = add_wandb_arguments(parser)
+        parser = add_dashboard_arguments(parser)
         parser = add_router_arguments(parser)
         parser = add_debug_arguments(parser)
         parser = add_sglang_diffusion_arguments(parser)
@@ -1450,8 +1454,8 @@ def miles_validate_args(args):
     if len(set(args.update_weight_target_modules)) != len(args.update_weight_target_modules):
         raise ValueError(f"--update-weight-target-module has duplicates: {args.update_weight_target_module!r}")
 
-    if args.diffusion_log_image_interval < 1:
-        raise ValueError(f"diffusion_log_image_interval must be >= 1, got {args.diffusion_log_image_interval}")
+    if args.wandb_log_image_interval < 1:
+        raise ValueError(f"wandb_log_image_interval must be >= 1, got {args.wandb_log_image_interval}")
 
     args.rollout_patch_groups = [name for name in (args.rollout_patch_group or "").split(",") if name]
 

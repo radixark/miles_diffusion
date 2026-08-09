@@ -17,7 +17,7 @@ def make_sample(index: int) -> Sample:
 def test_media_released_when_not_logged():
     sample = make_sample(index=3)
 
-    release_eval_sample_media(Namespace(save_debug_rollout_data=None, diffusion_log_images=2), sample)
+    release_eval_sample_media(Namespace(save_debug_rollout_data=None, wandb_log_num_images=2), sample)
 
     assert sample.generated_output is None
 
@@ -25,7 +25,7 @@ def test_media_released_when_not_logged():
 def test_media_kept_for_logged_samples():
     sample = make_sample(index=1)
 
-    release_eval_sample_media(Namespace(save_debug_rollout_data=None, diffusion_log_images=2), sample)
+    release_eval_sample_media(Namespace(save_debug_rollout_data=None, wandb_log_num_images=2), sample)
 
     assert sample.generated_output is not None
 
@@ -33,6 +33,6 @@ def test_media_kept_for_logged_samples():
 def test_media_kept_when_debug_dump_enabled():
     sample = make_sample(index=3)
 
-    release_eval_sample_media(Namespace(save_debug_rollout_data="/tmp/dump", diffusion_log_images=0), sample)
+    release_eval_sample_media(Namespace(save_debug_rollout_data="/tmp/dump", wandb_log_num_images=0), sample)
 
     assert sample.generated_output is not None

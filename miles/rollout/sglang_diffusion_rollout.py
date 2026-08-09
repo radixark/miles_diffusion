@@ -385,7 +385,7 @@ def release_eval_sample_media(args: Namespace, sample: Sample) -> None:
     """Drop a scored eval sample's media, which only image logging and debug dumps still read."""
     if args.save_debug_rollout_data is not None:
         return
-    if sample.index < args.diffusion_log_images:
+    if sample.index < args.wandb_log_num_images:
         return
     sample.generated_output = None
 

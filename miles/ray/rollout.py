@@ -210,7 +210,7 @@ class RolloutManager:
         data = result.data
         self._save_debug_rollout_data(data, rollout_id=rollout_id, evaluation=True)
         metrics = _log_eval_rollout_data(rollout_id, self.args, data, result.metrics)
-        max_images = self.args.diffusion_log_images
+        max_images = self.args.wandb_log_num_images
         if max_images > 0:
             self._log_images(
                 {
@@ -401,8 +401,8 @@ class RolloutManager:
         reward_stats["rollout/step"] = compute_rollout_step(self.args, self.rollout_id)
         tracking_utils.log(self.args, reward_stats, step_key="rollout/step")
 
-        max_images = self.args.diffusion_log_images
-        interval = self.args.diffusion_log_image_interval
+        max_images = self.args.wandb_log_num_images
+        interval = self.args.wandb_log_image_interval
         if max_images > 0 and self.rollout_id % interval == 0:
             self._log_images(
                 {"rollout_media/sample_images": samples},
@@ -427,7 +427,7 @@ class RolloutManager:
     ) -> None:
         """Log per-key sample image grids under their own media namespace.
 
-        Caller decides whether to invoke (gating like ``--diffusion-log-images``
+        Caller decides whether to invoke (gating like ``--wandb-log-num-images``
         > 0 or rollout-side interval lives at the call site, not here). wandb
         media panels do not honor ``step_metric`` (they slide on the internal
         commit step), so panels pile up over a run — keeping them in their

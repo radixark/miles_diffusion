@@ -30,8 +30,8 @@ if [[ -n "${WANDB_API_KEY:-}" ]]; then
     --wandb-project miles-diffusion-nft
     --wandb-group "${RUN_NAME}"
     --wandb-key "${WANDB_API_KEY}"
-    --diffusion-log-images 8
-    --diffusion-log-image-interval 10
+    --wandb-log-num-images 8
+    --wandb-log-image-interval 10
     --disable-wandb-random-suffix
   )
 fi
