@@ -109,48 +109,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="The backend for training.",
             )
             parser.add_argument(
-                "--diffusion-clip-range",
-                type=float,
-                default=1e-4,
-                help="Clip range for diffusion GRPO ratio.",
-            )
-            parser.add_argument(
-                "--diffusion-adv-clip-max",
-                type=float,
-                default=5.0,
-                help="Max absolute value for advantage clipping in diffusion training.",
-            )
-            parser.add_argument(
-                "--diffusion-recompute-old-log-prob",
-                action="store_true",
-                help=(
-                    "Recompute old log-probs with the trainer forward (pre-update weights) "
-                    "instead of using rollout-stored values, making the PPO ratio "
-                    "implementation-consistent. The first optimizer window skips the extra "
-                    "pass and reuses its training forward's log-prob (ratio == 1)."
-                ),
-            )
-            parser.add_argument(
-                "--diffusion-kl-beta",
-                type=float,
-                default=0.0,
-                help=(
-                    "Reference KL coefficient for diffusion GRPO. When > 0, enables a "
-                    "reference DiT forward (see --ref-mode; default lora_base)."
-                ),
-            )
-            parser.add_argument(
-                "--ref-mode",
-                type=str,
-                choices=["none", "lora_base", "ema"],
-                default=None,
-                help=(
-                    "Which reference weights to use for the no-grad DiT forward. "
-                    "Auto: lora_base when --diffusion-kl-beta > 0 and ema for --loss-type nft. "
-                    "Explicit values skip auto inference."
-                ),
-            )
-            parser.add_argument(
                 "--fsdp-master-dtype",
                 type=str,
                 default="fp32",
@@ -900,6 +858,48 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "Use batch-wide std instead of per-group std for GRPO advantage. "
                     "flow_grpo's pickscore recipe sets global_std=True, so enable this for parity."
+                ),
+            )
+            parser.add_argument(
+                "--diffusion-clip-range",
+                type=float,
+                default=1e-4,
+                help="Clip range for diffusion GRPO ratio.",
+            )
+            parser.add_argument(
+                "--diffusion-adv-clip-max",
+                type=float,
+                default=5.0,
+                help="Max absolute value for advantage clipping in diffusion training.",
+            )
+            parser.add_argument(
+                "--diffusion-recompute-old-log-prob",
+                action="store_true",
+                help=(
+                    "Recompute old log-probs with the trainer forward (pre-update weights) "
+                    "instead of using rollout-stored values, making the PPO ratio "
+                    "implementation-consistent. The first optimizer window skips the extra "
+                    "pass and reuses its training forward's log-prob (ratio == 1)."
+                ),
+            )
+            parser.add_argument(
+                "--diffusion-kl-beta",
+                type=float,
+                default=0.0,
+                help=(
+                    "Reference KL coefficient for diffusion GRPO. When > 0, enables a "
+                    "reference DiT forward (see --ref-mode; default lora_base)."
+                ),
+            )
+            parser.add_argument(
+                "--ref-mode",
+                type=str,
+                choices=["none", "lora_base", "ema"],
+                default=None,
+                help=(
+                    "Which reference weights to use for the no-grad DiT forward. "
+                    "Auto: lora_base when --diffusion-kl-beta > 0 and ema for --loss-type nft. "
+                    "Explicit values skip auto inference."
                 ),
             )
             return parser
