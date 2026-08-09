@@ -28,7 +28,6 @@ class FSDPArgs:
     # diffusion comparisons.
     adam_beta2: float = 0.999
     adam_eps: float = 1e-8
-    warmup_ratio: float = 0.03
 
     attn_implementation: str = "flash_attention_2"
 
@@ -37,14 +36,12 @@ class FSDPArgs:
 
     # Logging
     wandb_project: str = "miles-fsdp"
-    wandb_run_name: str | None = None
 
     # Precision
     gradient_checkpointing: bool = False
     fp16: bool = False
 
     # FSDP configuration
-    fsdp_state_dict_cpu_offload: bool = True  # If True, offload full state dict to CPU during collection.
     fsdp_cpu_offload: bool = (
         False  # If True, offload parameters, gradients, and optimizer states to CPU (optimizer runs on CPU)
     )

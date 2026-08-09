@@ -206,12 +206,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Extra environment variables for training process, e.g. PyTorch memory management ones.",
             )
             parser.add_argument(
-                "--train-memory-margin-bytes",
-                type=int,
-                default=1024**3,
-                help="Add margin for train memory allocation. By default we will reserve 1GB as margin.",
-            )
-            parser.add_argument(
                 "--recompute-loss-function",
                 action="store_true",
                 help="Whether to disable recompute loss function to save memory during training.",
@@ -277,12 +271,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help="Model loading function path; default from the family config.",
-            )
-            parser.add_argument(
-                "--diffusion-device",
-                type=str,
-                default=None,
-                help="Device for diffusion rollout, e.g. cuda or cpu. Defaults to auto.",
             )
             parser.add_argument(
                 "--diffusion-num-steps",
@@ -440,11 +428,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Set rollout_debug_mode=true on POST /rollout/generate.",
             )
             parser.add_argument(
-                "--diffusion-return-prev-latents-mean",
-                action="store_true",
-                help="Whether to store prev_latents_mean for KL regularization.",
-            )
-            parser.add_argument(
                 "--diffusion-reward",
                 type=str,
                 default="pickscore",
@@ -596,12 +579,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "buffer size for update weight, in bytes. "
                     "This is used for updating weights by chunk and should be useful for MoE models."
                 ),
-            )
-            parser.add_argument(
-                "--update-weights-interval",
-                type=int,
-                default=1,
-                help="Interval for updating the weights",
             )
             return parser
 
@@ -1116,12 +1093,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
 
             # LoRA
-            parser.add_argument(
-                "--diffusion-ignore-last",
-                type=int,
-                default=0,
-                help="Skip last N denoising steps for training (avoids small-sigma numerical issues). FlowGRPO/DanceGRPO use 1.",
-            )
             parser.add_argument(
                 "--use-lora", action="store_true", default=False, help="Use LoRA adapters instead of full finetune."
             )
@@ -1697,9 +1668,6 @@ def miles_validate_args(args):
             args.actor_num_nodes = args.rollout_num_gpus // args.actor_num_gpus_per_node
         args.colocate = False
         args.offload_train = args.offload_rollout = False
-        if args.train_memory_margin_bytes > 0:
-            logger.warning("Force train_memory_margin_bytes=0 since debug_rollout_only does not support it")
-            args.train_memory_margin_bytes = 0
 
     if getattr(args, "diffusion_model", None):
         from miles.backends.fsdp_utils.arguments import validate_hybrid_shard_args, validate_sp_args

@@ -110,7 +110,6 @@ python -u "${ROOT_DIR}/train_diffusion.py" \
   --update-weight-buffer-size 2147483648 \
   --diffusion-guidance-scale 4.5 \
   --diffusion-noise-level 0.7 \
-  --diffusion-ignore-last 1 \
   --diffusion-height 512 \
   --diffusion-width 512 \
   --global-batch-size 64 \
