@@ -83,6 +83,7 @@ class TrainPipelineConfig(abc.ABC):
     # Case-insensitive substrings matched against the checkpoint name (--diffusion-model).
     hf_ckpt_name_patterns: tuple[str, ...] = ()
     supports_cfg_training: bool = True
+    # Mirrors serial sgl-d serving; not valid when the rollout engine runs --enable-cfg-parallel (branches split per rank, different combine formula).
     cfg_batching: bool = False
     # Model-boundary input dtypes (see input_dtype_policy); families opt into casts explicitly.
     input_dtype_policy: dict = {"latents": None, "cond": None, "timestep": None}
