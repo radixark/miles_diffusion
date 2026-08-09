@@ -236,12 +236,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Diffusion rollout microgroup size (sub-batch of samples per prompt). Defaults to 1.",
             )
             parser.add_argument(
-                "--diffusion-eval-num-steps",
-                type=int,
-                default=None,
-                help="Number of diffusion inference steps for eval rollout. Defaults to diffusion-num-steps.",
-            )
-            parser.add_argument(
                 "--diffusion-fps",
                 type=float,
                 default=None,
@@ -360,12 +354,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "(diffusers op parity, small rollout perf hit) or 'ltx' "
                     "(see sglang_diffusion_utils/monkey_patches)."
                 ),
-            )
-            parser.add_argument(
-                "--diffusion-debug-mode",
-                action="store_true",
-                default=False,
-                help="Set rollout_debug_mode=true on POST /rollout/generate.",
             )
             parser.add_argument(
                 "--update-weight-target-module",
@@ -726,6 +714,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="number of responses for each prompt in generation",
             )
 
+            parser.add_argument(
+                "--diffusion-eval-num-steps",
+                type=int,
+                default=None,
+                help="Number of diffusion inference steps for eval rollout. Defaults to diffusion-num-steps.",
+            )
             return parser
 
         def add_algo_arguments(parser):
@@ -802,12 +796,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="DiffusionNFT dual-prediction blend coefficient (UniRL beta).",
             )
             parser.add_argument(
-                "--diffusion-nft-adv-clip-max",
-                type=float,
-                default=5.0,
-                help="DiffusionNFT advantage clip before remap to r in [0, 1].",
-            )
-            parser.add_argument(
                 "--no-diffusion-nft-adaptive-weight",
                 action="store_false",
                 dest="diffusion_nft_adaptive_weight",
@@ -870,7 +858,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--diffusion-adv-clip-max",
                 type=float,
                 default=5.0,
-                help="Max absolute value for advantage clipping in diffusion training.",
+                help=(
+                    "Advantage clip. Under --loss-type policy_loss this only bounds outliers. "
+                    "Under nft it also sets the advantage-to-r slope, so raising it flattens the "
+                    "positive/negative contrast."
+                ),
             )
             parser.add_argument(
                 "--diffusion-recompute-old-log-prob",
@@ -1151,6 +1143,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help=("Dump all details of training for post-hoc analysis and visualization."),
+            )
+            parser.add_argument(
+                "--diffusion-debug-mode",
+                action="store_true",
+                default=False,
+                help="Set rollout_debug_mode=true on POST /rollout/generate.",
             )
             return parser
 
@@ -1565,8 +1563,8 @@ def miles_validate_args(args):
             raise ValueError("--loss-type nft with --diffusion-noise-level 0 requires --diffusion-sde-type ode")
         if args.diffusion_nft_beta <= 0:
             raise ValueError(f"--diffusion-nft-beta must be > 0, got {args.diffusion_nft_beta}")
-        if args.diffusion_nft_adv_clip_max <= 0:
-            raise ValueError(f"--diffusion-nft-adv-clip-max must be > 0, got {args.diffusion_nft_adv_clip_max}")
+        if args.diffusion_adv_clip_max <= 0:
+            raise ValueError(f"--diffusion-adv-clip-max must be > 0, got {args.diffusion_adv_clip_max}")
         if not 0.0 < args.diffusion_nft_timestep_fraction <= 1.0:
             raise ValueError(
                 f"--diffusion-nft-timestep-fraction must be in (0, 1], got {args.diffusion_nft_timestep_fraction}"

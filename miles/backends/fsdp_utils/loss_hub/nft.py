@@ -120,7 +120,7 @@ def nft_loss_formula(
 
     args = ctx.args
     beta = args.diffusion_nft_beta
-    adv_clip_max = args.diffusion_nft_adv_clip_max
+    adv_clip_max = args.diffusion_adv_clip_max
     use_adaptive = args.diffusion_nft_adaptive_weight
 
     x0 = prepared.extras["x0"]

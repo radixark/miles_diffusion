@@ -113,7 +113,6 @@ python -u "${ROOT_DIR}/train_diffusion.py" \
   --clip-grad 1.0 \
   --loss-type nft \
   --diffusion-nft-beta 1.0 \
-  --diffusion-nft-adv-clip-max 5.0 \
   --diffusion-nft-timestep-fraction 0.99 \
   --ref-mode ema \
   --use-ema \
