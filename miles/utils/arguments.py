@@ -205,14 +205,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default="{}",
                 help="Extra environment variables for training process, e.g. PyTorch memory management ones.",
             )
-            parser.add_argument(
-                "--recompute-loss-function",
-                action="store_true",
-                help="Whether to disable recompute loss function to save memory during training.",
-            )
-            parser.add_argument(
-                "--log-probs-chunk-size", type=int, default=-1, help="Chunk size to compute log probs to save memory"
-            )
 
             return parser
 
@@ -825,11 +817,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             reset_arg(parser, "--seed", type=int, default=1234)
             reset_arg(parser, "--clip-grad", type=float, default=1.0)
-            reset_arg(parser, "--calculate-per-token-loss", action="store_true")
             reset_arg(parser, "--lr", type=float, default=1e-6)
-
-            parser.add_argument("--eps-clip", type=float, default=0.2, help="PPO clip range")
-            parser.add_argument("--eps-clip-high", type=float, default=None, help="PPO clip upper range")
             parser.add_argument(
                 "--loss-type",
                 type=str,
@@ -902,18 +890,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default="grpo",
             )
             parser.add_argument(
-                "--disable-compute-advantages-and-returns",
-                action="store_false",
-                dest="compute_advantages_and_returns",
-                help=(
-                    "Whether to disable computing advantages and returns. "
-                    "If set, we will not compute the advantages and returns, "
-                    "This is useful for sft or custom loss function."
-                ),
-            )
-            parser.add_argument("--entropy-coef", type=float, default=0.0, help="Entropy loss coef")
-            parser.add_argument("--normalize-advantages", action="store_true", default=False)
-            parser.add_argument(
                 "--disable-grpo-std-normalization",
                 action="store_false",
                 dest="grpo_std_normalization",
@@ -936,15 +912,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "Use batch-wide std instead of per-group std for GRPO advantage. "
                     "flow_grpo's pickscore recipe sets global_std=True, so enable this for parity."
-                ),
-            )
-            parser.add_argument(
-                "--use-rollout-entropy",
-                action="store_true",
-                default=False,
-                help=(
-                    "Whether to calculate the entropy when calculating the logprobs from actor and reference model. "
-                    "This is useful for doing special loss mask."
                 ),
             )
             return parser
@@ -1455,15 +1422,6 @@ def miles_validate_args(args):
 
     if args.save_interval is not None:
         assert args.save is not None, "'--save' is required when save_interval is set."
-
-    if args.advantage_estimator in ["reinforce_plus_plus", "reinforce_plus_plus_baseline"]:
-        assert args.normalize_advantages, (
-            "The 'reinforce_plus_plus' and 'reinforce_plus_plus_baseline' advantage estimators "
-            "require advantage normalization. Please add `--normalize-advantages` to your command."
-        )
-
-    if args.eps_clip_high is None:
-        args.eps_clip_high = args.eps_clip
 
     if (args.micro_batch_size_sample is None) != (args.micro_batch_size_tstep is None):
         raise ValueError("--micro-batch-size-sample and --micro-batch-size-tstep must be set together")
