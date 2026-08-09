@@ -215,13 +215,13 @@ class FSDPTrainRayActor(TrainRayActor):
         checkpoint_payload = checkpoint.load(self)
 
         self.ema_shadow = None
-        if self.args.ema_shadow:
+        if self.args.use_ema:
             self.ema_shadow = EmaShadow(
                 (p for m in self.models.values() for p in m.parameters()),
-                decay=self.args.ema_decay,
-                uprate=self.args.ema_uprate,
-                uphold=self.args.ema_uphold,
-                flat_steps=self.args.ema_flat_steps,
+                decay=self.args.ema_decay_init,
+                uprate=self.args.ema_decay_ramp,
+                uphold=self.args.ema_decay_max,
+                flat_steps=self.args.ema_decay_flat_steps,
             )
 
         # sglang-d now supports /update_weights_from_tensor (PR #20464).

@@ -1013,6 +1013,56 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             return parser
 
+        def add_ema_arguments(parser):
+            parser.add_argument(
+                "--use-ema",
+                action="store_true",
+                default=False,
+                help=(
+                    "Maintain an exponential moving average of the trainable weights as pi_old "
+                    "(LoRA or full finetune). Consumed by --ref-mode ema; combine with "
+                    "--ema-rollout-policy ema to sample under pi_old."
+                ),
+            )
+            parser.add_argument(
+                "--ema-rollout-policy",
+                type=str,
+                choices=["live", "ema"],
+                default="live",
+                help=(
+                    "Which trainable weights to push to rollout after each rollout_end when "
+                    "--use-ema is set: live weights, or the EMA copy (pi_old)."
+                ),
+            )
+            parser.add_argument(
+                "--ema-decay-init",
+                type=float,
+                default=0.001,
+                help="EMA decay during the flat period, before the ramp starts.",
+            )
+            parser.add_argument(
+                "--ema-decay-ramp",
+                type=float,
+                default=0.001,
+                help=(
+                    "Per-step increase of the EMA decay once the flat period ends. The ramp "
+                    "restarts from zero rather than continuing from --ema-decay-init."
+                ),
+            )
+            parser.add_argument(
+                "--ema-decay-max",
+                type=float,
+                default=0.5,
+                help="Ceiling the ramping EMA decay stops at.",
+            )
+            parser.add_argument(
+                "--ema-decay-flat-steps",
+                type=int,
+                default=0,
+                help="Steps the decay holds at --ema-decay-init before the ramp begins.",
+            )
+            return parser
+
         # debug
         def add_debug_arguments(parser):
             parser.add_argument(
@@ -1070,52 +1120,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "never drift. Useful for measuring pure forward-path divergence "
                     "from the rollout engine."
                 ),
-            )
-
-            # EMA
-            parser.add_argument(
-                "--ema-shadow",
-                action="store_true",
-                default=False,
-                help=(
-                    "Maintain an EMA shadow of trainable weights (pi_old; LoRA or full finetune). "
-                    "Consumed when --ref-mode ema; combine with --ema-rollout-policy ema to "
-                    "sample under pi_old."
-                ),
-            )
-            parser.add_argument(
-                "--ema-rollout-policy",
-                type=str,
-                choices=["live", "ema"],
-                default="live",
-                help=(
-                    "Which trainable weights to push to rollout after each rollout_end when "
-                    "--ema-shadow is set: live weights, or EMA shadow (pi_old)."
-                ),
-            )
-            parser.add_argument(
-                "--ema-decay",
-                type=float,
-                default=0.001,
-                help="EMA decay while step <= flat_steps.",
-            )
-            parser.add_argument(
-                "--ema-uprate",
-                type=float,
-                default=0.001,
-                help="EMA warmup rate after flat_steps.",
-            )
-            parser.add_argument(
-                "--ema-uphold",
-                type=float,
-                default=0.5,
-                help="EMA warmup cap.",
-            )
-            parser.add_argument(
-                "--ema-flat-steps",
-                type=int,
-                default=0,
-                help="EMA flat steps before warmup begins.",
             )
 
             parser.add_argument(
@@ -1305,6 +1309,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         parser = add_eval_arguments(parser)
         parser = add_algo_arguments(parser)
         parser = add_lora_arguments(parser)
+        parser = add_ema_arguments(parser)
         parser = add_wandb_arguments(parser)
         parser = add_router_arguments(parser)
         parser = add_debug_arguments(parser)
@@ -1493,16 +1498,18 @@ def miles_validate_args(args):
                 "set --diffusion-model (for per-model defaults) or --lora-target-modules."
             )
 
-    if not 0.0 <= args.ema_decay <= 1.0:
-        raise ValueError(f"--ema-decay must be in [0, 1], got {args.ema_decay}")
-    if args.ema_uprate < 0.0:
-        raise ValueError(f"--ema-uprate must be non-negative, got {args.ema_uprate}")
-    if not 0.0 <= args.ema_uphold <= 1.0:
-        raise ValueError(f"--ema-uphold must be in [0, 1], got {args.ema_uphold}")
-    if args.ema_flat_steps < 0:
-        raise ValueError(f"--ema-flat-steps must be non-negative, got {args.ema_flat_steps}")
-    if args.ema_rollout_policy == "ema" and not args.ema_shadow:
-        raise ValueError("--ema-rollout-policy ema requires --ema-shadow")
+    if not 0.0 <= args.ema_decay_init <= 1.0:
+        raise ValueError(f"--ema-decay-init must be in [0, 1], got {args.ema_decay_init}")
+    if args.ema_decay_ramp < 0.0:
+        raise ValueError(f"--ema-decay-ramp must be non-negative, got {args.ema_decay_ramp}")
+    if not 0.0 <= args.ema_decay_max <= 1.0:
+        raise ValueError(f"--ema-decay-max must be in [0, 1], got {args.ema_decay_max}")
+    if args.ema_decay_flat_steps < 0:
+        raise ValueError(f"--ema-decay-flat-steps must be non-negative, got {args.ema_decay_flat_steps}")
+    if args.use_ema and args.ref_mode != "ema" and args.ema_rollout_policy != "ema":
+        raise ValueError("--use-ema has no consumer; set --ref-mode ema or --ema-rollout-policy ema")
+    if args.ema_rollout_policy == "ema" and not args.use_ema:
+        raise ValueError("--ema-rollout-policy ema requires --use-ema")
 
     if args.loss_type == "sft_loss":
         if not args.train_only:
@@ -1545,8 +1552,8 @@ def miles_validate_args(args):
             raise ValueError("--loss-type sft_loss does not support --diffusion-recompute-old-log-prob")
         if args.ref_mode != "none":
             raise ValueError("--loss-type sft_loss does not use a reference model; drop --ref-mode")
-        if args.ema_shadow:
-            raise ValueError("--loss-type sft_loss does not support --ema-shadow (EMA updates run in weight sync)")
+        if args.use_ema:
+            raise ValueError("--loss-type sft_loss does not support --use-ema (EMA updates run in weight sync)")
 
     is_nft = args.loss_type == "nft"
     if is_nft:
@@ -1567,8 +1574,8 @@ def miles_validate_args(args):
 
     if is_nft and args.ref_mode == "none":
         raise ValueError("--loss-type nft requires a reference model; set --ref-mode ema or lora_base")
-    if args.ref_mode == "ema" and not args.ema_shadow:
-        raise ValueError("--ref-mode ema requires --ema-shadow")
+    if args.ref_mode == "ema" and not args.use_ema:
+        raise ValueError("--ref-mode ema requires --use-ema")
     if args.ref_mode == "lora_base" and not args.use_lora:
         raise ValueError("--ref-mode lora_base requires --use-lora")
     if args.diffusion_kl_beta > 0 and args.ref_mode == "none":

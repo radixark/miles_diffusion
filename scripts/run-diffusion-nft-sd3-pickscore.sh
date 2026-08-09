@@ -116,12 +116,12 @@ python -u "${ROOT_DIR}/train_diffusion.py" \
   --diffusion-nft-adv-clip-max 5.0 \
   --diffusion-nft-timestep-fraction 0.99 \
   --ref-mode ema \
-  --ema-shadow \
+  --use-ema \
   --ema-rollout-policy ema \
-  --ema-decay 0.001 \
-  --ema-uprate 0.001 \
-  --ema-uphold 0.5 \
-  --ema-flat-steps 0 \
+  --ema-decay-init 0.001 \
+  --ema-decay-ramp 0.001 \
+  --ema-decay-max 0.5 \
+  --ema-decay-flat-steps 0 \
   --advantage-estimator grpo \
   --globalize-reward-std \
   --diffusion-model "${SD3_MODEL}" \
