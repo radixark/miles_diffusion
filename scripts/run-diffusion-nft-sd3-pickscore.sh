@@ -43,7 +43,6 @@ if [[ "${SMOKE}" == "1" ]]; then
     --local-dir "${DATASETS_DIR}"
   PROMPT_DATA="${DATASETS_DIR}/flowgrpo_ocr/train.jsonl"
   REWARD_ARGS=(
-    --diffusion-reward ocr:1.0
     --rm-type ocr
   )
   # 2-GPU smoke: tiny batch, no dedicated reward GPU.
@@ -66,7 +65,6 @@ else
     --local-dir "${DATASETS_DIR}"
   PROMPT_DATA="${DATASETS_DIR}/flowgrpo_pickscore/train.jsonl"
   REWARD_ARGS=(
-    --diffusion-reward pickscore:1.0
     --rm-type pickscore
     --pickscore-num-workers 1
     --pickscore-num-gpus-per-worker 1.0

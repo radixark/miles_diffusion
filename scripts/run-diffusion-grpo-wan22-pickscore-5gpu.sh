@@ -95,7 +95,6 @@ WAN_LORA_TARGET_MODULES=(
   --sglang-server-concurrency 8 \
   --update-weight-buffer-size 2147483648 \
   --update-weight-target-module transformer,transformer_2 \
-  --diffusion-reward pickscore:1.0 \
   --advantage-estimator grpo \
   --rm-type pickscore \
   --pickscore-num-workers 1 \

@@ -231,16 +231,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
-                "--model-name",
-                type=str,
-                default=None,
-                help=(
-                    "The name of the model, this is used to convert the megatron weights into huggingface format. "
-                    "If not set, we will use `type(AutoConfig.from_pretrained(args.hf_checkpoint)).__name__.lower()` as model_name. "
-                    "Also, sometimes this will help alleviate the bug that transformers cannot find certain model."
-                ),
-            )
-            parser.add_argument(
                 "--rollout-function-path",
                 type=str,
                 default="miles.rollout.sglang_rollout.generate_rollout",
@@ -426,18 +416,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
                 default=False,
                 help="Set rollout_debug_mode=true on POST /rollout/generate.",
-            )
-            parser.add_argument(
-                "--diffusion-reward",
-                type=str,
-                default="pickscore",
-                help="Reward function name for diffusion rollout.",
-            )
-            parser.add_argument(
-                "--diffusion-reward-device",
-                type=str,
-                default=None,
-                help="Device for diffusion reward model, defaults to diffusion-device.",
             )
             parser.add_argument(
                 "--diffusion-log-images",
@@ -1227,12 +1205,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument(
                 "--group-rm", action="store_true", default=False, help="Whether to do rm on a whole group."
-            )
-            parser.add_argument(
-                "--rm-url",
-                type=str,
-                default=None,
-                help="URL for the reward model service for --rm-type remote_rm, e.g. http://localhost:8000",
             )
             parser.add_argument(
                 "--ocr-num-workers",

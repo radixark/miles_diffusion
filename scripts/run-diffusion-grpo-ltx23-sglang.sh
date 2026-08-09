@@ -87,7 +87,6 @@ fi
   --advantage-estimator grpo \
   --globalize-reward-std \
   --rm-type pickscore \
-  --diffusion-reward pickscore:1.0 \
   --pickscore-processor-path laion/CLIP-ViT-H-14-laion2B-s32B-b79K \
   --pickscore-model-path yuvalkirstain/PickScore_v1 \
   --pickscore-num-frames 3 \

@@ -81,7 +81,6 @@ hf download --repo-type dataset rockdu/miles-diffusion-datasets \
   --sglang-attention-backend torch_sdpa \
   --update-weight-buffer-size 2147483648 \
   --diffusion-model Qwen/Qwen-Image \
-  --diffusion-reward pickscore:1.0 \
   --advantage-estimator grpo \
   --globalize-reward-std \
   --rm-type pickscore \

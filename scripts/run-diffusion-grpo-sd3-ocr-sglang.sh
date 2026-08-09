@@ -95,7 +95,6 @@ python -u "${ROOT_DIR}/train_diffusion.py" \
   --weight-decay 1e-4 \
   --diffusion-kl-beta 0.04 \
   --diffusion-model "${SD3_MODEL}" \
-  --diffusion-reward ocr:1.0 \
   --advantage-estimator grpo \
   --globalize-reward-std \
   --rm-type ocr \

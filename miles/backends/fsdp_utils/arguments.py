@@ -29,8 +29,6 @@ class FSDPArgs:
     adam_beta2: float = 0.999
     adam_eps: float = 1e-8
 
-    attn_implementation: str = "flash_attention_2"
-
     # diffusers set_attention_backend value; None keeps the default. Ring attention accepts the RING_KERNELS subset.
     fsdp_attention_backend: str | None = None
 
@@ -39,7 +37,6 @@ class FSDPArgs:
 
     # Precision
     gradient_checkpointing: bool = False
-    fp16: bool = False
 
     # FSDP configuration
     fsdp_cpu_offload: bool = (
