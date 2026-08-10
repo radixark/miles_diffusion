@@ -254,7 +254,7 @@ async def generate_and_rm_group(
     # N-spaced base so sgl-d's seed→[seed+0..seed+N-1] expansion stays disjoint
     # per (rollout, prompt-group); group_index is monotonic across the run.
     n_per_prompt = args.n_samples_per_prompt
-    group_index = int(getattr(group[0], "group_index", 0) or 0)
+    group_index = int(group[0].group_index or 0)
     seed_base = (args.rollout_seed + group_index * n_per_prompt) % (2**31)
 
     tasks = []
@@ -278,11 +278,6 @@ async def generate_and_rm_group(
             sample.reward = reward
 
     return group
-
-
-async def abort(args: Namespace, rollout_id: int) -> list[list[Sample]]:
-    # SGL-D TODO: support oversampling+filter & abort
-    raise NotImplementedError("SGLang-Diffusion doesn't support abort")
 
 
 async def generate_rollout_async(
@@ -320,7 +315,6 @@ async def generate_rollout_async(
     ), "Now we don't support over sampling, please set --over_sampling_batch_size equal to --rollout_batch_size"
 
     data = []
-    all_data = []
     do_print = True
     pbar = tqdm(total=target_data_size * args.n_samples_per_prompt, desc="Rollout generation")
     while len(data) < target_data_size:
@@ -342,7 +336,6 @@ async def generate_rollout_async(
                 do_print = False
 
             assert len(group) == args.n_samples_per_prompt
-            all_data.append(group)
             dynamic_filter_output = call_dynamic_filter(dynamic_filter, args, group)
             if not dynamic_filter_output.keep:
                 metric_gatherer.on_dynamic_filter_drop(reason=dynamic_filter_output.reason)
@@ -367,7 +360,6 @@ async def generate_rollout_async(
 
     assert len(data) == args.rollout_batch_size, f"Got {len(data)} samples, expected {args.rollout_batch_size}"
     data = sorted(data, key=lambda group: group[0][0].index if isinstance(group[0], list) else group[0].index)
-    sorted(all_data, key=lambda group: group[0][0].index if isinstance(group[0], list) else group[0].index)
 
     # reset the global state to prevent effects on the next rollout or eval.
     state.reset()
@@ -437,7 +429,7 @@ async def eval_rollout_single_dataset(
             sample = copy.deepcopy(prompt_sample)
             sample.index = sample_index
             sample_index += 1
-            sample.metadata = dataset_config.inject_metadata(getattr(sample, "metadata", None))
+            sample.metadata = dataset_config.inject_metadata(sample.metadata)
             # Per-task dict so concurrent ``create_task`` calls never share one mutating mapping.
             # Train sets this inside ``generate_and_rm_group``; eval only needs ``rollout_microgroup_seed`` for images.
             sampling_params = base_sampling_params.copy()

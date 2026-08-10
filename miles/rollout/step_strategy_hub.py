@@ -64,7 +64,7 @@ def epoch_global_random_choice(
 
 
 def _sde_candidate_steps(args: Namespace, num_steps: int) -> list[int]:
-    raw = getattr(args, "diffusion_sde_candidate_steps", None)
+    raw = args.diffusion_sde_candidate_steps
     if raw is None:
         raise ValueError(
             "epoch_global_random_choice requires --diffusion-sde-candidate-steps "

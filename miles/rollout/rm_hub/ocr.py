@@ -1,4 +1,3 @@
-import argparse
 import asyncio
 import logging
 
@@ -17,15 +16,12 @@ logger = logging.getLogger(__name__)
 
 
 def _init_paddleocr(use_gpu: bool) -> PaddleOCR:
-    def make_ocr() -> PaddleOCR:
-        return PaddleOCR(
-            use_angle_cls=False,
-            lang="en",
-            use_gpu=use_gpu,
-            show_log=False,
-        )
-
-    return make_ocr()
+    return PaddleOCR(
+        use_angle_cls=False,
+        lang="en",
+        use_gpu=use_gpu,
+        show_log=False,
+    )
 
 
 class OcrScorer:
@@ -75,7 +71,7 @@ class OcrScorer:
 
             except Exception as e:
                 # Error handling (e.g., OCR parsing failure)
-                print(f"OCR processing failed: {str(e)}")
+                logger.warning(f"OCR processing failed: {e}")
                 dist = len(prompt)  # Maximum penalty
             reward = 1 - dist / (len(prompt))
             rewards.append(reward)
@@ -147,15 +143,3 @@ async def ocr_rm(args, sample: Sample):
     image = _rgb_hwc_from_generated(sample)
     score = await pool.score(image, sample.prompt)
     return score
-
-
-if __name__ == "__main__":
-    args = argparse.Namespace(ocr_num_workers=4)
-    pil_image = Image.open("imgs/miles_logo.png").convert("RGB")
-    image_tensor = torch.from_numpy(np.array(pil_image)).permute(2, 0, 1).unsqueeze(1).float()
-    sample = Sample(
-        prompt='A logo of Miles saying "Miles"',
-        generated_output=image_tensor,
-    )
-    img = np.array(pil_image)
-    print(OcrScorer()([img], [sample.prompt])[0])
