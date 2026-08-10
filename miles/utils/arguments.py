@@ -1307,13 +1307,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             return parser
 
-        def add_sglang_tp_size():
-            temp_parser = argparse.ArgumentParser(add_help=False)
-            temp_parser.add_argument("--rollout-num-gpus-per-engine", type=int, default=1)
-            temp_args, _ = temp_parser.parse_known_args()
-            sglang_tp_size = temp_args.rollout_num_gpus_per_engine
-            return sglang_tp_size
-
         # Add custom arguments in front to prevent overwritten some miles arguments.
         if add_custom_arguments is not None:
             parser = add_custom_arguments(parser)
@@ -1343,7 +1336,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             help="Path to the YAML config for custom function arguments.",
         )
 
-        parser.set_defaults(sglang_tensor_parallel_size=add_sglang_tp_size())
         return parser
 
     return add_miles_arguments
@@ -1356,7 +1348,9 @@ def parse_args(add_custom_arguments=None):
     # TODO: Diffusion FSDP
     add_miles_arguments = get_miles_extra_args_provider(add_custom_arguments)
 
-    parse_args_train_backend()
+    if os.environ.get("MILES_BACKEND") is not None:
+        raise Exception("`MILES_BACKEND` is deprecated, please use --train-backend directly.")
+
     from miles.backends.fsdp_utils.arguments import load_fsdp_args
 
     args = load_fsdp_args(extra_args_provider=add_miles_arguments)
@@ -1368,16 +1362,6 @@ def parse_args(add_custom_arguments=None):
     sglang_validate_args(args)
 
     return args
-
-
-def parse_args_train_backend():
-    if os.environ.get("MILES_BACKEND") is not None:
-        raise Exception("`MILES_BACKEND` is deprecated, please use --train-backend directly.")
-
-    parser = argparse.ArgumentParser()
-    get_miles_extra_args_provider()(parser)
-    args_partial, _ = parser.parse_known_args()
-    return args_partial.train_backend
 
 
 def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
@@ -1742,33 +1726,3 @@ def miles_validate_args(args):
             if hasattr(args, k):
                 logger.info(f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}.")
             setattr(args, k, v)
-
-
-def hf_validate_args(args, hf_config):
-    def equal(x, y):
-        return x == y
-
-    errors = []
-
-    # multimodal models have different config structure
-    if hasattr(hf_config, "text_config"):
-        hf_config = hf_config.text_config
-
-    for hf_config_name, megatron_config_name, compare_fn in [
-        ("hidden_size", "hidden_size", equal),
-        ("num_attention_heads", "num_attention_heads", equal),
-        ("num_hidden_layers", "num_layers", equal),
-        ("intermediate_size", "ffn_hidden_size", equal),
-        ("tie_word_embeddings", "untie_embeddings_and_output_weights", lambda x, y: not x == y),
-        ("rms_norm_eps", "norm_epsilon", equal),
-        ("rope_theta", "rotary_base", equal),
-    ]:
-        if hasattr(hf_config, hf_config_name):
-            if not compare_fn(getattr(hf_config, hf_config_name), getattr(args, megatron_config_name)):
-                errors.append(
-                    f"{hf_config_name} in hf config {getattr(hf_config, hf_config_name)} is not equal to "
-                    f"{megatron_config_name} {getattr(args, megatron_config_name)}, please check the config."
-                )
-
-    if len(errors) > 0:
-        raise AssertionError("hf_validate_args failed: " + "; ".join(errors))
