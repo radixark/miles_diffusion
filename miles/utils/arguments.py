@@ -742,7 +742,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             reset_arg(parser, "--load", type=str, default=None)
             reset_arg(parser, "--save", type=str, default=None)
             reset_arg(parser, "--save-interval", type=int, default=None)
-            reset_arg(parser, "--async-save", action="store_true")
             parser.add_argument(
                 "--ckpt-step",
                 type=int,
@@ -1293,16 +1292,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--ci-metric-checker-threshold",
                 type=float,
-                default=None,
-            )
-            parser.add_argument(
-                "--ci-save-grad-norm",
-                type=str,
-                default=None,
-            )
-            parser.add_argument(
-                "--ci-load-grad-norm",
-                type=str,
                 default=None,
             )
             return parser
