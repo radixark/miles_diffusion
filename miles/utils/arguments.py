@@ -188,7 +188,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "The diffusers pipeline to train, as a HuggingFace repo id or a local directory. "
                     "One value serves three readers, so they cannot disagree: the training side loads "
                     "the components and scheduler from it, the sglang-d engine serves it, and the model "
-                    "family (hence the TrainPipelineConfig) is resolved from its name. Required."
+                    "family is matched from its name unless --diffusion-model-family says otherwise. "
+                    "Required."
                 ),
             )
             parser.add_argument(
@@ -203,6 +204,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "`def generate_rollout(args, rollout_id, *, evaluation=False) -> list[list[Sample]]`"
                     "and within the output sample, you should at least set `tokens`, `response_length`, `reward` "
                     "and `truncated`."
+                ),
+            )
+            parser.add_argument(
+                "--diffusion-model-family",
+                type=str,
+                default=None,
+                help=(
+                    "Registered family key, e.g. sd3, wan2_2, ltx, qwen_image. Default: matched from "
+                    "--hf-checkpoint against each family's name patterns. Pass it when the checkpoint "
+                    "does not carry the family name, which your own local weights usually do not. Use "
+                    "--train-pipeline-config-path instead for a family that is not registered."
                 ),
             )
             parser.add_argument(
@@ -1472,6 +1484,8 @@ def miles_validate_args(args):
     from miles.utils.misc import load_function
 
     if args.train_pipeline_config_path is not None:
+        if args.diffusion_model_family is not None:
+            raise ValueError("--train-pipeline-config-path and --diffusion-model-family both name a config; pass one.")
         # Explicit config path IS the identity (custom classes never need registering).
         cfg_cls = load_function(args.train_pipeline_config_path)
         args.diffusion_model_family = None
@@ -1481,7 +1495,12 @@ def miles_validate_args(args):
             resolve_diffusion_model_family,
         )
 
-        args.diffusion_model_family = resolve_diffusion_model_family(args.hf_checkpoint)
+        if args.diffusion_model_family is None:
+            args.diffusion_model_family = resolve_diffusion_model_family(args.hf_checkpoint)
+        else:
+            # Downstream lookups compare this exactly (encoder_hub.get_encoder), so normalize
+            # here rather than at every reader.
+            args.diffusion_model_family = args.diffusion_model_family.strip().lower()
         cfg_cls = get_train_pipeline_config_cls(args.diffusion_model_family)
         args.train_pipeline_config_path = f"{cfg_cls.__module__}.{cfg_cls.__qualname__}"
     if args.model_backend_path is None:

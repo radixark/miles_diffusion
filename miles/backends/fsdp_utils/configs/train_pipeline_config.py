@@ -59,7 +59,8 @@ def resolve_diffusion_model_family(model_ref: str) -> str:
     raise ValueError(
         f"Cannot resolve diffusion model family for '{model_ref}' "
         f"(known families: {list(_REGISTRY)}). "
-        "Set MILES_DIFFUSION_MODEL_FAMILY to override."
+        "Name it with --diffusion-model-family, or point --train-pipeline-config-path at your own "
+        "TrainPipelineConfig if the family is not one of these."
     )
 
 
