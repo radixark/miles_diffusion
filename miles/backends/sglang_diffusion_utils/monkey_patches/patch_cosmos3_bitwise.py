@@ -32,6 +32,14 @@ Direction discipline (never downgrade precision):
     train side is single-sample by construction (``compute_noise_pred``
     asserts ``not cfg_batching``). This also removes the uncond text padding
     (11 -> 29) that batch-2 forced.
+  * LoRA runs as adapter GEMMs instead of a weight merge. The trainer's peft
+    forward is ``base(x) + lora_B(lora_A(x))·s`` (three GEMMs); a merged
+    ``GEMM(W + sBA)`` rounds differently, so merged sync caps parity at the
+    first step (B starts at 0). With ``--lora-unmerged-weight-sync`` the
+    trainer ships base weights untouched plus per-layer A/B/scaling tensors;
+    this side intercepts them at the weight-sync loader and replays peft's
+    exact op sequence per target (to_qkv slices for add_q/k/v, to_out for
+    to_add_out).
 """
 
 from __future__ import annotations
@@ -47,6 +55,7 @@ def apply() -> None:
     _patch_silu_and_mul_eager()
     _patch_qk_norm_rope_split_eager()
     _patch_cfg_sequential()
+    _patch_lora_adapter_intercept()
 
 
 def _force_torch_sdpa_backend() -> None:
@@ -96,15 +105,122 @@ def _patch_merged_column_linear_unfused() -> None:
         if not logged:
             logged = True
             print(f"[cosmos3_bitwise] unfused MergedColumnParallelLinear active: slices={sizes}", flush=True)
+        lora = getattr(self, "_miles_lora", None)
         outs = []
         offset = 0
-        for size in sizes:
+        for idx, size in enumerate(sizes):
             bias = self.bias[offset : offset + size] if self.bias is not None else None
-            outs.append(F.linear(x, self.weight[offset : offset + size], bias))
+            out = F.linear(x, self.weight[offset : offset + size], bias)
+            if lora is not None and idx in lora:
+                out = out + _lora_term(x, *lora[idx])
+            outs.append(out)
             offset += size
         return torch.cat(outs, dim=-1), None
 
     MergedColumnParallelLinear.forward = _forward
+
+
+def _lora_term(x: torch.Tensor, A: torch.Tensor, B: torch.Tensor, s: float) -> torch.Tensor:
+    """peft vanilla LoRA (0.18.x), op for op: ``lora_B(lora_A(x)) * scaling``.
+
+    The trainer runs it under bf16 autocast on FSDP-gathered bf16 adapters; the
+    shipped A/B are pre-rounded to that dtype, so both sides execute the same
+    two bf16 GEMMs and the same elementwise multiply. The base output is added
+    by the caller as ``base + term`` — same order as peft's ``result + ...``.
+    """
+    return F.linear(F.linear(x, A), B) * s
+
+
+def _attach_lora_adapters(module, adapters: dict[str, dict[str, torch.Tensor]]) -> None:
+    """Store shipped adapter tensors on their target submodules.
+
+    ``adapters`` maps a diffusers-style layer prefix (e.g.
+    ``layers.5.self_attn.add_q_proj``) to its ``.lora_A.weight`` /
+    ``.lora_B.weight`` / ``.lora_scaling`` tensors. The module's own
+    param-name mapper resolves the prefix to the sgl-d parameter — including
+    the merge index for slices of a fused param (add_q/k/v -> to_qkv slots
+    0/1/2; to_add_out -> to_out, no index).
+    """
+    from sglang.multimodal_gen.runtime.post_training.weights_updater import (
+        _build_module_weight_name_mapper,
+    )
+
+    map_name = _build_module_weight_name_mapper(module)
+    for prefix, parts in adapters.items():
+        missing = {".lora_A.weight", ".lora_B.weight", ".lora_scaling"} - set(parts)
+        if missing:
+            raise RuntimeError(f"cosmos3_bitwise LoRA sync: incomplete adapter for {prefix!r}: missing {missing}")
+        mapped, slot = map_name(f"{prefix}.weight") if map_name is not None else (f"{prefix}.weight", None)
+        target = module.get_submodule(mapped[: -len(".weight")])
+        device = next(target.parameters()).device
+        # clone(): the shipped tensors are views into the CUDA-IPC flattened
+        # bucket, whose storage the sender reclaims after the update returns.
+        A = parts[".lora_A.weight"].to(device).clone()
+        B = parts[".lora_B.weight"].to(device).clone()
+        s = float(parts[".lora_scaling"].item())
+        registry = getattr(target, "_miles_lora", None)
+        if registry is None:
+            registry = {}
+            target._miles_lora = registry
+        registry[slot] = (A, B, s)
+        if slot is None:
+            _wrap_linear_instance_with_lora(target)
+
+
+def _wrap_linear_instance_with_lora(target) -> None:
+    """Instance-level wrap for non-fused targets (RowParallelLinear to_out):
+    add the adapter term after the complete base output (bias included), the
+    position peft adds it at."""
+    if getattr(target, "_miles_lora_wrapped", False):
+        return
+    orig_forward = target.forward
+
+    def forward(x):
+        out, out_bias = orig_forward(x)
+        A, B, s = target._miles_lora[None]
+        return out + _lora_term(x, A, B, s), out_bias
+
+    target.forward = forward
+    target._miles_lora_wrapped = True
+
+
+def _patch_lora_adapter_intercept() -> None:
+    """Consume `<layer>.lora_A/lora_B/lora_scaling` tensors from weight sync.
+
+    The trainer's --lora-unmerged-weight-sync ships base weights untouched
+    plus per-layer adapter tensors (see DiffusionUpdateWeightFromTensorLoRA).
+    sgl-d's loader would warn-and-drop these unknown names, so split them out
+    before it runs and attach them to the resolved target modules. No-op when
+    the trainer syncs merged weights.
+
+    A layer's three parts arrive in separate calls — the sender flushes one
+    flattened bucket per dtype (A/B at forward dtype, scaling fp64) and may
+    also split across buffer-size flushes — so partial adapters are buffered
+    until complete.
+    """
+    from sglang.multimodal_gen.runtime.post_training import weights_updater
+
+    orig_load = weights_updater._load_weights_into_module
+    pending: dict[str, dict[str, torch.Tensor]] = {}
+
+    def _load(module, weights_iter):
+        base_entries = []
+        for name, weight in weights_iter:
+            for suffix in (".lora_A.weight", ".lora_B.weight", ".lora_scaling"):
+                if name.endswith(suffix):
+                    pending.setdefault(name[: -len(suffix)], {})[suffix] = weight
+                    break
+            else:
+                base_entries.append((name, weight))
+        complete = {prefix: parts for prefix, parts in pending.items() if len(parts) == 3}
+        if complete:
+            _attach_lora_adapters(module, complete)
+            for prefix in complete:
+                del pending[prefix]
+            print(f"[cosmos3_bitwise] attached {len(complete)} LoRA adapters (unmerged weight sync)", flush=True)
+        return orig_load(module, iter(base_entries))
+
+    weights_updater._load_weights_into_module = _load
 
 
 def _patch_silu_and_mul_eager() -> None:

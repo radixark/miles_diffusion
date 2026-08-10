@@ -312,6 +312,18 @@ class DiffusionUpdateWeightFromTensor(DiffusionUpdateWeight):
                 ray.get(ref)
 
 
+_FORWARD_DTYPES = {"fp32": torch.float32, "bf16": torch.bfloat16, "fp16": torch.float16}
+
+
+def _strip_peft_wrappers(name: str) -> str:
+    """base_model.model.X.base_layer.weight -> X.weight (see the comment in
+    ``_update_component_weights`` for the wrapper layout)."""
+    name = name.replace(".base_layer", "")
+    if name.startswith("base_model.model."):
+        name = name[len("base_model.model.") :]
+    return name
+
+
 # TODO: update weights only for sgl-d LoRA params
 class DiffusionUpdateWeightFromTensorLoRA(DiffusionUpdateWeightFromTensor):
     """LoRA-aware updater: merges adapters into base before pushing to rollout.
@@ -319,10 +331,20 @@ class DiffusionUpdateWeightFromTensorLoRA(DiffusionUpdateWeightFromTensor):
     The rollout engine has no LoRA layers — it receives standard weight keys
     like ``transformer_blocks.0.attn.to_q.weight``.  We compute ``W_base + αBA/r``
     on the fly during sync (no in-place mutation of the FSDP model).
+
+    With ``--lora-unmerged-weight-sync`` the base weights ship untouched and the
+    adapters ship alongside as ``<layer>.lora_A.weight`` / ``<layer>.lora_B.weight``
+    / ``<layer>.lora_scaling`` (A/B pre-rounded to the trainer's forward dtype —
+    the same rounding FSDP's mixed-precision gather applies in the train
+    forward). An engine-side patch stores them and adds the adapter GEMMs in
+    peft's exact op order, keeping the two forwards bitwise comparable after
+    updates: ``GEMM(W + αBA/r)`` is not bitwise equal to
+    ``GEMM(W) + GEMM_B(GEMM_A(x))·s``, so merged sync caps parity at one step.
     """
 
     def __init__(self, args, models):
         super().__init__(args, models)
+        self._unmerged = getattr(args, "lora_unmerged_weight_sync", False)
         # Per-component LoRA index: component -> {param name -> (A, B, scaling)}.
         self._lora_index: dict[str, dict[str, tuple]] = {}
         for component, model in self.models.items():
@@ -336,7 +358,24 @@ class DiffusionUpdateWeightFromTensorLoRA(DiffusionUpdateWeightFromTensor):
                             module.scaling[adapter],
                         )
             self._lora_index[component] = index
-            logger.info(f"LoRA weight sync [{component}]: {len(index)} mergeable layers")
+            mode = "unmerged (adapter tensors)" if self._unmerged else "merged"
+            logger.info(f"LoRA weight sync [{component}]: {len(index)} layers, mode={mode}")
+
+    def _iter_adapter_tensors(self, lora_index: dict[str, tuple]):
+        """Yield (name, tensor) adapter entries for unmerged sync."""
+        forward_dtype = _FORWARD_DTYPES[self.args.diffusion_forward_dtype]
+        for base_name, (A, B, s) in lora_index.items():
+            stripped = _strip_peft_wrappers(base_name)
+            assert stripped.endswith(".weight")
+            prefix = stripped[: -len(".weight")]
+            # Round exactly as the train forward sees the adapters: FSDP gathers
+            # the fp32 masters at forward dtype (elementwise cast, shard-order
+            # invariant), so `.to(forward_dtype)` reproduces those bits.
+            yield f"{prefix}.lora_A.weight", self._gather_full(A.weight.detach()).to(forward_dtype).contiguous()
+            yield f"{prefix}.lora_B.weight", self._gather_full(B.weight.detach()).to(forward_dtype).contiguous()
+            # fp64 so the engine recovers the exact python float peft multiplies
+            # by (`... * self.scaling`); fp32 could round e.g. alpha/r = 10/3.
+            yield f"{prefix}.lora_scaling", torch.tensor([float(s)], dtype=torch.float64, device="cuda")
 
     def _gather_full(self, t: torch.Tensor) -> torch.Tensor:
         t = t.cuda()
@@ -366,7 +405,7 @@ class DiffusionUpdateWeightFromTensorLoRA(DiffusionUpdateWeightFromTensor):
                     async_op=True,
                 ).to_local()
 
-            if name in lora_index:
+            if name in lora_index and not self._unmerged:
                 # Merge LoRA for this layer on the fly instead of pre-computing
                 # all 720 deltas up front: Qwen-Image's MLP + attn deltas total
                 # tens of GB at peak — here only one delta is resident at a time.
@@ -387,9 +426,7 @@ class DiffusionUpdateWeightFromTensorLoRA(DiffusionUpdateWeightFromTensor):
             #
             # ``.base_layer`` is the inner wrapper (lora.Linear.base_layer);
             # ``base_model.model.`` is PeftModel.base_model (=LoraModel) .model.
-            sglang_d_param_name = name.replace(".base_layer", "")
-            if sglang_d_param_name.startswith("base_model.model."):
-                sglang_d_param_name = sglang_d_param_name[len("base_model.model.") :]
+            sglang_d_param_name = _strip_peft_wrappers(name)
 
             sz = param.numel() * param.element_size()
             if bucket and bucket_size + sz >= self.args.update_weight_buffer_size:
@@ -402,6 +439,15 @@ class DiffusionUpdateWeightFromTensorLoRA(DiffusionUpdateWeightFromTensor):
                 # hash matches what the rollout engine stored (bytes-identical).
                 t = param.wait() if hasattr(param, "wait") else param
                 verify_pairs.append((sglang_d_param_name, t.detach().cpu().contiguous()))
+
+        if self._unmerged:
+            for adapter_name, tensor in self._iter_adapter_tensors(lora_index):
+                sz = tensor.numel() * tensor.element_size()
+                if bucket and bucket_size + sz >= self.args.update_weight_buffer_size:
+                    self.wait_and_update_bucket_weights(bucket, target_module)
+                    bucket, bucket_size = [], 0
+                bucket.append((adapter_name, tensor))
+                bucket_size += sz
 
         if bucket:
             self.wait_and_update_bucket_weights(bucket, target_module)

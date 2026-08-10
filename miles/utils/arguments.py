@@ -1028,6 +1028,19 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "(requires matching sglang-d LoRAPipeline support)."
                 ),
             )
+            parser.add_argument(
+                "--lora-unmerged-weight-sync",
+                action="store_true",
+                default=False,
+                help=(
+                    "Ship base weights unmerged plus lora_A/lora_B (+scaling) tensors so the "
+                    "rollout engine applies LoRA as adapter GEMMs in peft's exact op order "
+                    "instead of merging W+BA. Keeps train/rollout forwards bitwise comparable "
+                    "after weight updates (a merged GEMM is not bitwise equal to base+adapter). "
+                    "Requires an engine-side patch that consumes the adapter tensors (see "
+                    "monkey_patches.patch_cosmos3_bitwise)."
+                ),
+            )
             return parser
 
         def add_ema_arguments(parser):
