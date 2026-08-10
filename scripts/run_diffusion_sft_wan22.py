@@ -44,38 +44,35 @@ def execute(args: ScriptArgs) -> None:
         raise SystemExit("set --data-jsonl (or MILES_SCRIPT_DATA_JSONL) to a jsonl with prompt + metadata.video")
     run_name = f"diffusion_sft_wan22_{U.create_run_id()}"
 
-    ckpt_args = f"--hf-checkpoint {MODEL} --save {args.output_dir}/{run_name}/ckpt --save-interval 20 "
+    ckpt_args = (
+        f"--hf-checkpoint {MODEL} --diffusion-model {MODEL} --sft-encoder-checkpoint {MODEL} "
+        f"--save {args.output_dir}/{run_name}/ckpt --save-interval 20 "
+    )
     if args.resume_ckpt:
         ckpt_args += f"--load {args.resume_ckpt} "
         if args.start_rollout >= 0:
             ckpt_args += f"--start-rollout-id {args.start_rollout} "
 
-    sft_args = (
-        "--loss-type sft_loss "
-        "--train-only "
-        "--rollout-function-path miles.rollout.sft_rollout.generate_rollout "
-        "--custom-convert-samples-to-train-data-path miles.rollout.sft_rollout.convert_samples_to_train_data "
-        "--custom-rollout-log-function-path miles.rollout.sft_rollout.log_rollout_data "
-        "--custom-prepare-train-batch-path miles.backends.fsdp_utils.loss_hub.sft.prepare_sft_batch "
-        "--custom-loss-function-path miles.backends.fsdp_utils.loss_hub.sft.sft_loss_formula "
-        f"--sft-encoder-checkpoint {MODEL} "
-        "--sft-frame-stride 2 "
-    )
-
     rollout_args = (
+        "--rollout-function-path miles.rollout.sft_rollout.generate_rollout "
         f"--prompt-data {args.data_jsonl} "
         "--input-key prompt "
         "--rollout-batch-size 64 "
         "--num-epoch 3 "
         "--num-steps-per-rollout 4 "
-        "--micro-batch-size 1 "
-    )
-
-    diffusion_args = (
-        f"--diffusion-model {MODEL} "
         "--diffusion-height 480 "
         "--diffusion-width 832 "
         "--diffusion-output-num-frames 81 "
+    )
+
+    sft_args = (
+        "--loss-type sft_loss "
+        "--train-only "
+        "--custom-convert-samples-to-train-data-path miles.rollout.sft_rollout.convert_samples_to_train_data "
+        "--custom-rollout-log-function-path miles.rollout.sft_rollout.log_rollout_data "
+        "--custom-prepare-train-batch-path miles.backends.fsdp_utils.loss_hub.sft.prepare_sft_batch "
+        "--custom-loss-function-path miles.backends.fsdp_utils.loss_hub.sft.sft_loss_formula "
+        "--sft-frame-stride 2 "
     )
 
     optimizer_args = "--lr 1e-4 --adam-beta2 0.999 --weight-decay 1e-4 "
@@ -99,12 +96,14 @@ def execute(args: ScriptArgs) -> None:
         "--update-weight-target-module transformer,transformer_2 "
     )
 
+    perf_args = "--micro-batch-size 1 "
+
     misc_args = "--actor-num-gpus-per-node 4 --num-gpus-per-node 4 "
 
     U.execute_train(
         train_args=(
-            f"{ckpt_args} {sft_args} {rollout_args} {diffusion_args} {optimizer_args} {lora_args} "
-            f"{wandb_args} {train_backend_args} {misc_args} {args.extra_args}"
+            f"{ckpt_args} {rollout_args} {sft_args} {optimizer_args} {lora_args} "
+            f"{wandb_args} {train_backend_args} {perf_args} {misc_args} {args.extra_args}"
         ),
         num_gpus_per_node=4,
         config=args,

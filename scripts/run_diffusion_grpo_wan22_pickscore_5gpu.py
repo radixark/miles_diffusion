@@ -56,7 +56,10 @@ def prepare(args: ScriptArgs) -> str:
 def execute(args: ScriptArgs, data_dir: str) -> None:
     run_name = f"diffusion_grpo_wan22_pickscore_5gpu_{U.create_run_id()}"
 
-    ckpt_args = f"--hf-checkpoint {MODEL} --save {args.output_dir}/{run_name}/ckpt --save-interval 10 "
+    ckpt_args = (
+        f"--hf-checkpoint {MODEL} --diffusion-model {MODEL} "
+        f"--save {args.output_dir}/{run_name}/ckpt --save-interval 10 "
+    )
 
     rollout_args = (
         "--rollout-function-path miles.rollout.sglang_diffusion_rollout.generate_rollout "
@@ -67,11 +70,6 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         f"--num-rollout {args.num_rollout} "
         "--num-steps-per-rollout 2 "
         "--rollout-microgroup-size 8 "
-        "--micro-batch-size 2 "
-    )
-
-    diffusion_args = (
-        f"--diffusion-model {MODEL} "
         "--diffusion-num-steps 10 "
         "--diffusion-output-num-frames 5 "
         "--diffusion-guidance-scale 4.0 "
@@ -118,16 +116,14 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         __file__, run_id=run_name, project=WANDB_PROJECT, wandb_log_num_images=8, wandb_log_image_interval=10
     )
 
-    sglang_args = (
-        "--use-miles-router "
-        "--sglang-server-concurrency 8 "
-        "--update-weight-buffer-size 2147483648 "
-        "--update-weight-target-module transformer,transformer_2 "
-    )
+    sglang_args = "--use-miles-router --sglang-server-concurrency 8 --update-weight-buffer-size 2147483648 "
 
     train_backend_args = (
         "--train-backend fsdp --fsdp-master-dtype fp32 --fsdp-reduce-dtype fp32 --diffusion-forward-dtype bf16 "
+        "--update-weight-target-module transformer,transformer_2 "
     )
+
+    perf_args = "--micro-batch-size 2 "
 
     misc_args = (
         "--actor-num-gpus-per-node 4 "
@@ -135,15 +131,14 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         "--rollout-num-gpus-per-engine 1 "
         "--num-gpus-per-node 5 "
         "--colocate "
+        "--diffusion-debug-mode "
     )
-
-    debug_args = "--diffusion-debug-mode "
 
     U.execute_train(
         train_args=(
-            f"{ckpt_args} {rollout_args} {diffusion_args} {eval_args} {grpo_args} {optimizer_args} "
-            f"{lora_args} {reward_args} {wandb_args} {sglang_args} {train_backend_args} {misc_args} "
-            f"{debug_args} {args.extra_args}"
+            f"{ckpt_args} {rollout_args} {eval_args} {grpo_args} {optimizer_args} "
+            f"{lora_args} {reward_args} {wandb_args} {sglang_args} {train_backend_args} {perf_args} "
+            f"{misc_args} {args.extra_args}"
         ),
         num_gpus_per_node=5,
         config=args,

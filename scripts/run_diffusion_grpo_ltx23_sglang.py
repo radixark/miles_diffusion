@@ -42,7 +42,9 @@ def prepare(args: ScriptArgs) -> str:
 def execute(args: ScriptArgs, data_dir: str) -> None:
     run_name = f"diffusion_grpo_ltx23_pickscore_{U.create_run_id()}"
 
-    ckpt_args = f"--hf-checkpoint gpt2 --save {args.output_dir}/{run_name}/ckpt --save-interval 50 "
+    ckpt_args = (
+        f"--hf-checkpoint gpt2 --diffusion-model {MODEL} --save {args.output_dir}/{run_name}/ckpt --save-interval 50 "
+    )
 
     rollout_args = (
         "--rollout-function-path miles.rollout.sglang_diffusion_rollout.generate_rollout "
@@ -53,14 +55,8 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         f"--num-rollout {args.num_rollout} "
         "--num-steps-per-rollout 2 "
         "--rollout-microgroup-size 1 "
-        "--micro-batch-size-sample 1 "
-        "--micro-batch-size-tstep 1 "
         "--train-dp-split-mode stride "
         "--diffusion-train-iter-order sample_major "
-    )
-
-    diffusion_args = (
-        f"--diffusion-model {MODEL} "
         "--rollout-patch-group ltx "
         "--diffusion-num-steps 24 "
         "--diffusion-output-num-frames 57 "
@@ -91,7 +87,6 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         "--pickscore-num-gpus-per-worker 1.0 "
         "--pickscore-num-workers 1 "
         "--pickscore-batch-size 8 "
-        "--rollout-parser-num-workers 8 "
     )
 
     wandb_args = U.get_default_wandb_args(
@@ -114,7 +109,12 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         "--fsdp-attention-backend sdpa_math "
     )
 
-    perf_args = "--gradient-checkpointing --deterministic-mode "
+    perf_args = (
+        "--gradient-checkpointing "
+        "--micro-batch-size-sample 1 "
+        "--micro-batch-size-tstep 1 "
+        "--rollout-parser-num-workers 8 "
+    )
 
     misc_args = (
         "--actor-num-nodes 1 "
@@ -123,13 +123,14 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         "--rollout-num-gpus-per-engine 1 "
         "--num-gpus-per-node 4 "
         "--colocate "
+        "--deterministic-mode "
         "--rollout-health-check-interval 120 "
         "--miles-router-health-check-failure-threshold 30 "
     )
 
     U.execute_train(
         train_args=(
-            f"{ckpt_args} {rollout_args} {diffusion_args} {grpo_args} {optimizer_args} {lora_args} "
+            f"{ckpt_args} {rollout_args} {grpo_args} {optimizer_args} {lora_args} "
             f"{reward_args} {wandb_args} {sglang_args} {train_backend_args} {perf_args} {misc_args} "
             f"{args.extra_args}"
         ),

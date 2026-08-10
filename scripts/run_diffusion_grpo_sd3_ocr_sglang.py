@@ -44,7 +44,7 @@ def prepare(args: ScriptArgs) -> str:
 def execute(args: ScriptArgs, data_dir: str) -> None:
     run_name = f"diffusion_grpo_sd3_ocr_sglang_{U.create_run_id()}"
 
-    ckpt_args = f"--hf-checkpoint {MODEL} --save {args.output_dir}/{run_name}/ckpt "
+    ckpt_args = f"--hf-checkpoint {MODEL} --diffusion-model {MODEL} --save {args.output_dir}/{run_name}/ckpt "
 
     rollout_args = (
         "--rollout-function-path miles.rollout.sglang_diffusion_rollout.generate_rollout "
@@ -55,13 +55,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         f"--num-rollout {args.num_rollout} "
         "--global-batch-size 64 "
         "--rollout-microgroup-size 8 "
-        "--micro-batch-size-sample 16 "
-        "--micro-batch-size-tstep 5 "
         "--train-dp-split-mode stride "
-    )
-
-    diffusion_args = (
-        f"--diffusion-model {MODEL} "
         "--diffusion-num-steps 10 "
         "--diffusion-guidance-scale 4.5 "
         "--diffusion-noise-level 0.7 "
@@ -98,7 +92,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
 
     train_backend_args = "--train-backend fsdp --diffusion-forward-dtype fp16 "
 
-    perf_args = "--gradient-checkpointing --deterministic-mode "
+    perf_args = "--gradient-checkpointing --micro-batch-size-sample 16 --micro-batch-size-tstep 5 "
 
     misc_args = (
         "--actor-num-gpus-per-node 2 "
@@ -106,15 +100,14 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         "--rollout-num-gpus-per-engine 1 "
         "--num-gpus-per-node 2 "
         "--colocate "
-    )
-
-    debug_args = "--diffusion-debug-mode --debug-skip-optimizer-step " if args.debug_alignment else ""
+        "--deterministic-mode "
+    ) + ("--diffusion-debug-mode --debug-skip-optimizer-step " if args.debug_alignment else "")
 
     U.execute_train(
         train_args=(
-            f"{ckpt_args} {rollout_args} {diffusion_args} {eval_args} {grpo_args} {optimizer_args} "
+            f"{ckpt_args} {rollout_args} {eval_args} {grpo_args} {optimizer_args} "
             f"{lora_args} {reward_args} {wandb_args} {sglang_args} {train_backend_args} {perf_args} "
-            f"{misc_args} {debug_args} {args.extra_args}"
+            f"{misc_args} {args.extra_args}"
         ),
         num_gpus_per_node=2,
         config=args,
