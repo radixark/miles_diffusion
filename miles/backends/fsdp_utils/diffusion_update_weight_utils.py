@@ -165,13 +165,6 @@ class DiffusionUpdateWeight(abc.ABC):
 
     def _update_component_weights(self, target_module: str, model: torch.nn.Module) -> None:
         state_dict = model.state_dict()
-        if self.weight_version <= 2 and dist.get_rank() == 0:
-            keys = list(state_dict.keys())
-            print(
-                f"[weight_sync v{self.weight_version} {target_module}] total={len(keys)} keys, "
-                f"first5={keys[:5]}, last3={keys[-3:]}",
-                flush=True,
-            )
         bucket = []
         bucket_size = 0
         for name, param in state_dict.items():
@@ -340,11 +333,6 @@ class DiffusionUpdateWeightFromTensorLoRA(DiffusionUpdateWeightFromTensor):
         if isinstance(t, DTensor):
             return t.redistribute(placements=[Replicate()] * t.device_mesh.ndim).to_local()
         return t
-
-    def update_weights(self):
-        self.weight_version += 1
-        for target_module, model in self.models.items():
-            self._update_component_weights(target_module, model)
 
     def _update_component_weights(self, target_module: str, model: torch.nn.Module) -> None:
         verify = os.environ.get("MILES_VERIFY_WEIGHT_SYNC", "").lower() in ("1", "true", "yes")
