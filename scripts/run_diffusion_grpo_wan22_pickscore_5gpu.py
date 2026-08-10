@@ -56,10 +56,7 @@ def prepare(args: ScriptArgs) -> str:
 def execute(args: ScriptArgs, data_dir: str) -> None:
     run_name = f"diffusion_grpo_wan22_pickscore_5gpu_{U.create_run_id()}"
 
-    ckpt_args = (
-        f"--hf-checkpoint {MODEL} --diffusion-model {MODEL} "
-        f"--save {args.output_dir}/{run_name}/ckpt --save-interval 10 "
-    )
+    ckpt_args = f"--hf-checkpoint {MODEL} --save {args.output_dir}/{run_name}/ckpt --save-interval 10 "
 
     rollout_args = (
         "--rollout-function-path miles.rollout.sglang_diffusion_rollout.generate_rollout "

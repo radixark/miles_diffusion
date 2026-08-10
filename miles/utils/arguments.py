@@ -185,11 +185,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help=(
-                    "The huggingface checkpoint of the trained model. "
-                    "This is used to initialize sglang and also provide the tokenizer. "
-                    "Note that, we will always update the parameters in sglang with that of megatron before training, "
-                    "so you only need to provide a huggingface checkpoint that has the same architecture as the model you want to train. "
-                    "It doesn't necessary need to contain the most up-to-date parameters."
+                    "The diffusers pipeline to train, as a HuggingFace repo id or a local directory. "
+                    "One value serves three readers, so they cannot disagree: the training side loads "
+                    "the components and scheduler from it, the sglang-d engine serves it, and the model "
+                    "family (hence the TrainPipelineConfig) is resolved from its name. Required."
                 ),
             )
             parser.add_argument(
@@ -205,12 +204,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "and within the output sample, you should at least set `tokens`, `response_length`, `reward` "
                     "and `truncated`."
                 ),
-            )
-            parser.add_argument(
-                "--diffusion-model",
-                type=str,
-                default="stabilityai/stable-diffusion-3.5-medium",
-                help="HuggingFace model id for diffusion rollout.",
             )
             parser.add_argument(
                 "--train-pipeline-config-path",
@@ -1473,34 +1466,36 @@ def miles_validate_args(args):
 
     args.rollout_patch_groups = [name for name in (args.rollout_patch_group or "").split(",") if name]
 
-    if getattr(args, "diffusion_model", None):
-        from miles.utils.misc import load_function
+    if not args.hf_checkpoint:
+        raise ValueError("--hf-checkpoint is required: it names the diffusers pipeline to train and to serve.")
 
-        if args.train_pipeline_config_path is not None:
-            # Explicit config path IS the identity (custom classes never need registering).
-            cfg_cls = load_function(args.train_pipeline_config_path)
-            args.diffusion_model_family = None
-        else:
-            from miles.backends.fsdp_utils.configs.train_pipeline_config import (
-                get_train_pipeline_config_cls,
-                resolve_diffusion_model_family,
-            )
+    from miles.utils.misc import load_function
 
-            args.diffusion_model_family = resolve_diffusion_model_family(args.diffusion_model)
-            cfg_cls = get_train_pipeline_config_cls(args.diffusion_model_family)
-            args.train_pipeline_config_path = f"{cfg_cls.__module__}.{cfg_cls.__qualname__}"
-        if args.model_backend_path is None:
-            args.model_backend_path = cfg_cls.model_backend_path
-        if not cfg_cls.supports_cfg_training and (
-            args.diffusion_guidance_scale != 1.0 or args.diffusion_negative_prompt is not None
-        ):
-            raise ValueError(
-                f"{cfg_cls.__name__} trains unguided (supports_cfg_training=False); set "
-                f"--diffusion-guidance-scale 1.0 and drop --diffusion-negative-prompt"
-            )
-        cfg_cls.validate_args(args)
-        if args.use_lora and args.lora_target_modules is None:
-            args.lora_target_modules = list(cfg_cls.lora_target_modules)
+    if args.train_pipeline_config_path is not None:
+        # Explicit config path IS the identity (custom classes never need registering).
+        cfg_cls = load_function(args.train_pipeline_config_path)
+        args.diffusion_model_family = None
+    else:
+        from miles.backends.fsdp_utils.configs.train_pipeline_config import (
+            get_train_pipeline_config_cls,
+            resolve_diffusion_model_family,
+        )
+
+        args.diffusion_model_family = resolve_diffusion_model_family(args.hf_checkpoint)
+        cfg_cls = get_train_pipeline_config_cls(args.diffusion_model_family)
+        args.train_pipeline_config_path = f"{cfg_cls.__module__}.{cfg_cls.__qualname__}"
+    if args.model_backend_path is None:
+        args.model_backend_path = cfg_cls.model_backend_path
+    if not cfg_cls.supports_cfg_training and (
+        args.diffusion_guidance_scale != 1.0 or args.diffusion_negative_prompt is not None
+    ):
+        raise ValueError(
+            f"{cfg_cls.__name__} trains unguided (supports_cfg_training=False); set "
+            f"--diffusion-guidance-scale 1.0 and drop --diffusion-negative-prompt"
+        )
+    cfg_cls.validate_args(args)
+    if args.use_lora and args.lora_target_modules is None:
+        args.lora_target_modules = list(cfg_cls.lora_target_modules)
 
     if args.rollout_patch_groups:
         from miles.backends.sglang_diffusion_utils.monkey_patches import validate_rollout_patch_groups
@@ -1513,7 +1508,7 @@ def miles_validate_args(args):
         if not args.lora_target_modules:
             raise ValueError(
                 "--lora-ipc-weight-sync requires LoRA target modules; "
-                "set --diffusion-model (for per-model defaults) or --lora-target-modules."
+                "set --hf-checkpoint (for per-model defaults) or --lora-target-modules."
             )
 
     if not 0.0 <= args.ema_decay_init <= 1.0:
@@ -1628,11 +1623,10 @@ def miles_validate_args(args):
         args.colocate = False
         args.offload_train = args.offload_rollout = False
 
-    if getattr(args, "diffusion_model", None):
-        from miles.backends.fsdp_utils.arguments import validate_hybrid_shard_args, validate_sp_args
+    from miles.backends.fsdp_utils.arguments import validate_hybrid_shard_args, validate_sp_args
 
-        validate_sp_args(args)
-        validate_hybrid_shard_args(args)
+    validate_sp_args(args)
+    validate_hybrid_shard_args(args)
 
     # always true on offload for colocate at the moment.
     if args.colocate:
@@ -1695,8 +1689,7 @@ def miles_validate_args(args):
         args.global_batch_size = derived_gbs
 
     train_world_size = args.actor_num_gpus_per_node * args.actor_num_nodes
-    sp_size = args.sequence_parallel_size if getattr(args, "diffusion_model", None) else 1
-    dp_size = train_world_size // sp_size
+    dp_size = train_world_size // args.sequence_parallel_size
     if args.global_batch_size is not None:
         assert (
             args.global_batch_size % dp_size == 0

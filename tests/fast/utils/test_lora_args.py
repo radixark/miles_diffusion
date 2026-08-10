@@ -9,7 +9,7 @@ from miles.backends.sglang_diffusion_utils.sglang_diffusion_engine import _compu
 
 def _server_args(**overrides):
     base = dict(
-        diffusion_model="Qwen/Qwen-Image",
+        hf_checkpoint="Qwen/Qwen-Image",
         diffusion_flow_shift=None,
         rollout_num_gpus_per_engine=1,
         sglang_sp_degree=None,

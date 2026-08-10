@@ -4,9 +4,6 @@
 per epoch from candidate steps 0-9. Everything runs bf16 end to end — master, reduce,
 forward and the sgl-d engine — on the sdpa_math attention backend.
 
---hf-checkpoint points at gpt2 on purpose: LTX-2.3 needs no HF tokenizer here, and the flag
-still wants a resolvable repo id.
-
 Video rollouts take minutes per request, so the health checker gets a far longer interval
 and failure budget than the image recipes.
 
@@ -42,9 +39,7 @@ def prepare(args: ScriptArgs) -> str:
 def execute(args: ScriptArgs, data_dir: str) -> None:
     run_name = f"diffusion_grpo_ltx23_pickscore_{U.create_run_id()}"
 
-    ckpt_args = (
-        f"--hf-checkpoint gpt2 --diffusion-model {MODEL} --save {args.output_dir}/{run_name}/ckpt --save-interval 50 "
-    )
+    ckpt_args = f"--hf-checkpoint {MODEL} --save {args.output_dir}/{run_name}/ckpt --save-interval 50 "
 
     rollout_args = (
         "--rollout-function-path miles.rollout.sglang_diffusion_rollout.generate_rollout "

@@ -45,7 +45,7 @@ def execute(args: ScriptArgs) -> None:
     run_name = f"diffusion_sft_wan22_{U.create_run_id()}"
 
     ckpt_args = (
-        f"--hf-checkpoint {MODEL} --diffusion-model {MODEL} --sft-encoder-checkpoint {MODEL} "
+        f"--hf-checkpoint {MODEL} --sft-encoder-checkpoint {MODEL} "
         f"--save {args.output_dir}/{run_name}/ckpt --save-interval 20 "
     )
     if args.resume_ckpt:

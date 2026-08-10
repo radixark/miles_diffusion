@@ -79,7 +79,7 @@ class TrainPipelineConfig(abc.ABC):
     model_family: str | None = None
     lora_target_modules: list[str] = ["to_q", "to_k", "to_v", "to_out.0"]
     optimizer_state_allowed_missing: list[str] = []
-    # Case-insensitive substrings matched against the checkpoint name (--diffusion-model).
+    # Case-insensitive substrings matched against the checkpoint name (--hf-checkpoint).
     hf_ckpt_name_patterns: tuple[str, ...] = ()
     supports_cfg_training: bool = True
     # Mirrors serial sgl-d serving; not valid when the rollout engine runs --enable-cfg-parallel (branches split per rank, different combine formula).

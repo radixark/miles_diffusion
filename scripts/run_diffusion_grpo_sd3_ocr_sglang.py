@@ -44,7 +44,7 @@ def prepare(args: ScriptArgs) -> str:
 def execute(args: ScriptArgs, data_dir: str) -> None:
     run_name = f"diffusion_grpo_sd3_ocr_sglang_{U.create_run_id()}"
 
-    ckpt_args = f"--hf-checkpoint {MODEL} --diffusion-model {MODEL} --save {args.output_dir}/{run_name}/ckpt "
+    ckpt_args = f"--hf-checkpoint {MODEL} --save {args.output_dir}/{run_name}/ckpt "
 
     rollout_args = (
         "--rollout-function-path miles.rollout.sglang_diffusion_rollout.generate_rollout "
