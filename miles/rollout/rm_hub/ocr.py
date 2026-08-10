@@ -42,19 +42,15 @@ class OcrScorer:
         """
         prompts = [prompt.split('"')[1] for prompt in prompts]
         rewards = []
-        # Ensure input lengths are consistent
         assert len(images) == len(
             prompts
         ), f"Images({len(images)}) and prompts({len(prompts)}) must have the same length"
         for img, prompt in zip(images, prompts, strict=False):
-            # Convert image format
             if isinstance(img, Image.Image):
                 img = np.array(img)
 
             try:
-                # OCR recognition
                 result = self.ocr.ocr(img, cls=False)
-                # Extract recognized text (handle possible multi-line results)
                 recognized_text = (
                     "".join([res[1][0] if res[1][1] > 0 else "" for res in result[0]]) if result[0] else ""
                 )
@@ -70,7 +66,6 @@ class OcrScorer:
                     dist = len(prompt)
 
             except Exception as e:
-                # Error handling (e.g., OCR parsing failure)
                 logger.warning(f"OCR processing failed: {e}")
                 dist = len(prompt)  # Maximum penalty
             reward = 1 - dist / (len(prompt))

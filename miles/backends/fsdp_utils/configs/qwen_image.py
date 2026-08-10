@@ -48,7 +48,6 @@ def _rebuild_pos_embed_freqs_on_cuda(model) -> None:
         neg_idx = torch.arange(4096, device=device).flip(0) * -1 - 1
         submod.pos_freqs = torch.cat([_params(pos_idx, d) for d in submod.axes_dim], dim=1)
         submod.neg_freqs = torch.cat([_params(neg_idx, d) for d in submod.axes_dim], dim=1)
-        # clear @lru_cache function
         cvf = getattr(submod, "_compute_video_freqs", None)
         if cvf is not None and hasattr(cvf, "cache_clear"):
             cvf.cache_clear()
@@ -90,7 +89,6 @@ class QwenImageTrainPipelineConfig(TrainPipelineConfig):
         kwargs = {}
         if cond.encoder_hidden_states:
             enc = torch.cat(cond.encoder_hidden_states).to(device)
-            # Ensure batch dimension: (seq_len, dim) → (1, seq_len, dim)
             if enc.ndim == 2:
                 enc = enc.unsqueeze(0)
             kwargs["encoder_hidden_states"] = enc
@@ -144,8 +142,6 @@ class QwenImageTrainPipelineConfig(TrainPipelineConfig):
         for enc, _L in zip(encs, seq_lens, strict=False):
             cur_len = enc.shape[1]
             if cur_len < max_len:
-                # pad seq dim on the right; F.pad with 4-tuple pads the last 2 dims
-                # (..., D, L) → pad last dim 0, pad second-last dim by max_len - cur_len.
                 enc = F.pad(enc, (0, 0, 0, max_len - cur_len))
             elif cur_len > max_len:
                 enc = enc[:, :max_len, :]

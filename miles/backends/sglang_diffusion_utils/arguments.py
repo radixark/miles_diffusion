@@ -68,8 +68,6 @@ def add_sglang_diffusion_arguments(parser):
                 # Positional arguments or non-string items
                 new_name_or_flags_list.append(item_flag)
 
-        # Prepare kwargs for the actual add_argument call.
-        # Make a copy to avoid modifying the original kwargs dict.
         final_kwargs = kwargs.copy()
 
         # If 'dest' is explicitly provided and is a string, prefix it.

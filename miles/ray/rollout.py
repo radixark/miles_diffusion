@@ -492,7 +492,6 @@ def init_rollout_engines(args, pg, all_rollout_engines):
         num_gpus = 0.25 if args.colocate_reward else 0.3
         num_cpus = num_gpus
 
-        # Get the base GPU ID from placement group
         base_gpu_id = int(reordered_gpu_ids[i * num_gpu_per_engine])
 
         scheduling_strategy = PlacementGroupSchedulingStrategy(
@@ -545,12 +544,6 @@ def init_rollout_engines(args, pg, all_rollout_engines):
 
 
 def _allocate_rollout_engine_addr_and_ports_normal(*, args, num_engines, rollout_engines):
-    # get ports
-    # there are 4 ports we need to allocate
-    # 1. server port
-    # 2. nccl port
-    # 3. dist_init_addr port
-    # 4. other ports for dp_attention, which is of size 4 + dp_size
     num_engines_per_node = max(
         1, min(args.num_gpus_per_node, args.rollout_num_gpus) // args.rollout_num_gpus_per_engine
     )

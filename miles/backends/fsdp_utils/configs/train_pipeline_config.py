@@ -1,10 +1,5 @@
-"""Training-side pipeline config for diffusion models.
-
-Model-specific logic for the GRPO training forward (after rollout has built
-train-pair dicts):
-  - prepare_cond_kwargs / collate / expand for DenoisingEnv
-  - CFG combine
-  - FSDP preprocess hooks
+"""Per-family hooks for the GRPO training forward, applied after rollout has built the
+train-pair dicts.
 
 Trajectory unpacking for train-pair construction lives in
 ``miles.ray.data_conversion_hub.flow_grpo.expand_samples_to_train_pairs``.
@@ -74,8 +69,6 @@ def get_train_pipeline_config_cls(family: str) -> type[TrainPipelineConfig]:
 
 
 class TrainPipelineConfig(abc.ABC):
-    """Base class. Subclass per model family."""
-
     model_family: str | None = None
     lora_target_modules: list[str] = ["to_q", "to_k", "to_v", "to_out.0"]
     optimizer_state_allowed_missing: list[str] = []
@@ -90,14 +83,13 @@ class TrainPipelineConfig(abc.ABC):
     model_backend_path: str = "miles.backends.fsdp_utils.model_backend.DiffusersModelBackend"
     # Native model package import path; required when model_backend_path is MilesModelBackend.
     model_package: str | None = None
+    sde_timestep_divisor = 1.0
 
-    @classmethod  # noqa: B027 — optional hook, deliberately non-abstract
+    @classmethod  # noqa: B027 — optional hook, deliberately not abstract
     def validate_args(cls, args) -> None:
         """Family-specific arg validation/defaults; runs once at arg validation."""
 
-    sde_timestep_divisor = 1.0
-
-    def configure(self, args) -> None:  # noqa: B027  optional no-op hook, not abstract
+    def configure(self, args) -> None:  # noqa: B027 — optional hook, deliberately not abstract
         """Bind the request constants a family needs at train time; default binds none."""
 
     def process_timestep_as_input(self, timesteps: torch.Tensor) -> torch.Tensor:
@@ -164,11 +156,8 @@ class TrainPipelineConfig(abc.ABC):
         device: torch.device,
         pad_to_len: int | None = None,
     ) -> dict:
-        """Stack a list of per-sample cond_kwargs (output of prepare_cond_kwargs)
-        into a single batched dict suitable for one DiT forward over M samples.
-
-        Model-specific because variable-length text embeds need padding + mask.
-        Default: naive concat along batch dim, only valid when shapes match.
+        """Model-specific because variable-length text embeds need padding + a mask; the
+        default naive concat along the batch dim is only valid when shapes already match.
 
         ``pad_to_len`` is part of the contract so the trainer can uniformly ask
         every config to pad text to a shared width (the legacy window-wide
@@ -195,6 +184,7 @@ class TrainPipelineConfig(abc.ABC):
     ) -> torch.Tensor:
         """Apply classifier-free guidance. Model-specific (e.g. rescale or not)."""
 
-    def postprocess_model_after_materialize(self, model: torch.nn.Module) -> None:
-        """Postprocess the model after FSDP wrap + weight materialization (default: no-op)."""
-        return None
+    def postprocess_model_after_materialize(  # noqa: B027 — optional hook, deliberately not abstract
+        self, model: torch.nn.Module
+    ) -> None:
+        """Runs after the FSDP wrap and weight materialization, when params are real tensors."""
