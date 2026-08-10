@@ -31,7 +31,6 @@ class RolloutHealthMonitor:
         self._check_timeout = args.rollout_health_check_timeout
         self._check_first_wait = args.rollout_health_check_first_wait
         self._need_first_wait = True  # Need to wait after each resume
-        self._is_checking_enabled = False  # Track if health checking should be active
 
     def start(self) -> bool:
         """Start the health monitor thread. Called once during initialization.
@@ -73,14 +72,13 @@ class RolloutHealthMonitor:
         timeout = self._check_timeout + self._check_interval + 5
         self._thread.join(timeout=timeout)
         if self._thread.is_alive():
-            logging.warning("Rollout health monitor thread did not terminate within %.1fs", timeout)
+            logger.warning("Rollout health monitor thread did not terminate within %.1fs", timeout)
         else:
             logger.info("RolloutHealthMonitor stopped.")
 
         self._thread = None
         self._stop_event = None
         self._pause_event = None
-        self._is_checking_enabled = False
 
     def pause(self) -> None:
         """Pause health checking. Called when engines are offloaded."""
@@ -88,7 +86,6 @@ class RolloutHealthMonitor:
             return
         logger.info("Pausing health monitor...")
         self._pause_event.set()
-        self._is_checking_enabled = False
 
     def resume(self) -> None:
         """Resume health checking. Called when engines are onloaded."""
@@ -97,11 +94,6 @@ class RolloutHealthMonitor:
         logger.info("Resuming health monitor...")
         self._need_first_wait = True  # Need to wait after each resume
         self._pause_event.clear()
-        self._is_checking_enabled = True
-
-    def is_checking_enabled(self) -> bool:
-        """Return whether health checking is currently enabled (not paused)."""
-        return self._is_checking_enabled
 
     def _health_monitor_loop(self) -> None:
         assert self._stop_event is not None
