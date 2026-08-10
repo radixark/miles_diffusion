@@ -18,7 +18,6 @@ from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.metric_buffer import MetricBuffer
 from miles.utils.metric_utils import compute_rollout_step
-from miles.utils.profile_utils import TrainProfiler
 from miles.utils.timer import Timer, inverse_timer, timer
 from miles.utils.tracking_utils import init_tracking
 from miles.utils.train_data_utils import (
@@ -93,8 +92,6 @@ class FSDPTrainRayActor(TrainRayActor):
 
         if self.args.start_rollout_id is None:
             self.args.start_rollout_id = 0
-
-        self.prof = TrainProfiler(args)
 
         self._master_dtype = parse_dtype_from_str(args.fsdp_master_dtype)
         self._forward_dtype = parse_dtype_from_str(args.diffusion_forward_dtype)
@@ -238,8 +235,6 @@ class FSDPTrainRayActor(TrainRayActor):
 
         if self.args.offload_train:
             self.sleep()
-
-        self.prof.on_init_end()
 
         return self.args.start_rollout_id
 
@@ -472,7 +467,6 @@ class FSDPTrainRayActor(TrainRayActor):
                         # (required for SD3.5 fp16 forward); no-op for bf16/fp32.
                         self.scaler.scale(loss_sum / float(num_local_pairs)).backward()
 
-                self.prof.step(rollout_id=rollout_id)
                 if not self.args.debug_skip_optimizer_step:
                     self.scaler.unscale_(self.optimizer)
                     grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip_grad)
