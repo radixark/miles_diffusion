@@ -118,7 +118,7 @@ def init_wandb_secondary(args, router_addr=None):
             x_update_finish_state=False,
         )
 
-    if getattr(args, "sglang_enable_metrics", False) and router_addr is not None:
+    if args.sglang_enable_metrics and router_addr is not None:
         logger.info(f"Forward SGLang metrics at {router_addr} to WandB.")
         settings_kwargs |= dict(
             x_stats_open_metrics_endpoints={
@@ -152,19 +152,13 @@ def init_wandb_secondary(args, router_addr=None):
 def _init_wandb_common():
     wandb.define_metric("train/step")
     wandb.define_metric("train/*", step_metric="train/step")
-    # Also register deeper paths explicitly. A single ``rollout/*`` wildcard
-    # is unreliable in wandb's multi-process shared mode: a 3-level key like
-    # ``rollout/reward/raw_mean`` logged from the RolloutManager actor can
-    # bypass the wildcard and fall back to wandb's auto-incrementing internal
-    # commit step for its x-axis, which is what produced the 1, 6, 10 pattern
-    # users were seeing (5 commits for rollout_id=0 including images, 4 per
-    # subsequent rollout).
+    # Nested keys need their own entry: in shared mode a ``rollout/*`` wildcard misses
+    # 3-level keys like ``rollout/reward/raw_mean``, which then bind to wandb's
+    # auto-incrementing commit step instead of ``rollout/step``.
     wandb.define_metric("rollout/step")
     wandb.define_metric("rollout/*", step_metric="rollout/step")
     wandb.define_metric("rollout/reward/*", step_metric="rollout/step")
     wandb.define_metric("rollout_media/*", step_metric="rollout/step")
-    wandb.define_metric("multi_turn/*", step_metric="rollout/step")
-    wandb.define_metric("passrate/*", step_metric="rollout/step")
     wandb.define_metric("eval/step")
     wandb.define_metric("eval/*", step_metric="eval/step")
     wandb.define_metric("eval_media/*", step_metric="eval/step")
