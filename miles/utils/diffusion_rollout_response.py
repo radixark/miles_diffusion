@@ -17,8 +17,6 @@ __all__ = [
     "RolloutImageResponseParserActor",
 ]
 
-# Prefer these keys for mapping dict ``rollout_log_probs`` → ``Sample.rollout_log_probs``.
-_ROLLOUT_LOG_PROB_PRIMARY_KEYS = ("log_prob", "log_probs", "total", "per_step")
 _IMAGE_CHANNEL_COUNTS = (1, 3, 4)
 
 
@@ -59,17 +57,6 @@ def _normalize_generated_output(tensor: torch.Tensor | None) -> torch.Tensor | N
         )
 
     return canonical.contiguous()
-
-
-def _deserialize_rollout_log_probs(
-    value: Any,
-    *,
-    deserialize_func: Callable[[Any], torch.Tensor | None],
-) -> torch.Tensor | None:
-    # Eval-mode rollout (rollout=False) sends no log_probs; train-mode always does.
-    if value is None:
-        return None
-    return deserialize_func(value)
 
 
 def _parse_tensor_or_list(
@@ -181,9 +168,8 @@ def apply_rollout_image_response(
         sample.seed = int(body["seed"])
 
     sample.generated_output = _normalize_generated_output(deserialize_func(body.get("generated_output")))
-    sample.rollout_log_probs = _deserialize_rollout_log_probs(
-        body.get("rollout_log_probs"), deserialize_func=deserialize_func
-    )
+    # Eval-mode rollout (rollout=False) sends no log_probs; train-mode always does.
+    sample.rollout_log_probs = deserialize_func(body.get("rollout_log_probs"))
     sample.rollout_debug_tensors = _parse_rollout_debug_tensors(
         body.get("rollout_debug_tensors"),
         deserialize_func=deserialize_func,
