@@ -44,7 +44,6 @@ class MilesRouter:
         self.worker_failure_counts: dict[str, int] = {}
         # Quarantined workers excluded from routing pool
         self.dead_workers: set[str] = set()
-        self.max_weight_version = None
 
         max_connections = args.miles_router_max_connections
         if max_connections is None:
