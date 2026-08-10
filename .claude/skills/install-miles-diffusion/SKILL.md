@@ -1,67 +1,111 @@
 ---
 name: install-miles-diffusion
-description: One-click install of miles-diffusion on a fresh Linux GPU machine. Sets up the conda env, sglang-diffusion (PR #20464), miles package (incl. OCR reward deps), then smoke-tests train_diffusion. Use when the user asks to install / bootstrap / set up miles-diffusion on a new machine.
+description: Fallback installer for miles_diffusion on a bare CUDA 12.9 Linux GPU box, reproducing the official rockdu/miles_diffusion image's package versions and verifying them. Docker is the supported way to run miles_diffusion and this is not recommended — use it only when the image cannot be pulled, or to check whether a machine's env still matches the image.
 ---
 
 # install-miles-diffusion
 
-Drives the install helper at `.claude/skills/install-miles-diffusion/install.sh` and verifies the result. The helper is idempotent — re-running it skips steps that already succeeded (conda env exists, sglang at pinned commit, etc.).
+> **Docker is the official way to run miles_diffusion — pull `OFFICIAL_IMAGE` and use it.**
+> This skill is a fallback for machines that cannot, and it is not recommended: it reconstructs
+> the image's package set, it is not the image. `deep_ep` and `flash_mla` cannot be reproduced at
+> all, and every apt-sourced dist depends on the host being Ubuntu 24.04.
 
-**All package versions are pinned**, including torch, sglang (commit SHA), transformers, accelerate, ray, diffusers, peft, paddleocr, and paddlepaddle-gpu. Pins reflect the currently-validated working environment.
+Reproduces the official Docker environment on a box that has only CUDA 12.9 and Ubuntu 24.04.
+The target is not "an env that works" but "the image's env": `snapshot/` is a capture of
+`OFFICIAL_IMAGE`, `install.sh` replays it, and `verify_env.py` fails if the result drifts.
 
-## When to invoke
+## Files
 
-User says anything like: "install miles-diffusion", "set up this repo on a new machine", "bootstrap the env for run-diffusion-grpo-ocr.sh", "装一下", etc.
+| | |
+|---|---|
+| `snapshot/packages.txt` | the image's `pip freeze`; `#skip[reason]` marks what we don't install |
+| `snapshot/apt.txt` | the apt packages install.sh needs |
+| `snapshot/pins.env` | pins pip can't express — image tag, sglang/miles branch and commit, indexes |
+| `snapshot/kernels.lock` | the image's resolved FA3 kernel hashes |
+| `install.sh` | six steps: apt, pip, packages, sglang, miles, verify |
+| `verify_env.py` | per-package diff against `packages.txt`; non-zero exit on drift |
+| `refresh.sh` | re-capture `snapshot/` when the image moves |
 
-## What it installs
+## Run
 
-End goal: `bash scripts/run-diffusion-grpo-ocr.sh` boots cleanly on this host with **bit-reproducible** package versions.
-
-Components (every version pinned):
-
-1. **apt system libs** — `libglib2.0-0 libgl1` (paddleocr / cv2 runtime).
-2. **Conda env** — Python `3.11` (configurable via `PY_VER`).
-3. **Tooling** — `pip==26.0.1`, `wheel==0.45.1`, `setuptools==82.0.1` (resolver behaviour depends on these).
-4. **PyTorch** — `torch==2.9.1` on `cu129` (override via `TORCH_VER` / `CUDA_VER`).
-5. **sglang-diffusion** — clones **`Rockdu/sglang` @ `sglang-diffusion-rollout-test`** into `$SGLANG_DIR` (default `../sglang`) and `git checkout --detach $SGLANG_COMMIT` (default `0372158dd66bc7cb0740c733bd60047db790ec7d`). Installed editable as `python[all]`. Pinning to a SHA (not just the branch tip) is required for bit-exact rollout reproducibility. Override `SGLANG_REPO` / `SGLANG_BRANCH` / `SGLANG_COMMIT` only if you know what you're doing.
-6. **miles package** — `pip install -r requirements.txt` (all `==`-pinned: transformers 5.5.4, accelerate 1.12.0, ray 2.53.0, datasets 4.4.2, safetensors 0.7.0, wandb 0.23.1, and the OCR reward deps paddleocr 2.9.1, paddlepaddle-gpu 2.6.2, peft 0.18.1, diffusers 0.37.0, opencv-python-headless 4.10.0.84, …) plus `pip install -e . --no-deps`.
-7. **torch_memory_saver** — pinned to `0.0.9`, skipped silently on failure.
-8. **Smoke test** — `nvidia-smi`, then `python -c "import train_diffusion"`.
-
-## How to run
-
-Before doing anything, surface these to the user and let them override:
-
-- `ENV_NAME` (default `miles-diffusion`)
-- `PY_VER` (default `3.11`)
-- `SGLANG_DIR` (default `$(dirname "$PWD")/sglang`)
-- `SGLANG_REPO` (default `https://github.com/Rockdu/sglang.git`)
-- `SGLANG_BRANCH` (default `sglang-diffusion-rollout-test`)
-- `SGLANG_COMMIT` (default `0372158dd66bc7cb0740c733bd60047db790ec7d`)
-- `CUDA_VER` (default `12.9`)
-- `TORCH_VER` (default `2.9.1`)
-
-Then:
+A bare CUDA image has no git, and some clusters hand out a resolver that can't answer for
+outside names:
 
 ```bash
+grep -q nameserver /etc/resolv.conf || echo "nameserver 8.8.8.8" >> /etc/resolv.conf
+apt-get update -qq && apt-get install -y --no-install-recommends git ca-certificates
+git clone https://github.com/radixark/miles_diffusion.git && cd miles_diffusion
 bash .claude/skills/install-miles-diffusion/install.sh
 ```
 
-It's long — run with `run_in_background: true` and stream with Monitor, or let it block in foreground if the user is OK with a 5–15 min wait.
+~20 min cold, ~4 with a warm pip cache. Run it in the background and poll the log.
+`--from STEP` resumes; every step is idempotent. To check an existing box instead:
+`python3 .claude/skills/install-miles-diffusion/verify_env.py`.
 
-## What can go wrong
+## Why it replays instead of resolving
 
-- **No conda/mamba** — helper aborts with a message telling the user to install miniforge. Don't auto-install conda.
-- **No CUDA toolkit / no GPU** — `nvidia-smi` fails at smoke-test; install still succeeds but warn the user.
-- **sglang branch missing / renamed** — if `Rockdu/sglang` no longer has `sglang-diffusion-rollout-test`, the clone/fetch fails. Do not silently fall back to upstream sgl-project/sglang: the required changes (multimodal_gen + weight-sync RPC) only live on the Rockdu fork. Surface the failure to the user and ask which branch to pin to instead.
-- **paddlepaddle-gpu wheel mismatch** — pinned to 2.6.2 in requirements.txt. If the machine's CUDA is too new, you may need to swap the pin. Report the mismatch; don't silently change the pin.
-- **System apt missing sudo** — fall back to `apt-get` without sudo (works in containers). If both fail, tell the user which .so is missing.
+The image does not satisfy its own dependency metadata — `pip check` there reports ~20
+violations, because sglang is installed `--no-deps` from a commit newer than the base image's
+package set, and nvidia-modelopt wants `setuptools>=80` against a pinned 70.2.0. Resolving the
+freeze returns `ResolutionImpossible`, and any relaxation that resolves lands on versions the
+image does not have. So `install.sh` installs `packages.txt` with `--no-deps`.
 
-## After install
+Two packages cannot be reproduced at all: `deep_ep` and `flash_mla` are compiled inside
+`lmsysorg/sglang` and published nowhere. Neither is on a miles_diffusion import path.
 
-Tell the user:
-1. `conda activate <ENV_NAME>`
-2. `export WANDB_API_KEY=...` (optional)
-3. `bash scripts/run-diffusion-grpo-ocr.sh`
+`flash_attn_3` comes from a wheel the image installs from a local copy, so `pip freeze` reports
+an unresolvable `file://` path. `refresh.sh` rewrites it to the release asset the Dockerfile
+pulls from (`FA3_WHEELS_REPO` / `FA3_WHEELS_TAG`), so pip installs it like any other pin.
 
-Do **not** kick off the training run yourself — the script does `pkill -9 python` at the top, which would kill the Claude Code session.
+## sglang and miles are anchored to main
+
+Both come from `main` upstream, as in the Dockerfile (`SGLANG_DIFFUSION_BRANCH=main`,
+`MILES_DIFFUSION_COMMIT=main`). The difference is that the Dockerfile follows the branch tip at
+build time while this pins a commit and checks it is an ancestor of the branch. That check
+matters: the first capture pinned a local cherry-pick that exists in no remote.
+
+Because the ancestor check needs real history, the checkout is a blob-filtered full clone rather
+than the image's `--depth=1`, so setuptools_scm reports a different commit count for the same
+sha; `verify_env.py` compares sglang and miles by presence, not by that string.
+
+## Refreshing the snapshot
+
+```bash
+bash .claude/skills/install-miles-diffusion/refresh.sh <devbox-on-the-new-image>
+```
+
+Capture from a box running the image itself, not from whichever tag a devbox happens to be on —
+the first snapshot here was taken from a devbox two image releases behind, which pinned
+`diffusers 0.37.0` against a repo that had moved to `0.38.0`.
+
+A devbox people have worked on is also not a pristine image. `refresh.sh` guards both drift
+classes it has hit: the sglang commit comes from setuptools_scm rather than `git rev-parse HEAD`,
+and packages dated after the image's build day are marked `#skip[capture-drift]`. If the box ran
+`:latest`, replace `OFFICIAL_IMAGE` with the concrete tag it resolved to.
+
+## What goes wrong
+
+- **"Cannot uninstall X, RECORD file not found"** — apt dists have no RECORD. `step_pip`
+  pre-seeds pip, PyJWT and wheel with `--ignore-installed`; a fourth needs the same flag.
+- **"Device or resource busy" on a file in `/usr/local/bin`** — the host mounted a binary
+  read-only there (rx devboxes do this for `uv`, `gh`, `claude`). `step_packages` drops the
+  matching packages and `verify` treats them as expected absences.
+- **Not Ubuntu 24.04** — the apt-sourced python dists then come from different pockets and
+  `verify` reports drift on them.
+
+## Running SD3 after install
+
+```bash
+export HF_TOKEN=...              # SD3.5 is gated
+export NCCL_NVLS_ENABLE=0        # partial-node containers have no IMEX multicast capability
+python3 scripts/run_diffusion_grpo_sd3_ocr_sglang.py --cuda-visible-devices 0,1
+```
+
+Without `NCCL_NVLS_ENABLE=0`, `execute_train` enables NVLink SHARP whenever it sees NVLink and
+NCCL dies in `FSDPTrainRayActor.init` with `Failed to bind NVLink SHARP (NVLS) Multicast memory`.
+On a fresh HF cache the SD3.5 download pulls both `model.safetensors` and `model.fp16.safetensors`
+for the CLIP encoders; sglang's fast loader refuses the duplicate tensor names, logs a traceback
+and falls back to the native loader. The run continues.
+
+Verified on `nvidia/cuda:12.9.1-cudnn-devel-ubuntu24.04`, 4×H100, no python preinstalled: 369
+matched / 0 mismatched / 0 missing, then a completed GRPO step of the SD3 recipe.
