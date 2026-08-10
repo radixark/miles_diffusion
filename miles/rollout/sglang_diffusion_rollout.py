@@ -258,8 +258,8 @@ async def generate_and_rm_group(
     seed_base = (args.rollout_seed + group_index * n_per_prompt) % (2**31)
 
     tasks = []
-    for idx in range(0, len(group), args.diffusion_microgroup_size):
-        microgroup = group[idx : min(idx + args.diffusion_microgroup_size, len(group))]
+    for idx in range(0, len(group), args.rollout_microgroup_size):
+        microgroup = group[idx : min(idx + args.rollout_microgroup_size, len(group))]
         current_sampling_params = sampling_params.copy()
         current_sampling_params["seed"] = seed_base + idx
         tasks.append(

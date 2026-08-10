@@ -1,3 +1,15 @@
+"""Command-line arguments for diffusion training.
+
+`diffusion-` marks the modality, so a CLI merged with miles LLM says what a flag is for:
+
+  - Prefix concepts from diffusion modelling — denoising, SDE, CFG, latents, frames.
+  - Not generic ML/RL — clipping, KL, EMA, LoRA, batching — nor what `lora-` etc. place.
+  - `fsdp-`/`rollout-` mark the side: `--fsdp-flow-shift` vs `--diffusion-flow-shift`.
+
+Shared concepts miles names differently (`--diffusion-clip-range` vs `--eps-clip`) keep
+the prefix until the CLIs merge; stripping it early leaves two names for one idea.
+"""
+
 import argparse
 import json
 import logging
@@ -230,10 +242,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
-                "--diffusion-microgroup-size",
+                "--rollout-microgroup-size",
                 type=int,
                 default=1,
-                help="Diffusion rollout microgroup size (sub-batch of samples per prompt). Defaults to 1.",
+                help="Samples per prompt sent in one rollout request (sub-batch of the group).",
             )
             parser.add_argument(
                 "--diffusion-fps",
@@ -633,23 +645,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=int,
                 default=None,
                 help=(
-                    "[DEPRECATED -- kept only for backward compatibility with legacy (pre-refactor) configs; planned for removal, prefer --micro-batch-size.] "
-                    "Diffusion FSDP legacy 2D grouping: samples per DiT-forward tile. When set "
-                    "(together with --micro-batch-size-tstep), the RolloutManager groups train pairs "
-                    "into sample x timestep tiles instead of contiguous --micro-batch-size chunks, "
-                    "reproducing the legacy TrainRayActor tiling (e.g. SD3.5 where tstep micro-batch "
-                    "!= SDE window)."
+                    "Samples per DiT-forward tile. When set together with --micro-batch-size-tstep, "
+                    "the RolloutManager groups train pairs into sample x timestep tiles rather than "
+                    "contiguous --micro-batch-size chunks. The two together are more expressive than "
+                    "--micro-batch-size, which can only cut the flat pair list: they control how many "
+                    "samples and how many timesteps share one forward."
                 ),
             )
             parser.add_argument(
                 "--micro-batch-size-tstep",
                 type=int,
                 default=None,
-                help=(
-                    "[DEPRECATED -- kept only for backward compatibility with legacy (pre-refactor) configs; planned for removal, prefer --micro-batch-size.] "
-                    "Diffusion FSDP legacy 2D grouping: SDE timesteps per DiT-forward tile "
-                    "(pairs with --micro-batch-size-sample)."
-                ),
+                help=("SDE timesteps per DiT-forward tile; pairs with --micro-batch-size-sample."),
             )
             parser.add_argument(
                 "--train-dp-split-mode",
@@ -669,11 +676,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default="sample_major",
                 choices=["sample_major", "timestep_major"],
-                help=(
-                    "[DEPRECATED -- kept only for backward compatibility with legacy (pre-refactor) configs; planned for removal, prefer --micro-batch-size.] "
-                    "Diffusion FSDP legacy 2D grouping: tile iteration order "
-                    "(only meaningful with --micro-batch-size-sample/-tstep)."
-                ),
+                help=("Tile iteration order; only meaningful with --micro-batch-size-sample/-tstep."),
             )
             return parser
 

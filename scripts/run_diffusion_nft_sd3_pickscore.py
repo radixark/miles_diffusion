@@ -58,9 +58,9 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         f"--num-rollout {num_rollout} "
         "--num-steps-per-rollout 1 "
     ) + (
-        "--rollout-batch-size 2 --n-samples-per-prompt 2 --micro-batch-size 2 --diffusion-microgroup-size 2 "
+        "--rollout-batch-size 2 --n-samples-per-prompt 2 --micro-batch-size 2 --rollout-microgroup-size 2 "
         if args.smoke
-        else "--rollout-batch-size 8 --n-samples-per-prompt 8 --micro-batch-size 4 --diffusion-microgroup-size 8 "
+        else "--rollout-batch-size 8 --n-samples-per-prompt 8 --micro-batch-size 4 --rollout-microgroup-size 8 "
     )
 
     diffusion_args = (

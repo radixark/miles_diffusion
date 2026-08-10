@@ -53,7 +53,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         "--n-samples-per-prompt 16 "
         f"--num-rollout {args.num_rollout} "
         "--num-steps-per-rollout 2 "
-        "--diffusion-microgroup-size 8 "
+        "--rollout-microgroup-size 8 "
         "--micro-batch-size-sample 8 "
         "--micro-batch-size-tstep 1 "
         "--train-dp-split-mode stride "

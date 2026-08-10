@@ -15,7 +15,7 @@ optimizer step over 4 train GPUs. micro-batch-size 2 keeps every micro-batch pha
 
 Gradient checkpointing stays off: Wan2.2 under FSDP2 mixed precision hits a
 torch.utils.checkpoint CheckpointError on the fp32 RoPE freq buffers. If you OOM, lower
---rollout-batch-size, --n-samples-per-prompt or --diffusion-microgroup-size.
+--rollout-batch-size, --n-samples-per-prompt or --rollout-microgroup-size.
 
 Usage:
     python3 scripts/run_diffusion_grpo_wan22_pickscore_5gpu.py
@@ -66,7 +66,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         "--n-samples-per-prompt 16 "
         f"--num-rollout {args.num_rollout} "
         "--num-steps-per-rollout 2 "
-        "--diffusion-microgroup-size 8 "
+        "--rollout-microgroup-size 8 "
         "--micro-batch-size 2 "
     )
 
