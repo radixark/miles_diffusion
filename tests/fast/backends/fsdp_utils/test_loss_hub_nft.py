@@ -26,6 +26,7 @@ def _args(**overrides):
         reward_key=None,
         diffusion_nft_timestep_fraction=1.0,
         diffusion_nft_shuffle_timesteps=False,
+        seed=42,
         custom_prepare_train_batch_path=None,
         custom_loss_function_path=None,
     )
@@ -155,7 +156,7 @@ class TestPrepareNftBatch:
         pos_cond_kwargs = None
         neg_cond_kwargs = None
 
-    def _ctx(self, config):
+    def _ctx(self, config, microbatch_id=0):
         return DiffusionLossContext(
             models={"transformer": torch.nn.Identity()},
             train_pipeline_config=config,
@@ -164,6 +165,7 @@ class TestPrepareNftBatch:
             args=Namespace(seed=42),
             forward_dtype=torch.float32,
             device=torch.device("cpu"),
+            microbatch_id=microbatch_id,
         )
 
     def _batch(self):
@@ -200,6 +202,61 @@ class TestPrepareNftBatch:
         prepared = prepare_nft_batch(self._ctx(_QwenStyleConfig()), self._batch())
         # equal, not allclose: the wrong hook would still pass allclose.
         assert torch.equal(prepared.timesteps_for_model, torch.tensor(self.SIGMAS))
+
+
+class TestNftDeterminism:
+    # NFT draws two random streams -- the sigma permutation in the converter and the
+    # corruption noise in prepare. Both used the global RNG, so two runs of the same
+    # configuration trained on different data and no metric reproduced.
+    def _traj(self):
+        class _Traj:
+            def __init__(self):
+                self.timesteps = torch.tensor([999.0, 750.0, 500.0, 250.0, 0.0])
+                self.sigmas = torch.tensor([1.0, 0.75, 0.5, 0.25, 0.0])
+                self.latents = torch.zeros(5, 2, 2)
+
+        return _Traj()
+
+    def _samples(self):
+        class _Env:
+            pos_cond_kwargs = None
+            neg_cond_kwargs = None
+
+        return [
+            Sample(index=i, prompt=p, reward=r, dit_trajectory=self._traj(), denoising_env=_Env())
+            for i, (p, r) in enumerate([("a", 1.0), ("b", 3.0)])
+        ]
+
+    def test_sigma_shuffle_reproduces(self):
+        args = _args(diffusion_nft_shuffle_timesteps=True)
+        first = expand_samples_to_train_pairs(args, self._samples(), [-1.0, 1.0], [1.0, 3.0])
+        second = expand_samples_to_train_pairs(args, self._samples(), [-1.0, 1.0], [1.0, 3.0])
+        got = [p["timestep"] for p in first["train_data"]]
+        assert got == [p["timestep"] for p in second["train_data"]]
+        # Shuffled, not just handed back in scheduler order.
+        assert got[: len(got) // 2] != sorted(got[: len(got) // 2], reverse=True)
+
+    def test_each_sample_draws_its_own_permutation(self):
+        args = _args(diffusion_nft_shuffle_timesteps=True)
+        out = expand_samples_to_train_pairs(args, self._samples(), [-1.0, 1.0], [1.0, 3.0])
+        per_sample = {}
+        for pair in out["train_data"]:
+            per_sample.setdefault(pair["sample_index"], []).append(pair["timestep"])
+        assert len(per_sample) == 2
+        assert list(per_sample.values())[0] != list(per_sample.values())[1]
+
+    def test_corruption_noise_reproduces(self):
+        ctx = TestPrepareNftBatch()._ctx(_Sd3StyleConfig())
+        batch = TestPrepareNftBatch()._batch()
+        first = prepare_nft_batch(ctx, batch)
+        second = prepare_nft_batch(ctx, batch)
+        assert torch.equal(first.latents, second.latents)
+
+    def test_a_different_microbatch_draws_different_noise(self):
+        harness = TestPrepareNftBatch()
+        first = prepare_nft_batch(harness._ctx(_Sd3StyleConfig()), harness._batch())
+        second = prepare_nft_batch(harness._ctx(_Sd3StyleConfig(), microbatch_id=1), harness._batch())
+        assert not torch.equal(first.latents, second.latents)
 
 
 class TestEmaShadow:

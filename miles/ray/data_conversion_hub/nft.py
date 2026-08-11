@@ -5,6 +5,7 @@ from typing import Any
 
 import torch
 
+from miles.utils.hash_utils import stable_hash
 from miles.utils.train_data_utils import scheduler_meta_from_samples
 from miles.utils.types import Sample
 
@@ -60,11 +61,21 @@ def expand_samples_to_train_pairs(
     num_timesteps = int(sigmas.numel())
 
     train_data: list[dict[str, Any]] = []
-    for sample, adv, raw in zip(samples, rewards, raw_rewards, strict=True):
+    for position, (sample, adv, raw) in enumerate(zip(samples, rewards, raw_rewards, strict=True)):
         if sample.denoising_env is None:
             raise ValueError(f"sample {sample.index} missing denoising_env")
         x0 = _clean_x0_from_sample(sample)
-        sample_sigmas = sigmas[torch.randperm(num_timesteps)] if args.diffusion_nft_shuffle_timesteps else sigmas
+        # Keyed on the sample's global index, which the data source advances across rollouts,
+        # so each sample draws its own permutation and the run reproduces.
+        stream = sample.index if sample.index is not None else position
+        shuffle_generator = torch.Generator().manual_seed(
+            stable_hash("nft_sigma_shuffle", int(args.seed), int(stream))
+        )
+        sample_sigmas = (
+            sigmas[torch.randperm(num_timesteps, generator=shuffle_generator)]
+            if args.diffusion_nft_shuffle_timesteps
+            else sigmas
+        )
         for t in sample_sigmas.tolist():
             train_data.append(
                 {
