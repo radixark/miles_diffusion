@@ -24,7 +24,6 @@ def prepare_flow_grpo_batch(
     args = ctx.args
     device = ctx.device
     config = ctx.train_pipeline_config
-    num_train_timesteps = int(ctx.scheduler.config.num_train_timesteps)
     bsz = len(batch)
 
     latents = _stack_pair_field(batch, "latent", device)
@@ -47,6 +46,9 @@ def prepare_flow_grpo_batch(
     if len(ctx.models) == 1:
         component_name, model = next(iter(ctx.models.items()))
     else:
+        # Only multi-DiT families route timesteps to a phase, and only their schedulers are
+        # guaranteed to declare num_train_timesteps.
+        num_train_timesteps = int(ctx.scheduler.config.num_train_timesteps)
         components = {config.component_for_timestep(t, num_train_timesteps) for t in timesteps.tolist()}
         if len(components) > 1:
             raise ValueError(
