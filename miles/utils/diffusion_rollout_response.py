@@ -120,7 +120,33 @@ def _parse_cond_kwargs(
             data.get("audio_encoder_attention_mask"), deserialize_func=deserialize_func
         ),
         pooled_projections=_parse_tensor_or_list(data.get("pooled_projections"), deserialize_func=deserialize_func),
+        h3_packed_layout=_parse_h3_packed_layout(data.get("h3_packed_layout"), deserialize_func=deserialize_func),
+        h3_token_tags=_deserialize_optional_tensor(data.get("h3_token_tags"), deserialize_func=deserialize_func),
     )
+
+
+def _deserialize_optional_tensor(value, *, deserialize_func):
+    if value is None:
+        return None
+    if isinstance(value, dict) and value.get("__tensor__"):
+        return deserialize_func(value)
+    if isinstance(value, torch.Tensor):
+        return value
+    return value
+
+
+def _parse_h3_packed_layout(value, *, deserialize_func):
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        return value
+    out = {}
+    for key, item in value.items():
+        if isinstance(item, dict) and item.get("__tensor__"):
+            out[key] = deserialize_func(item)
+        else:
+            out[key] = item
+    return out
 
 
 def _parse_denoising_env(

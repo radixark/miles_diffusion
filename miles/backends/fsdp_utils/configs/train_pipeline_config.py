@@ -95,7 +95,28 @@ class TrainPipelineConfig(abc.ABC):
     def validate_args(cls, args) -> None:
         """Family-specific arg validation/defaults; runs once at arg validation."""
 
+    @classmethod  # noqa: B027 — optional hook, deliberately non-abstract
+    def apply_rollout_sampling_params(
+        cls,
+        args,
+        sampling_params: dict,
+        extra_sampling_params: dict,
+    ) -> None:
+        """Adjust the ``POST /rollout/generate`` body for this family; default adjusts nothing.
+
+        Both dicts are mutated in place: ``sampling_params`` is the request body the
+        generic builder has already filled in, ``extra_sampling_params`` the
+        family-specific passthrough. Families whose sgl-d request schema rejects some
+        of the generic fields drop them here.
+        """
+
     sde_timestep_divisor = 1.0
+    # Per --diffusion-sde-type train-side scorer overrides, for families whose rollout
+    # dynamics the generic backends cannot score as-is; empty keeps the generic mapping.
+    sde_step_backend_overrides: dict[str, str] = {}
+    # LoRA IPC layer grouper for families whose rollout module names or tensor layout
+    # differ from the trained diffusers ones; None keeps the generic PEFT grouping.
+    lora_layer_group_collector_path: str | None = None
 
     def configure(self, args) -> None:  # noqa: B027  optional no-op hook, not abstract
         """Bind the request constants a family needs at train time; default binds none."""

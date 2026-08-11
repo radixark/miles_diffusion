@@ -69,9 +69,14 @@ def build_rollout_sampling_params(
     if args.diffusion_fps is not None:
         sampling_params["fps"] = int(args.diffusion_fps)
 
+    extra_sampling_params = dict(extra_sampling_params or {})
     if args.diffusion_guidance_scale_2 is not None:
-        extra_sampling_params = dict(extra_sampling_params or {})
         extra_sampling_params["guidance_scale_2"] = float(args.diffusion_guidance_scale_2)
+
+    if args.train_pipeline_config_path:
+        load_function(args.train_pipeline_config_path).apply_rollout_sampling_params(
+            args, sampling_params, extra_sampling_params
+        )
 
     if extra_sampling_params:
         sampling_params["extra_sampling_params"] = extra_sampling_params

@@ -33,6 +33,9 @@ class CondKwargs:
     encoder_attention_mask: list[torch.Tensor] | None = None
     audio_encoder_attention_mask: list[torch.Tensor] | None = None
     pooled_projections: list[torch.Tensor] | None = None
+    # MiniMax H3 packed-sequence replay metadata (from rollout denoising_env).
+    h3_packed_layout: dict | None = None
+    h3_token_tags: torch.Tensor | None = None
 
 
 @dataclass

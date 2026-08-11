@@ -290,6 +290,24 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Width of the trained media: rollout output width, SFT encode center-crop width.",
             )
             parser.add_argument(
+                "--diffusion-h3-aspect-ratio",
+                type=str,
+                default="16:9",
+                help="MiniMax H3 target aspect_ratio: one of 21:9, 16:9, 4:3, 1:1, 3:4, 9:16.",
+            )
+            parser.add_argument(
+                "--diffusion-h3-duration-seconds",
+                type=float,
+                default=5.0,
+                help="MiniMax H3 target duration_seconds for rollout (4.0-15.0).",
+            )
+            parser.add_argument(
+                "--diffusion-audio-flow-shift",
+                type=float,
+                default=3.0,
+                help="MiniMax H3 audio_flow_shift for rollout.",
+            )
+            parser.add_argument(
                 "--diffusion-negative-prompt",
                 type=str,
                 default=None,
@@ -1676,6 +1694,8 @@ def miles_validate_args(args):
             # NFT does not use the placeholder backend.
             "ode": "miles.backends.fsdp_utils.sde_step_backend.DiffusersSdeStepBackend",
         }
+        if args.train_pipeline_config_path is not None:
+            sde_step_backends |= load_function(args.train_pipeline_config_path).sde_step_backend_overrides
         if args.diffusion_sde_type not in sde_step_backends:
             raise ValueError(
                 f"no train-side sde step backend for --diffusion-sde-type {args.diffusion_sde_type!r}; "

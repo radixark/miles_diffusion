@@ -24,7 +24,7 @@ Components (every version pinned):
 3. **Tooling** — `pip==26.0.1`, `wheel==0.45.1`, `setuptools==82.0.1` (resolver behaviour depends on these).
 4. **PyTorch** — `torch==2.9.1` on `cu129` (override via `TORCH_VER` / `CUDA_VER`).
 5. **sglang-diffusion** — clones **`Rockdu/sglang` @ `sglang-diffusion-rollout-test`** into `$SGLANG_DIR` (default `../sglang`) and `git checkout --detach $SGLANG_COMMIT` (default `0372158dd66bc7cb0740c733bd60047db790ec7d`). Installed editable as `python[all]`. Pinning to a SHA (not just the branch tip) is required for bit-exact rollout reproducibility. Override `SGLANG_REPO` / `SGLANG_BRANCH` / `SGLANG_COMMIT` only if you know what you're doing.
-6. **miles package** — `pip install -r requirements.txt` (all `==`-pinned: transformers 5.5.4, accelerate 1.12.0, ray 2.53.0, datasets 4.4.2, safetensors 0.7.0, wandb 0.23.1, and the OCR reward deps paddleocr 2.9.1, paddlepaddle-gpu 2.6.2, peft 0.18.1, diffusers 0.37.0, opencv-python-headless 4.10.0.84, …) plus `pip install -e . --no-deps`.
+6. **miles package** — `pip install -r requirements.txt` (all `==`-pinned: transformers 5.5.4, accelerate 1.12.0, ray 2.53.0, datasets 4.4.2, safetensors 0.7.0, wandb 0.23.1, and the OCR reward deps paddleocr 2.9.1, paddlepaddle-gpu 2.6.2, peft 0.18.1, opencv-python-headless 4.10.0.84, …; diffusers pinned to the diffusers main commit `f53d5520`, which merged MiniMax H3 support — no stable release carries it yet) plus `pip install -e . --no-deps`.
 7. **torch_memory_saver** — pinned to `0.0.9`, skipped silently on failure.
 8. **Smoke test** — `nvidia-smi`, then `python -c "import train_diffusion"`.
 

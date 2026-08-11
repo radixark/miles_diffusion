@@ -468,10 +468,39 @@ class DiffusionUpdateWeightFromTensorLoRAIPC(DiffusionUpdateWeightFromTensor):
             ).to_local()
         return param
 
+    def _collect_layer_groups(
+        self, model: torch.nn.Module
+    ) -> tuple[list[list[tuple[str, torch.Tensor]]], list[str], int]:
+        """Group this model's LoRA tensors into rollout layer names, per model family."""
+        from miles.utils.misc import load_function
+
+        collector_path = None
+        if self.args.train_pipeline_config_path:
+            collector_path = load_function(self.args.train_pipeline_config_path).lora_layer_group_collector_path
+        if collector_path is None:
+            return collect_lora_layer_groups(model.state_dict())
+
+        # A family whose rollout fuses several projections into one layer (H3's
+        # qkv_proj) combines adapters here, so DTensor shards must resolve first.
+        lora_state = {
+            name: self._prepare_lora_param(param)
+            for name, param in model.state_dict().items()
+            if PeftLoRAKeyMapper.is_lora_key(name)
+        }
+        layer_groups, unmapped_keys, num_lora_keys = load_function(collector_path)(lora_state)
+        if unmapped_keys:
+            # The rollout only warns about a name it cannot resolve, which would
+            # leave that adapter frozen at its checkpoint value.
+            raise ValueError(
+                f"{collector_path} could not map {len(unmapped_keys)} adapter modules to "
+                f"rollout layer names (first 5: {unmapped_keys[:5]})"
+            )
+        return layer_groups, unmapped_keys, num_lora_keys
+
     def update_weights(self) -> None:
         self.weight_version += 1
         for target_module, model in self.models.items():
-            layer_groups, unmapped_keys, num_lora_keys = collect_lora_layer_groups(model.state_dict())
+            layer_groups, unmapped_keys, num_lora_keys = self._collect_layer_groups(model)
             bucket: list[tuple[str, torch.Tensor]] = []
             bucket_size = 0
             num_buckets = 0
@@ -502,7 +531,10 @@ class DiffusionUpdateWeightFromTensorLoRAIPC(DiffusionUpdateWeightFromTensor):
                 num_buckets += 1
 
             if self.weight_version <= 2 and dist.is_initialized() and dist.get_rank() == 0:
-                _, num_layers, sample_layers, _ = PeftLoRAKeyMapper.summarize_mapping(model.state_dict())
+                # Report the layers actually pushed: a family that fuses projections
+                # into one rollout layer has fewer layers than PEFT modules.
+                num_layers = len(layer_groups)
+                sample_layers = [PeftLoRAKeyMapper.layer_prefix(group[0][0]) for group in layer_groups[:3]]
                 logger.info(
                     "LoRA IPC weight sync v%s [%s]: pushed %d lora tensors, "
                     "%d layer prefixes in %d buckets (unmapped=%d)",
