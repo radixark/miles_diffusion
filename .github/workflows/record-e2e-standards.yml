@@ -29,6 +29,10 @@ jobs:
     with:
       # e2e recording runs where e2e verification runs (see pr-test stage-c).
       runs_on: ${{ inputs.runs_on }}
+      # RECORDING BRANCH: the image `latest` pointed at on 2026-07-30, when #63 merged
+      # DiffusionNFT. Today's `latest` carries a different torch, so it would not reproduce
+      # the numbers this branch exists to capture.
+      container_image: rockdu/miles_diffusion:dev-cu129-sglang-main-20260728
       upload_standards: true
       execute_command: >-
         python tests/ci/e2e_metrics_registry.py record --test ${{ inputs.test }}

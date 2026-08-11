@@ -142,5 +142,6 @@ python -u "${ROOT_DIR}/train_diffusion.py" \
   --save "${SAVE_DIR}" \
   --save-interval 20 \
   --skip-eval-before-train \
+  --deterministic-mode \
   "${WANDB_ARGS[@]}" \
   2>&1 | tee -a "${ROOT_DIR}/logs/${RUN_NAME}.log"
