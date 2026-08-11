@@ -367,9 +367,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help=(
                     "Comma-separated rollout patch groups applied at sglang-d startup so its "
-                    "forward is numerically aligned with the training side, e.g. 'sgld' "
-                    "(diffusers op parity, small rollout perf hit) or 'ltx' "
-                    "(see sglang_diffusion_utils/monkey_patches)."
+                    "forward is numerically aligned with the training side, e.g. 'qwen_image' "
+                    "or 'ltx' (see sglang_diffusion_utils/monkey_patches)."
                 ),
             )
             parser.add_argument(
