@@ -85,7 +85,6 @@ class Sample:
     # Scalar from single RM (e.g. pickscore) or dict when combining multiple RMs
     # (--reward-key selects the scalar used for GRPO / logging).
     reward: float | dict[str, Any] | None = None
-    weight_versions: list[str] = field(default_factory=list)
 
     class Status(Enum):
         PENDING = "pending"

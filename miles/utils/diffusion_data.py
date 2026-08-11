@@ -25,12 +25,12 @@ def read_file(path):
             try:
                 yield json.loads(line)
             except json.JSONDecodeError as e:
-                print(f"JSON decode error at line {line_num}: {e}")
+                logger.warning(f"JSON decode error at line {line_num}: {e}")
                 continue
 
 
 class Dataset:
-    """T2I RL: same loading pattern as :class:`miles.utils.data.Dataset` — ``read_file`` yields row dicts; we build :class:`~miles.utils.types.Sample`."""
+    """Prompt-only dataset for T2I RL: one :class:`~miles.utils.types.Sample` per jsonl row."""
 
     def __init__(
         self,
@@ -46,8 +46,6 @@ class Dataset:
             if not isinstance(prompt, str) or not prompt.strip():
                 continue
             metadata = data.get(metadata_key) or {}
-            if not isinstance(metadata, dict):
-                metadata = {}
             origin_samples.append(Sample(prompt=prompt.strip(), metadata=metadata))
 
         self.origin_samples = origin_samples

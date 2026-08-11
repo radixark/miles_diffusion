@@ -125,16 +125,16 @@ def deterministic_capable_flash_fns():
 
 
 def validate_attention_args(args):
-    """Fail fast (driver-side, before any actor launches) on deterministic-mode misconfig."""
-    if not getattr(args, "deterministic_mode", False):
+    """Fail fast (driver-side, before any actor launches) on deterministic-mode misconfig.
+
+    Enforces the support matrix documented above _FLASH_ATTN_DISPATCH_FNS.
+    """
+    if not args.deterministic_mode:
         return
     backend = args.fsdp_attention_backend
     name = "" if backend is None else backend.lower()
-    # torch SDPA (diffusers default / native): torch's global determinism covers it.
-    # 'math' backends (torch SDPBackend.MATH semantics) are deterministic by construction.
     if backend is None or "native" in name or "math" in name:
         return
-    # flash-attn: torch's global flag can't reach it; we patch its deterministic= on.
     if "flash" in name:
         if not deterministic_capable_flash_fns():
             raise RuntimeError(
@@ -143,7 +143,6 @@ def validate_attention_args(args):
                 "installed and recent enough?)."
             )
         return
-    # Anything else is a custom kernel we can neither cover via torch nor patch.
     raise ValueError(
         f"deterministic_mode cannot guarantee a deterministic backward for attention "
         f"backend '{backend}': it is a custom kernel opaque to "

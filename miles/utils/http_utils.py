@@ -2,7 +2,6 @@ import asyncio
 import ipaddress
 import json
 import logging
-import multiprocessing
 import os
 import random
 import socket
@@ -113,36 +112,6 @@ def _wrap_ipv6(host):
         return f"[{host.strip('[]')}]"
     except ipaddress.AddressValueError:
         return host
-
-
-def run_router(args):
-    try:
-        from sglang_router.launch_router import launch_router
-
-        router = launch_router(args)
-        if router is None:
-            return 1
-        return 0
-    except Exception as e:
-        logger.info(e)
-        return 1
-
-
-def terminate_process(process: multiprocessing.Process, timeout: float = 1.0) -> None:
-    """Terminate a process gracefully, with forced kill as fallback.
-
-    Args:
-        process: The process to terminate
-        timeout: Seconds to wait for graceful termination before forcing kill
-    """
-    if not process.is_alive():
-        return
-
-    process.terminate()
-    process.join(timeout=timeout)
-    if process.is_alive():
-        process.kill()
-        process.join()
 
 
 _http_client: httpx.AsyncClient | None = None
@@ -290,10 +259,3 @@ async def post(url, payload, max_retries=60, raw=False):
             # fall through to local
 
     return await _post(_http_client, url, payload, max_retries, raw)
-
-
-async def get(url):
-    response = await _http_client.get(url)
-    response.raise_for_status()
-    output = _parse_response(response)
-    return output

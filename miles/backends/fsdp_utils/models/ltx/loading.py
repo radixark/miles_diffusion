@@ -166,19 +166,19 @@ def resolve_materialized_model_dir(
 
 
 def resolve_transformer_checkpoint(
-    diffusion_model: str | None,
+    hf_checkpoint: str | None,
     *,
     materialize: bool = True,
 ) -> str:
     """Resolve the single-file DiT checkpoint used by FSDP train."""
-    if diffusion_model:
-        path = Path(str(diffusion_model)).expanduser()
+    if hf_checkpoint:
+        path = Path(str(hf_checkpoint)).expanduser()
         if path.is_file() and path.suffix == ".safetensors":
             return str(path)
 
-        if _is_hf_model_id(str(diffusion_model)):
+        if _is_hf_model_id(str(hf_checkpoint)):
             materialized_dir = resolve_materialized_model_dir(
-                str(diffusion_model),
+                str(hf_checkpoint),
                 materialize=materialize,
             )
             if materialized_dir is not None:
@@ -191,7 +191,7 @@ def resolve_transformer_checkpoint(
                 return str(checkpoint)
 
     raise FileNotFoundError(
-        "Could not resolve LTX transformer checkpoint. Pass --diffusion-model "
+        "Could not resolve LTX transformer checkpoint. Pass --hf-checkpoint "
         "Lightricks/LTX-2.3 (recommended) or a .safetensors override."
     )
 
@@ -205,7 +205,7 @@ def load_component(
 ):
     if component != TRAIN_COMPONENT:
         raise ValueError(f"LTX trains the single DiT ({TRAIN_COMPONENT!r}); got {component!r}")
-    checkpoint = resolve_transformer_checkpoint(str(args.diffusion_model))
+    checkpoint = resolve_transformer_checkpoint(str(args.hf_checkpoint))
     return load_transformer_for_train(
         checkpoint,
         device="cpu",

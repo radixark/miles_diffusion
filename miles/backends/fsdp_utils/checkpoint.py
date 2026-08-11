@@ -209,9 +209,9 @@ def load(actor: Any) -> dict[str, Any] | None:
         return None
 
     # Load optimizer state (optional)
-    load_optimizer = not actor.args.no_load_optim and hasattr(actor, "optimizer")
+    load_optimizer = not actor.args.no_load_optim
     if load_optimizer and optimizer_dir.exists():
-        allowed_missing = getattr(getattr(actor, "train_pipeline_config", None), "optimizer_state_allowed_missing", [])
+        allowed_missing = actor.train_pipeline_config.optimizer_state_allowed_missing
         optimizer_state = OptimizerState(actor.model, actor.optimizer, allowed_missing=allowed_missing)
         optim_state_dict = {"optim_state": optimizer_state}
         try:
@@ -223,7 +223,7 @@ def load(actor: Any) -> dict[str, Any] | None:
         logger.info(f"[FSDP] Optimizer checkpoint not found at {optimizer_dir}, skipping optimizer load.")
 
     # Load LR scheduler state (optional)
-    load_lr_scheduler = hasattr(actor, "lr_scheduler") and lr_scheduler_dir.exists()
+    load_lr_scheduler = lr_scheduler_dir.exists()
     if load_lr_scheduler:
         lr_scheduler_state = LRSchedulerState(actor.lr_scheduler)
         lr_scheduler_state_dict = {"lr_scheduler_state": lr_scheduler_state}
@@ -232,7 +232,7 @@ def load(actor: Any) -> dict[str, Any] | None:
             logger.info(f"[FSDP] Loaded LR scheduler from {lr_scheduler_dir}")
         except Exception as e:
             logger.warning(f"[FSDP] Failed to load LR scheduler from {lr_scheduler_dir}: {e}")
-    elif hasattr(actor, "lr_scheduler"):
+    else:
         logger.info(f"[FSDP] LR scheduler checkpoint not found at {lr_scheduler_dir}, skipping LR scheduler load.")
 
     rng_state = None
@@ -305,19 +305,14 @@ def save(actor: Any, iteration: int) -> None:
     state_dict = {"model_state": model_state}
     dcp.save(state_dict, checkpoint_id=str(model_dir))
 
-    # Save optimizer state (skip if --no-save-optim is set)
-    save_optimizer_state = not actor.args.no_save_optim
-    if save_optimizer_state and hasattr(actor, "optimizer") and actor.optimizer is not None:
-        allowed_missing = getattr(getattr(actor, "train_pipeline_config", None), "optimizer_state_allowed_missing", [])
+    # --no-save-optim drops both the optimizer and the LR scheduler.
+    if not actor.args.no_save_optim:
+        allowed_missing = actor.train_pipeline_config.optimizer_state_allowed_missing
         optimizer_state = OptimizerState(actor.model, actor.optimizer, allowed_missing=allowed_missing)
-        optim_state_dict = {"optim_state": optimizer_state}
-        dcp.save(optim_state_dict, checkpoint_id=str(optimizer_dir))
+        dcp.save({"optim_state": optimizer_state}, checkpoint_id=str(optimizer_dir))
 
-    # Save LR scheduler state (skip if --no-save-optim is set)
-    if save_optimizer_state and hasattr(actor, "lr_scheduler") and actor.lr_scheduler is not None:
         lr_scheduler_state = LRSchedulerState(actor.lr_scheduler)
-        lr_scheduler_state_dict = {"lr_scheduler_state": lr_scheduler_state}
-        dcp.save(lr_scheduler_state_dict, checkpoint_id=str(lr_scheduler_dir))
+        dcp.save({"lr_scheduler_state": lr_scheduler_state}, checkpoint_id=str(lr_scheduler_dir))
 
     if dist.get_rank() == 0:
         rng_state = {"torch": torch.get_rng_state()}

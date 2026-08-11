@@ -119,6 +119,7 @@ def should_run_periodic_action(
         rollout_id: The current rollout index (0-based).
         interval: Desired cadence; disables checks when None.
         num_rollout_per_epoch: Optional epoch boundary to treat as a trigger.
+        num_rollout: Total rollouts; the final one always triggers.
     """
     if interval is None:
         return False

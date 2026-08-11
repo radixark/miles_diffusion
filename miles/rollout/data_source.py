@@ -171,17 +171,6 @@ class RolloutDataSourceWithBuffer(RolloutDataSource):
             group = samples[i]  # type: ignore
             self.buffer.append(group)
 
-    # TODO remove
-    def update_metadata(self, metadata: dict):
-        self.metadata.update(metadata)
-
-    # TODO remove
-    def get_metadata(self):
-        return self.metadata
-
-    def get_buffer_length(self):
-        return len(self.buffer)
-
 
 def pop_first(args, rollout_id, buffer: list[list[Sample]], num_samples: int) -> list[list[Sample]]:
     num_to_pop = min(len(buffer), num_samples)

@@ -56,7 +56,7 @@ class RayTrainGroup:
             **self.args.train_env_vars,
         }
 
-        if getattr(self.args, "deterministic_mode", False):
+        if self.args.deterministic_mode:
             # Must be in the process env at spawn: NCCL reads it at
             # init_process_group and cuBLAS at first matmul, both before the actor
             # runs. torch-runtime knobs are set in the actor instead.
@@ -66,19 +66,6 @@ class RayTrainGroup:
             env_vars.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
         # Let Ray set CUDA_VISIBLE_DEVICES per actor to avoid all ranks
         # sharing GPU0. (Old --diffusion-train branch removed.)
-
-        if self.args.offload_train and self.args.train_backend == "megatron":
-            import torch_memory_saver
-
-            dynlib_path = os.path.join(
-                os.path.dirname(os.path.dirname(torch_memory_saver.__file__)),
-                "torch_memory_saver_hook_mode_preload.abi3.so",
-            )
-            assert os.path.exists(dynlib_path), f"LD_PRELOAD so file {dynlib_path} does not exist."
-
-            env_vars["LD_PRELOAD"] = dynlib_path
-            env_vars["TMS_INIT_ENABLE"] = "1"
-            env_vars["TMS_INIT_ENABLE_CPU_BACKUP"] = "1"
 
         backend = self.args.train_backend
         if backend == "fsdp":

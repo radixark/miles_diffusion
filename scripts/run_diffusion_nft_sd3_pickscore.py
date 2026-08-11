@@ -57,27 +57,23 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         "--input-key input "
         f"--num-rollout {num_rollout} "
         "--num-steps-per-rollout 1 "
-    ) + (
-        "--rollout-batch-size 2 --n-samples-per-prompt 2 --micro-batch-size 2 --rollout-microgroup-size 2 "
-        if args.smoke
-        else "--rollout-batch-size 8 --n-samples-per-prompt 8 --micro-batch-size 4 --rollout-microgroup-size 8 "
-    )
-
-    diffusion_args = (
-        f"--diffusion-model {MODEL} "
         "--diffusion-num-steps 10 "
         "--diffusion-guidance-scale 1.0 "
         "--diffusion-noise-level 0.0 "
         "--diffusion-sde-type ode "
         "--diffusion-height 512 "
         "--diffusion-width 512 "
+    ) + (
+        "--rollout-batch-size 2 --n-samples-per-prompt 2 --rollout-microgroup-size 2 "
+        if args.smoke
+        else "--rollout-batch-size 8 --n-samples-per-prompt 8 --rollout-microgroup-size 8 "
     )
 
     eval_args = "--diffusion-eval-num-steps 50 --skip-eval-before-train " + (
         "" if args.smoke else f"--eval-prompt-data pickscore_test {data_dir}/test.jsonl --eval-interval 30 "
     )
 
-    nft_args = (
+    grpo_args = (
         "--loss-type nft "
         "--diffusion-nft-beta 1.0 "
         "--diffusion-nft-timestep-fraction 0.99 "
@@ -126,7 +122,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
 
     train_backend_args = "--train-backend fsdp --diffusion-forward-dtype fp16 "
 
-    perf_args = "--gradient-checkpointing "
+    perf_args = "--gradient-checkpointing " + ("--micro-batch-size 2 " if args.smoke else "--micro-batch-size 4 ")
 
     misc_args = (
         "--actor-num-gpus-per-node 2 "
@@ -138,7 +134,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
 
     U.execute_train(
         train_args=(
-            f"{ckpt_args} {rollout_args} {diffusion_args} {eval_args} {nft_args} {ema_args} "
+            f"{ckpt_args} {rollout_args} {eval_args} {grpo_args} {ema_args} "
             f"{optimizer_args} {lora_args} {reward_args} {wandb_args} {sglang_args} "
             f"{train_backend_args} {perf_args} {misc_args} {args.extra_args}"
         ),

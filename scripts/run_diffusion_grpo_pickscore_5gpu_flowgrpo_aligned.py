@@ -54,14 +54,8 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         f"--num-rollout {args.num_rollout} "
         "--num-steps-per-rollout 2 "
         "--rollout-microgroup-size 8 "
-        "--micro-batch-size-sample 8 "
-        "--micro-batch-size-tstep 1 "
         "--train-dp-split-mode stride "
         "--diffusion-train-iter-order sample_major "
-    )
-
-    diffusion_args = (
-        f"--diffusion-model {MODEL} "
         "--diffusion-num-steps 10 "
         "--diffusion-guidance-scale 4.0 "
         "--diffusion-true-cfg-scale 4.0 "
@@ -111,7 +105,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         "--train-backend fsdp --fsdp-master-dtype fp32 --fsdp-reduce-dtype fp32 --diffusion-forward-dtype bf16 "
     )
 
-    perf_args = "--gradient-checkpointing --deterministic-mode "
+    perf_args = "--gradient-checkpointing --micro-batch-size-sample 8 --micro-batch-size-tstep 1 "
 
     misc_args = (
         "--actor-num-gpus-per-node 4 "
@@ -119,11 +113,12 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         "--rollout-num-gpus-per-engine 1 "
         "--num-gpus-per-node 5 "
         "--colocate "
+        "--deterministic-mode "
     )
 
     U.execute_train(
         train_args=(
-            f"{ckpt_args} {rollout_args} {diffusion_args} {eval_args} {grpo_args} {optimizer_args} "
+            f"{ckpt_args} {rollout_args} {eval_args} {grpo_args} {optimizer_args} "
             f"{lora_args} {reward_args} {wandb_args} {sglang_args} {train_backend_args} {perf_args} "
             f"{misc_args} {args.extra_args}"
         ),

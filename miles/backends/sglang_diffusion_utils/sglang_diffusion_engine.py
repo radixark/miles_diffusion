@@ -315,7 +315,7 @@ def _compute_server_args(args, host, port, nccl_port):
     # Only set fields SGL-D's ServerArgs actually accepts. GPU pinning is done
     # in `_init_normal` via CUDA_VISIBLE_DEVICES — SGL-D has no base_gpu_id arg.
     kwargs = {
-        "model_path": args.diffusion_model,
+        "model_path": args.hf_checkpoint,
         "trust_remote_code": True,
         "host": host,
         "port": port,

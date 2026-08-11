@@ -110,7 +110,6 @@ def execute(args: ScriptArgs, prompt_dir: str) -> None:
     )
 
     diffusion_args = (
-        f"--diffusion-model {MODEL} "
         "--diffusion-num-steps 10 "
         "--diffusion-guidance-scale 1.0 "
         "--diffusion-noise-level 0.7 "
