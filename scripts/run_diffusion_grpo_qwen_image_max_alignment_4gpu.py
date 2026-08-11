@@ -1,14 +1,14 @@
-"""Reproduce bitwise train<->rollout parity for Qwen-Image: model_output_*_abs_diff stays exactly 0.
+"""Maximally aligned Qwen-Image train<->rollout run: model_output_*_abs_diff in debug mode.
 
 Every optimizer step is on-policy (num_steps_per_rollout=1) and the train micro-batch
 reproduces one rollout microgroup exactly (micro_batch_size_sample == rollout_microgroup_size,
-contiguous dp split), so the mask collapses to None and both sides run the same SDPA flash
-kernel (--fsdp-attention-backend _native_flash, torch_sdpa rollout).
+contiguous dp split). The remaining diff comes from the legacy whole-window cond pad and its
+attention mask, which move the train forward off the rollout's mask-less SDPA flash kernel.
 
 Layout: 4 GPUs, train + rollout + pickscore reward all colocated.
 
 Usage:
-    python3 scripts/run_diffusion_grpo_qwen_image_bitwise_parity_4gpu.py
+    python3 scripts/run_diffusion_grpo_qwen_image_max_alignment_4gpu.py
 """
 
 from dataclasses import dataclass
@@ -37,7 +37,7 @@ def prepare(args: ScriptArgs) -> str:
 
 
 def execute(args: ScriptArgs, data_dir: str) -> None:
-    run_name = f"diffusion_grpo_qwen_image_bitwise_parity_4gpu_{U.create_run_id()}"
+    run_name = f"diffusion_grpo_qwen_image_max_alignment_4gpu_{U.create_run_id()}"
 
     ckpt_args = f"--hf-checkpoint {MODEL} --save {args.output_dir}/{run_name}/ckpt --save-interval 10 "
 
@@ -90,7 +90,6 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
 
     train_backend_args = (
         "--train-backend fsdp --fsdp-master-dtype fp32 --fsdp-reduce-dtype fp32 --diffusion-forward-dtype bf16 "
-        "--fsdp-attention-backend _native_flash "
     )
 
     perf_args = "--gradient-checkpointing --micro-batch-size-sample 8 --micro-batch-size-tstep 1 "
