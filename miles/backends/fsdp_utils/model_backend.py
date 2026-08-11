@@ -246,9 +246,11 @@ class DiffusersModelBackend(BaseModelBackend):
 
     @staticmethod
     def _component_class(spec):
-        if not isinstance(spec, (list, tuple)) or len(spec) != 2:
+        # ``[library, class_name]``, plus a trailing loading spec on modular pipelines
+        # (``model_index.json`` of e.g. MiniMaxH3ModularPipeline carries a third element).
+        if not isinstance(spec, (list, tuple)) or len(spec) < 2:
             return None
-        library, class_name = spec
+        library, class_name = spec[0], spec[1]
         if not library or not class_name:
             return None
         try:
