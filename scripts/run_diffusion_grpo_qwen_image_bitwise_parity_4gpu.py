@@ -1,18 +1,14 @@
-"""Qwen-Image PickScore GRPO, aligned with flow_grpo `pickscore_qwenimage`.
+"""Reproduce bitwise train<->rollout parity for Qwen-Image: model_output_*_abs_diff stays exactly 0.
 
-resolution=512, num_steps=10, eval_steps=50, guidance=4, noise_level=1.2,
-sde_window_size=2. sde_window_range=3,5 gives effective SDE indices [3,4]: flow_grpo
-hard-codes (0, num_steps//2) but only trains steps 3-4, and we mirror that.
-beta=0 (no KL), global_std=True, per-prompt mean.
+Every optimizer step is on-policy (num_steps_per_rollout=1) and the train micro-batch
+reproduces one rollout microgroup exactly (micro_batch_size_sample == rollout_microgroup_size,
+contiguous dp split), so the mask collapses to None and both sides run the same SDPA flash
+kernel (--fsdp-attention-backend _native_flash, torch_sdpa rollout).
 
-Per rollout: 32 prompts x 16 samples = 512 samples. num_steps_per_rollout=2 gives 256
-samples per optimizer step, matching flow_grpo's 32-GPU run (batch 4 x 32 GPU x 2 accum).
-
-Layout: the first four GPUs in CUDA_VISIBLE_DEVICES are train+sgld colocate, the fifth is
-a dedicated pickscore reward worker.
+Layout: 4 GPUs, train + rollout + pickscore reward all colocated.
 
 Usage:
-    python3 scripts/run_diffusion_grpo_pickscore_5gpu_flowgrpo_aligned.py
+    python3 scripts/run_diffusion_grpo_qwen_image_bitwise_parity_4gpu.py
 """
 
 from dataclasses import dataclass
@@ -29,7 +25,8 @@ WANDB_PROJECT = "miles-diffusion-grpo"
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
-    num_rollout: int = 400
+    cuda_visible_devices: str = "4,5,6,7"
+    num_rollout: int = 3
     data_dir: str = "/root/datasets"
     extra_args: str = ""
 
@@ -40,7 +37,7 @@ def prepare(args: ScriptArgs) -> str:
 
 
 def execute(args: ScriptArgs, data_dir: str) -> None:
-    run_name = f"diffusion_grpo_pickscore_5gpu_flowgrpo_aligned_{U.create_run_id()}"
+    run_name = f"diffusion_grpo_qwen_image_bitwise_parity_4gpu_{U.create_run_id()}"
 
     ckpt_args = f"--hf-checkpoint {MODEL} --save {args.output_dir}/{run_name}/ckpt --save-interval 10 "
 
@@ -48,16 +45,14 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         "--rollout-function-path miles.rollout.sglang_diffusion_rollout.generate_rollout "
         f"--prompt-data {data_dir}/train.jsonl "
         "--input-key input "
-        "--rollout-batch-size 32 "
+        "--rollout-batch-size 8 "
         "--n-samples-per-prompt 16 "
         f"--num-rollout {args.num_rollout} "
-        "--num-steps-per-rollout 2 "
+        "--num-steps-per-rollout 1 "
         "--rollout-microgroup-size 8 "
-        "--train-dp-split-mode stride "
         "--diffusion-train-iter-order sample_major "
         "--diffusion-num-steps 10 "
         "--diffusion-guidance-scale 4.0 "
-        "--diffusion-negative-prompt ' ' "
         "--diffusion-true-cfg-scale 4.0 "
         "--diffusion-noise-level 1.2 "
         "--diffusion-height 512 "
@@ -66,13 +61,6 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         "--diffusion-num-sde-steps 2 "
         "--diffusion-sde-window-range 3,5 "
         "--rollout-patch-group qwen_image "
-    )
-
-    eval_args = (
-        f"--eval-prompt-data pickscore_test {data_dir}/test.jsonl "
-        "--eval-interval 30 "
-        "--diffusion-eval-num-steps 50 "
-        "--skip-eval-before-train "
     )
 
     grpo_args = "--advantage-estimator grpo --globalize-reward-std --diffusion-clip-range 1e-4 "
@@ -84,7 +72,6 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
     reward_args = (
         "--rm-type pickscore "
         "--pickscore-num-workers 1 "
-        "--pickscore-num-gpus-per-worker 1.0 "
         "--pickscore-batch-size 8 "
         "--pickscore-processor-path laion/CLIP-ViT-H-14-laion2B-s32B-b79K "
         "--pickscore-model-path yuvalkirstain/PickScore_v1 "
@@ -103,6 +90,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
 
     train_backend_args = (
         "--train-backend fsdp --fsdp-master-dtype fp32 --fsdp-reduce-dtype fp32 --diffusion-forward-dtype bf16 "
+        "--fsdp-attention-backend _native_flash "
     )
 
     perf_args = "--gradient-checkpointing --micro-batch-size-sample 8 --micro-batch-size-tstep 1 "
@@ -111,18 +99,20 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         "--actor-num-gpus-per-node 4 "
         "--rollout-num-gpus 4 "
         "--rollout-num-gpus-per-engine 1 "
-        "--num-gpus-per-node 5 "
+        "--num-gpus-per-node 4 "
         "--colocate "
+        "--colocate-reward "
         "--deterministic-mode "
+        "--diffusion-debug-mode "
     )
 
     U.execute_train(
         train_args=(
-            f"{ckpt_args} {rollout_args} {eval_args} {grpo_args} {optimizer_args} "
+            f"{ckpt_args} {rollout_args} {grpo_args} {optimizer_args} "
             f"{lora_args} {reward_args} {wandb_args} {sglang_args} {train_backend_args} {perf_args} "
             f"{misc_args} {args.extra_args}"
         ),
-        num_gpus_per_node=5,
+        num_gpus_per_node=4,
         config=args,
         extra_env_vars={"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"},
     )

@@ -5,11 +5,7 @@ The engine parent lists selected group names in ``MILES_ROLLOUT_PATCH_GROUPS``;
 the sglang scheduler grandchild (spawn: fresh imports) re-reads it and applies
 those groups before model construction.
 
-- ``sgld``: diffusers / SD3 op parity (RMSNorm, LayerNormScaleShift, MulAdd,
-  ...). Op-layer patches: they apply to every sgl-d DiT built from these
-  generic classes. Attention is NOT patched: overriding USPAttention.forward
-  breaks bitwise SP-invariance (kernel choice depends on head/batch shape) —
-  align the attention kernel via the attention-backend selection instead.
+- ``qwen_image``: bitwise train<->rollout parity for the Qwen-Image DiT.
 - ``ltx``:  LTX rollout cond kwargs + AV cross-off (video-only train parity).
 
 Patch modules are imported inside ``apply_*`` only, so CPU-only Ray actors
@@ -22,7 +18,7 @@ from __future__ import annotations
 import os
 from collections.abc import Callable
 
-# Comma-separated group names selected by the engine parent, e.g. "sgld,ltx".
+# Comma-separated group names selected by the engine parent, e.g. "qwen_image".
 ROLLOUT_PATCH_GROUPS_ENV = "MILES_ROLLOUT_PATCH_GROUPS"
 
 _ROLLOUT_PATCH_APPLIERS: dict[str, Callable[[], None]] = {}
@@ -38,21 +34,11 @@ def register_rollout_patch_group(name: str):
     return wrapper
 
 
-@register_rollout_patch_group("sgld")
-def apply_sgld_monkey_patches() -> None:
-    from miles.backends.sglang_diffusion_utils.monkey_patches import (
-        patch_layernorm_scale_shift,
-        patch_mul_add,
-        patch_qk_norm_rope,
-        patch_rmsnorm,
-        patch_scale_residual_layernorm,
-    )
+@register_rollout_patch_group("qwen_image")
+def apply_qwen_image_rollout_patches() -> None:
+    from miles.backends.sglang_diffusion_utils.monkey_patches import patch_qwen_image
 
-    patch_rmsnorm.apply()
-    patch_layernorm_scale_shift.apply()
-    patch_scale_residual_layernorm.apply()
-    patch_mul_add.apply()
-    patch_qk_norm_rope.apply()
+    patch_qwen_image.apply()
 
 
 @register_rollout_patch_group("wan")

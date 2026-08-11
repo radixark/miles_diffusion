@@ -162,17 +162,15 @@ class QwenImageTrainPipelineConfig(TrainPipelineConfig):
             1
         )  # (M, max_len) bool
 
+        # Collapse an all-true mask to None so training hits the same mask-less SDPA kernel as rollout.
+        mask_or_none = None if bool(mask.all()) else mask
+
         return {
             "encoder_hidden_states": encoder_hidden_states,
-            "encoder_hidden_states_mask": mask,
+            "encoder_hidden_states_mask": mask_or_none,
             "txt_seq_lens": seq_lens,
             "img_shapes": img_shapes,
         }
-
-    def maybe_legacy_window_pad_len(self, conds: list) -> int | None:
-        # LEGACY 2D parity: reproduce the legacy whole-window cond pad width. TODO: remove with legacy 2D path.
-        lens = [int(c.txt_seq_lens[0]) for c in conds if c is not None and c.txt_seq_lens]
-        return max(lens) if lens else None
 
     def cfg_combine(
         self,
@@ -192,7 +190,7 @@ class QwenImageTrainPipelineConfig(TrainPipelineConfig):
         combined = noise_pred_neg + scale * (noise_pred_pos - noise_pred_neg)
         if true_cfg_scale is not None and true_cfg_scale > 1.0:
             pos_norm = torch.norm(noise_pred_pos, dim=-1, keepdim=True)
-            combined_norm = torch.norm(combined, dim=-1, keepdim=True)
+            combined_norm = torch.norm(combined, dim=-1, keepdim=True).clamp_min(1e-12)
             combined = combined * (pos_norm / combined_norm)
         return combined
 
