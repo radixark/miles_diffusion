@@ -2,8 +2,6 @@
 
 import torch
 import torch.nn.functional as F
-from torch.distributed.tensor import DTensor
-
 from sglang.multimodal_gen.runtime.layers import layernorm as layernorm_mod
 from sglang.multimodal_gen.runtime.layers.elementwise import MulAdd
 from sglang.multimodal_gen.runtime.layers.layernorm import (
@@ -13,6 +11,7 @@ from sglang.multimodal_gen.runtime.layers.layernorm import (
 )
 from sglang.multimodal_gen.runtime.layers.lora import linear as lora_linear
 from sglang.multimodal_gen.runtime.models.dits import qwen_image as qwen_image_mod
+from torch.distributed.tensor import DTensor
 
 _orig_split_seqs = qwen_image_mod.split_seqs
 _orig_set_lora_weights = lora_linear.BaseLayerWithLoRA.set_lora_weights
