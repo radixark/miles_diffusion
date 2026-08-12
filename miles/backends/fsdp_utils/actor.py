@@ -95,7 +95,9 @@ class FSDPTrainRayActor(TrainRayActor):
 
         self._master_dtype = parse_dtype_from_str(args.fsdp_master_dtype)
         self._forward_dtype = parse_dtype_from_str(args.diffusion_forward_dtype)
-        self._frozen_dtype = parse_dtype_from_str(args.fsdp_frozen_params_dtype) if args.fsdp_frozen_params_dtype else None
+        self._frozen_dtype = (
+            parse_dtype_from_str(args.fsdp_frozen_params_dtype) if args.fsdp_frozen_params_dtype else None
+        )
         if self._frozen_dtype is not None and not args.use_lora:
             raise ValueError("--fsdp-frozen-params-dtype requires --use-lora")
 
