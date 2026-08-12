@@ -5,6 +5,7 @@ from __future__ import annotations
 import torch
 
 from miles.backends.fsdp_utils.loss_hub.types import DiffusionLossContext, PreparedBatch
+from miles.utils.hash_utils import stable_hash
 from miles.utils.metric_buffer import MetricBuffer
 
 
@@ -41,7 +42,10 @@ def prepare_nft_batch(
 
     num_train_timesteps = ctx.scheduler.config.num_train_timesteps
 
-    xt = corrupt(x0, t, sample_noise(x0))
+    noise_generator = torch.Generator(device=device).manual_seed(
+        stable_hash("nft_corrupt", int(ctx.args.seed), ctx.rollout_id, ctx.microbatch_id, ctx.dp_rank)
+    )
+    xt = corrupt(x0, t, sample_noise(x0, generator=noise_generator))
     return PreparedBatch(
         latents=xt,
         timesteps=t,

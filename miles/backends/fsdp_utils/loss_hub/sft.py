@@ -2,20 +2,12 @@
 
 from __future__ import annotations
 
-import hashlib
-
 import torch
 import torch.nn as nn
 
 from miles.backends.fsdp_utils.loss_hub.types import DiffusionLossContext, PreparedBatch
+from miles.utils.hash_utils import stable_hash
 from miles.utils.metric_buffer import MetricBuffer
-
-
-def _seed(scope: str, *parts: int) -> int:
-    """Create a stable seed for one named random stream."""
-    payload = ":".join([scope, *(str(part) for part in parts)]).encode()
-    digest = hashlib.blake2b(payload, digest_size=8).digest()
-    return int.from_bytes(digest, "little") & (2**63 - 1)
 
 
 def sample_grid_indices(
@@ -46,7 +38,7 @@ def sample_grid_indices(
         num_train_timesteps = int(ctx.scheduler.config.num_train_timesteps)
         components = [config.component_for_timestep(float(t), num_train_timesteps) for t in ctx.scheduler.timesteps]
         expert_generator = torch.Generator().manual_seed(
-            _seed("expert", int(ctx.args.seed), ctx.rollout_id, ctx.microbatch_id)
+            stable_hash("expert", int(ctx.args.seed), ctx.rollout_id, ctx.microbatch_id)
         )
         component_name = components[int(torch.randint(num_grid, (1,), generator=expert_generator))]
         model = ctx.models[component_name]
@@ -72,7 +64,7 @@ def prepare_sft_batch(
 
     x0 = torch.stack([pair["latent"] for pair in batch]).to(device=device, dtype=torch.float32)
     sample_generator = torch.Generator(device=device).manual_seed(
-        _seed("sample", int(ctx.args.seed), ctx.rollout_id, ctx.microbatch_id, ctx.dp_rank)
+        stable_hash("sample", int(ctx.args.seed), ctx.rollout_id, ctx.microbatch_id, ctx.dp_rank)
     )
     component_name, model, idx = sample_grid_indices(ctx, bsz, generator=sample_generator)
     timesteps = ctx.scheduler.timesteps[idx].to(dtype=torch.float32)
