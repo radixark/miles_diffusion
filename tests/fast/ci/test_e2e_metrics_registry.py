@@ -58,6 +58,24 @@ def test_strict_mismatch_fails_but_tolerance_passes(sandbox, monkeypatch):
     reg.check_or_update("test_foo.py", drifted, ["m"], tolerances={"m": {"atol": 1e-3}})
 
 
+def test_recorded_nan_matches_itself_but_not_a_number(sandbox, monkeypatch):
+    # fp16 runs emit grad_norm=nan on the step the scaler overflows its init scale.
+    nan_run = sandbox / "nan.jsonl"
+    finite_run = sandbox / "finite.jsonl"
+    _write_jsonl(nan_run, [{"step": 1, "m": float("nan")}, {"step": 2, "m": 0.25}])
+    _write_jsonl(finite_run, [{"step": 1, "m": 0.5}, {"step": 2, "m": 0.25}])
+    monkeypatch.setenv("MILES_E2E_METRICS_UPDATE", "1")
+    reg.check_or_update("test_foo.py", nan_run, ["m"])
+    monkeypatch.delenv("MILES_E2E_METRICS_UPDATE")
+    reg.check_or_update("test_foo.py", nan_run, ["m"])
+    # A run that stops overflowing is a real change, not a match.
+    with pytest.raises(AssertionError, match="strict"):
+        reg.check_or_update("test_foo.py", finite_run, ["m"])
+    # Nor does a tolerance let a number pass against a recorded NaN.
+    with pytest.raises(AssertionError, match="tol"):
+        reg.check_or_update("test_foo.py", finite_run, ["m"], tolerances={"m": {"atol": 1e9}})
+
+
 def test_series_shape_mismatches_fail(sandbox, monkeypatch):
     std = sandbox / "std.jsonl"
     _write_jsonl(std, [{"step": 1, "m": 0.5}, {"step": 2, "m": 0.25}])
