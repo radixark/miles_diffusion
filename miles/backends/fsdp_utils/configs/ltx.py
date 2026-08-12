@@ -15,7 +15,6 @@ from .train_pipeline_config import TrainPipelineConfig, register_train_pipeline_
 class LTXTrainPipelineConfig(TrainPipelineConfig):
     """LTX-2.3 video GRPO: unguided velocity forward over ltx_core."""
 
-    needs_timestep_scaling = False
     supports_cfg_training = False
     # Rollout stores σ×1000 in trajectory timesteps; ltx_core AdaLN uses σ∈[0,1].
     sde_timestep_divisor = 1000.0

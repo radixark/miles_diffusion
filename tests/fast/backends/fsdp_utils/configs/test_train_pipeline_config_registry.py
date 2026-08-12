@@ -107,3 +107,28 @@ class TestProcessTimestepAsInput:
         out = QwenImageTrainPipelineConfig.process_timestep_as_input(QwenImageTrainPipelineConfig, self.TIMESTEPS)
         # One division, like the rollout: any rewrite of the expression drifts ULPs.
         assert torch.equal(out, self.TIMESTEPS / 1000.0)
+
+
+class TestProcessSigmaAsTimestepsInput:
+    # The NFT counterpart: each family rescales the opposite way from above.
+    NUM_TRAIN_TIMESTEPS = 1000
+    # 0.8474... does not survive a multiply then divide by 1000 in fp32.
+    SIGMAS = torch.tensor([0.8474337458610535, 0.5])
+
+    @pytest.mark.parametrize("config_cls", [SD3TrainPipelineConfig, Wan2_2TrainPipelineConfig])
+    def test_scales_up_to_the_scheduler_range(self, config_cls):
+        out = config_cls.process_sigma_as_timesteps_input(
+            config_cls, self.SIGMAS, num_train_timesteps=self.NUM_TRAIN_TIMESTEPS
+        )
+        assert torch.equal(out, self.SIGMAS * float(self.NUM_TRAIN_TIMESTEPS))
+
+    def test_qwen_image_passes_the_sigma_through(self):
+        out = QwenImageTrainPipelineConfig.process_sigma_as_timesteps_input(
+            QwenImageTrainPipelineConfig, self.SIGMAS, num_train_timesteps=self.NUM_TRAIN_TIMESTEPS
+        )
+        assert torch.equal(out, self.SIGMAS)
+        # Asserted so the equal() above keeps its teeth.
+        round_tripped = QwenImageTrainPipelineConfig.process_timestep_as_input(
+            QwenImageTrainPipelineConfig, self.SIGMAS * float(self.NUM_TRAIN_TIMESTEPS)
+        )
+        assert not torch.equal(round_tripped, self.SIGMAS)
