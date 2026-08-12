@@ -134,18 +134,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
-                "--fsdp-frozen-params-dtype",
-                type=str,
-                default=None,
-                choices=["bf16", "fp16"],
-                help=(
-                    "Storage dtype for frozen (non-LoRA) parameters. The model is "
-                    "loaded at this dtype and only LoRA parameters are upcast to "
-                    "--fsdp-master-dtype, so a large frozen base does not pay the "
-                    "fp32 master cost. Requires --use-lora."
-                ),
-            )
-            parser.add_argument(
                 "--fsdp-reduce-dtype",
                 type=str,
                 default="fp32",

@@ -67,7 +67,6 @@ fi
   --train-backend fsdp \
   --rollout-function-path miles.rollout.sglang_diffusion_rollout.generate_rollout \
   --hf-checkpoint nvidia/Cosmos3-Nano \
-  --diffusion-model nvidia/Cosmos3-Nano \
   --prompt-data "${DATASETS_DIR}/flowgrpo_pickscore/train.jsonl" \
   --input-key input \
   --rollout-batch-size 48 \

@@ -95,11 +95,6 @@ class FSDPTrainRayActor(TrainRayActor):
 
         self._master_dtype = parse_dtype_from_str(args.fsdp_master_dtype)
         self._forward_dtype = parse_dtype_from_str(args.diffusion_forward_dtype)
-        self._frozen_dtype = (
-            parse_dtype_from_str(args.fsdp_frozen_params_dtype) if args.fsdp_frozen_params_dtype else None
-        )
-        if self._frozen_dtype is not None and not args.use_lora:
-            raise ValueError("--fsdp-frozen-params-dtype requires --use-lora")
 
         from miles.utils.misc import load_function
 
@@ -120,7 +115,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 model = self.model_backend.load_component(
                     component,
                     args,
-                    master_dtype=self._frozen_dtype or self._master_dtype,
+                    master_dtype=self._master_dtype,
                     materialize_weights=materialize_weights,
                 )
             if args.fsdp_attention_backend is not None:
@@ -134,12 +129,6 @@ class FSDPTrainRayActor(TrainRayActor):
 
             if args.use_lora:
                 model = apply_lora(model, args, self.train_pipeline_config)
-                if self._frozen_dtype is not None:
-                    # Base stays at the (checkpoint-native) frozen dtype; only
-                    # LoRA params get a true master copy for the optimizer.
-                    for pname, p in model.named_parameters():
-                        if "lora_" in pname:
-                            p.data = p.data.to(self._master_dtype)
 
             model.train()
 
