@@ -184,7 +184,7 @@ class SGLangDiffusionEngine(RayActor):
         os.environ["CUDA_VISIBLE_DEVICES"] = pinned
         logger.info(
             f"Engine rank={self.rank}: pinned CUDA_VISIBLE_DEVICES={pinned} "
-            f"(base_gpu_id={self.base_gpu_id}, span={span})"
+            f"(base_gpu_id={self.base_gpu_id}, local_idx={local_idx})"
         )
 
     def _make_request(self, endpoint: str, payload: dict | None = None):
