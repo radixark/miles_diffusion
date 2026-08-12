@@ -12,8 +12,7 @@ from .train_pipeline_config import TrainPipelineConfig, register_train_pipeline_
 # Cosmos3 reuses the Wan2.2 VAE (4x temporal compression).
 _VAE_TEMPORAL_FACTOR = 4
 
-# GEN-tower parameter name fragments (diffusers Cosmos3OmniTransformer layout).
-# Everything else — UND tower, lm_head, unused sound/action heads — stays frozen.
+# GEN-tower param name fragments; everything else (UND tower, lm_head, unused heads) stays frozen.
 _GEN_PARAM_FRAGMENTS = (
     ".add_q_proj.",
     ".add_k_proj.",
@@ -39,16 +38,9 @@ def _is_gen_param(name: str) -> bool:
 @register_train_pipeline_config("cosmos3")
 class Cosmos3TrainPipelineConfig(TrainPipelineConfig):
     hf_ckpt_name_patterns = ("cosmos3", "cosmos-3")
-    # process_timestep_as_input: base identity — the DiT takes the raw
-    # trajectory timestep and scales by config.timestep_scale internally.
-    # Timesteps stay fp32: the karras flow grid is non-integer and sgl-d
-    # conditions on exact fp32 values (bf16 rounds 993.25 -> 992). Conds pass
-    # through — the packed forward casts its own inputs (mRoPE position ids
-    # sit at ~15000, where bf16 spacing is 128; a boundary cast scrambles
-    # rotary phases).
+    # Timesteps stay fp32 (bf16 rounds the karras grid); conds pass through, the packed forward casts its own inputs.
     input_dtype_policy = {"latents": "default", "cond": None, "timestep": "fp32"}
-    # The packed forward is single-sample by construction (compute_noise_pred
-    # asserts it); never batch the CFG branches.
+    # The packed forward is single-sample; never batch the CFG branches.
     cfg_batching = False
     lora_target_modules = ["add_q_proj", "add_k_proj", "add_v_proj", "to_add_out"]
 
@@ -110,9 +102,7 @@ class Cosmos3TrainPipelineConfig(TrainPipelineConfig):
         cond: dict,
         config,
     ) -> torch.Tensor:
-        """One (text, video) joint-sequence forward; mirrors the packing in
-        diffusers' Cosmos3OmniDiffusersPipeline denoising loop (T2V/T2I: all
-        frames noisy, no conditioning frames)."""
+        """One packed (text, video) forward mirroring the diffusers denoising loop (T2V/T2I: all frames noisy)."""
         from diffusers.pipelines.cosmos.pipeline_cosmos3_omni import (
             get_3d_mrope_ids_text_tokens,
             get_3d_mrope_ids_vae_tokens,
@@ -174,15 +164,12 @@ class Cosmos3TrainPipelineConfig(TrainPipelineConfig):
         return noise_pred_neg + scale * (noise_pred_pos - noise_pred_neg)
 
     def postprocess_model_after_materialize(self, model: torch.nn.Module) -> None:
-        # The UND tower sits inside the training forward graph (paired
-        # attention), so gradients reach it unless explicitly frozen.
+        # The UND tower sits inside the training graph, so it must be explicitly frozen.
         for name, param in model.named_parameters():
             if "lora_" not in name and not _is_gen_param(name):
                 param.requires_grad_(False)
 
-        # sglang-d casts the fp32 timestep sinusoid to the MLP weight dtype
-        # before linear_1; diffusers feeds it through as-is, which crashes on
-        # the fp32/bf16 mismatch under FSDP mixed precision.
+        # Cast the timestep sinusoid to the MLP weight dtype before linear_1, exactly as sglang-d does.
         def _cast_to_weight_dtype(module, args):
             dtype = module.linear_1.weight.dtype
             return tuple(a.to(dtype) if torch.is_tensor(a) else a for a in args)
