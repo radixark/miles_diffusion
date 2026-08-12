@@ -273,6 +273,13 @@ class DiffusionUpdateWeightFromTensor(DiffusionUpdateWeight):
         else:
             gathered_batches = None
 
+        # DEBUG(gpu-pairing): the engine side already names its own GPU when the lookup fails;
+        # this is the other half -- which rank contributed which UUID, and where it was sent.
+        logger.warning(
+            f"[gpu-pairing] rank={dist.get_rank()} uuid={get_physical_gpu_id()} "
+            f"gather_src={self._ipc_gather_src} group_size={dist.get_world_size(self._ipc_gather_group)}"
+        )
+
         dist.gather_object(
             obj=(get_physical_gpu_id(), serialized_tensors),
             object_gather_list=gathered_batches,

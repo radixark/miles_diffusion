@@ -1,4 +1,5 @@
 import logging
+import os
 import socket
 
 import ray
@@ -73,6 +74,14 @@ def _create_placement_group(num_gpus):
         logger.info(
             f"  bundle {i:4}, actual_bundle_index: {actual_bundle_index:4}, "
             f"node: {gpu_ids[actual_bundle_index][0]}, gpu: {gpu_ids[actual_bundle_index][1]}"
+        )
+        # DEBUG(gpu-pairing): print, not logger -- this runs in the ray job driver, whose
+        # logger is not configured at INFO, so the map above never reaches the CI log.
+        print(
+            f"[gpu-pairing] logical={i} bundle={actual_bundle_index} "
+            f"node={gpu_ids[actual_bundle_index][0]} ray_gpu_id={gpu_ids[actual_bundle_index][1]!r} "
+            f"driver_cvd={os.environ.get('CUDA_VISIBLE_DEVICES')!r}",
+            flush=True,
         )
 
     return pg, pg_reordered_bundle_indices, pg_reordered_gpu_ids

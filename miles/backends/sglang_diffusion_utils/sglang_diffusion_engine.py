@@ -170,22 +170,28 @@ class SGLangDiffusionEngine(RayActor):
                 logger.warning("Skipping router add_worker: only miles_router is supported for now")
 
     def _pin_to_assigned_gpu(self):
-        if self.base_gpu_id is None:
-            return
+        # DEBUG(gpu-pairing): every branch reports, via print. This module's logger emits
+        # nothing in a ray actor -- `Launch HttpServerEngineAdapter` one frame up is absent from
+        # the job log too, while rollout.py's logger.info comes through -- so a logging call here
+        # proves nothing either way about which branch ran. No torch.cuda: touching it would
+        # initialise CUDA before sglang does.
         span = self.args.rollout_num_gpus_per_engine
         cvd = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+        prefix = f"[gpu-pairing] engine rank={self.rank} base_gpu_id={self.base_gpu_id} inherited_cvd={cvd!r}"
+        if self.base_gpu_id is None:
+            print(f"{prefix} -> NO PIN (base_gpu_id is None); engine keeps the ambient device", flush=True)
+            return
         if not cvd:
             # No ambient device list (full-node multi-node ray start): pin to the physical GPUs.
-            os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(str(self.base_gpu_id + i) for i in range(span))
+            pinned = ",".join(str(self.base_gpu_id + i) for i in range(span))
+            os.environ["CUDA_VISIBLE_DEVICES"] = pinned
+            print(f"{prefix} -> pinned={pinned!r} (empty-cvd path, base_gpu_id as a physical id)", flush=True)
             return
         visible = [x.strip() for x in cvd.split(",") if x.strip()]
         local_idx = _to_local_gpu_id(self.base_gpu_id)
         pinned = ",".join(visible[local_idx : local_idx + span])
         os.environ["CUDA_VISIBLE_DEVICES"] = pinned
-        logger.info(
-            f"Engine rank={self.rank}: pinned CUDA_VISIBLE_DEVICES={pinned} "
-            f"(base_gpu_id={self.base_gpu_id}, local_idx={local_idx})"
-        )
+        print(f"{prefix} -> pinned={pinned!r} (translated path, local_idx={local_idx})", flush=True)
 
     def _make_request(self, endpoint: str, payload: dict | None = None):
         """Make a POST request to the specified endpoint with the given payload.
