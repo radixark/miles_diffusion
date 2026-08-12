@@ -15,6 +15,8 @@ from torch.distributed.tensor import DTensor
 
 _orig_split_seqs = qwen_image_mod.split_seqs
 _orig_set_lora_weights = lora_linear.BaseLayerWithLoRA.set_lora_weights
+_orig_column_parallel_lora_forward = lora_linear.ColumnParallelLinearWithLoRA.forward
+_orig_row_parallel_lora_forward = lora_linear.RowParallelLinearWithLoRA.forward
 
 
 def _rmsnorm_forward(self, x: torch.Tensor, residual: torch.Tensor | None = None):
@@ -155,6 +157,22 @@ def _lora_nn_linear_forward(self, x: torch.Tensor):
     return out
 
 
+def _lora_column_parallel_forward(self, x: torch.Tensor):
+    # The PEFT-ordered path adds the rank-local delta after base_layer() has already
+    # all-gathered (gather_output=True), so it only holds at tp_size==1; bitwise parity
+    # is unattainable under TP anyway, so fall back to the native TP-aware forward.
+    if self.base_layer.tp_size > 1:
+        return _orig_column_parallel_lora_forward(self, x)
+    return _lora_base_forward(self, x)
+
+
+def _lora_row_parallel_forward(self, x: torch.Tensor):
+    # Same constraint: base_layer() all-reduces before the rank-local delta is added.
+    if self.base_layer.tp_size > 1:
+        return _orig_row_parallel_lora_forward(self, x)
+    return _lora_base_forward(self, x)
+
+
 def _set_lora_weights_unmerged(self, *args, **kwargs):
     # Merging W' = W + scaling*(B@A) in bf16 rounds differently from PEFT's unmerged path.
     kwargs["merge_weights"] = False
@@ -170,7 +188,7 @@ def apply() -> None:
     qwen_image_mod.apply_qk_norm_with_optional_rope = _qk_norm_rope
     qwen_image_mod.split_seqs = _contiguous_split_seqs
     lora_linear.BaseLayerWithLoRA.forward = _lora_base_forward
-    lora_linear.RowParallelLinearWithLoRA.forward = _lora_base_forward
-    lora_linear.ColumnParallelLinearWithLoRA.forward = _lora_base_forward
+    lora_linear.RowParallelLinearWithLoRA.forward = _lora_row_parallel_forward
+    lora_linear.ColumnParallelLinearWithLoRA.forward = _lora_column_parallel_forward
     lora_linear.LinearWithLoRA.forward = _lora_nn_linear_forward
     lora_linear.BaseLayerWithLoRA.set_lora_weights = _set_lora_weights_unmerged
