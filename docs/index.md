@@ -63,7 +63,7 @@ Each model name links to its recipe page.
 | Flow-GRPO (`policy_loss`)                | ✅     | ✅          | ✅      | ✅       | ✅       |
 | DiffusionNFT (`nft`)                     | ✅     | 🟡         | 🟡     | 🟡      | 🟡      |
 | SFT (`sft_loss`, `--train-only`)         | 🟡    | 🟡         | ✅      | 🟡      | 🟡      |
-| LoRA + IPC weight sync                   | ✅     | ✅          | ✅      | ✅    | ✅       |
+| LoRA + IPC weight sync                   | ✅     | ✅          | ✅      | 🟡    | ✅       |
 | Single-prompt multi-gen (microgroup > 1) | ✅     | ✅          | ✅      | ❌       | ❌      |
 | USP sequence parallelism                 | ❌     | ❌          | ✅    | ❌       | ❌       |
 | Deterministic mode                       | ✅     | ✅          | ❌      | ✅       | ❌       |
@@ -74,7 +74,7 @@ Each model name links to its recipe page.
 
 1. **[Installation](/getting-started/installation)** — Docker image, pinned dependency versions, bare-metal setup.
 2. **[Quick Start](/getting-started/quick-start)** — a working Flow-GRPO run on SD3.5 with 2 GPUs.
-3. **[Core Concepts](/user-guide/concepts)** — the five objects in every miles-diffusion job and the loop that connects
+3. **[Core Concepts](/user-guide/concepts)** — the four objects in every miles-diffusion job and the loop that connects
    them.
 4. **[Training Script Walkthrough](/user-guide/training-script-walkthrough)** — every argument group in a launch script,
    annotated.

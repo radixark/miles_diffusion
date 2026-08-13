@@ -53,8 +53,9 @@ Every flag in miles-diffusion configures one of these four phases.
 In miles-diffusion a sample is a whole denoising **trajectory**, and the fan-out continues below it: a step strategy
 picks the trained timesteps, and micro-batching counts **(x_t → x_{t+1}) pairs**. One equation per level.
 
-**Trajectory level** — the four-knob invariant, enforced in `miles/utils/arguments.py`. Set any three; the fourth is
-derived, and contradictions abort:
+**Trajectory level** — the four-knob invariant, enforced in `miles/utils/arguments.py`. `rollout_batch_size` is
+required and `n_samples_per_prompt` defaults to 1; of the right-hand pair, set one and the other is derived
+(passing both with contradicting values aborts):
 
 ```bash
 rollout_batch_size × n_samples_per_prompt
@@ -75,7 +76,7 @@ Two independent knobs control physical batching, one per side of the loop:
 
 | Knob                          | Side     | Governs                         |
 | ----------------------------- | -------- | ------------------------------- |
-| `--diffusion-microgroup-size` | rollout  | Samples per engine **request**  |
+| `--rollout-microgroup-size` | rollout  | Samples per engine **request**  |
 | `--micro-batch-size`          | training | Train pairs per DiT **forward** |
 
 And one knob controls the trajectory→pair fan-out itself: `--diffusion-step-strategy-path` picks the SDE step subset per

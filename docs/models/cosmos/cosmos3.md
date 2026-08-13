@@ -18,7 +18,7 @@ everything below applies family-wide; the canonical recipes are validated on **C
   parameter-name fragments rather than dropped; LoRA targets are GEN attention only (`add_q_proj`, `add_k_proj`,
   `add_v_proj`, `to_add_out`).
 - **Packed single-sample forward.** The transformer consumes one packed text+vision sequence per forward — one request
-  cannot batch multiple outputs, so recipes run `--diffusion-microgroup-size 1` and CFG batching is disabled by
+  cannot batch multiple outputs, so recipes run `--rollout-microgroup-size 1` and CFG batching is disabled by
   construction.
 - **Karras flow-sigma grid.** Checkpoints ship a non-uniform sigma grid; SDE candidate steps must be derived from it.
 
@@ -55,12 +55,12 @@ From `miles/backends/fsdp_utils/configs/cosmos3.py`:
 
 ## 4. Launch
 
-Canonical recipe: `scripts/run-diffusion-grpo-cosmos3-pickscore-t2i-5gpu.sh` — 4 colocate + 1 reward GPU, T2I (832×480,
+Canonical recipe: `scripts/run_diffusion_grpo_cosmos3_pickscore_t2i_5gpu.py` — 4 colocate + 1 reward GPU, T2I (832×480,
 1 frame), PickScore reward.
 
 ```bash
 export SGLANG_DISABLE_COSMOS3_GUARDRAILS=1   # RL scores raw samples; skip serving-side guardrail models
-bash scripts/run-diffusion-grpo-cosmos3-pickscore-t2i-5gpu.sh
+python3 scripts/run_diffusion_grpo_cosmos3_pickscore_t2i_5gpu.py
 ```
 
 

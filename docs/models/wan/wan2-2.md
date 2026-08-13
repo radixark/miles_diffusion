@@ -62,7 +62,7 @@ MILES_SCRIPT_DATA_JSONL=/abs/data.jsonl python3 scripts/run_diffusion_sft_wan22.
 ## 5. Pairs well with
 
 - [Single-Prompt Multi-Generation](/advanced/single-prompt-multi-gen) — the microgroup mechanics behind
-  `--diffusion-microgroup-size 8`.
+  `--rollout-microgroup-size 8`.
 - [LoRA Training and Weight Sync](/advanced/lora) — IPC merge used by the GRPO recipe.
 - [SDE Step Backend](/advanced/sde-backend) — how the trained SDE step is scored train-side.
 - [Rewards](/user-guide/rewards) — PickScore worker pool configuration.
