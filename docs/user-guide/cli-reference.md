@@ -65,9 +65,7 @@ do not.
 | `--num-rollout` | from dataset | Total rollout iterations. |
 | `--num-epoch` | – | Alternative to `--num-rollout`; ignored if both are set. |
 
-`global_batch_size` counts samples; the micro-batch knobs count train pairs (one sample yields
-one pair per trained denoising step). The four trajectory-level knobs are locked by one
-invariant, checked at parse time — see
+To check how these batch-related arguments interact and related to each other — see
 [the batch-knob invariant](/user-guide/concepts#the-batch-knob-invariant).
 
 ### Diffusion sampling
