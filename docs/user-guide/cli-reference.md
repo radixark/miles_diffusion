@@ -50,15 +50,9 @@ do not.
 | `--rollout-num-gpus` | – | GPUs for rollout-side work. Forced to the train world size under `--colocate`. |
 | `--rollout-num-gpus-per-engine` | `1` | GPUs per sglang-d engine (its TP × SP). |
 | `--num-gpus-per-node` | `8` | Total GPUs the job may use per node. **Set this when using fewer than 8.** |
-| `--colocate` | off | Time-share GPUs between trainer and engines; forces `--offload-train` and `--offload-rollout` on. **Effectively required for RL** — the only weight-sync transport is CUDA IPC over shared GPUs. Every GRPO recipe sets it; only `--debug-rollout-only` / train-only SFT run without. |
+| `--colocate` | on | Time-share GPUs between trainer and engines; forces `--offload-train` and `--offload-rollout` on. **Effectively required for RL** — the only weight-sync transport is CUDA IPC over shared GPUs. Every GRPO recipe sets it; only `--debug-rollout-only` / train-only SFT run without. |
 
 ### Batch sizing
-
-One identity, checked at parse time — pass **one** of the two, never both:
-
-```
-global_batch_size = rollout_batch_size × n_samples_per_prompt ÷ num_steps_per_rollout
-```
 
 | Flag | Default | What |
 |---|---|---|
@@ -72,8 +66,9 @@ global_batch_size = rollout_batch_size × n_samples_per_prompt ÷ num_steps_per_
 | `--num-epoch` | – | Alternative to `--num-rollout`; ignored if both are set. |
 
 `global_batch_size` counts samples; the micro-batch knobs count train pairs (one sample yields
-one pair per trained denoising step). See
-[the arithmetic](/user-guide/launch-script#the-batch-size-arithmetic).
+one pair per trained denoising step). The four trajectory-level knobs are locked by one
+invariant, checked at parse time — see
+[the batch-knob invariant](/user-guide/concepts#the-batch-knob-invariant).
 
 ### Diffusion sampling
 
@@ -123,7 +118,7 @@ See [Dtype Control](/advanced/dtype-control).
 | `--rollout-num-gpus` | int | – | For train-only SFT, unset colocates encoders with training; set it to reserve dedicated encoder GPUs. |
 | `--rollout-num-gpus-per-engine` | int | `1` | Like sglang's `tp_size`. |
 | `--num-gpus-per-node` | int | `8` | |
-| `--colocate` | flag | off | Also sets `--offload`. Effectively required for RL: weight sync is CUDA-IPC-only and assumes trainer and engines share GPU ids. Non-colocate layouts exist only for `--debug-rollout-only` and train-only SFT. |
+| `--colocate` | flag | on | Also sets `--offload`. Effectively required for RL: weight sync is CUDA-IPC-only and assumes trainer and engines share GPU ids. Non-colocate layouts exist only for `--debug-rollout-only` and train-only SFT. |
 | `--offload` | flag | off | `--offload-train` + `--offload-rollout`. |
 | `--offload-train` / `--no-offload-train` | tri-state | – | Always on under `--colocate`. |
 | `--offload-rollout` / `--no-offload-rollout` | tri-state | – | Always on under `--colocate`. |

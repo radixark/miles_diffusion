@@ -133,11 +133,11 @@ one per trained denoising step.
 ```
 samples per rollout   = rollout_batch_size × n_samples_per_prompt
 train pairs           = samples × (number of SDE step indices)
-global_batch_size     = rollout_batch_size × n_samples_per_prompt ÷ num_steps_per_rollout
 ```
 
-Pass **one** of `--global-batch-size` / `--num-steps-per-rollout`; both with inconsistent values
-is a parse-time error. `global_batch_size` counts samples and must divide by `dp_size`
+The trajectory-level knobs are locked by
+[the batch-knob invariant](/user-guide/concepts#the-batch-knob-invariant); contradictory values
+abort at parse time. `global_batch_size` counts samples and must divide by `dp_size`
 (= train world size ÷ `--sequence-parallel-size`).
 
 | Knob | Unit | Meaning |
