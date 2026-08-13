@@ -11,12 +11,8 @@ Use Docker unless you have a reason not to.
 
 ## Method 1: Docker (recommended)
 
-<Warning>
-
 The image is still **experimental** and there is no published release tag yet
 (`docker/README.md`: *Release rule — TBD*). Build it yourself from `docker/Dockerfile`.
-
-</Warning>
 
 ### Build
 
@@ -87,14 +83,10 @@ pip install -e . --no-deps
 Requires **Python ≥ 3.12**. `requirements.txt` pins `torch==2.11.0`, `diffusers==0.38.0`,
 `transformers==5.5.4`, `peft==0.18.1`, and `ray==2.53.0`, among others.
 
-<Warning>
-
 `pip install -r requirements.txt` does **not** give you a rollout engine. You additionally need
 sglang built from `main` with the `sglang.multimodal_gen` package, plus FlashAttention-3 and
 `torch_memory_saver`. `docker/Dockerfile` is the authoritative recipe for that half — read it
 before assembling an environment by hand.
-
-</Warning>
 
 ## Verify
 
@@ -144,6 +136,6 @@ so the floor is set by whichever of the two needs more memory, not by their sum.
 
 ## Next
 
-- [Training Script Walkthrough](/user-guide/training-script-walkthrough) — what the launch scripts
-  actually pass, group by group.
+- [Launch Scripts](/user-guide/launch-script) — what a launch script does and how to override a
+  recipe.
 - [CLI Reference](/user-guide/cli-reference) — every flag.

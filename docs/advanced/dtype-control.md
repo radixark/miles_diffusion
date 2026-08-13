@@ -1,21 +1,21 @@
 ---
-title: Dtype Control
-description: The three dtype knobs, the model-boundary cast policy, and per-parameter dtype overrides under FSDP2.
----
-Diffusion RL is unusually sensitive to precision. The PPO ratio is
-`exp(log_prob_new − log_prob_old)`, where `log_prob_old` came from the **rollout engine** and
-`log_prob_new` from the **trainer**. Any numeric difference between the two forwards shows up as a
-ratio drifting off 1.0 — an update signal made of nothing but rounding.
 
-miles-diffusion therefore separates precision into three layers, each with its own control.
+## title: Dtype Control
+
+description: The three dtype knobs, the model-boundary cast policy, and per-parameter dtype overrides under FSDP2.
+
+Diffusion RL is unusually sensitive to precision. The PPO ratio is
+`exp(log_prob_new − log_prob_old)`, where `log_prob_old` came from the **rollout engine** (without recompute flag) and `log_prob_new` from the **trainer**. Any numeric difference between the two forwards shows up as a ratio drifting off 1.0 — an update signal made of nothing but rounding.
 
 ## 1. The three flags
 
-| Flag | Default | Applies to |
-|---|---|---|
-| `--fsdp-master-dtype` | `fp32` | The FSDP-sharded master copy: load dtype, shard dtype, optimizer state. |
-| `--fsdp-reduce-dtype` | `fp32` | `MixedPrecisionPolicy.reduce_dtype` — the gradient reduce-scatter. |
-| `--diffusion-forward-dtype` | `bf16` | The DiT forward compute. |
+
+| Flag                        | Default | Applies to                                                              |
+| --------------------------- | ------- | ----------------------------------------------------------------------- |
+| `--fsdp-master-dtype`       | `fp32`  | The FSDP-sharded master copy: load dtype, shard dtype, optimizer state. |
+| `--fsdp-reduce-dtype`       | `fp32`  | `MixedPrecisionPolicy.reduce_dtype` — the gradient reduce-scatter.      |
+| `--diffusion-forward-dtype` | `bf16`  | The DiT forward compute.                                                |
+
 
 `--fsdp-master-dtype fp32` with a lower `--diffusion-forward-dtype` is ordinary mixed-precision
 training. Setting both to `bf16` (as the LTX-2 recipe does) is a deliberate choice to match a
@@ -27,7 +27,7 @@ runs on different rank counts will not agree.
 
 ### `--diffusion-forward-dtype` is used three times
 
-This is the flag that matters most, because one value is applied in three separate places:
+This is the flag that matters most — one value is applied in three places:
 
 1. the **sglang-d rollout engine**'s forward,
 2. FSDP's `MixedPrecisionPolicy.param_dtype` on the training side,
@@ -35,12 +35,6 @@ This is the flag that matters most, because one value is applied in three separa
 
 All three at one value is what makes `log_prob_new` comparable to `log_prob_old`. Split them and
 the ratio drifts.
-
-### fp16 needs the grad scaler
-
-fp16 policy gradients are small enough to underflow. The actor always constructs a
-`ShardedGradScaler`, enabled only when the forward dtype is fp16, which keeps the `found_inf`
-decision synchronized across FSDP ranks. It is a no-op for bf16 and fp32 — nothing to configure.
 
 ## 2. The model-boundary cast policy
 
@@ -55,11 +49,13 @@ Each family therefore declares an `input_dtype_policy` over three boundary input
 input_dtype_policy = {"latents": ..., "cond": ..., "timestep": ...}
 ```
 
-| Value | Meaning |
-|---|---|
-| `"default"` | Cast to the run's `--diffusion-forward-dtype`. |
-| `"fp32"` / `"bf16"` / `"fp16"` | Cast to that dtype specifically. |
-| `None` | Passthrough — keep whatever dtype rollout handed us. |
+
+| Value                          | Meaning                                              |
+| ------------------------------ | ---------------------------------------------------- |
+| `"default"`                    | Cast to the run's `--diffusion-forward-dtype`.       |
+| `"fp32"` / `"bf16"` / `"fp16"` | Cast to that dtype specifically.                     |
+| `None`                         | Passthrough — keep whatever dtype rollout handed us. |
+
 
 The base class defaults to passthrough on all three, so families opt into casts explicitly. LTX-2
 is the current example:
@@ -104,13 +100,12 @@ FSDP_PARALLEL_PLAN = FSDPParallelPlan(
 Semantics:
 
 - Patterns apply **in declaration order**, and a later pattern overrides an earlier one — a narrow
-  rule can carve a parameter back out of a broad one.
+rule can carve a parameter back out of a broad one.
 - A pattern matching **nothing** is an error, not a no-op. Rules do not rot silently when a model
-  is renamed.
-- An assignment equal to the group default compiles to nothing (which is also how a carve-out
-  works).
+is renamed.
+- An assignment equal to the group default compiles to nothing
 
-SD3 and Qwen-Image declare an empty plan; only Wan2.2 currently needs overrides.
+
 
 ### How it is compiled
 
@@ -136,13 +131,9 @@ When any override exists, the actor swaps in `ParamDtypeMixedPrecisionPolicy` (a
 `MixedPrecisionPolicy` with an extra `param_dtype_map`) and applies
 `apply_param_dtype_map_patch()`.
 
-<Warning>
-
-The patch is **version-gated on `torch==2.11.0`** and raises on any other version. This is
+The patch is **version-gated on** `torch==2.11.0` and raises on any other version. This is
 deliberate: it reaches into FSDP2 internals, and silently running against a different torch would
 be worse than failing. `requirements.txt` pins the matching torch.
-
-</Warning>
 
 Wraps with no overrides get a plain `MixedPrecisionPolicy` and never touch the patched path.
 
@@ -160,7 +151,7 @@ If that count is zero when you expected overrides, your patterns did not match.
 
 ## 4. Verifying the result
 
-Precision work is only real if you can measure it. Run with:
+To measure any of this, run with:
 
 ```bash
 --diffusion-debug-mode --debug-skip-optimizer-step
@@ -169,13 +160,15 @@ Precision work is only real if you can measure it. Run with:
 The engine then returns per-step debug tensors and the trainer never updates weights, so any
 divergence is pure forward-path difference. Watch these metrics:
 
-| Metric | What it tells you |
-|---|---|
-| `train/model_output_mean_abs_diff` | Average trainer-vs-rollout `noise_pred` gap. |
-| `train/model_output_max_abs_diff` | Worst element. |
-| `train/model_output_rel_max` | The worst element relative to the rollout output's scale. |
-| `train/log_prob_mean_abs_diff` | The gap that actually feeds the PPO ratio. |
-| `train/ratio_abs_minus_1` | How far the ratio sits from 1.0 in a live run. |
+
+| Metric                             | What it tells you                                         |
+| ---------------------------------- | --------------------------------------------------------- |
+| `train/model_output_mean_abs_diff` | Average trainer-vs-rollout `noise_pred` gap.              |
+| `train/model_output_max_abs_diff`  | Worst element.                                            |
+| `train/model_output_rel_max`       | The worst element relative to the rollout output's scale. |
+| `train/log_prob_mean_abs_diff`     | The gap that actually feeds the PPO ratio.                |
+| `train/ratio_abs_minus_1`          | How far the ratio sits from 1.0 in a live run.            |
+
 
 For a sense of scale: the Qwen-Image RoPE cache bug — CPU-built vs CUDA-built frequency tables
 differing by fp32 ULPs — produced a frozen-weight `noise_pred` mean |Δ| of about **2e-2**. Small
@@ -183,9 +176,12 @@ absolute numbers here are not automatically fine; compare against a known-good r
 
 ## 5. Related knobs
 
-| Flag | Why it matters for precision |
-|---|---|
-| `--rollout-patch-group sgld` | Engine-side op-parity patches (RMSNorm, LayerNormScaleShift, MulAdd, QK-norm RoPE). Costs rollout throughput, buys forward agreement. |
-| `--fsdp-attention-backend` / `--sglang-attention-backend` | Different attention kernels give different results at the same dtype. Match them. |
-| `--deterministic-mode` | Removes run-to-run nondeterminism so a dtype change is the only variable. See [Deterministic Training](/advanced/deterministic). |
-| `--diffusion-recompute-old-log-prob` | Sidesteps the question: recompute `log_prob_old` with the trainer's own forward, making the ratio implementation-consistent by construction. |
+
+| Flag                                                      | Why it matters for precision                                                                                                                 |
+| --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--rollout-patch-group sgld`                              | Engine-side op-parity patches (RMSNorm, LayerNormScaleShift, MulAdd, QK-norm RoPE). Costs rollout throughput, buys forward agreement.        |
+| `--fsdp-attention-backend` / `--sglang-attention-backend` | Different attention kernels give different results at the same dtype. Match them.                                                            |
+| `--deterministic-mode`                                    | Removes run-to-run nondeterminism so a dtype change is the only variable. See [Deterministic Training](/advanced/deterministic).             |
+| `--diffusion-recompute-old-log-prob`                      | Sidesteps the question: recompute `log_prob_old` with the trainer's own forward, making the ratio implementation-consistent by construction. |
+
+
