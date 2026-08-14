@@ -61,6 +61,7 @@ def execute_train(
 
     exec_command(
         "pkill -9 sglang; "
+        "pkill -9 sgl_diffusion; "
         "sleep 3; "
         f"{'' if external_ray else 'ray stop --force; '}"
         f"{'' if external_ray else 'pkill -9 ray; '}"

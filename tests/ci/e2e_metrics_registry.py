@@ -71,7 +71,8 @@ def _cleanup_gpu_state() -> None:
     """Kill ray/sglang leftovers from a previous test in this job and wait for
     GPU memory to drain (engines take minutes to die after their driver exits)."""
     subprocess.run(
-        "pkill -9 -f 'ray::'; pkill -9 -f raylet; pkill -9 -f gcs_server; pkill -9 -f sgl_diffusion; ray stop --force; true",
+        "pkill -9 -f 'ray::'; pkill -9 -f raylet; pkill -9 -f gcs_server; "
+        "pkill -9 sglang; pkill -9 sgl_diffusion; ray stop --force; true",
         shell=True,
         capture_output=True,
     )
