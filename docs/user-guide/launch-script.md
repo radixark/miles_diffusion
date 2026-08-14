@@ -121,9 +121,9 @@ drives them the same way you do.
 
 | Env var | Effect |
 |---|---|
-| `MILES_SCRIPT_EXTERNAL_RAY=1` | A scheduler (Slurm, k8s) already built the cluster: skip the teardown and `ray start`, only submit |
+| `MILES_SCRIPT_EXTERNAL_RAY=1` | A scheduler already built the Ray cluster: skip the teardown and `ray start`, only submit. Inherited from the miles launcher — every shipped diffusion recipe is single-node, so no recipe exercises this path yet. |
 | `MILES_SCRIPT_ENABLE_RAY_SUBMIT=0` | Run everything except the submission — shows what a launcher would do |
-| `MASTER_ADDR` | Head-node address, default `127.0.0.1`; export it on multi-node runs |
+| `MASTER_ADDR` | Head-node address, default `127.0.0.1` |
 
 ## The batch-size arithmetic
 

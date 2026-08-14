@@ -11,22 +11,21 @@ Use Docker unless you have a reason not to.
 
 ## Method 1: Docker (recommended)
 
-The image is still **experimental** and there is no published release tag yet
-(`docker/README.md`: *Release rule — TBD*). Build it yourself from `docker/Dockerfile`.
+```bash
+docker pull rockdu/miles_diffusion:latest
+```
 
-### Build
+`latest` tracks sglang main and is rebuilt every few days; dated tags
+(`dev-cu129-sglang-main-YYYYMMDD`) pin a specific build. CUDA 12.9 is the only supported
+build — the Dockerfile carries a CUDA 13 recipe in a comment, but its `sglang-kernel` pin is
+hardcoded to cu129 and no CI covers it.
+
+### Build it yourself
 
 ```bash
 git clone https://github.com/radixark/miles_diffusion.git
 cd miles_diffusion
-
-# CUDA 12.9 (default)
 docker build -f docker/Dockerfile -t miles-diffusion:$(cat docker/version.txt) .
-
-# CUDA 13.0
-docker build -f docker/Dockerfile -t miles-diffusion:$(cat docker/version-cu13.txt) \
-  --build-arg SGLANG_IMAGE_TAG=v0.5.14-cu130 \
-  --build-arg FA3_WHEELS_TAG=cu130-x86_64 .
 ```
 
 Useful build args:
@@ -48,7 +47,7 @@ docker run --rm \
   --network=host \
   -v /your/datasets:/root/datasets \
   -e HF_TOKEN=$HF_TOKEN \
-  -it miles-diffusion:<tag> /bin/bash
+  -it rockdu/miles_diffusion:latest /bin/bash
 ```
 
 The image ships with:
@@ -65,28 +64,61 @@ The image ships with:
 To run your own working tree instead of the baked copy, bind-mount it and reinstall:
 
 ```bash
-docker run ... -v $PWD:/root/miles_diffusion -it miles-diffusion:<tag> /bin/bash
+docker run ... -v $PWD:/root/miles_diffusion -it rockdu/miles_diffusion:latest /bin/bash
 cd /root/miles_diffusion && pip install -e . --no-deps
 ```
 
-## Method 2: From source
+## Method 2: Update an existing container
 
-Only worth it if you already have a working sglang-main environment.
+If you already run the image and want the latest code:
 
 ```bash
-git clone https://github.com/radixark/miles_diffusion.git
-cd miles_diffusion
-pip install -r requirements.txt
+cd /root/miles_diffusion
+git pull --rebase
 pip install -e . --no-deps
 ```
 
-Requires **Python ≥ 3.12**. `requirements.txt` pins `torch==2.11.0`, `diffusers==0.38.0`,
-`transformers==5.5.4`, `peft==0.18.1`, and `ray==2.53.0`, among others.
+No Ray restart is needed — the launch scripts stop and restart the cluster themselves.
 
-`pip install -r requirements.txt` does **not** give you a rollout engine. You additionally need
-sglang built from `main` with the `sglang.multimodal_gen` package, plus FlashAttention-3 and
-`torch_memory_saver`. `docker/Dockerfile` is the authoritative recipe for that half — read it
-before assembling an environment by hand.
+## Method 3: Bare metal, from source
+
+<Warning>
+
+**Strongly discouraged unless the image genuinely cannot run on your machine.** Unlike
+Docker, this mutates the host: it installs apt packages and replays the image's pinned
+package set into the **system** Python with `--no-deps`, overwriting whatever versions are
+already there. Do not run it on a machine you use for anything else.
+
+</Warning>
+
+```bash
+apt-get update && apt-get install -y --no-install-recommends git ca-certificates
+git clone https://github.com/radixark/miles_diffusion.git
+cd miles_diffusion
+bash .claude/skills/install-miles-diffusion/install.sh
+```
+
+Written against a CUDA 12.9 / Ubuntu 24.04 host, to match the image. Nothing enforces that,
+but the apt versions are unpinned, so another release hands out different versions of the
+apt-sourced dists and the verify step reports drift.
+
+About 20 minutes cold, ~4 with a warm pip cache; six idempotent steps, and `--from STEP`
+resumes a failed run. The last step diffs every installed package against the image's
+snapshot — a clean run ends with:
+
+```
+matched 369   mismatched 0   missing 0   expected-absent 4   extra 0
+environment matches the official image
+```
+
+To check an existing machine against the image without installing anything:
+`python3 .claude/skills/install-miles-diffusion/verify_env.py`.
+
+Plain `pip install -r requirements.txt && pip install -e . --no-deps` installs, but leaves a
+**trainer-only** environment: CPU tests and `--train-only` SFT run, RL does not —
+`sglang.multimodal_gen` and FlashAttention-3 are not on PyPI. Resolving the full set through
+pip is not possible (it is only consistent under `--no-deps` replay), which is what the
+installer handles.
 
 ## Verify
 
@@ -131,7 +163,6 @@ so the floor is set by whichever of the two needs more memory, not by their sum.
 | `HF_TOKEN` | Gated checkpoints. SD3.5 needs it **even when the weights are cached** — sglang still fetches `model_index.json` from the hub at startup. |
 | `WANDB_API_KEY` | Without it the launch scripts silently drop all `--use-wandb` flags. |
 | `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` | Set by every launch script; reduces fragmentation OOMs. |
-| `MILES_SCRIPT_EXTERNAL_RAY=1` | A scheduler (Slurm, k8s) already built the Ray cluster — skips `ray stop` / `ray start` in the launcher. |
 | `MILES_DIFFUSION_MODEL_FAMILY` | Escape hatch for family auto-detection. Prefer the `--diffusion-model-family` flag; the env var still wins over both. |
 
 ## Next
