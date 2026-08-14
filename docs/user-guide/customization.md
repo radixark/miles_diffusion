@@ -161,7 +161,8 @@ def post_process(args, samples) -> tuple[list[float], list[float]]:
 
 Default behavior: reshape to `(-1, n_samples_per_prompt)`, subtract mean
 (`--globalize-reward-mean` for batch-level), optionally divide by std
-(`--grpo-std-normalization`, `--globalize-reward-std`).
+(on by default — `--disable-grpo-std-normalization` turns it off; `--globalize-reward-std`
+switches per-group std to batch-wide).
 
 ***
 

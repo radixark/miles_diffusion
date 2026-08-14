@@ -108,7 +108,7 @@ Set automatically in `RolloutManager` when spawning engines.
 On the first few syncs, rank 0 logs lines like:
 
 ```text
-LoRA IPC weight sync v1 [transformer]: pushed N lora tensors, M layer prefixes in K buckets
+LoRA IPC weight sync v1 [transformer]: pushed N lora tensors, M layer prefixes in K buckets (unmapped=0)
 ```
 
 After FSDP all-gather, serialized buckets are collected on the **gather-src

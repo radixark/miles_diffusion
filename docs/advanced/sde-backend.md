@@ -48,7 +48,7 @@ consistent with the train-side backend:
 |---|---|---|
 | `--diffusion-sde-type` | `sde` | Dynamics family (auto-selects backend) |
 | `--diffusion-noise-level` | `0.7` | η in the SDE kernel |
-| `--diffusion-num-steps` | model default | Denoise schedule length |
+| `--diffusion-num-steps` | `10` | Denoise schedule length |
 | `--diffusion-num-sde-steps` | `0` | Steps scored by the step strategy |
 | `--diffusion-sde-window-range` | None | e.g. `0,10` for a full window |
 | `--diffusion-step-strategy-path` | None | Which steps enter training |

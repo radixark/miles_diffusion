@@ -1255,6 +1255,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Hugging Face model path for PickScore. Required when --rm-type pickscore.",
             )
 
+            parser.add_argument(
+                "--rm-url",
+                type=str,
+                default=None,
+                help=(
+                    "URL of a remote reward service, e.g. http://localhost:8000. Mirrors the "
+                    "miles-core flag; no built-in --rm-type consumes it here yet, so read it "
+                    "from a --custom-rm-path function."
+                ),
+            )
+
             # Customization extension hooks for reward computation.
             parser.add_argument(
                 "--custom-rm-path",
