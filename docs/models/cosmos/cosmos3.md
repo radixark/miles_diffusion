@@ -73,7 +73,14 @@ basically train nothing. Step numbers are **not transferable across sigma-grid f
 `|dt|` when changing model or grid.
 
 
-## 6. Pairs well with
+## 6. Reference results
+
+Flow-GRPO + PickScore on Cosmos3-Nano, run with the native Cosmos3 recipe scripts in this repo. PickScore
+(`rollout/reward/raw_mean`) climbs from ~0.77 to ~0.85 over 250 rollout steps:
+
+![Cosmos3 PickScore reward mean](/assets/images/cosmos3/reward_mean.png)
+
+## 7. Pairs well with
 
 - [LoRA Training and Weight Sync](/advanced/lora) — GEN-tower LoRA sync.
 - [Rewards](/user-guide/rewards) — PickScore worker pool configuration.

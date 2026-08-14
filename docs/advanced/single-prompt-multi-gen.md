@@ -30,8 +30,12 @@ Canonical values on `main`:
 | SD3.5 GRPO + OCR | 16 | 8 |
 | Qwen-Image GRPO + PickScore | 16 | 8 |
 | Wan2.2 GRPO + PickScore | 16 | 8 |
-| LTX-2.3 GRPO + PickScore | 8 | 1 |
+| LTX-2.3 GRPO + PickScore | 8 | 1 — multi-gen works but single-gen is faster |
 | Cosmos3 GRPO | 16 | 1 — packed forward is single-sample |
+
+LTX-2.3 supports engine-side expansion, but the recipe generates one output per request: a multi-output video response
+is large enough that deserializing and scoring it stops overlapping with other in-flight requests, so single-output
+requests pipeline better end to end.
 
 ## 2. Seed layout
 

@@ -69,6 +69,15 @@ overlaps with generation and deserialization of the others.
 
 ## 4. Diagnosing the pipeline
 
+The miles dashboard visualizes the lifetime of every request — the generate / deserialize / reward spans of each
+microgroup on one timeline, so overlap (or the lack of it) is visible directly. Launch with `--use-miles-dashboard`
+(telemetry lands under `--miles-dashboard-workspace`), then render:
+
+```bash
+python -m miles.dashboard.viewer --workspace ./miles_dashboard --out dash.html
+```
+
+For quick triage from `perf/*` metrics alone:
 
 | Symptom                                                 | Look at                  | Likely fix                                                                 |
 | ------------------------------------------------------- | ------------------------ | -------------------------------------------------------------------------- |
