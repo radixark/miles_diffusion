@@ -1,42 +1,29 @@
 ---
-
-## title: Dtype Control
-
-description: The three dtype knobs, the model-boundary cast policy, and per-parameter dtype overrides under FSDP2.
+title: Dtype Control
+description: The global dtype flags, the model-boundary input cast policy, and per-parameter dtype overrides under FSDP2.
+---
 
 Diffusion RL is unusually sensitive to precision. The PPO ratio is
 `exp(log_prob_new − log_prob_old)`, where `log_prob_old` came from the **rollout engine** (without recompute flag) and `log_prob_new` from the **trainer**. Any numeric difference between the two forwards shows up as a ratio drifting off 1.0 — an update signal made of nothing but rounding.
 
-## 1. The three flags
+## 1. Global dtype control flags
 
 
-| Flag                        | Default | Applies to                                                              |
-| --------------------------- | ------- | ----------------------------------------------------------------------- |
-| `--fsdp-master-dtype`       | `fp32`  | The FSDP-sharded master copy: load dtype, shard dtype, optimizer state. |
-| `--fsdp-reduce-dtype`       | `fp32`  | `MixedPrecisionPolicy.reduce_dtype` — the gradient reduce-scatter.      |
-| `--diffusion-forward-dtype` | `bf16`  | The DiT forward compute.                                                |
+| Flag                        | Default | Applies to                                                                             |
+| --------------------------- | ------- | -------------------------------------------------------------------------------------- |
+| `--fsdp-master-dtype`       | `fp32`  | The FSDP-sharded master copy: load dtype, shard dtype, optimizer state.                |
+| `--fsdp-reduce-dtype`       | `fp32`  | `MixedPrecisionPolicy.reduce_dtype` — the gradient reduce-scatter.                     |
+| `--diffusion-forward-dtype` | `bf16`  | The DiT forward compute on the training side. Must match `--sglang-dit-precision`.    |
+| `--sglang-dit-precision`    | `bf16`  | The DiT forward compute in the sglang-d rollout engine.                                |
 
 
-`--fsdp-master-dtype fp32` with a lower `--diffusion-forward-dtype` is ordinary mixed-precision
-training. Setting both to `bf16` (as the LTX-2 recipe does) is a deliberate choice to match a
-bf16-throughout reference.
+It is **strongly not recommended** to modify any of these dtype settings unless you have a
+thorough understanding of what the change does. The defaults are what keeps `log_prob_new`
+comparable to `log_prob_old`; in particular, `--diffusion-forward-dtype` must be set to the same
+value as `--sglang-dit-precision`, and `--fsdp-reduce-dtype bf16` trades multi-rank gradient
+stability for nothing you want.
 
-`--fsdp-reduce-dtype fp32` keeps multi-rank gradient sums numerically stable. `bf16` matches
-flow_grpo's all-bf16 policy, at the cost of bf16 add-non-associativity noise across ranks — two
-runs on different rank counts will not agree.
-
-### `--diffusion-forward-dtype` is used three times
-
-This is the flag that matters most — one value is applied in three places:
-
-1. the **sglang-d rollout engine**'s forward,
-2. FSDP's `MixedPrecisionPolicy.param_dtype` on the training side,
-3. the **training-side input cast** at the model boundary.
-
-All three at one value is what makes `log_prob_new` comparable to `log_prob_old`. Split them and
-the ratio drifts.
-
-## 2. The model-boundary cast policy
+## 2. Input dtype control
 
 Autocast is not enough on its own. It governs op *interiors* — matmuls, convolutions — but
 element-wise ops run at whatever dtype their inputs already carry. So the dtype of the tensors
@@ -57,20 +44,13 @@ input_dtype_policy = {"latents": ..., "cond": ..., "timestep": ...}
 | `None`                         | Passthrough — keep whatever dtype rollout handed us. |
 
 
-The base class defaults to passthrough on all three, so families opt into casts explicitly. LTX-2
-is the current example:
+The base class defaults to passthrough on all three, but the model family dtypes in the
+`TrainPipelineConfig` are aligned with sglang-d by default. LTX-2 is the current example:
 
 ```python
 # miles/backends/fsdp_utils/configs/ltx.py
 input_dtype_policy = {"latents": "default", "cond": "default", "timestep": None}
 ```
-
-`forward_velocity` anchors its element-wise math on `latents.dtype` and rollout runs it in bf16 —
-so latents and conditioning are cast at the boundary while the timestep is left alone.
-
-Non-float tensors (integer masks) and non-tensors are never cast, whatever the policy says.
-An unknown key in the dict is a hard error rather than a silent passthrough — a typo here would
-otherwise be invisible.
 
 **Division of labour:** `input_dtype_policy` owns the boundary; autocast owns the interior. That
 split also keeps gradient-checkpointing recompute consistent, since the recomputed forward sees
@@ -90,8 +70,6 @@ A model's `FSDPParallelPlan` carries FQN glob patterns, matched against **root-r
 # miles/backends/fsdp_utils/models/diffusers/wan2_2/parallel_plan.py
 FSDP_PARALLEL_PLAN = FSDPParallelPlan(
     param_dtype_patterns={
-        "*scale_shift_table": "fp32",
-        "*time_embedder*": "fp32",
         "*.norm2.*": "fp32",
     },
 )
@@ -111,43 +89,36 @@ is renamed.
 
 `compile_param_dtype_maps` (`miles/backends/fsdp_utils/mixed_precision.py`) does two passes:
 
-```
-pass 1   expand patterns against root FQNs → one dtype per matched parameter
-pass 2   walk the wraps in fully_shard() call order, claiming parameters
-         first-wrap-wins (the rule FSDP2 itself applies), and re-key each
-         override to the FQN local to its owning wrap
-```
-
-Anything no wrap claims lands in `root_map` under its root FQN. The result is one dtype map per
-`fully_shard` call, keyed the way that call will look parameters up.
-
-Because the runtime map is keyed by *wrap-local* FQN, two parameters in one wrap group that share
-a local FQN but want different dtypes cannot be told apart — that is detected and raised, rather
-than silently applying one dtype to both.
-
-### The runtime patch
-
-When any override exists, the actor swaps in `ParamDtypeMixedPrecisionPolicy` (a
-`MixedPrecisionPolicy` with an extra `param_dtype_map`) and applies
-`apply_param_dtype_map_patch()`.
-
-The patch is **version-gated on** `torch==2.11.0` and raises on any other version. This is
-deliberate: it reaches into FSDP2 internals, and silently running against a different torch would
-be worse than failing. `requirements.txt` pins the matching torch.
-
-Wraps with no overrides get a plain `MixedPrecisionPolicy` and never touch the patched path.
-
-Both policies set `cast_forward_inputs=False` — input casting belongs to `input_dtype_policy`,
-not to FSDP.
-
-At startup the actor logs what it compiled:
-
-```
-FSDP: wrapping 40 modules of type ('WanTransformerBlock',), param_dtype=torch.bfloat16,
-reduce_dtype=torch.float32, param_dtype_overrides=123 (4,567,890 parameters)
+```mermaid
+flowchart LR
+    A["param_dtype_patterns<br/>root-relative globs"]
+    B["one dtype per<br/>matched parameter"]
+    C["per-wrap map<br/>wrap-local FQNs"]
+    D["root_map<br/>root FQNs"]
+    E["mp_policy of that<br/>fully_shard(block)"]
+    F["mp_policy of the root<br/>fully_shard(model)"]
+    A -- "pass 1: expand" --> B
+    B -- "pass 2: claimed<br/>by a child wrap" --> C
+    B -- "claimed by<br/>no wrap" --> D
+    C --> E
+    D --> F
 ```
 
-If that count is zero when you expected overrides, your patterns did not match.
+Put simply: the rules name parameters from the model root, but at runtime each `fully_shard`
+call looks its parameters up by wrap-local name — the compile step bridges the two. A parameter
+belongs to the first `fully_shard` call that reaches it: the block wraps first, the final root
+call takes whatever is left, exactly the order in which FSDP2 itself claims parameters. Each
+call then gets its own small map in its own namespace; at cast time a hit uses the override
+dtype, a miss falls back to the group `param_dtype`. The one thing this cannot express — two
+parameters in one wrap group sharing a local name but wanting different dtypes — is rejected at
+compile time.
+
+### Expand FSDP2 with param-level dtype control
+
+When any override exists, the actor swaps in `ParamDtypeMixedPrecisionPolicy` — a
+`MixedPrecisionPolicy` extended with a per-parameter `param_dtype_map` — and patches FSDP2's
+casting path to honour it. Because the patch reaches into FSDP2 internals, it is version-gated on
+`torch==2.11.0` and raises on any other version; `requirements.txt` pins the matching torch.
 
 ## 4. Verifying the result
 
@@ -172,16 +143,9 @@ divergence is pure forward-path difference. Watch these metrics:
 
 For a sense of scale: the Qwen-Image RoPE cache bug — CPU-built vs CUDA-built frequency tables
 differing by fp32 ULPs — produced a frozen-weight `noise_pred` mean |Δ| of about **2e-2**. Small
-absolute numbers here are not automatically fine; compare against a known-good run.
-
-## 5. Related knobs
-
-
-| Flag                                                      | Why it matters for precision                                                                                                                 |
-| --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--rollout-patch-group sgld`                              | Engine-side op-parity patches (RMSNorm, LayerNormScaleShift, MulAdd, QK-norm RoPE). Costs rollout throughput, buys forward agreement.        |
-| `--fsdp-attention-backend` / `--sglang-attention-backend` | Different attention kernels give different results at the same dtype. Match them.                                                            |
-| `--deterministic-mode`                                    | Removes run-to-run nondeterminism so a dtype change is the only variable. See [Deterministic Training](/advanced/deterministic).             |
-| `--diffusion-recompute-old-log-prob`                      | Sidesteps the question: recompute `log_prob_old` with the trainer's own forward, making the ratio implementation-consistent by construction. |
+absolute numbers here are not automatically fine; compare against a known-good run. With CFG
+enabled, `noise_pred` is the guided combination scaled by `--diffusion-guidance-scale`, so the
+output magnitude — and every abs-diff metric above — scales with it; factor the CFG scale in
+before comparing runs.
 
 

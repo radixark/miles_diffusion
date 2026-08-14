@@ -66,12 +66,6 @@ flash_attn_3_func       flash_attn_3_varlen_func
 Each entry point with a `deterministic` parameter is replaced by
 `functools.partial(fn, deterministic=True)`; the rest are skipped.
 
-Native model packages (`MilesModelBackend`, e.g. LTX-2) declare their own entry points via
-`modeling.flash_attention_entrypoints(backend)`. A package that declares none raises
-`NotImplementedError` under deterministic mode rather than pretending — use a native/math backend
-for that model. When a package also declares `required_flash_kernel_label(backend)`, the named
-kernel *must* end up patched; if it did not, startup fails with the list of what was patched.
-
 ## What it does not cover
 
 `--deterministic-mode` is **train-actor only**. It does not make the rollout engine deterministic.
@@ -83,8 +77,8 @@ engine outputs, so with an unpinned engine a fully deterministic train actor sti
 reproduce the same reward curve — it only guarantees the same training computation *given* the
 same rollout data.
 - **Different rank counts.** With `--fsdp-reduce-dtype bf16`, gradient sums are non-associative
-across ranks, so a 4-rank and an 8-rank run will not match even in deterministic mode. Use
-`fp32` reduce when you need that.
+across ranks, so a 4-rank and an 8-rank run will not match even in deterministic mode. Setting
+`--fsdp-reduce-dtype bf16` is **strongly not recommended**; keep the `fp32` default.
 - **Train/rollout agreement.** Determinism removes run-to-run variance; it does not make the two
 forwards equal. That is a precision problem — see [Dtype Control](/advanced/dtype-control).
 
@@ -93,21 +87,6 @@ forwards equal. That is a precision problem — see [Dtype Control](/advanced/dt
 Real but usually acceptable: `cudnn.benchmark=False` gives up kernel autotuning, deterministic
 kernels are chosen over faster nondeterministic ones, and cuBLAS reserves ~32 MiB per handle.
 Recipes that need reproducibility more than throughput keep it on permanently.
-
-## Typical use
-
-Recipes that ship with it on include the Qwen-Image PickScore recipe, the SD3.5 OCR recipe, and
-the LTX-2.3 recipe.
-
-The standard alignment investigation combines it with the debug flags:
-
-```bash
-python3 scripts/run_diffusion_grpo_sd3_ocr_sglang.py --debug-alignment
-```
-
-which adds `--diffusion-debug-mode --debug-skip-optimizer-step`: weights never update, the engine
-returns per-step debug tensors, and `train/model_output_*_abs_diff` reports pure forward-path
-divergence with no run-to-run noise underneath it.
 
 ## In CI
 
@@ -126,8 +105,4 @@ Because reward metrics are compared too, the CI recipes also pin the engine side
 ## Related
 
 - [Dtype Control](/advanced/dtype-control) — the other half of train/rollout numeric agreement.
-- `--rollout-patch-group sgld` — engine-side op-parity patches. Note that attention is
-deliberately **not** patched there: overriding `USPAttention.forward` breaks bitwise
-SP-invariance because kernel choice depends on head and batch shape. Align attention through
-backend selection instead.
 
