@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import types
+
 import torch
+import torch.nn.functional as F
 from miles.utils.types import CondKwargs
 
 from .train_pipeline_config import TrainPipelineConfig, register_train_pipeline_config
@@ -15,6 +18,22 @@ class Wan2_2TrainPipelineConfig(TrainPipelineConfig):
     # High-noise expert ("transformer") handles t >= boundary, low-noise expert
     # ("transformer_2") the rest.
     boundary_ratio = 0.875
+
+    def postprocess_model_after_materialize(self, model: torch.nn.Module) -> None:
+        """Patchify with a GEMM, matching the rollout engine, instead of cuDNN Conv3d.
+
+        sglang-d's PatchEmbed never runs the conv when kernel == stride: it
+        rearranges patches and applies F.linear, whose cuBLAS GEMM accumulates
+        in fp32. cuDNN's bf16 Conv3d accumulates less precisely: on paired
+        dumps the conv output disagreed with the engine at rel 2.7e-3 on a
+        bit-exact input while an fp32-accum GEMM reproduces the engine to
+        9e-6 -- and this seed is what every block's norm re-amplifies down the
+        depth. The rearrangement is mathematically identical (stride ==
+        kernel), so this changes the summation kernel, never the math.
+        """
+        for name, module in model.named_modules():
+            if name.endswith("patch_embedding") and isinstance(module, torch.nn.Conv3d):
+                module.forward = types.MethodType(_gemm_patchify_forward, module)
 
     def component_for_timestep(self, timestep: float, num_train_timesteps: int) -> str:
         if timestep >= self.boundary_ratio * num_train_timesteps:
@@ -65,3 +84,17 @@ class Wan2_2TrainPipelineConfig(TrainPipelineConfig):
     ) -> torch.Tensor:
         scale = true_cfg_scale if true_cfg_scale is not None else guidance_scale
         return noise_pred_neg + scale * (noise_pred_pos - noise_pred_neg)
+
+
+def _gemm_patchify_forward(self: torch.nn.Conv3d, x: torch.Tensor) -> torch.Tensor:
+    """Conv3d-as-GEMM for the kernel==stride patchify case (see hook above)."""
+    pt, ph, pw = self.kernel_size
+    batch, chan, t, h, w = x.shape
+    if tuple(self.stride) != (pt, ph, pw) or t % pt or h % ph or w % pw:
+        return F.conv3d(x, self.weight, self.bias, self.stride, self.padding, self.dilation, self.groups)
+    t_, h_, w_ = t // pt, h // ph, w // pw
+    x = x.reshape(batch, chan, t_, pt, h_, ph, w_, pw)
+    x = x.permute(0, 2, 4, 6, 1, 3, 5, 7).contiguous()
+    x = x.reshape(batch, t_ * h_ * w_, chan * pt * ph * pw)
+    x = F.linear(x, self.weight.reshape(self.weight.shape[0], -1), self.bias)
+    return x.reshape(batch, t_, h_, w_, -1).permute(0, 4, 1, 2, 3).contiguous()
