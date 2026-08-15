@@ -20,17 +20,7 @@ class Wan2_2TrainPipelineConfig(TrainPipelineConfig):
     boundary_ratio = 0.875
 
     def postprocess_model_after_materialize(self, model: torch.nn.Module) -> None:
-        """Patchify with a GEMM, matching the rollout engine, instead of cuDNN Conv3d.
-
-        sglang-d's PatchEmbed never runs the conv when kernel == stride: it
-        rearranges patches and applies F.linear, whose cuBLAS GEMM accumulates
-        in fp32. cuDNN's bf16 Conv3d accumulates less precisely: on paired
-        dumps the conv output disagreed with the engine at rel 2.7e-3 on a
-        bit-exact input while an fp32-accum GEMM reproduces the engine to
-        9e-6 -- and this seed is what every block's norm re-amplifies down the
-        depth. The rearrangement is mathematically identical (stride ==
-        kernel), so this changes the summation kernel, never the math.
-        """
+        """Patchify with a GEMM so the trainer matches the engine's fp32-accumulating F.linear."""
         for name, module in model.named_modules():
             if name.endswith("patch_embedding") and isinstance(module, torch.nn.Conv3d):
                 module.forward = types.MethodType(_gemm_patchify_forward, module)
