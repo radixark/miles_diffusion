@@ -60,7 +60,7 @@ Options shared by every launcher, from the `ExecuteTrainConfig` base class and r
 | Option | Default | Purpose |
 |---|---|---|
 | `--num-nodes` | `$SLURM_JOB_NUM_NODES` or `1` | Training nodes |
-| `--cuda-visible-devices` | inherited from the environment | Physical GPUs the job may use. Applied by exporting it for `ray start`, so the count must equal the recipe's GPU count. Leave it unset when something upstream (a CI runner, your shell) already pins the devices. |
+| `--cuda-visible-devices` | inherited from the environment | Physical GPUs the job may use. Applied by exporting it for `ray start`. |
 | `--output-dir` | `<repo>/logs` | Where checkpoints and dumps are written |
 | `--extra-env-vars` | empty | Extra env vars added to the Ray runtime env |
 | `--extra-args` | empty | Extra flags appended to the `train_diffusion.py` command line |
