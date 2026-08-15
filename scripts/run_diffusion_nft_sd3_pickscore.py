@@ -29,7 +29,6 @@ WANDB_PROJECT = "miles-diffusion-nft"
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
-    cuda_visible_devices: str = "4,5,2"
     num_rollout: int = 0  # 0 picks the smoke/full default
     data_dir: str = "/root/datasets"
     smoke: bool = False

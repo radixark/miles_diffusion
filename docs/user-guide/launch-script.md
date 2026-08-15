@@ -31,7 +31,6 @@ Every launcher follows the same layout:
 ```python
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):     # inherits output_dir, num_nodes, ...
-    cuda_visible_devices: str = "4,5,6,7,1"
     num_rollout: int = 400
     extra_args: str = ""                     # appended verbatim to the command line
 
@@ -61,7 +60,7 @@ Options shared by every launcher, from the `ExecuteTrainConfig` base class and r
 | Option | Default | Purpose |
 |---|---|---|
 | `--num-nodes` | `$SLURM_JOB_NUM_NODES` or `1` | Training nodes |
-| `--cuda-visible-devices` | recipe-set | Physical GPUs the job may use |
+| `--cuda-visible-devices` | inherited from the environment | Physical GPUs the job may use. Applied by exporting it for `ray start`, so the count must equal the recipe's GPU count. Leave it unset when something upstream (a CI runner, your shell) already pins the devices. |
 | `--output-dir` | `<repo>/logs` | Where checkpoints and dumps are written |
 | `--extra-env-vars` | empty | Extra env vars added to the Ray runtime env |
 | `--extra-args` | empty | Extra flags appended to the `train_diffusion.py` command line |

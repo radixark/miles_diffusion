@@ -37,6 +37,18 @@ class ExecuteTrainConfig:
     output_dir: str = str(repo_base_dir / "logs")
 
 
+def _cvd_export(config: ExecuteTrainConfig, num_gpus_per_node: int) -> str:
+    """Shell prefix pinning the raylet's GPUs; empty means inherit the caller's environment."""
+    if not config.cuda_visible_devices:
+        return ""
+    visible = [x.strip() for x in config.cuda_visible_devices.split(",") if x.strip()]
+    assert len(visible) == num_gpus_per_node, (
+        f"--cuda-visible-devices lists {len(visible)} GPU(s) ({config.cuda_visible_devices}) but this "
+        f"recipe runs on {num_gpus_per_node}; ray would hand out ids the visible list does not have."
+    )
+    return f"export CUDA_VISIBLE_DEVICES={','.join(visible)} && "
+
+
 def execute_train(
     train_args: str,
     num_gpus_per_node: int,
@@ -73,10 +85,20 @@ def execute_train(
 
     if not external_ray:
         exec_command(
+            # `ray start` is the only place a GPU restriction takes effect: Ray reads the
+            # device list once, when the raylet comes up, and schedules from it forever
+            # after. Set later (per job or per actor) it is just an env var the scheduler
+            # never sees, so the job can be placed on GPUs it was told not to touch.
+            f"{_cvd_export(config, num_gpus_per_node)}"
             # keeps ray from buffering stdout/stderr
             "export PYTHONBUFFERED=16 && "
             f"ray start --head --node-ip-address {master_addr} "
             f"--num-gpus {num_gpus_per_node} --disable-usage-stats"
+        )
+    else:
+        assert not config.cuda_visible_devices, (
+            "--cuda-visible-devices cannot be applied to an externally started cluster: "
+            "export CUDA_VISIBLE_DEVICES before `ray start` instead."
         )
 
     if (f := before_ray_job_submit) is not None:
@@ -92,7 +114,6 @@ def execute_train(
         "no_proxy": f"127.0.0.1,{master_addr}",
         # torch distributed needs this on every node, not just the submitting shell.
         "MASTER_ADDR": master_addr,
-        **({"CUDA_VISIBLE_DEVICES": config.cuda_visible_devices} if config.cuda_visible_devices else {}),
         **(
             {
                 "CUDA_ENABLE_COREDUMP_ON_EXCEPTION": "1",

@@ -29,7 +29,6 @@ MASTER_SGLANG_PYTHON = "/sgl-workspace/master_sglang/sglang/python"
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
-    cuda_visible_devices: str = "6,7"
     num_rollout: int = 600
     data_dir: str = "/root/datasets"
     debug_alignment: bool = False

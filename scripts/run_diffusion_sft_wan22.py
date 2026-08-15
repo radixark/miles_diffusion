@@ -32,7 +32,6 @@ LORA_TARGET_MODULES = (
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
-    cuda_visible_devices: str = "0,1,2,3"
     data_jsonl: str = ""
     resume_ckpt: str = ""
     start_rollout: int = -1

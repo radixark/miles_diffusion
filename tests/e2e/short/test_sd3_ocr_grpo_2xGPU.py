@@ -10,7 +10,7 @@ register_e2e_ci(
     est_time=1200,
     suite="stage-c-3-gpu-h200",
     script="scripts/run_diffusion_grpo_sd3_ocr_sglang.py",
-    args=["--num-rollout", "2", "--cuda-visible-devices", "0,1"],
+    args=["--num-rollout", "2"],
     metrics=[
         "rollout/reward/raw_num_samples",
         "rollout/reward/raw_mean",
