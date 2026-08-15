@@ -85,10 +85,8 @@ def execute_train(
 
     if not external_ray:
         exec_command(
-            # `ray start` is the only place a GPU restriction takes effect: Ray reads the
-            # device list once, when the raylet comes up, and schedules from it forever
-            # after. Set later (per job or per actor) it is just an env var the scheduler
-            # never sees, so the job can be placed on GPUs it was told not to touch.
+            # Ray reads the device list once, at raylet startup; set per job or per actor
+            # it never reaches the scheduler, which then places work on excluded GPUs.
             f"{_cvd_export(config, num_gpus_per_node)}"
             # keeps ray from buffering stdout/stderr
             "export PYTHONBUFFERED=16 && "
