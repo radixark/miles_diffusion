@@ -98,13 +98,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
     # UND/GEN towers share layers and differ by parameter name (to_q vs
     # add_q_proj, mlp vs mlp_moe_gen); LoRA targeting defaults to the GEN
     # fragments in the cosmos3 train pipeline config.
-    lora_args = (
-        "--use-lora "
-        "--lora-ipc-weight-sync "
-        "--lora-rank 64 "
-        "--lora-alpha 128 "
-        "--lora-init-weights gaussian "
-    )
+    lora_args = "--use-lora --lora-ipc-weight-sync --lora-rank 64 --lora-alpha 128 --lora-init-weights gaussian "
 
     reward_args = (
         "--rm-type pickscore "
