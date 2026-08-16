@@ -27,7 +27,7 @@ The 4 GiB weight-sync buffer takes the full-finetune sync from 92 s to ~15 s (la
 on per-bucket round-trips, not bandwidth).
 
 Usage (after docs/user-guide/launch-script.md (Multi-node training) bring-up, on the head node):
-    MILES_SCRIPT_EXTERNAL_RAY=1 python3 scripts/run_diffusion_grpo_wan22_pickscore_16gpu_multinode.py
+    MILES_SCRIPT_EXTERNAL_RAY=1 python3 scripts/run_diffusion_grpo_wan22_pickscore_17gpu_multinode.py
 """
 
 from dataclasses import dataclass
@@ -64,7 +64,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         "bring it up first, then run with MILES_SCRIPT_EXTERNAL_RAY=1."
     )
 
-    run_name = f"diffusion_grpo_wan22_pickscore_16gpu_{U.create_run_id()}"
+    run_name = f"diffusion_grpo_wan22_pickscore_17gpu_{U.create_run_id()}"
 
     ckpt_args = f"--hf-checkpoint {MODEL} "
     if not args.four_gpu_ci:

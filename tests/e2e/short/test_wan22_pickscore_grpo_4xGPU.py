@@ -12,7 +12,7 @@ from tests.ci.e2e_metrics_registry import register_e2e_ci
 register_e2e_ci(
     est_time=2400,
     suite="stage-c-5-gpu-h200",
-    script="scripts/run_diffusion_grpo_wan22_pickscore_16gpu_multinode.py",
+    script="scripts/run_diffusion_grpo_wan22_pickscore_17gpu_multinode.py",
     args=["--num-rollout", "2", "--four-gpu-ci", "--cuda-visible-devices", ""],
     labels=["e2e"],
     metrics=[

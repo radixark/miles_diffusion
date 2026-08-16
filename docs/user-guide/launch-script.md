@@ -185,7 +185,7 @@ Start from the closest existing script and change one group at a time:
 
 ## Multi-node training
 
-The worked example is `scripts/run_diffusion_grpo_wan22_pickscore_16gpu_multinode.py`:
+The worked example is `scripts/run_diffusion_grpo_wan22_pickscore_17gpu_multinode.py`:
 wan2.2-A14B full finetune on 2 nodes × 8 GPUs (train + rollout colocated) plus 1 reward GPU on a
 separate node. Multi-node runs submit into a cluster you build yourself; the launcher only submits
 (`MILES_SCRIPT_EXTERNAL_RAY=1`).
@@ -233,7 +233,7 @@ ray start --address=<head-ip>:6379 --num-gpus 1
 
 ```bash
 ulimit -n 1000000   # the driver needs it too
-MILES_SCRIPT_EXTERNAL_RAY=1 python3 scripts/run_diffusion_grpo_wan22_pickscore_16gpu_multinode.py
+MILES_SCRIPT_EXTERNAL_RAY=1 python3 scripts/run_diffusion_grpo_wan22_pickscore_17gpu_multinode.py
 ```
 
 Reward workers (`--pickscore-num-workers 4 --pickscore-num-gpus-per-worker 0.25`, no
