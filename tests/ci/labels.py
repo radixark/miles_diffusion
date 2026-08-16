@@ -25,4 +25,5 @@ KNOWN_LABELS: dict[str, str] = {
     "router": "Router routing decision tests",
     "arguments": "Top-level argparse / validate_args tests",
     "model-scripts": "train_diffusion.py + scripts/*.py smoke tests",
+    "e2e": "End-to-end recipe runs checked against a committed metric standard",
 }
