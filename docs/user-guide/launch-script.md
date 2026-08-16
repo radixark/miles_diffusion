@@ -254,7 +254,7 @@ Reward workers (`--pickscore-num-workers 4 --pickscore-num-gpus-per-worker 0.25`
 | Stale engine hijacks the port | Killing a driver by name leaves its spawned engine alive; the next driver's health check talks to the old, unpatched server while the new one dies on `EADDRINUSE`. Between runs kill by GPU pid and check `nvidia-smi` shows no compute processes |
 | Version strings lie under editable installs | `pip show sglang` reports the install-time commit; trust `git rev-parse HEAD` in the checkout (or the `-e git+...@<sha>` line in `pip freeze`) |
 | Weight-sync bucket | `--update-weight-buffer-size 4294967296` (4 GiB): the sync is latency-bound on per-bucket round-trips — 512 MiB costs ~92 s for the A14B pair, 4 GiB ~15 s; output diff stays 0 at any size |
-| Determinism env vars are trainer-side | The tp=1 engine is bitwise deterministic without `NCCL_DETERMINISTIC`/`CUBLAS_WORKSPACE_CONFIG` (its ulysses all-to-all is a permutation; verified bitwise across machines and torch versions) |
+| Determinism env vars are trainer-side | `--deterministic-mode` sets `NCCL_DETERMINISTIC` and `CUBLAS_WORKSPACE_CONFIG` on the FSDP actors; check rollout parity with `train/model_output_mean_abs_diff` |
 
 ## Next
 
