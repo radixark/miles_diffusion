@@ -67,7 +67,7 @@ jobs:
   ci-gate:
     runs-on: ubuntu-latest
     outputs:
-      approved: ${{ steps.trusted.outputs.approved || steps.pr.outputs.approved }}
+      authorized: ${{ steps.trusted.outputs.authorized || steps.pr.outputs.authorized }}
       docs_only: ${{ steps.trusted.outputs.docs_only || steps.pr.outputs.docs_only }}
     steps:
       - name: Allow trusted non-PR runs
@@ -75,10 +75,10 @@ jobs:
         id: trusted
         shell: bash
         run: |
-          echo "approved=true" >> "$GITHUB_OUTPUT"
+          echo "authorized=true" >> "$GITHUB_OUTPUT"
           echo "docs_only=false" >> "$GITHUB_OUTPUT"
 
-      - name: Check approval and changed files
+      - name: Check authorization and changed files
         if: github.event_name == 'pull_request' || github.event_name == 'pull_request_review'
         id: pr
         uses: actions/github-script@v7
@@ -106,9 +106,15 @@ jobs:
                 decisiveReviews.set(review.user.id, review);
               }
             }
-            const approved = [...decisiveReviews.values()].some(
+            const reviewApproved = [...decisiveReviews.values()].some(
               (review) => review.state === "APPROVED",
             );
+            // Applying labels requires triage (or stronger) repository
+            // permission, so run-ci-* also acts as a maintainer authorization.
+            const labelAuthorized = context.payload.pull_request.labels.some(
+              (label) => label.name.startsWith("run-ci-"),
+            );
+            const authorized = reviewApproved || labelAuthorized;
 
             const files = await github.paginate(
               github.rest.pulls.listFiles,
@@ -135,14 +141,16 @@ jobs:
                 (!file.previous_filename || isDocumentation(file.previous_filename)),
             );
 
-            core.setOutput("approved", String(approved));
+            core.setOutput("authorized", String(authorized));
             core.setOutput("docs_only", String(docsOnly));
             core.info(
-              `CI gate: approved=${approved}, docs_only=${docsOnly}, changed_files=${files.length}`,
+              `CI gate: review_approved=${reviewApproved}, ` +
+                `label_authorized=${labelAuthorized}, docs_only=${docsOnly}, ` +
+                `changed_files=${files.length}`,
             );
-            if (!approved) {
+            if (!authorized) {
               core.setFailed(
-                "PR CI requires an approval from a repository owner, member, or collaborator.",
+                "PR CI requires a trusted approval or a maintainer-applied run-ci-* label.",
               );
             }
 
@@ -150,7 +158,7 @@ jobs:
   docker-paths:
     needs: [ci-gate]
     if: |
-      needs.ci-gate.outputs.approved == 'true' &&
+      needs.ci-gate.outputs.authorized == 'true' &&
       needs.ci-gate.outputs.docs_only != 'true' &&
       github.event_name != 'workflow_dispatch' &&
       github.event_name != 'schedule'
@@ -215,7 +223,7 @@ jobs:
     # A failed build must skip this job so the GPU stages' `success` guard stops the matrix.
     if: |
       always() && !cancelled() &&
-      needs.ci-gate.outputs.approved == 'true' &&
+      needs.ci-gate.outputs.authorized == 'true' &&
       needs.ci-gate.outputs.docs_only != 'true' &&
       (needs.docker-build.result == 'success' || needs.docker-build.result == 'skipped') &&
       ((github.event_name == 'workflow_dispatch') || (github.event_name == 'schedule') || (github.event.pull_request))
@@ -247,11 +255,11 @@ jobs:
           echo "container_image=rockdu/miles_diffusion:${CI_IMAGE_TAG}" >> "$GITHUB_OUTPUT"
           echo "Resolved CI image: rockdu/miles_diffusion:${CI_IMAGE_TAG}"
 
-  # Stage A: CPU-only fast tests. PRs require approval; docs-only PRs run
+  # Stage A: CPU-only fast tests. PRs require authorization; docs-only PRs run
   # the full CPU suite and stop before the GPU stages.
   stage-a-cpu:
     needs: [ci-gate]
-    if: needs.ci-gate.outputs.approved == 'true'
+    if: needs.ci-gate.outputs.authorized == 'true'
     uses: ./.github/workflows/_run-ci.yml
     with:
       cpu_runner: true
@@ -267,7 +275,7 @@ jobs:
   # Empty result exits 0 in run_suite.py.
   stage-b-cpu:
     needs: [ci-gate, stage-a-cpu]
-    if: needs.ci-gate.outputs.approved == 'true' && needs.stage-a-cpu.result == 'success'
+    if: needs.ci-gate.outputs.authorized == 'true' && needs.stage-a-cpu.result == 'success'
     uses: ./.github/workflows/_run-ci.yml
     with:
       cpu_runner: true
@@ -286,7 +294,7 @@ jobs:
     needs: [ci-gate, resolve-ci-image, stage-a-cpu]
     if: |
       always() && !cancelled() &&
-      needs.ci-gate.outputs.approved == 'true' &&
+      needs.ci-gate.outputs.authorized == 'true' &&
       needs.ci-gate.outputs.docs_only != 'true' &&
       needs.resolve-ci-image.result == 'success' &&
       needs.stage-a-cpu.result == 'success' &&
@@ -308,7 +316,7 @@ jobs:
     needs: [ci-gate, resolve-ci-image, stage-a-cpu]
     if: |
       always() && !cancelled() &&
-      needs.ci-gate.outputs.approved == 'true' &&
+      needs.ci-gate.outputs.authorized == 'true' &&
       needs.ci-gate.outputs.docs_only != 'true' &&
       needs.resolve-ci-image.result == 'success' &&
       needs.stage-a-cpu.result == 'success' &&
