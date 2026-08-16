@@ -192,14 +192,31 @@ separate node. Multi-node runs submit into a cluster you build yourself; the lau
 
 ### Bring up the cluster
 
-Run on every node, in the environment of the `ray start` daemon itself:
+Each node runs ONE of the blocks below, chosen by its role. The two `export` lines must be in
+the environment of the `ray start` daemon itself, which is why every block repeats them.
+
+On the head node:
 
 ```bash
 ulimit -n 1000000
-export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7   # the GPUs this node contributes
-ray start --head --port=6379 --num-gpus 8 --dashboard-host 0.0.0.0   # head
-ray start --address=<head-ip>:6379 --num-gpus 8                      # other training nodes
-CUDA_VISIBLE_DEVICES=0 ray start --address=<head-ip>:6379 --num-gpus 1   # reward node
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+ray start --head --port=6379 --num-gpus 8 --dashboard-host 0.0.0.0
+```
+
+On every other training node:
+
+```bash
+ulimit -n 1000000
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+ray start --address=<head-ip>:6379 --num-gpus 8
+```
+
+On the reward node:
+
+```bash
+ulimit -n 1000000
+export CUDA_VISIBLE_DEVICES=0
+ray start --address=<head-ip>:6379 --num-gpus 1
 ```
 
 - **`ulimit -n`**: a non-interactive ssh shell defaults to 1024 open files. The raylet inherits
