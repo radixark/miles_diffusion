@@ -51,7 +51,21 @@ python3 scripts/run_diffusion_grpo_wan22_pickscore_5gpu.py
 ```
 
 
-### 4.2 LoRA SFT on (video, prompt) pairs (4 GPUs, no rollout engines)
+### 4.2 Full-finetune Flow-GRPO + PickScore, multi-node (2×8 train GPUs + 1 reward GPU)
+
+Recipe: `scripts/run_diffusion_grpo_wan22_pickscore_16gpu_multinode.py` — full finetune (no LoRA),
+true on-policy (`train/model_output_mean_abs_diff` is exactly 0 via `--rollout-patch-group wan` +
+`--sglang-attention-backend torch_sdpa`). Bring up the external ray cluster first — see
+[Multi-node training](/user-guide/launch-script#multi-node-training) — then, on the head node:
+
+```bash
+MILES_SCRIPT_EXTERNAL_RAY=1 python3 scripts/run_diffusion_grpo_wan22_pickscore_16gpu_multinode.py
+```
+
+`--four-gpu-ci` caps the same recipe to 1 node × 4 GPUs (batch /4, FSDP shard 4, two sp2 engines,
+reward colocated one worker per GPU) — the shape the `run-ci-e2e`-gated e2e test runs.
+
+### 4.3 LoRA SFT on (video, prompt) pairs (4 GPUs, no rollout engines)
 
 Recipe: `scripts/run_diffusion_sft_wan22.py`
 
