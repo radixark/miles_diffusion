@@ -31,7 +31,6 @@ Every launcher follows the same layout:
 ```python
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):     # inherits output_dir, num_nodes, ...
-    cuda_visible_devices: str = "4,5,6,7,1"
     num_rollout: int = 400
     extra_args: str = ""                     # appended verbatim to the command line
 
@@ -61,7 +60,7 @@ Options shared by every launcher, from the `ExecuteTrainConfig` base class and r
 | Option | Default | Purpose |
 |---|---|---|
 | `--num-nodes` | `$SLURM_JOB_NUM_NODES` or `1` | Training nodes |
-| `--cuda-visible-devices` | recipe-set | Physical GPUs the job may use |
+| `--cuda-visible-devices` | inherited from the environment | Physical GPUs the job may use. Applied by exporting it for `ray start`. |
 | `--output-dir` | `<repo>/logs` | Where checkpoints and dumps are written |
 | `--extra-env-vars` | empty | Extra env vars added to the Ray runtime env |
 | `--extra-args` | empty | Extra flags appended to the `train_diffusion.py` command line |
@@ -114,14 +113,16 @@ drives them the same way you do.
 ## What execute_train runs on your machine
 
 1. Kills stale `sglang` / `ray` / `miles` processes.
-2. Starts a fresh cluster with `ray start --head`.
-3. Builds the Ray runtime env: NCCL socket vars, `MASTER_ADDR`, `CUDA_VISIBLE_DEVICES`,
-   `PYTHONPATH`, plus anything from `--extra-env-vars`.
+2. Starts a fresh cluster with `export CUDA_VISIBLE_DEVICES=... && ray start --head` — the
+   device list must be in the raylet's own environment; set per job or per actor it never
+   reaches the scheduler, which then places work on excluded GPUs.
+3. Builds the Ray runtime env: NCCL socket vars, `MASTER_ADDR`, `PYTHONPATH`, plus anything
+   from `--extra-env-vars`.
 4. Submits the job: `ray job submit -- python3 train_diffusion.py <flags>`.
 
 | Env var | Effect |
 |---|---|
-| `MILES_SCRIPT_EXTERNAL_RAY=1` | A scheduler already built the Ray cluster: skip the teardown and `ray start`, only submit. Inherited from the miles launcher — every shipped diffusion recipe is single-node, so no recipe exercises this path yet. |
+| `MILES_SCRIPT_EXTERNAL_RAY=1` | A scheduler already built the Ray cluster: skip the teardown and `ray start`, only submit. `--cuda-visible-devices` must be empty here — export it before each `ray start` instead. Used by the multi-node recipe below. |
 | `MILES_SCRIPT_ENABLE_RAY_SUBMIT=0` | Run everything except the submission — shows what a launcher would do |
 | `MASTER_ADDR` | Head-node address, default `127.0.0.1` |
 
@@ -181,6 +182,62 @@ Start from the closest existing script and change one group at a time:
 | Smaller GPU budget | Lower `--rollout-batch-size`, `--n-samples-per-prompt`, `--rollout-microgroup-size`; keep the batch identity satisfied |
 | Train more denoising steps | Raise `--diffusion-num-sde-steps` — this multiplies train pairs |
 | Try a flag without editing the file | `--extra-args "--flag value"` |
+
+## Multi-node training
+
+The worked example is `scripts/run_diffusion_grpo_wan22_pickscore_16gpu_multinode.py`:
+wan2.2-A14B full finetune on 2 nodes × 8 GPUs (train + rollout colocated) plus 1 reward GPU on a
+separate node. Multi-node runs submit into a cluster you build yourself; the launcher only submits
+(`MILES_SCRIPT_EXTERNAL_RAY=1`).
+
+### Bring up the cluster
+
+Run on every node, in the environment of the `ray start` daemon itself:
+
+```bash
+ulimit -n 1000000
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7   # the GPUs this node contributes
+ray start --head --port=6379 --num-gpus 8 --dashboard-host 0.0.0.0   # head
+ray start --address=<head-ip>:6379 --num-gpus 8                      # other training nodes
+CUDA_VISIBLE_DEVICES=0 ray start --address=<head-ip>:6379 --num-gpus 1   # reward node
+```
+
+- **`ulimit -n`**: a non-interactive ssh shell defaults to 1024 open files. The raylet inherits
+  it and, once the FSDP actors and engines connect, dies with `epoll: Too many open files` — but
+  the driver log shows a misleading `ActorUnavailableError: ... RpcError: Socket closed`. Verify
+  with `grep "Max open files" /proc/$(pgrep -f raylet | head -1)/limits` after `ray start`.
+- **`CUDA_VISIBLE_DEVICES`** follows the same rule the launcher automates single-node: it must be
+  in the raylet's environment, and with an external cluster the launcher refuses a
+  `--cuda-visible-devices` of its own.
+
+`ray status` on the head should show every node and the full GPU count.
+
+### Submit
+
+```bash
+ulimit -n 1000000   # the driver needs it too
+MILES_SCRIPT_EXTERNAL_RAY=1 python3 scripts/run_diffusion_grpo_wan22_pickscore_16gpu_multinode.py
+```
+
+Reward workers (`--pickscore-num-workers 4 --pickscore-num-gpus-per-worker 0.25`, no
+`--colocate-reward`) are default-scheduled and land on the only free GPU: the reward node.
+
+### Verify the run is healthy
+
+- `train/model_output_mean_abs_diff` must be exactly `0.0` from the first optimizer step — with
+  `--rollout-patch-group wan` and `--sglang-attention-backend torch_sdpa` the trainer recompute and
+  the engine forward are the same function. Any nonzero value means a patch missed some rank.
+- Both training nodes near 100% GPU util during rollout; a 100%-vs-idle split between nodes means
+  the reward workers were packed onto one node.
+
+### Multi-node pitfalls
+
+| Pitfall | What to know |
+|---|---|
+| Stale engine hijacks the port | Killing a driver by name leaves its spawned engine alive; the next driver's health check talks to the old, unpatched server while the new one dies on `EADDRINUSE`. Between runs kill by GPU pid and check `nvidia-smi` shows no compute processes |
+| Version strings lie under editable installs | `pip show sglang` reports the install-time commit; trust `git rev-parse HEAD` in the checkout (or the `-e git+...@<sha>` line in `pip freeze`) |
+| Weight-sync bucket | `--update-weight-buffer-size 4294967296` (4 GiB): the sync is latency-bound on per-bucket round-trips — 512 MiB costs ~92 s for the A14B pair, 4 GiB ~15 s; output diff stays 0 at any size |
+| Determinism env vars are trainer-side | The tp=1 engine is bitwise deterministic without `NCCL_DETERMINISTIC`/`CUBLAS_WORKSPACE_CONFIG` (its ulysses all-to-all is a permutation; verified bitwise across machines and torch versions) |
 
 ## Next
 
