@@ -73,7 +73,17 @@ Recipe: `scripts/run_diffusion_sft_wan22.py`
 MILES_SCRIPT_DATA_JSONL=/abs/data.jsonl python3 scripts/run_diffusion_sft_wan22.py
 ```
 
-## 5. Pairs well with
+## 5. Reference results
+
+Full-finetune Flow-GRPO + PickScore with the multi-node recipe above.
+`rollout/reward/raw_mean` climbs from ~0.77 to ~0.82 over 200 rollout steps:
+
+![Wan2.2 PickScore reward mean](../../assets/images/wan/reward_mean.png)
+
+Held-out PickScore improves from **0.8090** at rollout 99 to **0.8231** at
+rollout 199 (28-step UniPC evaluation over 2048 prompts).
+
+## 6. Pairs well with
 
 - [Single-Prompt Multi-Generation](/advanced/single-prompt-multi-gen) — the microgroup mechanics behind
   `--rollout-microgroup-size 8`.
