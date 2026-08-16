@@ -75,10 +75,8 @@ MILES_SCRIPT_DATA_JSONL=/abs/data.jsonl python3 scripts/run_diffusion_sft_wan22.
 
 ### 5.1 17-GPU multi-node full-finetune GRPO
 
-Reference run (200 rollouts):
+#### CFG enabled (`4.0/3.0`)
 
-- CFG: enabled (`--diffusion-guidance-scale 4.0`,
-  `--diffusion-guidance-scale-2 3.0`).
 - `train/model_output_mean_abs_diff`: **0.0** every rollout.
 - `rollout/reward/raw_mean`: ~0.77 → ~0.82.
 - Final `eval/pickscore_test`: **0.8231** (rollout 199, 28 denoising steps—not 40,
@@ -86,8 +84,13 @@ Reference run (200 rollouts):
 
 ![Wan2.2 CFG PickScore reward mean](../../assets/images/wan/reward_mean.png)
 
-A separate no-CFG run (both guidance scales `1.0`) raised
-`rollout/reward/raw_mean` from ~0.72 to ~0.83.
+#### CFG disabled (`1.0/1.0`)
+
+- `rollout/reward/raw_mean`: ~0.72 → ~0.83.
+- Final `eval/pickscore_test`: **0.8243** (rollout 199, 28 denoising steps—not 40,
+  UniPC, 2048 prompts).
+
+![Wan2.2 no-CFG PickScore reward mean](../../assets/images/wan/reward_mean_nocfg.png)
 
 ## 6. Pairs well with
 
