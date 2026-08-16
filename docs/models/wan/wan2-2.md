@@ -75,13 +75,17 @@ MILES_SCRIPT_DATA_JSONL=/abs/data.jsonl python3 scripts/run_diffusion_sft_wan22.
 
 ## 5. Reference results
 
-Full-finetune Flow-GRPO + PickScore with the multi-node recipe above.
-`rollout/reward/raw_mean` climbs from ~0.77 to ~0.82 over 200 rollout steps:
+### 5.1 17-GPU multi-node full-finetune Flow-GRPO + PickScore
+
+The curve below is from
+`scripts/run_diffusion_grpo_wan22_pickscore_17gpu_multinode.py`; it does not
+describe the other Wan2.2 recipes. `rollout/reward/raw_mean` climbs from ~0.77
+to ~0.82 over 200 rollout steps:
 
 ![Wan2.2 PickScore reward mean](../../assets/images/wan/reward_mean.png)
 
-Held-out PickScore improves from **0.8090** at rollout 99 to **0.8231** at
-rollout 199 (28-step UniPC evaluation over 2048 prompts).
+Final held-out `eval/pickscore_test` at rollout 199 was **0.8231** (28-step
+UniPC evaluation over 2048 prompts).
 
 ## 6. Pairs well with
 
