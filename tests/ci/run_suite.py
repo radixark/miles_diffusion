@@ -37,11 +37,6 @@ PER_COMMIT_SUITES = {
     ],
 }
 
-# Nightly test suites (placeholder for future use)
-NIGHTLY_SUITES = {
-    HWBackend.CUDA: [],
-}
-
 
 def strip_run_ci_prefix(raw_labels: Iterable[str]) -> set[str]:
     """Strip the `run-ci-` prefix from each PR-side label.
@@ -73,11 +68,14 @@ def filter_tests(
     ci_tests: list[CIRegistry],
     hw: HWBackend,
     suite: str,
-    nightly: bool = False,
+    admit_nightly_tests: bool = False,
     labels: set[str] | None = None,
     match_all_labels: bool = False,
 ) -> tuple[list[CIRegistry], list[CIRegistry]]:
     """Filter registered tests down to the set that should run.
+
+    Nightly tests live in the per-commit suites: excluded by default,
+    admitted (in addition) when `admit_nightly_tests` is set.
 
     The base predicate (hw / suite / nightly / disabled) is applied first.
     Label selection then narrows further, with two modes:
@@ -94,12 +92,10 @@ def filter_tests(
       set; a test with non-empty `labels` survives only when its labels
       intersect the PR-supplied set.
     """
-    ci_tests = [t for t in ci_tests if t.backend == hw and t.suite == suite and t.nightly == nightly]
+    ci_tests = [t for t in ci_tests if t.backend == hw and t.suite == suite and (not t.nightly or admit_nightly_tests)]
 
-    valid_suites = NIGHTLY_SUITES.get(hw, []) if nightly else PER_COMMIT_SUITES.get(hw, [])
-
-    if suite not in valid_suites:
-        print(f"Warning: Unknown suite {suite} for backend {hw.name}, nightly={nightly}")
+    if suite not in PER_COMMIT_SUITES.get(hw, []):
+        print(f"Warning: Unknown suite {suite} for backend {hw.name}")
 
     if not match_all_labels:
         label_set: set[str] = labels or set()
@@ -216,7 +212,7 @@ def run_a_suite(args):
         all_tests,
         hw,
         suite,
-        nightly,
+        admit_nightly_tests=nightly,
         labels=stripped_labels,
         match_all_labels=args.match_all_labels,
     )
@@ -267,7 +263,7 @@ def main():
     parser.add_argument(
         "--nightly",
         action="store_true",
-        help="Run nightly tests instead of per-commit tests.",
+        help="Also admit tests registered with nightly=True (excluded from PR runs).",
     )
     parser.add_argument(
         "--timeout-per-file",

@@ -118,17 +118,6 @@ def init_wandb_secondary(args, router_addr=None):
             x_update_finish_state=False,
         )
 
-    if args.sglang_enable_metrics and router_addr is not None:
-        logger.info(f"Forward SGLang metrics at {router_addr} to WandB.")
-        settings_kwargs |= dict(
-            x_stats_open_metrics_endpoints={
-                "sgl_engine": f"{router_addr}/engine_metrics",
-            },
-            x_stats_open_metrics_filters={
-                "sgl_engine.*": {},
-            },
-        )
-
     init_kwargs = {
         "id": wandb_run_id,
         "entity": args.wandb_team,

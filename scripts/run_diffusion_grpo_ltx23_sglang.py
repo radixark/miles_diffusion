@@ -25,7 +25,6 @@ WANDB_PROJECT = "miles-diffusion-grpo"
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
-    cuda_visible_devices: str = "0,1,2,3,4"
     num_rollout: int = 200
     data_dir: str = "/root/datasets"
     extra_args: str = ""

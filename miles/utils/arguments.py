@@ -1277,6 +1277,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Hugging Face model path for PickScore. Required when --rm-type pickscore.",
             )
 
+            parser.add_argument(
+                "--rm-url",
+                type=str,
+                default=None,
+                help=(
+                    "URL of a remote reward service, e.g. http://localhost:8000. Mirrors the "
+                    "miles-core flag; no built-in --rm-type consumes it here yet, so read it "
+                    "from a --custom-rm-path function."
+                ),
+            )
+
             # Customization extension hooks for reward computation.
             parser.add_argument(
                 "--custom-rm-path",
@@ -1319,6 +1330,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             return parser
 
+        def add_sglang_tp_size():
+            temp_parser = argparse.ArgumentParser(add_help=False)
+            temp_parser.add_argument("--rollout-num-gpus-per-engine", type=int, default=1)
+            temp_args, _ = temp_parser.parse_known_args()
+            sglang_tp_size = temp_args.rollout_num_gpus_per_engine
+            return sglang_tp_size
+
         # Add custom arguments in front to prevent overwritten some miles arguments.
         if add_custom_arguments is not None:
             parser = add_custom_arguments(parser)
@@ -1348,6 +1366,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             help="Path to the YAML config for custom function arguments.",
         )
 
+        parser.set_defaults(sglang_tensor_parallel_size=add_sglang_tp_size())
         return parser
 
     return add_miles_arguments

@@ -12,11 +12,16 @@ name: PR Test
 #   * `docker-paths` + `docker-build` build a `pr-<num>` image on docker PRs.
 #   * `ci_megatron_pr` workflow_dispatch input removed — miles-D source has
 #     zero `from megatron` imports.
-#   * No `schedule` trigger yet (miles main runs a nightly full CI).
+#   * Nightly full CI on main: every suite with `--match-all-labels`, like
+#     miles main's cron (catches drift in floating deps: sglang main tip,
+#     image `latest`, HF snapshots).
 
 on:
   pull_request:
     types: [synchronize, labeled, opened, reopened]
+  schedule:
+    # 16:30 UTC = 09:30 PDT / 08:30 PST (cron is UTC, no DST).
+    - cron: '30 16 * * *'
   workflow_dispatch:
     inputs:
       ci_sglang_pr:
@@ -39,7 +44,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # PR updates supersede their previous run; cron and manual runs on main
+  # must not cancel one another.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.schedule || github.run_id }}
   cancel-in-progress: true
 
 # PR labels are passed through to run_suite.py as raw `run-ci-<X>` strings via
@@ -112,7 +119,7 @@ jobs:
     if: |
       always() && !cancelled() &&
       (needs.docker-build.result == 'success' || needs.docker-build.result == 'skipped') &&
-      ((github.event_name == 'workflow_dispatch') || (github.event.pull_request))
+      ((github.event_name == 'workflow_dispatch') || (github.event_name == 'schedule') || (github.event.pull_request))
     runs-on: ubuntu-latest
     outputs:
       container_image: ${{ steps.resolve.outputs.container_image }}
@@ -143,14 +150,15 @@ jobs:
 
   # Stage A: CPU-only fast tests (always runs on PR)
   stage-a-cpu:
-    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request)
+    if: (github.event_name == 'workflow_dispatch') || (github.event_name == 'schedule') || (github.event.pull_request)
     uses: ./.github/workflows/_run-ci.yml
     with:
       cpu_runner: true
       execute_command: >-
         python tests/ci/run_suite.py --hw cpu --suite stage-a-cpu
         --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
-        ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
+        ${{ (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
+        ${{ github.event_name == 'schedule' && '--nightly' || '' }}
     secrets: inherit
 
   # Stage B: CPU-only slower bucket (currently empty; reserved for future
@@ -158,14 +166,15 @@ jobs:
   # Empty result exits 0 in run_suite.py.
   stage-b-cpu:
     needs: [stage-a-cpu]
-    if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request)
+    if: (github.event_name == 'workflow_dispatch') || (github.event_name == 'schedule') || (github.event.pull_request)
     uses: ./.github/workflows/_run-ci.yml
     with:
       cpu_runner: true
       execute_command: >-
         python tests/ci/run_suite.py --hw cpu --suite stage-b-cpu
         --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
-        ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
+        ${{ (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
+        ${{ github.event_name == 'schedule' && '--nightly' || '' }}
     secrets: inherit
 
   # Stage B GPU: fast-gpu bucket, runs once stage-a-cpu is green (fast-fail:
@@ -178,7 +187,7 @@ jobs:
       always() && !cancelled() &&
       needs.resolve-ci-image.result == 'success' &&
       needs.stage-a-cpu.result == 'success' &&
-      ((github.event_name == 'workflow_dispatch') || (github.event.pull_request))
+      ((github.event_name == 'workflow_dispatch') || (github.event_name == 'schedule') || (github.event.pull_request))
     uses: ./.github/workflows/_run-ci.yml
     with:
       # Suite names match the runner split: 3gpu (GPUs 0-2) + 5gpu (GPUs 3-7).
@@ -187,7 +196,8 @@ jobs:
       execute_command: >-
         python tests/ci/run_suite.py --hw cuda --suite stage-b-3-gpu-h200
         --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
-        ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
+        ${{ (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
+        ${{ github.event_name == 'schedule' && '--nightly' || '' }}
     secrets: inherit
 
   # Stage B GPU: 4-GPU distributed tests on the 5gpu runner.
@@ -197,7 +207,7 @@ jobs:
       always() && !cancelled() &&
       needs.resolve-ci-image.result == 'success' &&
       needs.stage-a-cpu.result == 'success' &&
-      ((github.event_name == 'workflow_dispatch') || (github.event.pull_request))
+      ((github.event_name == 'workflow_dispatch') || (github.event_name == 'schedule') || (github.event.pull_request))
     uses: ./.github/workflows/_run-ci.yml
     with:
       runs_on: '["h200", "5gpu"]'
@@ -205,7 +215,8 @@ jobs:
       execute_command: >-
         python tests/ci/run_suite.py --hw cuda --suite stage-b-5-gpu-h200
         --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
-        ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
+        ${{ (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
+        ${{ github.event_name == 'schedule' && '--nightly' || '' }}
     secrets: inherit
 
   # Fan-in so each stage-c needs one job instead of every stage-b.
@@ -227,7 +238,7 @@ jobs:
       always() && !cancelled() &&
       needs.resolve-ci-image.result == 'success' &&
       needs.stage-b.result == 'success' &&
-      (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' ||
         (github.event.pull_request &&
           !contains(github.event.pull_request.labels.*.name, 'skip-ci-stage-c')))
     uses: ./.github/workflows/_run-ci.yml
@@ -237,7 +248,8 @@ jobs:
       execute_command: >-
         python tests/ci/run_suite.py --hw cuda --suite stage-c-3-gpu-h200
         --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
-        ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
+        ${{ (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
+        ${{ github.event_name == 'schedule' && '--nightly' || '' }}
     secrets: inherit
 
   # Stage C GPU: e2e suite on the 5gpu runner.
@@ -247,7 +259,7 @@ jobs:
       always() && !cancelled() &&
       needs.resolve-ci-image.result == 'success' &&
       needs.stage-b.result == 'success' &&
-      (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' ||
         (github.event.pull_request &&
           !contains(github.event.pull_request.labels.*.name, 'skip-ci-stage-c')))
     uses: ./.github/workflows/_run-ci.yml
@@ -257,5 +269,6 @@ jobs:
       execute_command: >-
         python tests/ci/run_suite.py --hw cuda --suite stage-c-5-gpu-h200
         --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
-        ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
+        ${{ (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
+        ${{ github.event_name == 'schedule' && '--nightly' || '' }}
     secrets: inherit

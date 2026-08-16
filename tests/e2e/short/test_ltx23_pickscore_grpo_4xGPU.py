@@ -10,9 +10,7 @@ register_e2e_ci(
     est_time=1800,
     suite="stage-c-5-gpu-h200",
     script="scripts/run_diffusion_grpo_ltx23_sglang.py",
-    # Empty on purpose: the runner already pins CUDA_VISIBLE_DEVICES=3,4,5,6,7,
-    # and the recipe's own "0,1,2,3,4" default would grab the 3gpu runner's cards.
-    args=["--num-rollout", "2", "--cuda-visible-devices", ""],
+    args=["--num-rollout", "2"],
     metrics=[
         "rollout/reward/raw_num_samples",
         "rollout/reward/raw_mean",

@@ -45,7 +45,7 @@ def prepare_nft_batch(
     return PreparedBatch(
         latents=xt,
         timesteps=t,
-        timesteps_for_model=config.process_timestep_as_input(t * float(num_train_timesteps)),
+        timesteps_for_model=config.process_sigma_as_timesteps_input(t, num_train_timesteps=num_train_timesteps),
         model=model,
         component_name=component_name,
         guidance_scale=0.0,

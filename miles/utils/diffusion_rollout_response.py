@@ -109,6 +109,9 @@ def _parse_cond_kwargs(
         pooled_projections=_parse_tensor_or_list(data.get("pooled_projections"), deserialize_func=deserialize_func),
         h3_packed_layout=_parse_h3_packed_layout(data.get("h3_packed_layout"), deserialize_func=deserialize_func),
         h3_token_tags=_deserialize_optional_tensor(data.get("h3_token_tags"), deserialize_func=deserialize_func),
+        text_ids=deserialize_func(data.get("text_ids")),
+        text_mask=deserialize_func(data.get("text_mask")),
+        fps=data.get("fps"),
     )
 
 
