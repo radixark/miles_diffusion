@@ -1,6 +1,6 @@
 """Low-memory Wan2.2-T2V-A14B high-noise GRPO + PickScore, 102 GPUs.
 
-Same recipe family as scripts/run_diffusion_grpo_wan22_pickscore_low_memory_16gpu.py (itself
+Same recipe family as scripts/run_diffusion_grpo_wan22_pickscore_low_memory_17gpu.py (itself
 derived from the 17-GPU multi-node recipe in PR #173). 12 nodes × 8 GPUs colocate
 train+rollout (96), plus 6 leftover GPUs for PickScore (24 workers × 0.25). N=12:
 24 rollout engines at TP4, 12 FSDP hybrid replicas (8-way shard) × Ulysses SP2.

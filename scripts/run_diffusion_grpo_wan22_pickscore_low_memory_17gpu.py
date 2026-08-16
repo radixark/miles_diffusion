@@ -1,9 +1,9 @@
-"""16-GPU scale-down of the low-memory Wan2.2 high-noise GRPO recipe.
+"""17-GPU scale-down of the low-memory Wan2.2 high-noise GRPO recipe.
 
 Derived from scripts/run_diffusion_grpo_wan22_pickscore_17gpu_multinode.py (PR #173):
 same multi-node submit path (existing ray cluster, MILES_SCRIPT_EXTERNAL_RAY=1), same
-2×8 colocate train+rollout layout. Reward is folded onto the 16 cards with
---colocate-reward (4 workers, one per TP4 engine) instead of a 17th GPU.
+2×8 colocate train+rollout layout plus one dedicated reward GPU shared by four
+PickScore workers.
 
 LoRA r64 for 40GB GPUs. Trainer: 2 FSDP hybrid replicas ×
 Ulysses SP2 + gradient checkpointing (SP2 alone peaks at 39GB activations).
@@ -17,9 +17,9 @@ is trained; SDE candidates 1,2. 13-frame 480P (480×832), no CFG, microgroup 1.
     dp_size = 16/2 = 8 → 24 pairs/rank, micro-batch-size-sample 1 → 24 GA
     rollout microgroup 1
 
-Usage (after bringing up the 2-node ray cluster):
-    MILES_SCRIPT_EXTERNAL_RAY=1 python3 scripts/run_diffusion_grpo_wan22_pickscore_low_memory_16gpu.py
-    MILES_SCRIPT_EXTERNAL_RAY=1 python3 scripts/run_diffusion_grpo_wan22_pickscore_low_memory_16gpu.py --num-rollout 1
+Usage (after bringing up the 16+1 GPU ray cluster):
+    MILES_SCRIPT_EXTERNAL_RAY=1 python3 scripts/run_diffusion_grpo_wan22_pickscore_low_memory_17gpu.py
+    MILES_SCRIPT_EXTERNAL_RAY=1 python3 scripts/run_diffusion_grpo_wan22_pickscore_low_memory_17gpu.py --num-rollout 1
 """
 
 from dataclasses import dataclass
@@ -54,11 +54,11 @@ def prepare(args: ScriptArgs) -> str:
 
 def execute(args: ScriptArgs, data_dir: str) -> None:
     assert U.get_bool_env_var("MILES_SCRIPT_EXTERNAL_RAY"), (
-        "This recipe needs the 16-GPU ray cluster (2 nodes × 8); "
+        "This recipe needs a 17-GPU ray cluster (16 train/rollout + 1 reward); "
         "bring it up first, then run with MILES_SCRIPT_EXTERNAL_RAY=1."
     )
 
-    run_name = f"diffusion_grpo_wan22_pickscore_low_memory_16gpu_{U.create_run_id()}"
+    run_name = f"diffusion_grpo_wan22_pickscore_low_memory_17gpu_{U.create_run_id()}"
 
     ckpt_args = f"--hf-checkpoint {MODEL} --save {args.output_dir}/{run_name}/ckpt --save-interval 100 "
 
@@ -109,8 +109,8 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
 
     reward_args = (
         "--rm-type pickscore "
-        "--colocate-reward "
         "--pickscore-num-workers 4 "
+        "--pickscore-num-gpus-per-worker 0.25 "
         "--pickscore-batch-size 8 "
         "--pickscore-processor-path laion/CLIP-ViT-H-14-laion2B-s32B-b79K "
         "--pickscore-model-path yuvalkirstain/PickScore_v1 "
