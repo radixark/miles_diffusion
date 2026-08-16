@@ -82,6 +82,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          # Review-triggered callers otherwise check out the default branch.
+          ref: ${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
 
       - name: Cleanup Ray processes
         shell: bash
@@ -199,6 +202,8 @@ jobs:
 
       - name: Checkout miles-diffusion
         uses: actions/checkout@v4
+        with:
+          ref: ${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
