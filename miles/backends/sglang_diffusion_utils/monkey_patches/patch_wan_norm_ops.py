@@ -10,10 +10,7 @@ and is anti-parity for Wan; these mirror the Wan fp32-once shape.
 import torch
 import torch.nn.functional as F
 from sglang.multimodal_gen.runtime.layers.elementwise import MulAdd
-from sglang.multimodal_gen.runtime.layers.layernorm import (
-    LayerNormScaleShift,
-    ScaleResidualLayerNormScaleShift,
-)
+from sglang.multimodal_gen.runtime.layers.layernorm import LayerNormScaleShift, ScaleResidualLayerNormScaleShift
 
 from miles.backends.sglang_diffusion_utils.monkey_patches._common import ensure_broadcast
 
@@ -107,22 +104,19 @@ def _patched_apply_rotary_emb(x, cos, sin, is_neox_style, interleaved=False):
 
 
 def _upcast_head_table_pre_hook(module, args, kwargs=None):
-    """Two jobs, both required for `scale_shift_table + temb` parity at the root norm_out.
+    """Keep the root `scale_shift_table + temb` identical on both sides.
 
-    Promote the container to fp32: the trainer's temb is fp32 so its sum promotes; the engine's
-    temb is bf16, so with a bf16 table the sum rounds.
+    Container fp32: the trainer adds a fp32 temb, the engine a bf16 one -- with a bf16 table the
+    engine's sum rounds where the trainer's promotes.
 
-    Re-round the values to bf16 on every call, not once: each weight sync refills the (now fp32)
-    param with the trainer's full fp32 master, while the trainer's own forward reads the bf16 copy
-    FSDP gathered -- a one-time rounding is undone by the first sync. 10240 elements, cost is nil.
+    Values re-rounded to bf16 every call: weight sync writes the fp32 master into this param, but
+    the trainer's own forward computes with its bf16 copy.
     """
     table = getattr(module, "scale_shift_table", None)
     if table is None:
         return
     if table.dtype != torch.float32:
-        module.scale_shift_table = torch.nn.Parameter(
-            table.data.float(), requires_grad=table.requires_grad
-        )
+        module.scale_shift_table = torch.nn.Parameter(table.data.float(), requires_grad=table.requires_grad)
         table = module.scale_shift_table
     table.data.copy_(table.data.to(torch.bfloat16).to(torch.float32))
 
