@@ -77,12 +77,17 @@ MILES_SCRIPT_DATA_JSONL=/abs/data.jsonl python3 scripts/run_diffusion_sft_wan22.
 
 Reference run (200 rollouts):
 
+- CFG: enabled (`--diffusion-guidance-scale 4.0`,
+  `--diffusion-guidance-scale-2 3.0`).
 - `train/model_output_mean_abs_diff`: **0.0** every rollout.
 - `rollout/reward/raw_mean`: ~0.77 → ~0.82.
 - Final `eval/pickscore_test`: **0.8231** (rollout 199, 28 denoising steps—not 40,
   UniPC, 2048 prompts).
 
-![Wan2.2 PickScore reward mean](../../assets/images/wan/reward_mean.png)
+![Wan2.2 CFG PickScore reward mean](../../assets/images/wan/reward_mean.png)
+
+A separate no-CFG run (both guidance scales `1.0`) showed a larger increase in
+`rollout/reward/raw_mean`.
 
 ## 6. Pairs well with
 
