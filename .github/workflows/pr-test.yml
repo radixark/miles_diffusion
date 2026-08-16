@@ -140,6 +140,11 @@ jobs:
             core.info(
               `CI gate: approved=${approved}, docs_only=${docsOnly}, changed_files=${files.length}`,
             );
+            if (!approved) {
+              core.setFailed(
+                "PR CI requires an approval from a repository owner, member, or collaborator.",
+              );
+            }
 
   # Nothing rebuilds the CI image for a PR, so a docker PR would otherwise be tested inside the old `latest`.
   docker-paths:
