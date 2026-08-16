@@ -86,8 +86,8 @@ Reference run (200 rollouts):
 
 ![Wan2.2 CFG PickScore reward mean](../../assets/images/wan/reward_mean.png)
 
-A separate no-CFG run (both guidance scales `1.0`) showed a larger increase in
-`rollout/reward/raw_mean`.
+A separate no-CFG run (both guidance scales `1.0`) raised
+`rollout/reward/raw_mean` from ~0.72 to ~0.83.
 
 ## 6. Pairs well with
 
