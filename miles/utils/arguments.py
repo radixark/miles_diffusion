@@ -1659,11 +1659,9 @@ def miles_validate_args(args):
 
     if args.colocate_reward:
         assert args.colocate, "--colocate-reward requires --colocate."
-        num_gpu_per_engine = min(args.rollout_num_gpus_per_engine, args.num_gpus_per_node)
-        num_engines = args.rollout_num_gpus // num_gpu_per_engine
-        assert args.pickscore_num_workers <= num_engines, (
+        assert args.pickscore_num_workers <= args.rollout_num_gpus, (
             f"--colocate-reward requires pickscore_num_workers ({args.pickscore_num_workers}) "
-            f"<= rollout engines ({num_engines})."
+            f"<= rollout_num_gpus ({args.rollout_num_gpus}): the placement group has one bundle per GPU."
         )
 
     if args.eval_function_path is None:

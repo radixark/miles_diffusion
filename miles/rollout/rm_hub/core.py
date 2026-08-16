@@ -42,10 +42,13 @@ class AsyncRewardActorPool:
     ) -> None:
         if colocate:
             pg, bundle_indices, _ = get_reward_placement_group()
+            # bundle_indices is sorted by (node, gpu); stride so workers spread across nodes
+            # instead of stacking onto the first node's GPUs.
+            stride = max(1, len(bundle_indices) // num_workers)
             strategies = [
                 PlacementGroupSchedulingStrategy(
                     placement_group=pg,
-                    placement_group_bundle_index=bundle_indices[w],
+                    placement_group_bundle_index=bundle_indices[w * stride],
                 )
                 for w in range(num_workers)
             ]
