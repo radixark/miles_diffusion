@@ -124,7 +124,7 @@ drives them the same way you do.
 |---|---|
 | `MILES_SCRIPT_EXTERNAL_RAY=1` | A scheduler already built the Ray cluster: skip the teardown and `ray start`, only submit. `--cuda-visible-devices` must be empty here — export it before each `ray start` instead. Used by the multi-node recipe below. |
 | `MILES_SCRIPT_ENABLE_RAY_SUBMIT=0` | Run everything except the submission — shows what a launcher would do |
-| `MASTER_ADDR` | Head-node address, default `127.0.0.1` |
+| `MASTER_ADDR` | Where the single-node `ray start --head` binds, default `127.0.0.1`. The training process group does NOT use it: rank 0 negotiates its real node IP and a free port at runtime, so multi-node needs no setting here |
 
 ## The batch-size arithmetic
 
