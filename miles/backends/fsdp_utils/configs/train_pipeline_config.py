@@ -66,6 +66,7 @@ def resolve_diffusion_model_family(model_ref: str) -> str:
 
 def get_train_pipeline_config_cls(family: str) -> type[TrainPipelineConfig]:
     """The TrainPipelineConfig class registered for a resolved family key."""
+    _populate_registry()
     cls = _REGISTRY.get(family.lower())
     if cls is None:
         raise ValueError(

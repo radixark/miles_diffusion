@@ -21,19 +21,6 @@ import math
 import torch
 
 
-def _sigmas_from_timesteps(
-    timesteps: torch.Tensor,
-    next_timesteps: torch.Tensor,
-    *,
-    divisor: float,
-    ndim: int,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Linear timestep<->σ map: timesteps are σ×divisor, so σ comes from the carried
-    rollout values directly — no scheduler, no positional-alignment assumption."""
-    view = (-1, *([1] * (ndim - 1)))
-    return (timesteps.float() / divisor).view(view), (next_timesteps.float() / divisor).view(view)
-
-
 class SdeStepBackend(abc.ABC):
     def __init__(self, scheduler=None, *, sde_timestep_divisor: float = 1.0):
         # Primitive params only (no train pipeline config) so the rollout process — which has
@@ -115,10 +102,6 @@ class DiffusersSdeStepBackend(SdeStepBackend):
         view = (-1, *([1] * (ndim - 1)))
         return self.scheduler.sigmas[step_index].view(view), self.scheduler.sigmas[prev_step_index].view(view)
 
-    def sigma_max(self) -> float:
-        """σ substituted at σ=1, where the ``1/(1-σ)`` diffusion factor is singular."""
-        return self.scheduler.sigmas[1].item()
-
     def prev_sample_mean_and_std(
         self,
         model_output: torch.Tensor,
@@ -128,7 +111,7 @@ class DiffusersSdeStepBackend(SdeStepBackend):
         *,
         noise_level: float,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        sigma_max = self.sigma_max()
+        sigma_max = self.scheduler.sigmas[1].item()
         dt = sigma_prev - sigma
 
         std_dev_t = torch.sqrt(sigma / (1 - torch.where(sigma == 1, sigma_max, sigma))) * noise_level
@@ -139,58 +122,17 @@ class DiffusersSdeStepBackend(SdeStepBackend):
         return prev_mean, std_dev_t * torch.sqrt(-1 * dt), std_dev_t
 
 
-class H3SdeStepBackend(DiffusersSdeStepBackend):
-    """Flow-matching SDE with σ read off the rollout timesteps instead of a scheduler.
-
-    Only σ resolution differs from the generic backend: H3 relates timestep and σ
-    linearly, so its diffusers scheduler is never given a σ grid to look up. The
-    dynamics kernel is inherited, which is what keeps it identical to sgl-d's
-    ``rollout_sde_type="sde"`` branch.
-    """
-
-    def resolve_sigmas(
-        self, timesteps: torch.Tensor, next_timesteps: torch.Tensor, *, ndim: int
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        return _sigmas_from_timesteps(timesteps, next_timesteps, divisor=float(self.sde_timestep_divisor), ndim=ndim)
-
-    def sigma_max(self) -> float:
-        # Mirrors sgl-d's ``_h3_rollout_sigma_max`` default. Never actually substituted:
-        # σ=1 is rejected below, and no real σ grid is loaded to read a neighbour from.
-        return 1.0
-
-    def prev_sample_mean_and_std(
-        self,
-        model_output: torch.Tensor,
-        sample: torch.Tensor,
-        sigma: torch.Tensor,
-        sigma_prev: torch.Tensor,
-        *,
-        noise_level: float,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        if bool(torch.any(sigma >= 1.0)):
-            # 1/(1-σ) is singular there and the rollout engine silently yields NaN latents,
-            # so fail loudly instead of training on them.
-            raise ValueError(
-                "H3 flow-SDE is singular at σ=1 (the first denoising step). Exclude it from "
-                "the SDE window, e.g. --diffusion-sde-window-range 1,N, or use "
-                "--diffusion-sde-type cps."
-            )
-        return super().prev_sample_mean_and_std(
-            model_output,
-            sample,
-            sigma,
-            sigma_prev,
-            noise_level=noise_level,
-        )
-
-
 class CpsSdeStepBackend(SdeStepBackend):
     """CPS dynamics; σ = timestep/divisor resolved straight from the rollout values."""
 
     def resolve_sigmas(
         self, timesteps: torch.Tensor, next_timesteps: torch.Tensor, *, ndim: int
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        return _sigmas_from_timesteps(timesteps, next_timesteps, divisor=float(self.sde_timestep_divisor), ndim=ndim)
+        # Linear timestep<->σ (timesteps are σ×divisor), so σ/σ_next come directly from the
+        # carried rollout values — no scheduler, no positional-alignment assumption.
+        divisor = float(self.sde_timestep_divisor)
+        view = (-1, *([1] * (ndim - 1)))
+        return (timesteps.float() / divisor).view(view), (next_timesteps.float() / divisor).view(view)
 
     def prev_sample_mean_and_std(
         self,

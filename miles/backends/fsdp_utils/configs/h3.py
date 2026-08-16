@@ -21,13 +21,6 @@ class H3TrainPipelineConfig(TrainPipelineConfig):
     supports_cfg_training = False
     needs_timestep_scaling = False
     sde_timestep_divisor = 1000.0
-    # σ comes from the rollout timesteps, not a scheduler index: CPS already resolves it that
-    # way, so only the flow-SDE dynamics needs an H3 variant.
-    sde_step_backend_overrides = {
-        "sde": "miles.backends.fsdp_utils.sde_step_backend.H3SdeStepBackend",
-        "cps": "miles.backends.fsdp_utils.sde_step_backend.CpsSdeStepBackend",
-        "ode": "miles.backends.fsdp_utils.sde_step_backend.CpsSdeStepBackend",
-    }
     optimizer_state_allowed_missing = ["audio"]
     lora_layer_group_collector_path = "miles.backends.fsdp_utils.h3_weight_key_mapper.collect_h3_lora_layer_groups"
 
