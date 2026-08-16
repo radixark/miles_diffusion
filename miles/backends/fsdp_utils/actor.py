@@ -278,6 +278,7 @@ class FSDPTrainRayActor(TrainRayActor):
         move_torch_optimizer(self.optimizer, "cuda")
         dist.barrier(group=get_gloo_group())
         print_memory("after wake_up DiT")
+        torch.cuda.reset_peak_memory_stats()
 
     def save_model(self, rollout_id: int, force_sync: bool = False) -> None:  # type: ignore[override]
         if self.args.save is None:
