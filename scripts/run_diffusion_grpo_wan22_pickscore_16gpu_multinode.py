@@ -48,7 +48,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     data_dir: str = "/root/datasets"
     extra_args: str = ""
     # CI cap: same recipe on 1 node x 4 GPUs — batch /4, FSDP shard 4 (SP kept, so dp_replicate 1),
-    # one 4-GPU rollout engine (engine sp 2->4: per-engine must equal tp*sp), reward colocated one worker per GPU. Runs on the launcher's own
+    # two sp2 rollout engines, reward colocated one worker per GPU. Runs on the launcher's own
     # local ray instead of an external cluster.
     four_gpu_ci: bool = False
 
@@ -148,8 +148,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
             "--actor-num-gpus-per-node 4 "
             "--num-gpus-per-node 4 "
             "--rollout-num-gpus 4 "
-            "--rollout-num-gpus-per-engine 4 "
-            "--sglang-sp-degree 4 "
+            "--rollout-num-gpus-per-engine 2 "
             "--dp-replicate-size 1 "
         )
         if args.four_gpu_ci
@@ -159,11 +158,11 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
             "--num-gpus-per-node 8 "
             "--rollout-num-gpus 16 "
             "--rollout-num-gpus-per-engine 2 "
-            "--sglang-sp-degree 2 "
             "--dp-replicate-size 2 "
         )
     ) + (
         "--sglang-tp-size 1 "
+        "--sglang-sp-degree 2 "
         "--sequence-parallel-size 4 "
         "--ulysses-degree 4 "
         "--colocate "
