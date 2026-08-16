@@ -1,7 +1,7 @@
 {
   "meta": {
     "commit": "5aee5f49fc2c5e6ff25d1fced41b6e8c969da901",
-    "source": "test_wan22_pickscore_grpo_4xGPU.py"
+    "source": "test_wan22_pickscore_grpo_17xGPU_single_node_4xGPU_proxy.py"
   },
   "metrics": {
     "rollout/reward/raw_mean": [
