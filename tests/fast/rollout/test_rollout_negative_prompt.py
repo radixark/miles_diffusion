@@ -10,10 +10,7 @@ register_cpu_ci(est_time=5, suite="stage-a-cpu", labels=[])
 
 from argparse import Namespace
 
-from miles.rollout.sglang_diffusion_rollout import (
-    build_rollout_generate_payload,
-    build_rollout_sampling_params,
-)
+from miles.rollout.sglang_diffusion_rollout import build_rollout_generate_payload, build_rollout_sampling_params
 
 
 def _args(**overrides):
