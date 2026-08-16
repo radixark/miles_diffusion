@@ -18,6 +18,7 @@ here: they bypass the per-test labels filter and run the full suite via the
 
 KNOWN_LABELS: dict[str, str] = {
     "sglang-diffusion": "sglang_diffusion_utils engine / monkey patch tests",
+    "e2e": "Full-recipe GPU e2e runs (opt-in: heavy, ~30-40 min each)",
     "fsdp": "FSDP backend + config tests",
     "torch": "Ported PyTorch regression tests",
     "rollout": "Rollout sampling / filter / strategy tests",

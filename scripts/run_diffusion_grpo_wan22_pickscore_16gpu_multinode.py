@@ -47,6 +47,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
     num_rollout: int = 10000
     data_dir: str = "/root/datasets"
     extra_args: str = ""
+    # CI cap: same recipe on 1 node x 4 GPUs — batch /4, FSDP shard 4 (SP kept, so dp_replicate 1),
+    # one 4-GPU rollout engine, reward colocated one worker per GPU. Runs on the launcher's own
+    # local ray instead of an external cluster.
+    four_gpu_ci: bool = False
 
 
 def prepare(args: ScriptArgs) -> str:
@@ -55,20 +59,23 @@ def prepare(args: ScriptArgs) -> str:
 
 
 def execute(args: ScriptArgs, data_dir: str) -> None:
-    assert U.get_bool_env_var("MILES_SCRIPT_EXTERNAL_RAY"), (
+    assert args.four_gpu_ci or U.get_bool_env_var("MILES_SCRIPT_EXTERNAL_RAY"), (
         "This recipe needs the 17-GPU ray cluster from docs/user-guide/launch-script.md (Multi-node training); "
         "bring it up first, then run with MILES_SCRIPT_EXTERNAL_RAY=1."
     )
 
     run_name = f"diffusion_grpo_wan22_pickscore_16gpu_{U.create_run_id()}"
 
-    ckpt_args = f"--hf-checkpoint {MODEL} --save {args.output_dir}/{run_name}/ckpt --save-interval 100 "
+    ckpt_args = f"--hf-checkpoint {MODEL} "
+    if not args.four_gpu_ci:
+        ckpt_args += f"--save {args.output_dir}/{run_name}/ckpt --save-interval 100 "
 
+    rollout_batch_size = 6 if args.four_gpu_ci else 24
     rollout_args = (
         "--rollout-function-path miles.rollout.sglang_diffusion_rollout.generate_rollout "
         f"--prompt-data {data_dir}/train.jsonl "
         "--input-key input "
-        "--rollout-batch-size 24 "
+        f"--rollout-batch-size {rollout_batch_size} "
         "--n-samples-per-prompt 16 "
         f"--num-rollout {args.num_rollout} "
         "--num-steps-per-rollout 1 "
@@ -92,7 +99,9 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
     )
 
     eval_args = (
-        f"--eval-prompt-data pickscore_test {data_dir}/test.jsonl "
+        ""
+        if args.four_gpu_ci
+        else f"--eval-prompt-data pickscore_test {data_dir}/test.jsonl "
         "--eval-interval 100 "
         "--diffusion-eval-num-steps 28 "
         "--skip-eval-before-train "
@@ -102,10 +111,14 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
 
     optimizer_args = "--lr 1e-5 --adam-beta2 0.999 --weight-decay 1e-4 "
 
+    reward_placement = (
+        "--colocate-reward --pickscore-num-workers 4 "
+        if args.four_gpu_ci
+        else "--pickscore-num-workers 4 --pickscore-num-gpus-per-worker 0.25 "
+    )
     reward_args = (
         "--rm-type pickscore "
-        "--pickscore-num-workers 4 "
-        "--pickscore-num-gpus-per-worker 0.25 "
+        f"{reward_placement}"
         "--pickscore-batch-size 8 "
         "--pickscore-processor-path laion/CLIP-ViT-H-14-laion2B-s32B-b79K "
         "--pickscore-model-path yuvalkirstain/PickScore_v1 "
@@ -130,14 +143,26 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
     )
 
     topology_args = (
-        "--actor-num-nodes 2 "
-        "--actor-num-gpus-per-node 8 "
-        "--num-gpus-per-node 8 "
-        "--rollout-num-gpus 16 "
-        "--rollout-num-gpus-per-engine 2 "
+        (
+            "--actor-num-nodes 1 "
+            "--actor-num-gpus-per-node 4 "
+            "--num-gpus-per-node 4 "
+            "--rollout-num-gpus 4 "
+            "--rollout-num-gpus-per-engine 4 "
+            "--dp-replicate-size 1 "
+        )
+        if args.four_gpu_ci
+        else (
+            "--actor-num-nodes 2 "
+            "--actor-num-gpus-per-node 8 "
+            "--num-gpus-per-node 8 "
+            "--rollout-num-gpus 16 "
+            "--rollout-num-gpus-per-engine 2 "
+            "--dp-replicate-size 2 "
+        )
+    ) + (
         "--sglang-tp-size 1 "
         "--sglang-sp-degree 2 "
-        "--dp-replicate-size 2 "
         "--sequence-parallel-size 4 "
         "--ulysses-degree 4 "
         "--colocate "
@@ -151,7 +176,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
             f"{reward_args} {wandb_args} {sglang_args} {train_backend_args} "
             f"{topology_args} {args.extra_args}"
         ),
-        num_gpus_per_node=8,
+        num_gpus_per_node=4 if args.four_gpu_ci else 8,
         config=args,
         extra_env_vars={"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:False"},
     )
