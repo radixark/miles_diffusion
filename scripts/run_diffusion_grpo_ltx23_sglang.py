@@ -1,8 +1,8 @@
 """LTX-2.3 video PickScore GRPO: 4-GPU FSDP train + sglang rollout colocate, 1 reward GPU.
 
 57-frame 512x768 video at 24 fps, 24 denoising steps, CPS-SDE with 3 trainable steps drawn
-per epoch from candidate steps 0-9. Master weights run fp32; reduce, forward, and the
-sgl-d engine run bf16 on the sdpa_math attention backend.
+per epoch from candidate steps 0-9. Everything runs bf16 end to end — master, reduce,
+forward and the sgl-d engine — on the sdpa_math attention backend.
 
 Video rollouts take minutes per request, so the health checker gets a far longer interval
 and failure budget than the image recipes.
@@ -97,7 +97,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
 
     train_backend_args = (
         "--train-backend fsdp "
-        "--fsdp-master-dtype fp32 "
+        "--fsdp-master-dtype bf16 "
         "--fsdp-reduce-dtype bf16 "
         "--diffusion-forward-dtype bf16 "
         "--fsdp-attention-backend sdpa_math "
