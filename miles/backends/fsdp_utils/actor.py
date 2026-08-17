@@ -587,8 +587,7 @@ def _to_pinned_cpu(tensor: torch.Tensor) -> torch.Tensor:
             return tensor
         pinned = torch.empty_like(local_tensor, device="cpu", pin_memory=True)
         pinned.copy_(local_tensor, non_blocking=local_tensor.device.type == "cuda")
-        tensor._local_tensor = pinned
-        return tensor
+        return DTensor(pinned, tensor._spec, requires_grad=tensor.requires_grad)
     if tensor.device.type == "cpu" and tensor.is_pinned():
         return tensor
     pinned = torch.empty_like(tensor, device="cpu", pin_memory=True)
@@ -601,8 +600,8 @@ def _to_device(tensor: torch.Tensor, device: torch.device) -> torch.Tensor:
         local_tensor = tensor.to_local()
         if local_tensor.device == device:
             return tensor
-        tensor._local_tensor = local_tensor.to(device, non_blocking=True)
-        return tensor
+        moved = local_tensor.to(device, non_blocking=True)
+        return DTensor(moved, tensor._spec, requires_grad=tensor.requires_grad)
     return tensor.to(device, non_blocking=True)
 
 
@@ -625,12 +624,16 @@ def _fsdp_params(fsdp_modules):
 
 
 def _set_fsdp_param_storage(fsdp_param, storage: torch.Tensor) -> None:
-    local_tensor = fsdp_param.sharded_param.to_local()
+    sharded_param = fsdp_param.sharded_param
     shard_dim = fsdp_param.fsdp_placement.dim
-    length = local_tensor.size(shard_dim) if local_tensor.numel() > 0 else 0
     padded = storage.view(fsdp_param.padded_sharded_param_size)
+    local = padded.narrow(shard_dim, 0, fsdp_param.sharded_size[shard_dim])
+    replacement = torch.nn.Parameter(
+        fsdp_param.to_sharded_dtensor(local),
+        requires_grad=sharded_param.requires_grad,
+    )
+    torch.utils.swap_tensors(sharded_param, replacement)
     fsdp_param._sharded_param_data = storage
-    fsdp_param.sharded_param._local_tensor = padded.narrow(shard_dim, 0, length)
 
 
 def _move_model_to_pinned_cpu(model: torch.nn.Module) -> None:

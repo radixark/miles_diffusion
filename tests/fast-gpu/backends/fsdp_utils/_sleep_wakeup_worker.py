@@ -92,7 +92,7 @@ def main():
         fully_shard(layer, mesh=mesh)
     fully_shard(model, mesh=mesh)
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
-    ema = EmaShadow(model.parameters())
+    ema = EmaShadow(model.parameters(), decay=1.0, flat_steps=10)
 
     inputs = torch.randn(4, 8, device=device)
     model(inputs).sum().backward()
@@ -142,6 +142,8 @@ def main():
         _assert_device(_optimizer_tensors(optimizer), "cpu", pinned=True)
         _assert_device(ema.shadow, "cpu", pinned=True)
         _assert_device((param._sharded_param_data for param in fsdp_params), "cpu", pinned=True)
+        assert model.state_dict()
+        ema.update()
 
         start = time.perf_counter()
         move_torch_model(model, device)
