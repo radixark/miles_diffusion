@@ -68,9 +68,8 @@ python3 scripts/run_diffusion_grpo_ltx23_sglang.py
 
 ## 6. Reference results
 
-The original [bf16-master 4-train-GPU + 1-reward-GPU run](https://wandb.ai/kangrdu/miles-diffusion-grpo/runs/l301246j),
-used as the first LTX E2E reference, raises `rollout/reward/raw_mean` from ~0.68 to ~0.77
-over 200 rollouts:
+The original bf16-master 4-train-GPU + 1-reward-GPU run, used as the first LTX E2E
+reference, raises `rollout/reward/raw_mean` from ~0.68 to ~0.77 over 200 rollouts:
 
 ![LTX-2.3 PickScore reward mean](../../assets/images/ltx/reward_mean.png)
 
