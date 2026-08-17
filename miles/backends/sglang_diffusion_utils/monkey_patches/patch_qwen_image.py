@@ -14,7 +14,6 @@ from sglang.multimodal_gen.runtime.models.dits import qwen_image as qwen_image_m
 from torch.distributed.tensor import DTensor
 
 _orig_split_seqs = qwen_image_mod.split_seqs
-_orig_set_lora_weights = lora_linear.BaseLayerWithLoRA.set_lora_weights
 _orig_column_parallel_lora_forward = lora_linear.ColumnParallelLinearWithLoRA.forward
 _orig_row_parallel_lora_forward = lora_linear.RowParallelLinearWithLoRA.forward
 
@@ -173,12 +172,6 @@ def _lora_row_parallel_forward(self, x: torch.Tensor):
     return _lora_base_forward(self, x)
 
 
-def _set_lora_weights_unmerged(self, *args, **kwargs):
-    # Merging W' = W + scaling*(B@A) in bf16 rounds differently from PEFT's unmerged path.
-    kwargs["merge_weights"] = False
-    return _orig_set_lora_weights(self, *args, **kwargs)
-
-
 def apply() -> None:
     RMSNorm.forward = _rmsnorm_forward
     LayerNormScaleShift.forward = _layernorm_scale_shift_forward
@@ -191,4 +184,3 @@ def apply() -> None:
     lora_linear.RowParallelLinearWithLoRA.forward = _lora_row_parallel_forward
     lora_linear.ColumnParallelLinearWithLoRA.forward = _lora_column_parallel_forward
     lora_linear.LinearWithLoRA.forward = _lora_nn_linear_forward
-    lora_linear.BaseLayerWithLoRA.set_lora_weights = _set_lora_weights_unmerged

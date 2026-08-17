@@ -79,7 +79,11 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
 
     optimizer_args = "--lr 3e-4 --adam-beta2 0.999 --weight-decay 1e-4 "
 
-    lora_args = "--use-lora --lora-ipc-weight-sync --lora-rank 64 --lora-alpha 128 --lora-init-weights gaussian "
+    lora_args = (
+        "--use-lora --lora-ipc-weight-sync --lora-rank 64 --lora-alpha 128 --lora-init-weights gaussian "
+        # PEFT evaluates adapters unmerged; merging rounds differently in bf16.
+        "--sglang-lora-merge-mode dynamic "
+    )
 
     reward_args = (
         "--rm-type pickscore "
