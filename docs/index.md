@@ -47,6 +47,7 @@ Each model name links to its recipe page.
 | [Wan2.2-T2V-A14B](/models/wan/wan2-2)                   | T2V       | Flow-GRPO + PickScore, LoRA SFT           |
 | [LTX-2.3](/models/ltx/ltx2)                             | T2V       | Flow-GRPO + PickScore                     |
 | [Cosmos3 (Edge / Nano / Super)](/models/cosmos/cosmos3) | T2I       | Flow-GRPO + PickScore                     |
+| [MiniMax H3](/models/h3/h3)                             | T2VA      | Flow-GRPO + PickScore (2-GPU; large-scale recipe coming soon) |
 
 
 
