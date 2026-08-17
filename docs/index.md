@@ -37,7 +37,7 @@ reproducible.
 
 ## Supported models
 
-Each model name links to its recipe page. Every shipped script is labeled with a
+Each model name links to its recipe page. Every documented recipe is labeled with a
 [recipe verification level](/user-guide/recipe-verification).
 
 

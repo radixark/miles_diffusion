@@ -1,6 +1,6 @@
 ---
 title: Recipe Verification Levels
-description: Evidence levels for shipped training recipes.
+description: Evidence levels for documented training recipes.
 ---
 # Recipe verification levels
 
@@ -46,6 +46,8 @@ count as verification.
     Flow-GRPO + PickScore.
   - `run_diffusion_grpo_cosmos3_pickscore_t2i_4gpu.py` — Cosmos3-Nano
     Flow-GRPO + PickScore.
+  - `run_diffusion_grpo_h3_t2va_2gpu.py` — MiniMax H3 Flow-GRPO + PickScore
+    ([implementation PR #154](https://github.com/radixark/miles_diffusion/pull/154)).
 - **○ NV**
   - `run_diffusion_grpo_wan22_pickscore_5gpu.py` — Wan2.2 5-GPU LoRA
     Flow-GRPO + PickScore.
