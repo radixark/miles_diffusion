@@ -1,20 +1,21 @@
-"""Low-memory Wan2.2-T2V-A14B high-noise GRPO + PickScore, 102 GPUs.
+"""Low-memory Wan2.2-T2V-A14B high-noise GRPO + PickScore, 96 GPUs.
 
 Same recipe family as scripts/run_diffusion_grpo_wan22_pickscore_low_memory_17gpu.py (itself
-derived from the 17-GPU multi-node recipe in PR #173). 12 nodes × 8 GPUs colocate
-train+rollout (96), plus 6 leftover GPUs for PickScore (24 workers × 0.25). N=12:
-24 rollout engines at TP4, 12 FSDP hybrid replicas (8-way shard) × Ulysses SP2.
+derived from the 17-GPU multi-node recipe in PR #173). 11 nodes × 8 GPUs colocate
+train+rollout (88), plus one dedicated 8-GPU node for PickScore (32 workers ×
+0.25). N=11: 22 rollout engines at TP4, 11 FSDP hybrid replicas (8-way shard) ×
+Ulysses SP2.
 
 LoRA r64, only `transformer` trained, SDE candidates 1,2. The low-noise
 `transformer_2` uses component offload during rollout so both experts do not
 reside on GPU together. 13-frame 480P (480×832), no CFG, microgroup 1,
 SP2 + gradient checkpointing. Submits into an existing ray cluster.
 
-    144 prompts × 16 samples = 1152 global_batch × 2 steps_per_rollout
-    dp_size = 96/2 = 48 → 24 pairs/rank, micro-batch-size-sample 1 → 24 GA
+    132 prompts × 16 samples = 1056 global_batch × 2 steps_per_rollout
+    dp_size = 88/2 = 44 → 24 pairs/rank, micro-batch-size-sample 1 → 24 GA
 
-Usage (after bringing up the 13-node ray cluster):
-    MILES_SCRIPT_EXTERNAL_RAY=1 python3 scripts/run_diffusion_grpo_wan22_pickscore_low_memory_102gpu.py
+Usage (after bringing up the 12-node ray cluster):
+    MILES_SCRIPT_EXTERNAL_RAY=1 python3 scripts/run_diffusion_grpo_wan22_pickscore_low_memory_96gpu.py
 """
 
 from dataclasses import dataclass
@@ -49,11 +50,11 @@ def prepare(args: ScriptArgs) -> str:
 
 def execute(args: ScriptArgs, data_dir: str) -> None:
     assert U.get_bool_env_var("MILES_SCRIPT_EXTERNAL_RAY"), (
-        "This recipe needs the 102-GPU ray cluster (12 train nodes + leftover reward); "
+        "This recipe needs the 96-GPU ray cluster (11 train nodes + 1 reward node); "
         "bring it up first, then run with MILES_SCRIPT_EXTERNAL_RAY=1."
     )
 
-    run_name = f"diffusion_grpo_wan22_pickscore_low_memory_102gpu_{U.create_run_id()}"
+    run_name = f"diffusion_grpo_wan22_pickscore_low_memory_96gpu_{U.create_run_id()}"
 
     ckpt_args = f"--hf-checkpoint {MODEL} --save {args.output_dir}/{run_name}/ckpt --save-interval 100 "
 
@@ -61,7 +62,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         "--rollout-function-path miles.rollout.sglang_diffusion_rollout.generate_rollout "
         f"--prompt-data {data_dir}/train.jsonl "
         "--input-key input "
-        "--rollout-batch-size 144 "
+        "--rollout-batch-size 132 "
         "--n-samples-per-prompt 16 "
         f"--num-rollout {args.num_rollout} "
         "--num-steps-per-rollout 2 "
@@ -104,7 +105,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
 
     reward_args = (
         "--rm-type pickscore "
-        "--pickscore-num-workers 24 "
+        "--pickscore-num-workers 32 "
         "--pickscore-num-gpus-per-worker 0.25 "
         "--pickscore-batch-size 8 "
         "--pickscore-processor-path laion/CLIP-ViT-H-14-laion2B-s32B-b79K "
@@ -134,12 +135,12 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
     )
 
     topology_args = (
-        "--actor-num-nodes 12 "
+        "--actor-num-nodes 11 "
         "--actor-num-gpus-per-node 8 "
         "--num-gpus-per-node 8 "
-        "--rollout-num-gpus 96 "
+        "--rollout-num-gpus 88 "
         "--rollout-num-gpus-per-engine 4 "
-        "--dp-replicate-size 12 "
+        "--dp-replicate-size 11 "
         "--sequence-parallel-size 2 "
         "--ulysses-degree 2 "
         "--colocate "
