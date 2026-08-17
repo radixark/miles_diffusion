@@ -46,6 +46,8 @@ Registered in `miles/backends/fsdp_utils/configs/wan2_2.py`:
 
 Canonical recipe: `scripts/run_diffusion_grpo_wan22_pickscore_5gpu.py`
 
+**Status:** [○ NV — Not verified](/user-guide/recipe-verification#nv)
+
 ```bash
 python3 scripts/run_diffusion_grpo_wan22_pickscore_5gpu.py
 ```
@@ -57,6 +59,8 @@ Recipe: `scripts/run_diffusion_grpo_wan22_pickscore_17gpu_multinode.py`
 (full finetune, no LoRA, true on-policy). Start the
 [multi-node Ray cluster](/user-guide/launch-script#multi-node-training), then run on the head node:
 
+**Status:** [🧩 PG — Proxy gated](/user-guide/recipe-verification#pg)
+
 ```bash
 MILES_SCRIPT_EXTERNAL_RAY=1 python3 scripts/run_diffusion_grpo_wan22_pickscore_17gpu_multinode.py
 ```
@@ -66,6 +70,8 @@ MILES_SCRIPT_EXTERNAL_RAY=1 python3 scripts/run_diffusion_grpo_wan22_pickscore_1
 ### 4.3 LoRA SFT on (video, prompt) pairs (4 GPUs, no rollout engines)
 
 Recipe: `scripts/run_diffusion_sft_wan22.py`
+
+**Status:** [○ NV — Not verified](/user-guide/recipe-verification#nv)
 
 ```bash
 MILES_SCRIPT_DATA_JSONL=/abs/data.jsonl python3 scripts/run_diffusion_sft_wan22.py

@@ -37,7 +37,8 @@ reproducible.
 
 ## Supported models
 
-Each model name links to its recipe page.
+Each model name links to its recipe page. Every shipped script is labeled with a
+[recipe verification level](/user-guide/recipe-verification).
 
 
 | Model                                                   | Task      | Canonical recipes                         |
@@ -54,8 +55,8 @@ Each model name links to its recipe page.
 
 ## Feature support matrix
 
-- ✅ **Verified** — exercised by a canonical recipe in `scripts/` or a CI test.
-- 🟡 **Supported** — the code path exists, but no shipped recipe or test covers this combination yet.
+- ✅ **Recipe-backed** — exercised by a canonical recipe in `scripts/` or a CI test.
+- 🟡 **Implemented** — the code path exists, but no shipped recipe or test covers this combination yet.
 - ❌ **Not supported** — no working code path for this combination today.
 
 
@@ -67,7 +68,7 @@ Each model name links to its recipe page.
 | LoRA + IPC weight sync                   | ✅     | ✅          | ✅      | 🟡    | ✅       |
 | Single-prompt multi-gen (microgroup > 1) | ✅     | ✅          | ✅      | ❌       | ❌      |
 | USP sequence parallelism                 | ❌     | ❌          | ✅    | ❌       | ❌       |
-| Deterministic mode                       | ✅     | ✅          | ❌      | ✅       | ❌       |
+| Deterministic mode                       | ✅     | ✅          | ✅      | ✅       | ❌       |
 
 
 

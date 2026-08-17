@@ -108,6 +108,8 @@ All recipes are Python modules under `scripts/`. Each exposes a Typer CLI
 
 Canonical script: `scripts/run_diffusion_grpo_sd3_ocr_sglang.py`
 
+**Status:** [🛡️ FG — Fully gated](/user-guide/recipe-verification#fg)
+
 ```bash
 export HF_TOKEN=...
 python3 scripts/run_diffusion_grpo_sd3_ocr_sglang.py \
@@ -124,6 +126,8 @@ E2E test: `tests/e2e/short/test_sd3_ocr_grpo_2xGPU.py`.
 ### 5.3 DiffusionNFT + PickScore (3 GPU)
 
 Script: `scripts/run_diffusion_nft_sd3_pickscore.py`
+
+**Status:** [📈 V — Verified](/user-guide/recipe-verification#v)
 
 ```bash
 export HF_TOKEN=...

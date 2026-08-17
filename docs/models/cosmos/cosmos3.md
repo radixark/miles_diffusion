@@ -55,28 +55,33 @@ From `miles/backends/fsdp_utils/configs/cosmos3.py`:
 
 ## 4. Launch
 
-Canonical recipe: `scripts/run_diffusion_grpo_cosmos3_pickscore_t2i_5gpu.py` — 4 colocate + 1 reward GPU, T2I (832×480,
-1 frame), PickScore reward.
+Canonical recipe: `scripts/run_diffusion_grpo_cosmos3_pickscore_t2i_4gpu.py` — train, rollout,
+and PickScore colocated on 4 GPUs; T2I (832×480, 1 frame).
+
+**Status:** [📈 V — Verified](/user-guide/recipe-verification#v)
 
 ```bash
 export SGLANG_DISABLE_COSMOS3_GUARDRAILS=1   # RL scores raw samples; skip serving-side guardrail models
-python3 scripts/run_diffusion_grpo_cosmos3_pickscore_t2i_5gpu.py
+python3 scripts/run_diffusion_grpo_cosmos3_pickscore_t2i_4gpu.py
 ```
 
 
 
-## 5. Recipe Note
-`epoch_global_window` draws a 2-step window per rollout from `--diffusion-sde-candidate-steps 4-15`.
+## 5. Recipe notes
 
-The Cosmos3 checkpoint's Karras flow-sigma grid puts head steps 1–3 at `sigma > 0.96` with `|dt| < 0.02` — they
-basically train nothing. Step numbers are **not transferable across sigma-grid families**: re-derive candidates from
-`|dt|` when changing model or grid.
+`epoch_global_random_choice` draws two steps per epoch from
+`--diffusion-sde-candidate-steps 8,9,10,11`.
+
+The Cosmos3 checkpoint's Karras flow-sigma grid puts head steps 1–7 at
+`sigma > 0.96` with `|dt| < 0.02`; steps 8–11 are the useful high-noise segment.
+Step numbers are **not transferable across sigma-grid families**: re-derive candidates
+from `|dt|` when changing model or grid.
 
 
 ## 6. Reference results
 
-Flow-GRPO + PickScore on Cosmos3-Nano, run with the native Cosmos3 recipe scripts in this repo. PickScore
-(`rollout/reward/raw_mean`) climbs from ~0.77 to ~0.85 over 250 rollout steps:
+The 4-GPU colocated Cosmos3-Nano recipe raises PickScore
+(`rollout/reward/raw_mean`) from ~0.77 to ~0.85 over 250 rollouts:
 
 ![Cosmos3 PickScore reward mean](../../assets/images/cosmos3/reward_mean.png)
 

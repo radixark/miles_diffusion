@@ -48,6 +48,8 @@ Registered in `miles/backends/fsdp_utils/configs/ltx.py`:
 Canonical recipe: `scripts/run_diffusion_grpo_ltx23_sglang.py` — 4 colocate GPUs + 1 PickScore
 GPU, 57 frames @ 24 fps, 512×768, PickScore reward.
 
+**Status:** [🛡️ FG — Fully gated](/user-guide/recipe-verification#fg)
+
 ```bash
 python3 scripts/run_diffusion_grpo_ltx23_sglang.py
 ```

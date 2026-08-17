@@ -48,6 +48,8 @@ Registered in `miles/backends/fsdp_utils/configs/qwen_image.py`:
 Canonical recipe: `scripts/run_diffusion_grpo_pickscore_5gpu_flowgrpo_aligned.py` — 4 colocate
 GPUs + 1 PickScore GPU, 512×512, PickScore reward.
 
+**Status:** [📈 V — Verified](/user-guide/recipe-verification#v)
+
 ```bash
 python3 scripts/run_diffusion_grpo_pickscore_5gpu_flowgrpo_aligned.py
 ```
