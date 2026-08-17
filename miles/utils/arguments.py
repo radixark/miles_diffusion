@@ -1509,6 +1509,14 @@ def miles_validate_args(args):
         from miles.backends.sglang_diffusion_utils.monkey_patches import validate_rollout_patch_groups
 
         validate_rollout_patch_groups(args.rollout_patch_groups)
+        if args.use_lora and "cosmos3_bitwise" in args.rollout_patch_groups:
+            # Missing on engines whose ServerArgs predates --lora-merge-mode.
+            if getattr(args, "sglang_lora_merge_mode", None) != "dynamic":
+                logger.warning(
+                    "cosmos3_bitwise runs LoRA without --sglang-lora-merge-mode dynamic; the engine "
+                    "auto-merges the adapters into the base weights, introducing precision "
+                    "drift against the trainer's unmerged forward — training still works."
+                )
 
     if args.lora_ipc_weight_sync:
         if not args.use_lora:

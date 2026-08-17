@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 
 import torch
+from miles.backends.sglang_diffusion_utils.monkey_patches import patch_cosmos3_bitwise
 from miles.utils.types import CondKwargs
 
 from .train_pipeline_config import TrainPipelineConfig, register_train_pipeline_config
@@ -48,6 +49,9 @@ class Cosmos3TrainPipelineConfig(TrainPipelineConfig):
     def validate_args(cls, args) -> None:
         if list(args.update_weight_target_modules) != ["transformer"]:
             raise ValueError("Cosmos3 requires --update-weight-target-module transformer.")
+
+    def configure(self, args) -> None:
+        self._bitwise_parity = "cosmos3_bitwise" in args.rollout_patch_groups
 
     def prepare_cond_kwargs(self, cond: CondKwargs | None, device: torch.device) -> dict:
         if cond is None or cond.text_ids is None:
@@ -175,3 +179,5 @@ class Cosmos3TrainPipelineConfig(TrainPipelineConfig):
             return tuple(a.to(dtype) if torch.is_tensor(a) else a for a in args)
 
         model.time_embedder.register_forward_pre_hook(_cast_to_weight_dtype)
+        if self._bitwise_parity:
+            patch_cosmos3_bitwise.apply_train(model)

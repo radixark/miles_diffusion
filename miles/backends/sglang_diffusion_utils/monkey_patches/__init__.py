@@ -55,6 +55,13 @@ def apply_sgld_monkey_patches() -> None:
     patch_qk_norm_rope.apply()
 
 
+@register_rollout_patch_group("cosmos3_bitwise")
+def apply_cosmos3_bitwise_patches() -> None:
+    from miles.backends.sglang_diffusion_utils.monkey_patches import patch_cosmos3_bitwise
+
+    patch_cosmos3_bitwise.apply()
+
+
 @register_rollout_patch_group("wan")
 def apply_wan_rollout_patches() -> None:
     from miles.backends.sglang_diffusion_utils.monkey_patches import patch_wan_norm_ops
