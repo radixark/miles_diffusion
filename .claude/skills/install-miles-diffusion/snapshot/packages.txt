@@ -1,4 +1,4 @@
-# Package set of rockdu/miles_diffusion:latest, captured by refresh.sh.
+# Package set of radixark/miles_diffusion:latest, captured by refresh.sh.
 # install.sh installs every uncommented line with --no-deps; #skip lines record what the
 # image has that we deliberately do not install. verify_env.py compares against both halves.
 #   apt           Ubuntu 24.04 ships it; snapshot/apt.txt installs the same version

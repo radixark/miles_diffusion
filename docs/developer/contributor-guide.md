@@ -183,7 +183,7 @@ YAML / large-file / private-key checks.
 ## Docker changes
 
 A PR touching `docker/Dockerfile` or `requirements.txt` triggers an image build; every GPU suite
-then runs inside `rockdu/miles_diffusion:pr-<num>` instead of `latest`, and a failed build stops
+then runs inside `radixark/miles_diffusion:pr-<num>` instead of `latest`, and a failed build stops
 the matrix. The fresh build outranks a `ci-image-tag:` directive in the PR body. Fork PRs skip
 the build and stay on `latest`. The tag is deleted when the PR closes.
 

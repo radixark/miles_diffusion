@@ -19,13 +19,13 @@ recipe are in the [SD3 model guide](../models/sd3/sd3.md).
 On the **host** (experimental image — see `docker/README.md`):
 
 ```bash
-docker pull rockdu/miles_diffusion:latest
+docker pull radixark/miles_diffusion:latest
 
 docker run --rm \
   --gpus all --ipc=host --shm-size=32g \
   --ulimit memlock=-1 --ulimit stack=67108864 \
   --network=host \
-  -it rockdu/miles_diffusion:latest /bin/bash
+  -it radixark/miles_diffusion:latest /bin/bash
 ```
 
 Refresh the editable install inside the container:
