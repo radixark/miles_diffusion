@@ -12,20 +12,20 @@ Installation and environment setup are documented separately — this page start
 inside a ready container or machine.
 
 Deeper SD3 recipe config, reference curves, and the DiffusionNFT + PickScore
-recipe are in the [SD3 model guide](/models/sd3/sd3).
+recipe are in the [SD3 model guide](../models/sd3/sd3.md).
 
 ## 1. Start the container
 
 On the **host** (experimental image — see `docker/README.md`):
 
 ```bash
-docker pull rockdu/miles_diffusion:latest
+docker pull radixark/miles_diffusion:latest
 
 docker run --rm \
   --gpus all --ipc=host --shm-size=32g \
   --ulimit memlock=-1 --ulimit stack=67108864 \
   --network=host \
-  -it rockdu/miles_diffusion:latest /bin/bash
+  -it radixark/miles_diffusion:latest /bin/bash
 ```
 
 Refresh the editable install inside the container:
@@ -78,7 +78,7 @@ hf download --repo-type dataset rockdu/miles-diffusion-datasets \
 |---|---|
 | Train | `${DATASETS_DIR}/flowgrpo_ocr/train.jsonl` |
 
-See [Rewards](/user-guide/rewards) for OCR scoring and prompt format.
+See [Rewards](../user-guide/rewards.md) for OCR scoring and prompt format.
 
 ## 3. Launch training
 
@@ -144,7 +144,7 @@ Which denoising steps enter the loss is selected by a **step strategy**
 | `sde_window` | Random contiguous window (this recipe) | `--diffusion-num-sde-steps 10`, `--diffusion-sde-window-range 0,10` |
 | `epoch_global_random_choice` | Per-epoch random subset of candidate steps | `--diffusion-sde-candidate-steps …`, `--diffusion-num-sde-steps` |
 
-Train-side dynamics and more on these strategies: [SDE step backend](/advanced/sde-backend).
+Train-side dynamics and more on these strategies: [SDE step backend](../advanced/sde-backend.md).
 
 **DiffusionNFT + PickScore** (3 GPUs, ODE, EMA reference) is a separate recipe
 covered in the SD3 model guide.

@@ -7,7 +7,7 @@ microgroup. Reward computation lives in `miles/rollout/rm_hub/` and is invoked
 from `sglang_diffusion_rollout.generate_and_rm_microgroup`.
 
 For `--custom-rm-path`, `--custom-reward-post-process-path`, and other
-`--*-path` hooks, see [Customization](/user-guide/customization).
+`--*-path` hooks, see [Customization](customization.md).
 
 ## 1. At a glance
 
@@ -15,7 +15,7 @@ For `--custom-rm-path`, `--custom-reward-post-process-path`, and other
 |---|---|---|
 | Reward type | `--rm-type` | Selects built-in scorer (`pickscore`, `ocr`) |
 | Per-sample override | `metadata.rm_type` in JSONL | Overrides global `--rm-type` |
-| Custom reward / norm | see [Customization](/user-guide/customization) | `--custom-rm-path`, `--custom-reward-post-process-path` |
+| Custom reward / norm | see [Customization](customization.md) | `--custom-rm-path`, `--custom-reward-post-process-path` |
 
 ## 2. Built-in reward models
 
@@ -103,7 +103,7 @@ generate_and_rm_microgroup()
 After rollout, `RolloutManager._post_process_rewards` subtracts the mean and
 optionally divides by std to produce normalized advantages for training.
 Override that path with `--custom-reward-post-process-path` — see
-[Customization](/user-guide/customization) § Reward.
+[Customization](customization.md) § Reward.
 
 ## 4. Prompt data
 

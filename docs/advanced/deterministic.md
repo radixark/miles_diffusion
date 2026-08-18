@@ -80,7 +80,7 @@ same rollout data.
 across ranks, so a 4-rank and an 8-rank run will not match even in deterministic mode. Setting
 `--fsdp-reduce-dtype bf16` is **strongly not recommended**; keep the `fp32` default.
 - **Train/rollout agreement.** Determinism removes run-to-run variance; it does not make the two
-forwards equal. That is a precision problem — see [Dtype Control](/advanced/dtype-control).
+forwards equal. That is a precision problem — see [Dtype Control](dtype-control.md).
 
 ## Cost
 
@@ -104,5 +104,5 @@ Because reward metrics are compared too, the CI recipes also pin the engine side
 
 ## Related
 
-- [Dtype Control](/advanced/dtype-control) — the other half of train/rollout numeric agreement.
+- [Dtype Control](dtype-control.md) — the other half of train/rollout numeric agreement.
 

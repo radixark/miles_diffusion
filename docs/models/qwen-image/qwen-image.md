@@ -48,6 +48,8 @@ Registered in `miles/backends/fsdp_utils/configs/qwen_image.py`:
 Canonical recipe: `scripts/run_diffusion_grpo_pickscore_5gpu_flowgrpo_aligned.py` — 4 colocate
 GPUs + 1 PickScore GPU, 512×512, PickScore reward.
 
+**Status:** [📈 V — Verified](../../user-guide/recipe-verification.md#v)
+
 ```bash
 python3 scripts/run_diffusion_grpo_pickscore_5gpu_flowgrpo_aligned.py
 ```
@@ -67,6 +69,6 @@ Overrides go through the dataclass CLI, e.g.
 
 ## 6. Pairs well with
 
-- [LoRA weight sync](/advanced/lora) — `--lora-ipc-weight-sync` is on in this recipe.
-- [Dtype Control](/advanced/dtype-control) — why fp32 master + bf16 forward.
-- [Deterministic Training](/advanced/deterministic) — `--deterministic-mode` is on.
+- [LoRA weight sync](../../advanced/lora.md) — `--lora-ipc-weight-sync` is on in this recipe.
+- [Dtype Control](../../advanced/dtype-control.md) — why fp32 master + bf16 forward.
+- [Deterministic Training](../../advanced/deterministic.md) — `--deterministic-mode` is on.

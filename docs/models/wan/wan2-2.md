@@ -46,23 +46,62 @@ Registered in `miles/backends/fsdp_utils/configs/wan2_2.py`:
 
 Canonical recipe: `scripts/run_diffusion_grpo_wan22_pickscore_5gpu.py`
 
+**Status:** [○ NV — Not verified](../../user-guide/recipe-verification.md#nv)
+
 ```bash
 python3 scripts/run_diffusion_grpo_wan22_pickscore_5gpu.py
 ```
 
 
-### 4.2 LoRA SFT on (video, prompt) pairs (4 GPUs, no rollout engines)
+### 4.2 Full-finetune Flow-GRPO + PickScore, multi-node (2×8 train GPUs + 1 reward GPU)
+
+Recipe: `scripts/run_diffusion_grpo_wan22_pickscore_17gpu_multinode.py`
+(full finetune, no LoRA, true on-policy). Start the
+[multi-node Ray cluster](../../user-guide/launch-script.md#multi-node-training), then run on the head node:
+
+**Status:** [🧩 PG — Proxy gated](../../user-guide/recipe-verification.md#pg)
+
+```bash
+MILES_SCRIPT_EXTERNAL_RAY=1 python3 scripts/run_diffusion_grpo_wan22_pickscore_17gpu_multinode.py
+```
+
+`--four-gpu-ci` scales the recipe to one 4-GPU node for e2e CI.
+
+### 4.3 LoRA SFT on (video, prompt) pairs (4 GPUs, no rollout engines)
 
 Recipe: `scripts/run_diffusion_sft_wan22.py`
+
+**Status:** [○ NV — Not verified](../../user-guide/recipe-verification.md#nv)
 
 ```bash
 MILES_SCRIPT_DATA_JSONL=/abs/data.jsonl python3 scripts/run_diffusion_sft_wan22.py
 ```
 
-## 5. Pairs well with
+## 5. Reference results
 
-- [Single-Prompt Multi-Generation](/advanced/single-prompt-multi-gen) — the microgroup mechanics behind
+### 5.1 17-GPU multi-node full-finetune GRPO
+
+#### CFG enabled (`4.0/3.0`)
+
+- `train/model_output_mean_abs_diff`: **0.0** every rollout.
+- `rollout/reward/raw_mean`: ~0.77 → ~0.82.
+- Final `eval/pickscore_test`: **0.8231** (rollout 199, 28 denoising steps—not 40,
+  UniPC, 2048 prompts).
+
+![Wan2.2 CFG PickScore reward mean](../../assets/images/wan/reward_mean.png)
+
+#### CFG disabled (`1.0/1.0`)
+
+- `rollout/reward/raw_mean`: ~0.72 → ~0.83.
+- Final `eval/pickscore_test`: **0.8243** (rollout 199, 28 denoising steps—not 40,
+  UniPC, 2048 prompts).
+
+![Wan2.2 no-CFG PickScore reward mean](../../assets/images/wan/reward_mean_nocfg.png)
+
+## 6. Pairs well with
+
+- [Single-Prompt Multi-Generation](../../advanced/single-prompt-multi-gen.md) — the microgroup mechanics behind
   `--rollout-microgroup-size 8`.
-- [LoRA Training and Weight Sync](/advanced/lora) — IPC merge used by the GRPO recipe.
-- [SDE Step Backend](/advanced/sde-backend) — how the trained SDE step is scored train-side.
-- [Rewards](/user-guide/rewards) — PickScore worker pool configuration.
+- [LoRA Training and Weight Sync](../../advanced/lora.md) — IPC merge used by the GRPO recipe.
+- [SDE Step Backend](../../advanced/sde-backend.md) — how the trained SDE step is scored train-side.
+- [Rewards](../../user-guide/rewards.md) — PickScore worker pool configuration.

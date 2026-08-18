@@ -108,13 +108,15 @@ All recipes are Python modules under `scripts/`. Each exposes a Typer CLI
 
 Canonical script: `scripts/run_diffusion_grpo_sd3_ocr_sglang.py`
 
+**Status:** [🛡️ FG — Fully gated](../../user-guide/recipe-verification.md#fg)
+
 ```bash
 export HF_TOKEN=...
 python3 scripts/run_diffusion_grpo_sd3_ocr_sglang.py \
   --cuda-visible-devices 6,7
 ```
 
-Walkthrough: [Quick Start](/getting-started/quick-start).
+Walkthrough: [Quick Start](../../getting-started/quick-start.md).
 
 This script prepends `master_sglang` to `PYTHONPATH` for native SD3
 `/rollout/generate` support. See the module docstring for details.
@@ -124,6 +126,8 @@ E2E test: `tests/e2e/short/test_sd3_ocr_grpo_2xGPU.py`.
 ### 5.3 DiffusionNFT + PickScore (3 GPU)
 
 Script: `scripts/run_diffusion_nft_sd3_pickscore.py`
+
+**Status:** [📈 V — Verified](../../user-guide/recipe-verification.md#v)
 
 ```bash
 export HF_TOKEN=...
@@ -204,7 +208,7 @@ Both SD3 recipes use LoRA with IPC weight sync:
 --update-weight-buffer-size 2147483648
 ```
 
-See [LoRA weight sync](/advanced/lora) for the three updater paths and IPC
+See [LoRA weight sync](../../advanced/lora.md) for the three updater paths and IPC
 merge internals.
 
 ## 8. Precision notes
@@ -225,7 +229,7 @@ Flow-GRPO recipes also set **`--diffusion-clip-range`** (e.g. `1e-4` in the OCR
 script) to clip importance ratios during the policy update.
 
 Train/rollout dtype alignment for Flow-GRPO is covered in
-[SDE step backend](/advanced/sde-backend).
+[SDE step backend](../../advanced/sde-backend.md).
 
 ## 9. Reference results
 
@@ -251,8 +255,8 @@ Online runs: wandb project **`miles-diffusion-nft`**. Held-out
 
 ## 10. Pairs well with
 
-- [Quick Start](/getting-started/quick-start) — SD3.5 Flow-GRPO OCR walkthrough.
-- [Rewards](/user-guide/rewards) — OCR and PickScore scoring.
-- [Customization](/user-guide/customization) — `--*-path` plug-points.
-- [SDE step backend](/advanced/sde-backend) — SDE window (GRPO) vs ODE (NFT).
-- [LoRA weight sync](/advanced/lora) — IPC merge used by both recipes.
+- [Quick Start](../../getting-started/quick-start.md) — SD3.5 Flow-GRPO OCR walkthrough.
+- [Rewards](../../user-guide/rewards.md) — OCR and PickScore scoring.
+- [Customization](../../user-guide/customization.md) — `--*-path` plug-points.
+- [SDE step backend](../../advanced/sde-backend.md) — SDE window (GRPO) vs ODE (NFT).
+- [LoRA weight sync](../../advanced/lora.md) — IPC merge used by both recipes.

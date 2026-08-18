@@ -129,6 +129,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         "--rollout-num-gpus-per-engine 1 "
         f"--num-gpus-per-node {2 if args.smoke else 3} "
         "--colocate "
+        "--deterministic-mode "
     )
 
     U.execute_train(

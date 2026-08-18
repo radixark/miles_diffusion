@@ -1330,13 +1330,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             return parser
 
-        def add_sglang_tp_size():
-            temp_parser = argparse.ArgumentParser(add_help=False)
-            temp_parser.add_argument("--rollout-num-gpus-per-engine", type=int, default=1)
-            temp_args, _ = temp_parser.parse_known_args()
-            sglang_tp_size = temp_args.rollout_num_gpus_per_engine
-            return sglang_tp_size
-
         # Add custom arguments in front to prevent overwritten some miles arguments.
         if add_custom_arguments is not None:
             parser = add_custom_arguments(parser)
@@ -1366,7 +1359,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             help="Path to the YAML config for custom function arguments.",
         )
 
-        parser.set_defaults(sglang_tensor_parallel_size=add_sglang_tp_size())
         return parser
 
     return add_miles_arguments
@@ -1436,6 +1428,11 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
 
 
 def set_default_diffusion_args(args) -> None:
+    # Prefer TP for multi-GPU engines: SP/CFG-parallel change sampling numerics, so they stay
+    # opt-in. (The old default targeted a renamed dest and had silently stopped applying.)
+    if args.sglang_tp_size is None and args.sglang_sp_degree is None and not args.sglang_enable_cfg_parallel:
+        args.sglang_tp_size = args.rollout_num_gpus_per_engine
+
     is_nft = args.loss_type == "nft"
     if is_nft:
         if args.custom_expand_samples_to_train_pairs_path is None:
@@ -1677,11 +1674,9 @@ def miles_validate_args(args):
 
     if args.colocate_reward:
         assert args.colocate, "--colocate-reward requires --colocate."
-        num_gpu_per_engine = min(args.rollout_num_gpus_per_engine, args.num_gpus_per_node)
-        num_engines = args.rollout_num_gpus // num_gpu_per_engine
-        assert args.pickscore_num_workers <= num_engines, (
+        assert args.pickscore_num_workers <= args.rollout_num_gpus, (
             f"--colocate-reward requires pickscore_num_workers ({args.pickscore_num_workers}) "
-            f"<= rollout engines ({num_engines})."
+            f"<= rollout_num_gpus ({args.rollout_num_gpus}): the placement group has one bundle per GPU."
         )
 
     if args.eval_function_path is None:

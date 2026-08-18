@@ -82,6 +82,6 @@ Checklist:
 
 ## 5. Pairs well with
 
-- [Customization](/user-guide/customization) — `--diffusion-step-strategy-path` and `--sde-step-backend-path`.
-- [SD3 model guide](/models/sd3/sd3) — Flow-GRPO vs NFT recipe flags.
-- [Quick Start](/getting-started/quick-start) — SD3.5 Flow-GRPO OCR walkthrough.
+- [Customization](../user-guide/customization.md) — `--diffusion-step-strategy-path` and `--sde-step-backend-path`.
+- [SD3 model guide](../models/sd3/sd3.md) — Flow-GRPO vs NFT recipe flags.
+- [Quick Start](../getting-started/quick-start.md) — SD3.5 Flow-GRPO OCR walkthrough.

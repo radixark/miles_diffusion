@@ -1,6 +1,6 @@
 ---
 name: install-miles-diffusion
-description: Fallback installer for miles_diffusion on a bare CUDA 12.9 Linux GPU box, reproducing the official rockdu/miles_diffusion image's package versions and verifying them. Docker is the supported way to run miles_diffusion and this is not recommended — use it only when the image cannot be pulled, or to check whether a machine's env still matches the image.
+description: Fallback installer for miles_diffusion on a bare CUDA 12.9 Linux GPU box, reproducing the official radixark/miles_diffusion image's package versions and verifying them. Docker is the supported way to run miles_diffusion and this is not recommended — use it only when the image cannot be pulled, or to check whether a machine's env still matches the image.
 ---
 
 # install-miles-diffusion

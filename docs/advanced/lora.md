@@ -46,7 +46,7 @@ colocation, CUDA IPC handles cannot cross the train/rollout process boundary.
 
 LoRA target modules default from the model family's
 `TrainPipelineConfig.lora_target_modules`. For SD3, see
-[SD3 model guide](/models/sd3/sd3).
+[SD3 model guide](../models/sd3/sd3.md).
 
 ## 3. Three weight-sync strategies
 

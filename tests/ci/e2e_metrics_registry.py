@@ -106,6 +106,11 @@ def load_series(jsonl_path: str | Path, metrics: list[str]) -> dict[str, list[li
 
 
 def _values_match(got: float, want: float, tol: dict | None) -> bool:
+    # A recorded NaN is a value like any other -- fp16 runs emit grad_norm=nan on the step the
+    # grad scaler overflows its init scale, deterministically. Neither == nor isclose matches
+    # NaN against itself, so without this a standard containing one could never pass.
+    if math.isnan(got) or math.isnan(want):
+        return math.isnan(got) and math.isnan(want)
     if tol is None:
         return got == want
     return math.isclose(got, want, rel_tol=tol.get("rtol", 0.0), abs_tol=tol.get("atol", 0.0))

@@ -9,7 +9,7 @@ python3 scripts/run_diffusion_grpo_pickscore_5gpu_flowgrpo_aligned.py
 ```
 
 This page explains what that command does and how to change what it runs. For the meaning of
-individual flags, see the [CLI Reference](/user-guide/cli-reference).
+individual flags, see the [CLI Reference](cli-reference.md).
 
 ## How a launch script starts a training job
 
@@ -113,16 +113,18 @@ drives them the same way you do.
 ## What execute_train runs on your machine
 
 1. Kills stale `sglang` / `ray` / `miles` processes.
-2. Starts a fresh cluster with `ray start --head`.
-3. Builds the Ray runtime env: NCCL socket vars, `MASTER_ADDR`, `CUDA_VISIBLE_DEVICES`,
-   `PYTHONPATH`, plus anything from `--extra-env-vars`.
+2. Starts a fresh cluster with `export CUDA_VISIBLE_DEVICES=... && ray start --head` — the
+   device list must be in the raylet's own environment; set per job or per actor it never
+   reaches the scheduler, which then places work on excluded GPUs.
+3. Builds the Ray runtime env: NCCL socket vars, `MASTER_ADDR`, `PYTHONPATH`, plus anything
+   from `--extra-env-vars`.
 4. Submits the job: `ray job submit -- python3 train_diffusion.py <flags>`.
 
 | Env var | Effect |
 |---|---|
-| `MILES_SCRIPT_EXTERNAL_RAY=1` | A scheduler already built the Ray cluster: skip the teardown and `ray start`, only submit. Inherited from the miles launcher — every shipped diffusion recipe is single-node, so no recipe exercises this path yet. |
+| `MILES_SCRIPT_EXTERNAL_RAY=1` | A scheduler already built the Ray cluster: skip the teardown and `ray start`, only submit. `--cuda-visible-devices` must be empty here — export it before each `ray start` instead. Used by the multi-node recipe below. |
 | `MILES_SCRIPT_ENABLE_RAY_SUBMIT=0` | Run everything except the submission — shows what a launcher would do |
-| `MASTER_ADDR` | Head-node address, default `127.0.0.1` |
+| `MASTER_ADDR` | Where the single-node `ray start --head` binds, default `127.0.0.1`. The training process group does NOT use it: rank 0 negotiates its real node IP and a free port at runtime, so multi-node needs no setting here |
 
 ## The batch-size arithmetic
 
@@ -135,7 +137,7 @@ train pairs           = samples × (number of SDE step indices)
 ```
 
 The trajectory-level knobs are locked by
-[the batch-knob invariant](/user-guide/concepts#the-batch-knob-invariant); contradictory values
+[the batch-knob invariant](concepts.md#the-batch-knob-invariant); contradictory values
 abort at parse time. `global_batch_size` counts samples and must divide by `dp_size`
 (= train world size ÷ `--sequence-parallel-size`).
 
@@ -181,8 +183,81 @@ Start from the closest existing script and change one group at a time:
 | Train more denoising steps | Raise `--diffusion-num-sde-steps` — this multiplies train pairs |
 | Try a flag without editing the file | `--extra-args "--flag value"` |
 
+## Multi-node training
+
+The worked example is `scripts/run_diffusion_grpo_wan22_pickscore_17gpu_multinode.py`:
+wan2.2-A14B full finetune on 2 nodes × 8 GPUs (train + rollout colocated) plus 1 reward GPU on a
+separate node. Multi-node runs submit into a cluster you build yourself; the launcher only submits
+(`MILES_SCRIPT_EXTERNAL_RAY=1`).
+
+### Bring up the cluster
+
+Each node runs ONE of the blocks below, chosen by its role. The two `export` lines must be in
+the environment of the `ray start` daemon itself, which is why every block repeats them.
+
+On the head node:
+
+```bash
+ulimit -n 1000000
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+ray start --head --port=6379 --num-gpus 8 --dashboard-host 0.0.0.0
+```
+
+On every other training node:
+
+```bash
+ulimit -n 1000000
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+ray start --address=<head-ip>:6379 --num-gpus 8
+```
+
+On the reward node:
+
+```bash
+ulimit -n 1000000
+export CUDA_VISIBLE_DEVICES=0
+ray start --address=<head-ip>:6379 --num-gpus 1
+```
+
+- **`ulimit -n`**: a non-interactive ssh shell defaults to 1024 open files. The raylet inherits
+  it and, once the FSDP actors and engines connect, dies with `epoll: Too many open files` — but
+  the driver log shows a misleading `ActorUnavailableError: ... RpcError: Socket closed`. Verify
+  with `grep "Max open files" /proc/$(pgrep -f raylet | head -1)/limits` after `ray start`.
+- **`CUDA_VISIBLE_DEVICES`** follows the same rule the launcher automates single-node: it must be
+  in the raylet's environment, and with an external cluster the launcher refuses a
+  `--cuda-visible-devices` of its own.
+
+`ray status` on the head should show every node and the full GPU count.
+
+### Submit
+
+```bash
+ulimit -n 1000000   # the driver needs it too
+MILES_SCRIPT_EXTERNAL_RAY=1 python3 scripts/run_diffusion_grpo_wan22_pickscore_17gpu_multinode.py
+```
+
+Reward workers (`--pickscore-num-workers 4 --pickscore-num-gpus-per-worker 0.25`, no
+`--colocate-reward`) are default-scheduled and land on the only free GPU: the reward node.
+
+### Verify the run is healthy
+
+- `train/model_output_mean_abs_diff` must be exactly `0.0` from the first optimizer step — with
+  `--rollout-patch-group wan` and `--sglang-attention-backend torch_sdpa` the trainer recompute and
+  the engine forward are the same function. Any nonzero value means a patch missed some rank.
+- Both training nodes near 100% GPU util during rollout; a 100%-vs-idle split between nodes means
+  the reward workers were packed onto one node.
+
+### Multi-node pitfalls
+
+| Pitfall | What to know |
+|---|---|
+| Stale engine hijacks the port | Killing a driver by name leaves its spawned engine alive; the next driver's health check talks to the old, unpatched server while the new one dies on `EADDRINUSE`. Between runs kill by GPU pid and check `nvidia-smi` shows no compute processes |
+| Version strings lie under editable installs | `pip show sglang` reports the install-time commit; trust `git rev-parse HEAD` in the checkout (or the `-e git+...@<sha>` line in `pip freeze`) |
+| Weight-sync bucket | `--update-weight-buffer-size 4294967296` (4 GiB): the sync is latency-bound on per-bucket round-trips — 512 MiB costs ~92 s for the A14B pair, 4 GiB ~15 s; output diff stays 0 at any size |
+| Determinism env vars are trainer-side | `--deterministic-mode` sets `NCCL_DETERMINISTIC` and `CUBLAS_WORKSPACE_CONFIG` on the FSDP actors; check rollout parity with `train/model_output_mean_abs_diff` |
+
 ## Next
 
-- [CLI Reference](/user-guide/cli-reference) — every flag, grouped.
-- [Core Concepts](/user-guide/concepts) — what one rollout iteration does, object by object.
-- [Dtype Control](/advanced/dtype-control) — what the three dtype flags actually do.
+- [CLI Reference](cli-reference.md) — every flag, grouped.
+- [Core Concepts](concepts.md) — what one rollout iteration does, object by object.
+- [Dtype Control](../advanced/dtype-control.md) — what the three dtype flags actually do.

@@ -1,0 +1,108 @@
+{
+  "meta": {
+    "commit": "5aee5f49fc2c5e6ff25d1fced41b6e8c969da901",
+    "source": "test_wan22_pickscore_grpo_17xGPU_single_node_4xGPU_proxy.py"
+  },
+  "metrics": {
+    "rollout/reward/raw_mean": [
+      [
+        0,
+        0.7702639698982239
+      ],
+      [
+        1,
+        0.7633876204490662
+      ]
+    ],
+    "rollout/reward/raw_median": [
+      [
+        0,
+        0.7676190137863159
+      ],
+      [
+        1,
+        0.7625204920768738
+      ]
+    ],
+    "rollout/reward/raw_num_samples": [
+      [
+        0,
+        96.0
+      ],
+      [
+        1,
+        96.0
+      ]
+    ],
+    "rollout/reward/raw_std": [
+      [
+        0,
+        0.049161698669195175
+      ],
+      [
+        1,
+        0.06678705662488937
+      ]
+    ],
+    "train/grad_norm": [
+      [
+        1.0,
+        0.001453528762795031
+      ],
+      [
+        2.0,
+        0.0016035394510254264
+      ]
+    ],
+    "train/log_prob_mean_abs_diff": [
+      [
+        1.0,
+        0.0
+      ],
+      [
+        2.0,
+        0.0
+      ]
+    ],
+    "train/log_prob_new_idx_0": [
+      [
+        1.0,
+        -1.1472001026074092
+      ],
+      [
+        2.0,
+        -1.1474997003873189
+      ]
+    ],
+    "train/log_prob_old_idx_0": [
+      [
+        1.0,
+        -1.1472001026074092
+      ],
+      [
+        2.0,
+        -1.1474997003873189
+      ]
+    ],
+    "train/model_output_mean_abs_diff": [
+      [
+        1.0,
+        0.0
+      ],
+      [
+        2.0,
+        0.0
+      ]
+    ],
+    "train/model_output_rel_max": [
+      [
+        1.0,
+        0.0
+      ],
+      [
+        2.0,
+        0.0
+      ]
+    ]
+  }
+}

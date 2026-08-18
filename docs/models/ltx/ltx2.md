@@ -37,8 +37,8 @@ Registered in `miles/backends/fsdp_utils/configs/ltx.py`:
 | Property | Value | Why |
 |---|---|---|
 | Velocity → noise | `forward_velocity` reconstructs x0 via `ltx_core.utils.to_denoised` in fp32 and divides back out | Algebraically an identity, but the fp32 rounding path is what the e2e standards were recorded against |
-| Boundary dtypes | `latents` / `cond` cast to the forward dtype, `timestep` passthrough | Element-wise math anchors on `latents.dtype` and rollout runs bf16 — see [Dtype Control](/advanced/dtype-control) |
-| Precision | bf16 end to end (master, reduce, forward, engine) + math-SDPA on both sides | Matches a bf16-throughout reference; math-SDPA is deterministic by construction and identical across the two implementations |
+| Boundary dtypes | `latents` / `cond` cast to the forward dtype, `timestep` passthrough | Element-wise math anchors on `latents.dtype` and rollout runs bf16 — see [Dtype Control](../../advanced/dtype-control.md) |
+| Precision | bf16 end to end (master, reduce, forward, engine) + math-SDPA on both sides | Matches the original bitwise E2E reference; math-SDPA is deterministic by construction |
 | SDE | CPS kernel, `sde_timestep_divisor = 1000.0` | σ comes straight from the carried rollout timesteps rather than a scheduler lookup; log-prob drops its constants |
 | LoRA targets | Attention + FFN: `to_q`, `to_k`, `to_v`, `to_out.0`, `net.0.proj`, `net.2` | |
 | Rollout patches | `--rollout-patch-group ltx`: `patch_ltx2_rollout_cond_kwargs`, `patch_ltx2_disable_av_cross` | Video-only training forward needs AV cross-attention off engine-side |
@@ -47,6 +47,8 @@ Registered in `miles/backends/fsdp_utils/configs/ltx.py`:
 
 Canonical recipe: `scripts/run_diffusion_grpo_ltx23_sglang.py` — 4 colocate GPUs + 1 PickScore
 GPU, 57 frames @ 24 fps, 512×768, PickScore reward.
+
+**Status:** [🛡️ FG — Fully gated](../../user-guide/recipe-verification.md#fg)
 
 ```bash
 python3 scripts/run_diffusion_grpo_ltx23_sglang.py
@@ -66,8 +68,18 @@ python3 scripts/run_diffusion_grpo_ltx23_sglang.py
 - `--rollout-parser-num-workers 8`: 57-frame trajectory tensors are large enough that one
   deserializer actor starves the engines.
 
-## 6. Pairs well with
+## 6. Reference results
 
-- [Dtype Control](/advanced/dtype-control) — the boundary-dtype policy is why LTX has one.
-- [Deterministic Training](/advanced/deterministic) — `sdpa_math` is the deterministic-safe
+The original bf16-master 4-train-GPU + 1-reward-GPU run, used as the first LTX E2E
+reference, raises `rollout/reward/raw_mean` from ~0.68 to ~0.77 over 200 rollouts:
+
+![LTX-2.3 PickScore reward mean](../../assets/images/ltx/reward_mean.png)
+
+A future LTX update will make `train/model_output_mean_abs_diff` **0.0** and switch
+`--fsdp-master-dtype` to `fp32`.
+
+## 7. Pairs well with
+
+- [Dtype Control](../../advanced/dtype-control.md) — the boundary-dtype policy is why LTX has one.
+- [Deterministic Training](../../advanced/deterministic.md) — `sdpa_math` is the deterministic-safe
   backend this recipe relies on.

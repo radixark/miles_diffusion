@@ -102,14 +102,14 @@ def strategy(args, sample, num_steps, seed) -> tuple[list[int] | None, list[int]
 | `sde_window` | Random contiguous window (`--diffusion-num-sde-steps`, `--diffusion-sde-window-range`) |
 | `epoch_global_random_choice` | Per-epoch subset of `--diffusion-sde-candidate-steps` |
 
-Details: [SDE step backend](/advanced/sde-backend).
+Details: [SDE step backend](../advanced/sde-backend.md).
 
 ***
 
 ## Reward
 
 Built-in scorers (`--rm-type pickscore` / `ocr`) are documented in
-[Rewards](/user-guide/rewards). The hooks below replace that dispatch entirely.
+[Rewards](rewards.md). The hooks below replace that dispatch entirely.
 
 ### `--custom-rm-path`
 
@@ -263,7 +263,7 @@ def loss_formula(ctx, batch, prepared, *, new_pred, ref_pred, metrics, **kwargs)
 **Class** implementing `SdeStepBackend`. Auto-selected from
 `--diffusion-sde-type` (`sde` / `ode` → `DiffusersSdeStepBackend`, `cps` →
 `CpsSdeStepBackend`) unless overridden. See
-[SDE step backend](/advanced/sde-backend).
+[SDE step backend](../advanced/sde-backend.md).
 
 ***
 
@@ -318,7 +318,7 @@ flags into a forked recipe.)
 
 ## Pairs well with
 
-- [Rewards](/user-guide/rewards) — built-in PickScore / OCR and prompt JSONL.
-- [SDE step backend](/advanced/sde-backend) — step strategies and SDE kernels.
-- [LoRA weight sync](/advanced/lora) — IPC merge path used by most recipes.
-- [SD3 model guide](/models/sd3/sd3) — end-to-end recipe flags.
+- [Rewards](rewards.md) — built-in PickScore / OCR and prompt JSONL.
+- [SDE step backend](../advanced/sde-backend.md) — step strategies and SDE kernels.
+- [LoRA weight sync](../advanced/lora.md) — IPC merge path used by most recipes.
+- [SD3 model guide](../models/sd3/sd3.md) — end-to-end recipe flags.

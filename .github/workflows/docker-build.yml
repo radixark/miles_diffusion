@@ -8,7 +8,7 @@ on:
       image_repo:
         description: 'Docker Hub repository to push to'
         required: false
-        default: 'rockdu/miles_diffusion'
+        default: 'radixark/miles_diffusion'
         type: string
       tag:
         description: 'Image tag (empty = dev-cu129-sglang-main-<YYYYMMDD>)'
@@ -50,7 +50,7 @@ jobs:
 
       - name: Build and push
         env:
-          IMAGE_REPO: ${{ inputs.image_repo || 'rockdu/miles_diffusion' }}
+          IMAGE_REPO: ${{ inputs.image_repo || 'radixark/miles_diffusion' }}
           IMAGE_TAG: ${{ inputs.tag }}
           UPDATE_LATEST: ${{ github.event_name == 'push' || inputs.update_latest }}
         run: |

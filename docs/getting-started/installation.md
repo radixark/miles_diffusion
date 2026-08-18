@@ -12,7 +12,7 @@ Use Docker unless you have a reason not to.
 ## Method 1: Docker (recommended)
 
 ```bash
-docker pull rockdu/miles_diffusion:latest
+docker pull radixark/miles_diffusion:latest
 ```
 
 `latest` tracks sglang main and is rebuilt every few days; dated tags
@@ -47,7 +47,7 @@ docker run --rm \
   --network=host \
   -v /your/datasets:/root/datasets \
   -e HF_TOKEN=$HF_TOKEN \
-  -it rockdu/miles_diffusion:latest /bin/bash
+  -it radixark/miles_diffusion:latest /bin/bash
 ```
 
 The image ships with:
@@ -64,7 +64,7 @@ The image ships with:
 To run your own working tree instead of the baked copy, bind-mount it and reinstall:
 
 ```bash
-docker run ... -v $PWD:/root/miles_diffusion -it rockdu/miles_diffusion:latest /bin/bash
+docker run ... -v $PWD:/root/miles_diffusion -it radixark/miles_diffusion:latest /bin/bash
 cd /root/miles_diffusion && pip install -e . --no-deps
 ```
 
@@ -167,6 +167,6 @@ so the floor is set by whichever of the two needs more memory, not by their sum.
 
 ## Next
 
-- [Launch Scripts](/user-guide/launch-script) — what a launch script does and how to override a
+- [Launch Scripts](../user-guide/launch-script.md) — what a launch script does and how to override a
   recipe.
-- [CLI Reference](/user-guide/cli-reference) — every flag.
+- [CLI Reference](../user-guide/cli-reference.md) — every flag.

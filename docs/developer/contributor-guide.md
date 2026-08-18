@@ -183,7 +183,7 @@ YAML / large-file / private-key checks.
 ## Docker changes
 
 A PR touching `docker/Dockerfile` or `requirements.txt` triggers an image build; every GPU suite
-then runs inside `rockdu/miles_diffusion:pr-<num>` instead of `latest`, and a failed build stops
+then runs inside `radixark/miles_diffusion:pr-<num>` instead of `latest`, and a failed build stops
 the matrix. The fresh build outranks a `ci-image-tag:` directive in the PR body. Fork PRs skip
 the build and stay on `latest`. The tag is deleted when the PR closes.
 
@@ -207,7 +207,7 @@ The body explains **why**; the diff already shows what.
 - [ ] `pre-commit run --all-files` passes.
 - [ ] `pytest tests/fast -x -q` is green.
 - [ ] `python3 train_diffusion.py --help` still parses (any argparse change).
-- [ ] A new public flag is documented in [CLI Reference](/user-guide/cli-reference).
+- [ ] A new public flag is documented in [CLI Reference](../user-guide/cli-reference.md).
 - [ ] A new model family has a page under `docs/models/`.
 - [ ] Numeric changes are called out, and e2e standards re-recorded if they moved.
 - [ ] New behaviour has a test, registered with the right suite and label.

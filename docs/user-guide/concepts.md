@@ -110,9 +110,8 @@ tbd
 
 ## Next
 
-- [Training Script Walkthrough](/user-guide/training-script-walkthrough) — a canonical launcher, group by group.
-- [Rewards](/user-guide/rewards) — `rm_hub`, custom reward functions, prompt data format.
-- [CLI Reference](/user-guide/cli-reference) — every flag, fully cataloged.
-- [SDE Step Backend](/advanced/sde-backend) — how train-side log-probs mirror rollout stepping.
-- [Monitoring](/user-guide/monitoring) — the metrics that tell you whether a run is healthy.
+- [Launch Scripts](launch-script.md) — a canonical launcher, group by group.
+- [Rewards](rewards.md) — `rm_hub`, custom reward functions, prompt data format.
+- [CLI Reference](cli-reference.md) — every flag, fully cataloged.
+- [SDE Step Backend](../advanced/sde-backend.md) — how train-side log-probs mirror rollout stepping.
 

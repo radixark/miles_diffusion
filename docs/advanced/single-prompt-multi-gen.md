@@ -50,12 +50,12 @@ microgroup_seed = seed_base + idx   # idx = offset of the microgroup in its grou
 ```
 
 `group_index` is monotonic across the run, so every `(rollout, prompt-group, sample)` triple gets a distinct seed. This
-is what makes rollout replay and [deterministic mode](/advanced/deterministic) possible at microgroup granularity.
+is what makes rollout replay and [deterministic mode](deterministic.md) possible at microgroup granularity.
 
 
 ## 3. Pairs well with
 
-- [Streaming Reward and Deserialization](/advanced/streaming-reward) — what happens to a microgroup response after
+- [Streaming Reward and Deserialization](streaming-reward.md) — what happens to a microgroup response after
   generation.
-- [Deterministic Training](/advanced/deterministic) — seed layout is half of run reproducibility.
-- [Core Concepts](/user-guide/concepts) — where microgroup size sits among the batch knobs.
+- [Deterministic Training](deterministic.md) — seed layout is half of run reproducibility.
+- [Core Concepts](../user-guide/concepts.md) — where microgroup size sits among the batch knobs.

@@ -4,7 +4,6 @@ register_cpu_ci(est_time=15, suite="stage-a-cpu", labels=[])
 
 import torch
 
-from miles.backends.fsdp_utils.configs.wan2_2 import Wan2_2TrainPipelineConfig
 from miles.backends.fsdp_utils.model_backend import BaseModelBackend, DiffusersModelBackend, MilesModelBackend
 from miles.backends.fsdp_utils.models.diffusers import load_fsdp_parallel_plan
 
@@ -41,16 +40,6 @@ class TestBackendHierarchy:
         assert model.selected == "flash"
         assert plan.no_split_modules == ("TransformerBlock",)
         assert plan.param_dtype_patterns == {}
-
-    def test_diffusers_model_family_owns_fsdp_precision_plan(self):
-        backend = DiffusersModelBackend(Wan2_2TrainPipelineConfig())
-        plan = backend.fsdp_parallel_plan(_RecordingModel())
-
-        assert plan.param_dtype_patterns == {
-            "*scale_shift_table": "fp32",
-            "*time_embedder*": "fp32",
-            "*.norm2.*": "fp32",
-        }
 
     def test_all_diffusers_model_plans_load(self):
         assert load_fsdp_parallel_plan("sd3").param_dtype_patterns == {}

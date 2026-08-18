@@ -11,13 +11,16 @@ Adding a new label:
    The workflow does not need editing -- the generic stage job filters tests
    by labels at runtime.
 
-The meta-labels `run-ci-image` / `run-ci-all` are intentionally NOT listed
-here: they bypass the per-test labels filter and run the full suite via the
-`--match-all-labels` flag (handled in run_suite.py).
+The meta-labels are intentionally NOT listed here:
+* `run-ci-basic` authorizes CI but matches no domain, so only tests without
+  labels run.
+* `run-ci-image` / `run-ci-all` authorize CI and bypass the per-test labels
+  filter via `--match-all-labels` (handled in run_suite.py).
 """
 
 KNOWN_LABELS: dict[str, str] = {
     "sglang-diffusion": "sglang_diffusion_utils engine / monkey patch tests",
+    "e2e": "Full-recipe GPU e2e runs (opt-in: heavy, ~30-40 min each)",
     "fsdp": "FSDP backend + config tests",
     "torch": "Ported PyTorch regression tests",
     "rollout": "Rollout sampling / filter / strategy tests",

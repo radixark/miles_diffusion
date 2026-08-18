@@ -64,7 +64,7 @@ microgroup = await generate_microgroup(...)   # generate + deserialize
 rewards    = await batched_async_rm(args, microgroup)   # score right away
 ```
 
-Reward workers are Ray actor pools (see [Rewards](/user-guide/rewards) for per-reward flags), so scoring one microgroup
+Reward workers are Ray actor pools (see [Rewards](../user-guide/rewards.md) for per-reward flags), so scoring one microgroup
 overlaps with generation and deserialization of the others.
 
 ## 4. Diagnosing the pipeline
@@ -84,8 +84,4 @@ For quick triage from `perf/*` metrics alone:
 | `perf/rollout_time` high, engines idle between requests | `deserialize` stage time | Raise `--rollout-parser-num-workers`                                       |
 | Rollout stalls at the end of each iteration             | `reward` stage time      | More reward workers, or a dedicated reward GPU                             |
 | Event loop warnings / slow heartbeat                    | main-process CPU         | Confirm parsing is going through the actor pool (it always does on `main`) |
-
-## 5. Pairs well with
-
-- [Monitoring](/user-guide/monitoring) — the `perf/*` metrics referenced above.
 

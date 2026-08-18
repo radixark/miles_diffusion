@@ -57,6 +57,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         "--diffusion-train-iter-order sample_major "
         "--diffusion-num-steps 10 "
         "--diffusion-guidance-scale 4.0 "
+        "--diffusion-negative-prompt ' ' "
         "--diffusion-true-cfg-scale 4.0 "
         "--diffusion-noise-level 1.2 "
         "--diffusion-height 512 "

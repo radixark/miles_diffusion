@@ -6,7 +6,7 @@ name: PR Test
 #   * GPU stages run on the dedicated miles-D CI node (8×H200,
 #     node-radixark-32-0000) split into (h200,3gpu) + (h200,5gpu) runners —
 #     stage-b (fast-gpu) and stage-c (e2e) only, no stage-c-8-gpu-h100.
-#   * `resolve-ci-image` resolves a `rockdu/miles_diffusion:<tag>`
+#   * `resolve-ci-image` resolves a `radixark/miles_diffusion:<tag>`
 #     container (default `latest`), overridable via the `ci-image-tag:`
 #     PR-body line or the `ci_image_tag` dispatch input.
 #   * `docker-paths` + `docker-build` build a `pr-<num>` image on docker PRs.
@@ -19,6 +19,8 @@ name: PR Test
 on:
   pull_request:
     types: [synchronize, labeled, opened, reopened]
+  pull_request_review:
+    types: [submitted, dismissed]
   schedule:
     # 16:30 UTC = 09:30 PDT / 08:30 PST (cron is UTC, no DST).
     - cron: '30 16 * * *'
@@ -42,6 +44,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   # PR updates supersede their previous run; cron and manual runs on main
@@ -58,15 +61,115 @@ concurrency:
 # every enabled test in the suite.
 
 jobs:
+  # Keep unreviewed code off the expensive self-hosted runners. Review events
+  # retrigger this workflow, while schedule and manual runs remain trusted.
+  # The same gate also identifies documentation-only PRs.
+  ci-gate:
+    runs-on: ubuntu-latest
+    outputs:
+      authorized: ${{ steps.trusted.outputs.authorized || steps.pr.outputs.authorized }}
+      docs_only: ${{ steps.trusted.outputs.docs_only || steps.pr.outputs.docs_only }}
+    steps:
+      - name: Allow trusted non-PR runs
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+        id: trusted
+        shell: bash
+        run: |
+          echo "authorized=true" >> "$GITHUB_OUTPUT"
+          echo "docs_only=false" >> "$GITHUB_OUTPUT"
+
+      - name: Check authorization and changed files
+        if: github.event_name == 'pull_request' || github.event_name == 'pull_request_review'
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pull_number = context.payload.pull_request.number;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            const reviews = await github.paginate(
+              github.rest.pulls.listReviews,
+              { owner, repo, pull_number, per_page: 100 },
+            );
+            const trustedAssociations = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
+            const decisiveReviews = new Map();
+            for (const review of reviews) {
+              if (!review.user || !trustedAssociations.has(review.author_association)) {
+                continue;
+              }
+              if (!["APPROVED", "CHANGES_REQUESTED", "DISMISSED"].includes(review.state)) {
+                continue;
+              }
+              const previous = decisiveReviews.get(review.user.id);
+              if (!previous || review.id > previous.id) {
+                decisiveReviews.set(review.user.id, review);
+              }
+            }
+            const reviewApproved = [...decisiveReviews.values()].some(
+              (review) => review.state === "APPROVED",
+            );
+            // Applying labels requires triage (or stronger) repository
+            // permission, so run-ci-* also acts as a maintainer authorization.
+            const labelAuthorized = context.payload.pull_request.labels.some(
+              (label) => label.name.startsWith("run-ci-"),
+            );
+            const authorized = reviewApproved || labelAuthorized;
+
+            const files = await github.paginate(
+              github.rest.pulls.listFiles,
+              { owner, repo, pull_number, per_page: 100 },
+            );
+            const isDocumentation = (filename) => {
+              if (filename.startsWith("docs/")) {
+                return true;
+              }
+              if (
+                filename.startsWith(".github/ISSUE_TEMPLATE/") ||
+                filename.startsWith(".github/PULL_REQUEST_TEMPLATE/")
+              ) {
+                return true;
+              }
+              if (/\.(md|mdx|rst)$/i.test(filename)) {
+                return true;
+              }
+              return /^(LICENSE|NOTICE|CITATION\.cff)$/i.test(filename);
+            };
+            const docsOnly = files.length > 0 && files.every(
+              (file) =>
+                isDocumentation(file.filename) &&
+                (!file.previous_filename || isDocumentation(file.previous_filename)),
+            );
+
+            core.setOutput("authorized", String(authorized));
+            core.setOutput("docs_only", String(docsOnly));
+            core.info(
+              `CI gate: review_approved=${reviewApproved}, ` +
+                `label_authorized=${labelAuthorized}, docs_only=${docsOnly}, ` +
+                `changed_files=${files.length}`,
+            );
+            if (!authorized) {
+              core.setFailed(
+                "PR CI requires a trusted approval or a maintainer-applied run-ci-* label.",
+              );
+            }
+
   # Nothing rebuilds the CI image for a PR, so a docker PR would otherwise be tested inside the old `latest`.
   docker-paths:
-    if: github.event_name == 'pull_request'
+    needs: [ci-gate]
+    if: |
+      needs.ci-gate.outputs.authorized == 'true' &&
+      needs.ci-gate.outputs.docs_only != 'true' &&
+      github.event_name != 'workflow_dispatch' &&
+      github.event_name != 'schedule'
     runs-on: ubuntu-latest
     outputs:
       changed: ${{ steps.diff.outputs.changed }}
     steps:
       - uses: actions/checkout@v4
         with:
+          # pull_request_review otherwise checks out the default branch.
+          ref: ${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
           fetch-depth: 2
           persist-credentials: false
       - id: diff
@@ -94,6 +197,8 @@ jobs:
 
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
 
       - name: Login to Docker Hub
         uses: docker/login-action@v3
@@ -103,7 +208,7 @@ jobs:
 
       - name: Build and push
         run: |
-          IMAGE="rockdu/miles_diffusion:pr-${{ github.event.pull_request.number }}"
+          IMAGE="radixark/miles_diffusion:pr-${{ github.event.pull_request.number }}"
           # --no-cache --pull: the Dockerfile fetches branch tips, so cached layers would pin stale sources.
           docker build --no-cache --pull -f docker/Dockerfile . -t "${IMAGE}"
           docker push "${IMAGE}"
@@ -114,10 +219,12 @@ jobs:
         run: docker image prune -f
 
   resolve-ci-image:
-    needs: [docker-build]
+    needs: [ci-gate, docker-build]
     # A failed build must skip this job so the GPU stages' `success` guard stops the matrix.
     if: |
       always() && !cancelled() &&
+      needs.ci-gate.outputs.authorized == 'true' &&
+      needs.ci-gate.outputs.docs_only != 'true' &&
       (needs.docker-build.result == 'success' || needs.docker-build.result == 'skipped') &&
       ((github.event_name == 'workflow_dispatch') || (github.event_name == 'schedule') || (github.event.pull_request))
     runs-on: ubuntu-latest
@@ -145,35 +252,37 @@ jobs:
             echo "::error::ci-image-tag must be a Docker tag, not a full image name: $CI_IMAGE_TAG"
             exit 1
           fi
-          echo "container_image=rockdu/miles_diffusion:${CI_IMAGE_TAG}" >> "$GITHUB_OUTPUT"
-          echo "Resolved CI image: rockdu/miles_diffusion:${CI_IMAGE_TAG}"
+          echo "container_image=radixark/miles_diffusion:${CI_IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "Resolved CI image: radixark/miles_diffusion:${CI_IMAGE_TAG}"
 
-  # Stage A: CPU-only fast tests (always runs on PR)
+  # Stage A: CPU-only fast tests. PRs require authorization; docs-only PRs run
+  # the full CPU suite and stop before the GPU stages.
   stage-a-cpu:
-    if: (github.event_name == 'workflow_dispatch') || (github.event_name == 'schedule') || (github.event.pull_request)
+    needs: [ci-gate]
+    if: needs.ci-gate.outputs.authorized == 'true'
     uses: ./.github/workflows/_run-ci.yml
     with:
       cpu_runner: true
       execute_command: >-
         python tests/ci/run_suite.py --hw cpu --suite stage-a-cpu
         --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
-        ${{ (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
+        ${{ (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || needs.ci-gate.outputs.docs_only == 'true' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
         ${{ github.event_name == 'schedule' && '--nightly' || '' }}
     secrets: inherit
 
   # Stage B: CPU-only slower bucket (currently empty; reserved for future
-  # CPU tests that don't fit stage-a-cpu's fast budget). Always runs on PR.
+  # CPU tests that don't fit stage-a-cpu's fast budget). Runs after stage A.
   # Empty result exits 0 in run_suite.py.
   stage-b-cpu:
-    needs: [stage-a-cpu]
-    if: (github.event_name == 'workflow_dispatch') || (github.event_name == 'schedule') || (github.event.pull_request)
+    needs: [ci-gate, stage-a-cpu]
+    if: needs.ci-gate.outputs.authorized == 'true' && needs.stage-a-cpu.result == 'success'
     uses: ./.github/workflows/_run-ci.yml
     with:
       cpu_runner: true
       execute_command: >-
         python tests/ci/run_suite.py --hw cpu --suite stage-b-cpu
         --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
-        ${{ (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
+        ${{ (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || needs.ci-gate.outputs.docs_only == 'true' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
         ${{ github.event_name == 'schedule' && '--nightly' || '' }}
     secrets: inherit
 
@@ -182,9 +291,11 @@ jobs:
   # guards are load-bearing: docker-build skips on non-docker PRs, and a bare
   # `if` would inherit that skip and cascade it downstream (#67 regression).
   stage-b-3-gpu-h200:
-    needs: [resolve-ci-image, stage-a-cpu]
+    needs: [ci-gate, resolve-ci-image, stage-a-cpu]
     if: |
       always() && !cancelled() &&
+      needs.ci-gate.outputs.authorized == 'true' &&
+      needs.ci-gate.outputs.docs_only != 'true' &&
       needs.resolve-ci-image.result == 'success' &&
       needs.stage-a-cpu.result == 'success' &&
       ((github.event_name == 'workflow_dispatch') || (github.event_name == 'schedule') || (github.event.pull_request))
@@ -202,9 +313,11 @@ jobs:
 
   # Stage B GPU: 4-GPU distributed tests on the 5gpu runner.
   stage-b-5-gpu-h200:
-    needs: [resolve-ci-image, stage-a-cpu]
+    needs: [ci-gate, resolve-ci-image, stage-a-cpu]
     if: |
       always() && !cancelled() &&
+      needs.ci-gate.outputs.authorized == 'true' &&
+      needs.ci-gate.outputs.docs_only != 'true' &&
       needs.resolve-ci-image.result == 'success' &&
       needs.stage-a-cpu.result == 'success' &&
       ((github.event_name == 'workflow_dispatch') || (github.event_name == 'schedule') || (github.event.pull_request))

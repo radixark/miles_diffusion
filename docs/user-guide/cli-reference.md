@@ -66,7 +66,7 @@ do not.
 | `--num-epoch` | – | Alternative to `--num-rollout`; ignored if both are set. |
 
 To check how these batch-related arguments interact and related to each other — see
-[the batch-knob invariant](/user-guide/concepts#the-batch-knob-invariant).
+[the batch-knob invariant](concepts.md#the-batch-knob-invariant).
 
 ### Diffusion sampling
 
@@ -89,7 +89,7 @@ To check how these batch-related arguments interact and related to each other �
 | `--fsdp-master-dtype` | `fp32` | Sharded master weights and optimizer state. |
 | `--fsdp-reduce-dtype` | `fp32` | Gradient reduce-scatter. |
 
-See [Dtype Control](/advanced/dtype-control).
+See [Dtype Control](../advanced/dtype-control.md).
 
 ### Algorithm
 
@@ -139,7 +139,7 @@ See [Dtype Control](/advanced/dtype-control).
 | `--fsdp-attention-backend` | str | – | diffusers `set_attention_backend` value. |
 | `--fsdp-flow-shift` | float | – | Training-side sigma grid shift, regenerated when no engine supplies scheduler meta (SFT). Distinct from `--diffusion-flow-shift`. |
 | `--gradient-checkpointing` | flag | off | |
-| `--deterministic-mode` | flag | off | See [Deterministic Training](/advanced/deterministic). |
+| `--deterministic-mode` | flag | off | See [Deterministic Training](../advanced/deterministic.md). |
 | `--train-env-vars` | JSON | `{}` | Extra env for the training processes. |
 
 ### Optimizer and schedule
