@@ -118,6 +118,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         "--num-gpus-per-node 5 "
         "--colocate "
         "--deterministic-mode "
+        "--diffusion-debug-mode "
     )
 
     U.execute_train(
