@@ -140,7 +140,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         "--colocate "
     )
 
-    debug_args = "--diffusion-debug-mode "
+    debug_args = "--deterministic-mode --diffusion-debug-mode "
 
     U.execute_train(
         train_args=(
