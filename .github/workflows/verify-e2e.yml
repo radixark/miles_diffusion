@@ -1,0 +1,42 @@
+name: Verify E2E In Image
+
+# Run one stage-c suite in an arbitrary CI image, in compare mode, as a single
+# job (no concurrent sibling suite). For validating image changes against the
+# committed e2e standards without triggering a full PR matrix.
+
+on:
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: 'run_suite.py suite to run in compare mode'
+        required: false
+        type: string
+        default: 'stage-c-5-gpu-h200'
+      runs_on:
+        description: 'Runner label set. MUST match the suite (3gpu-suite -> 3gpu runner).'
+        required: false
+        type: string
+        default: '["h200", "5gpu"]'
+      ci_image_tag:
+        description: 'miles-diffusion Docker image tag to verify (e.g. test-pr-189)'
+        required: true
+        type: string
+      ci_sglang_pr:
+        description: 'SGLang branch, commit, or PR (default: main)'
+        required: false
+        type: string
+      ci_sglang_repo:
+        description: 'SGLang repository owner/name (default: sgl-project/sglang)'
+        required: false
+        type: string
+
+jobs:
+  verify:
+    uses: ./.github/workflows/_run-ci.yml
+    with:
+      runs_on: ${{ inputs.runs_on }}
+      container_image: radixark/miles_diffusion:${{ inputs.ci_image_tag }}
+      execute_command: >-
+        python tests/ci/run_suite.py --hw cuda --suite ${{ inputs.suite }}
+        --match-all-labels
+    secrets: inherit
