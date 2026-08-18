@@ -1,0 +1,108 @@
+{
+  "meta": {
+    "commit": "local",
+    "source": "test_cosmos3_pickscore_grpo_t2i_4xGPU.py"
+  },
+  "metrics": {
+    "rollout/reward/raw_mean": [
+      [
+        0,
+        0.7647189497947693
+      ],
+      [
+        1,
+        0.7742270827293396
+      ]
+    ],
+    "rollout/reward/raw_median": [
+      [
+        0,
+        0.7654154300689697
+      ],
+      [
+        1,
+        0.7737646102905273
+      ]
+    ],
+    "rollout/reward/raw_num_samples": [
+      [
+        0,
+        768.0
+      ],
+      [
+        1,
+        768.0
+      ]
+    ],
+    "rollout/reward/raw_std": [
+      [
+        0,
+        0.06847453862428665
+      ],
+      [
+        1,
+        0.061292387545108795
+      ]
+    ],
+    "train/grad_norm": [
+      [
+        1.0,
+        5.782852167612873e-05
+      ],
+      [
+        2.0,
+        3.818701588897966e-05
+      ]
+    ],
+    "train/log_prob_mean_abs_diff": [
+      [
+        1.0,
+        0.0
+      ],
+      [
+        2.0,
+        0.0
+      ]
+    ],
+    "train/log_prob_new_idx_0": [
+      [
+        1.0,
+        -0.2110141608864069
+      ],
+      [
+        2.0,
+        -0.3804309892778595
+      ]
+    ],
+    "train/log_prob_old_idx_0": [
+      [
+        1.0,
+        -0.2110141608864069
+      ],
+      [
+        2.0,
+        -0.3804309892778595
+      ]
+    ],
+    "train/model_output_mean_abs_diff": [
+      [
+        1.0,
+        0.0
+      ],
+      [
+        2.0,
+        0.0
+      ]
+    ],
+    "train/model_output_rel_max": [
+      [
+        1.0,
+        0.0
+      ],
+      [
+        2.0,
+        0.0
+      ]
+    ]
+  }
+}
