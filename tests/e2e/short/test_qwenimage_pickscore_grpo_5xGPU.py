@@ -7,19 +7,19 @@ every metric is compared strictly, bit for bit.
 Only --num-rollout is cut down, 400 -> 2: one weight-sync round trip is enough
 to catch drift in the post-update rollout and the second optimizer step.
 
-What this test uniquely guards is the bitwise train<->rollout parity the
-qwen_image rollout patch group + --sglang-lora-merge-mode dynamic establish:
-the recipe runs without --diffusion-recompute-old-log-prob, so
-train/log_prob_mean_abs_diff compares the trainer's recomputation against the
-engine's own log-probs, and train/model_output_mean_abs_diff /
-train/model_output_rel_max compare the raw DiT outputs — with parity all three
-are exactly 0, and any kernel-organization change on either side shows up here.
+The train/log_prob_* and train/model_output_* series record the
+train<->rollout residual under the qwen_image patch group +
+--sglang-lora-merge-mode dynamic (the recipe runs without
+--diffusion-recompute-old-log-prob, so old log-probs come from the engine).
+Exact zero is not yet expected for Qwen-Image; the strict comparison pins the
+residual at its recorded magnitude, so a numerics change on either side —
+engine kernels, patch group, LoRA path — moves these series and fails loudly.
 """
 
 from tests.ci.e2e_metrics_registry import register_e2e_ci
 
 register_e2e_ci(
-    est_time=2400,
+    est_time=1200,
     suite="stage-c-5-gpu-h200",
     script="scripts/run_diffusion_grpo_pickscore_5gpu_flowgrpo_aligned.py",
     args=["--num-rollout", "2"],
