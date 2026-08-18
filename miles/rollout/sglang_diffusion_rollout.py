@@ -40,13 +40,15 @@ def build_rollout_sampling_params(
 
     sampling_params: dict[str, Any] = {
         "generator_device": args.diffusion_generator_device,
-        "negative_prompt": neg,
         "width": args.diffusion_width,
         "height": args.diffusion_height,
         "num_inference_steps": num_steps,
         "guidance_scale": args.diffusion_guidance_scale,
         "true_cfg_scale": args.diffusion_true_cfg_scale,
     }
+
+    if neg is not None:
+        sampling_params["negative_prompt"] = neg
 
     if evaluation:
         sampling_params["rollout"] = False
@@ -73,7 +75,8 @@ def build_rollout_sampling_params(
     if args.diffusion_guidance_scale_2 is not None:
         extra_sampling_params["guidance_scale_2"] = float(args.diffusion_guidance_scale_2)
 
-    if args.train_pipeline_config_path:
+    # Tests (and other hand-built Namespaces) may omit this; production parse always sets it.
+    if getattr(args, "train_pipeline_config_path", None):
         load_function(args.train_pipeline_config_path).apply_rollout_sampling_params(
             args, sampling_params, extra_sampling_params
         )
@@ -92,8 +95,6 @@ def build_rollout_generate_payload(
 ) -> dict[str, Any]:
     """Build full JSON payload for ``POST /rollout/generate`` (``RolloutImageRequest``)."""
     sampling_params["prompt"] = prompt
-    if sampling_params.get("negative_prompt") is None and float(sampling_params.get("guidance_scale", 1.0)) != 1.0:
-        sampling_params["negative_prompt"] = " "  # FlowGRPO default when CFG is on
     sampling_params["num_outputs_per_prompt"] = num_outputs_per_prompt
     return sampling_params
 
