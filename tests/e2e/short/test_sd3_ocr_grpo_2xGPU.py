@@ -7,6 +7,7 @@ determinism), so every metric is compared strictly, bit for bit."""
 from tests.ci.e2e_metrics_registry import register_e2e_ci
 
 register_e2e_ci(
+    disabled="image-verify branch: run the 5gpu suite without a concurrent 3gpu job",
     est_time=1200,
     suite="stage-c-3-gpu-h200",
     script="scripts/run_diffusion_grpo_sd3_ocr_sglang.py",

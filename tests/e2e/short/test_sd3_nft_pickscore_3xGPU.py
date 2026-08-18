@@ -18,6 +18,7 @@ the DiT.
 from tests.ci.e2e_metrics_registry import register_e2e_ci
 
 register_e2e_ci(
+    disabled="image-verify branch: run the 5gpu suite without a concurrent 3gpu job",
     est_time=900,
     suite="stage-c-3-gpu-h200",
     script="scripts/run_diffusion_nft_sd3_pickscore.py",
