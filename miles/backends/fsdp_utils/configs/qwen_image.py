@@ -192,7 +192,7 @@ class QwenImageTrainPipelineConfig(TrainPipelineConfig):
         combined = noise_pred_neg + scale * (noise_pred_pos - noise_pred_neg)
         if true_cfg_scale is not None and true_cfg_scale > 1.0:
             pos_norm = torch.norm(noise_pred_pos, dim=-1, keepdim=True)
-            combined_norm = torch.norm(combined, dim=-1, keepdim=True)
+            combined_norm = torch.norm(combined, dim=-1, keepdim=True).clamp_min(1e-12)
             combined = combined * (pos_norm / combined_norm)
         return combined
 

@@ -12,7 +12,11 @@ import torch.nn.functional as F
 from sglang.multimodal_gen.runtime.layers.elementwise import MulAdd
 from sglang.multimodal_gen.runtime.layers.layernorm import LayerNormScaleShift, ScaleResidualLayerNormScaleShift
 
-from miles.backends.sglang_diffusion_utils.monkey_patches._common import ensure_broadcast
+
+def _ensure_broadcast(mod: torch.Tensor, ref: torch.Tensor) -> torch.Tensor:
+    if mod.dim() == ref.dim() - 1:
+        return mod.unsqueeze(-2)
+    return mod
 
 
 def _layer_norm_f32(norm: torch.nn.LayerNorm, x_f32: torch.Tensor) -> torch.Tensor:
@@ -26,8 +30,8 @@ def _lnss_forward(self, x: torch.Tensor, shift=None, scale=None):
     normed = _layer_norm_f32(self.norm, x.float())
     if shift is None and scale is None:
         return normed.type_as(x)
-    scale = ensure_broadcast(scale, normed).float()
-    shift = ensure_broadcast(shift, normed).float()
+    scale = _ensure_broadcast(scale, normed).float()
+    shift = _ensure_broadcast(shift, normed).float()
     return (normed * (1 + scale) + shift).type_as(x)
 
 
@@ -51,8 +55,8 @@ def _srlnss_forward(self, residual: torch.Tensor, x: torch.Tensor, gate, shift, 
     normed = _layer_norm_f32(self.norm, residual_out.float())
     if shift is None and scale is None:
         return normed.type_as(residual_out), residual_out
-    scale = ensure_broadcast(scale, normed).float()
-    shift = ensure_broadcast(shift, normed).float()
+    scale = _ensure_broadcast(scale, normed).float()
+    shift = _ensure_broadcast(shift, normed).float()
     return (normed * (1 + scale) + shift).type_as(residual_out), residual_out
 
 

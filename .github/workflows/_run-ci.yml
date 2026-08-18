@@ -27,7 +27,7 @@ on:
       container_image:
         type: string
         required: false
-        default: 'rockdu/miles_diffusion:latest'
+        default: 'radixark/miles_diffusion:latest'
       skip_dependency_install:
         type: boolean
         required: false

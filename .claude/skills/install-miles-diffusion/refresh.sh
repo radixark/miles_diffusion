@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Re-capture snapshot/ from an rx devbox running the official image, and rewrite the pins that
-# can be derived from it. Run this when rockdu/miles_diffusion moves; review the diff.
+# can be derived from it. Run this when radixark/miles_diffusion moves; review the diff.
 #
 #   bash refresh.sh <devbox-name>
 

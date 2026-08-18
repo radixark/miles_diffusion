@@ -6,7 +6,7 @@ name: PR Test
 #   * GPU stages run on the dedicated miles-D CI node (8×H200,
 #     node-radixark-32-0000) split into (h200,3gpu) + (h200,5gpu) runners —
 #     stage-b (fast-gpu) and stage-c (e2e) only, no stage-c-8-gpu-h100.
-#   * `resolve-ci-image` resolves a `rockdu/miles_diffusion:<tag>`
+#   * `resolve-ci-image` resolves a `radixark/miles_diffusion:<tag>`
 #     container (default `latest`), overridable via the `ci-image-tag:`
 #     PR-body line or the `ci_image_tag` dispatch input.
 #   * `docker-paths` + `docker-build` build a `pr-<num>` image on docker PRs.
@@ -208,7 +208,7 @@ jobs:
 
       - name: Build and push
         run: |
-          IMAGE="rockdu/miles_diffusion:pr-${{ github.event.pull_request.number }}"
+          IMAGE="radixark/miles_diffusion:pr-${{ github.event.pull_request.number }}"
           # --no-cache --pull: the Dockerfile fetches branch tips, so cached layers would pin stale sources.
           docker build --no-cache --pull -f docker/Dockerfile . -t "${IMAGE}"
           docker push "${IMAGE}"
@@ -252,8 +252,8 @@ jobs:
             echo "::error::ci-image-tag must be a Docker tag, not a full image name: $CI_IMAGE_TAG"
             exit 1
           fi
-          echo "container_image=rockdu/miles_diffusion:${CI_IMAGE_TAG}" >> "$GITHUB_OUTPUT"
-          echo "Resolved CI image: rockdu/miles_diffusion:${CI_IMAGE_TAG}"
+          echo "container_image=radixark/miles_diffusion:${CI_IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "Resolved CI image: radixark/miles_diffusion:${CI_IMAGE_TAG}"
 
   # Stage A: CPU-only fast tests. PRs require authorization; docs-only PRs run
   # the full CPU suite and stop before the GPU stages.
