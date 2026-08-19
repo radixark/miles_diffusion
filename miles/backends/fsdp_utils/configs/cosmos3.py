@@ -154,8 +154,6 @@ class Cosmos3TrainPipelineConfig(TrainPipelineConfig):
             vision_mse_loss_indexes=vision_sequence_indexes,
             vision_timesteps=torch.full((num_vision_tokens,), timestep, device=device, dtype=torch.float32),
             vision_noisy_frame_indexes=[torch.arange(latent_t, dtype=torch.long, device=device)],
-            # diffusers f53d5520 defaults to a Cosmos3OmniTransformerOutput; the
-            # tuple form is unchanged behind return_dict=False.
             return_dict=False,
         )
         return preds_vision[0]
