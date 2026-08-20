@@ -463,9 +463,8 @@ class DiffusionUpdateWeightFromTensorLoRAIPC(DiffusionUpdateWeightFromTensor):
         from miles.utils.misc import load_function
 
         collector_path = None
-        config_path = getattr(self.args, "train_pipeline_config_path", None)
-        if config_path:
-            collector_path = load_function(config_path).lora_layer_group_collector_path
+        if self.args.train_pipeline_config_path:
+            collector_path = load_function(self.args.train_pipeline_config_path).lora_layer_group_collector_path
         if collector_path is None:
             return collect_lora_layer_groups(model.state_dict())
 

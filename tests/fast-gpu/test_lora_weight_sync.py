@@ -59,14 +59,18 @@ def _make_peft_model():
     return peft_model
 
 
+def _fake_args(buffer_size):
+    return Namespace(update_weight_buffer_size=buffer_size, train_pipeline_config_path=None)
+
+
 def _run_update(peft_model, buffer_size):
-    updater = _CaptureUpdater(Namespace(update_weight_buffer_size=buffer_size), {"transformer": peft_model})
+    updater = _CaptureUpdater(_fake_args(buffer_size), {"transformer": peft_model})
     updater.update_weights()
     return updater.buckets
 
 
 def _run_lora_ipc_update(peft_model, buffer_size):
-    updater = _CaptureLoRAIPCUpdater(Namespace(update_weight_buffer_size=buffer_size), {"transformer": peft_model})
+    updater = _CaptureLoRAIPCUpdater(_fake_args(buffer_size), {"transformer": peft_model})
     updater.update_weights()
     return updater.buckets
 

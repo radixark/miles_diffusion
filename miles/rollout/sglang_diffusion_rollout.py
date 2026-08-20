@@ -75,8 +75,7 @@ def build_rollout_sampling_params(
     if args.diffusion_guidance_scale_2 is not None:
         extra_sampling_params["guidance_scale_2"] = float(args.diffusion_guidance_scale_2)
 
-    # Tests (and other hand-built Namespaces) may omit this; production parse always sets it.
-    if getattr(args, "train_pipeline_config_path", None):
+    if args.train_pipeline_config_path:
         load_function(args.train_pipeline_config_path).apply_rollout_sampling_params(
             args, sampling_params, extra_sampling_params
         )
