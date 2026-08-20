@@ -1701,8 +1701,6 @@ def miles_validate_args(args):
             # NFT does not use the placeholder backend.
             "ode": "miles.backends.fsdp_utils.sde_step_backend.DiffusersSdeStepBackend",
         }
-        if args.train_pipeline_config_path is not None:
-            sde_step_backends |= load_function(args.train_pipeline_config_path).sde_step_backend_overrides
         if args.diffusion_sde_type not in sde_step_backends:
             raise ValueError(
                 f"no train-side sde step backend for --diffusion-sde-type {args.diffusion_sde_type!r}; "

@@ -113,9 +113,6 @@ class TrainPipelineConfig(abc.ABC):
         """
 
     sde_timestep_divisor = 1.0
-    # Per --diffusion-sde-type train-side scorer overrides, for families whose rollout
-    # dynamics the generic backends cannot score as-is; empty keeps the generic mapping.
-    sde_step_backend_overrides: dict[str, str] = {}
     # LoRA IPC layer grouper for families whose rollout module names or tensor layout
     # differ from the trained diffusers ones; None keeps the generic PEFT grouping.
     lora_layer_group_collector_path: str | None = None

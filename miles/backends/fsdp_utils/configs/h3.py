@@ -19,7 +19,6 @@ class H3TrainPipelineConfig(TrainPipelineConfig):
 
     hf_ckpt_name_patterns = ("minimax-h3", "minimax_h3", "/h3")
     supports_cfg_training = False
-    needs_timestep_scaling = False
     sde_timestep_divisor = 1000.0
     optimizer_state_allowed_missing = ["audio"]
     lora_layer_group_collector_path = "miles.backends.fsdp_utils.h3_weight_key_mapper.collect_h3_lora_layer_groups"
@@ -183,7 +182,4 @@ class H3TrainPipelineConfig(TrainPipelineConfig):
         guidance_scale: float,
         true_cfg_scale: float | None = None,
     ) -> torch.Tensor:
-        scale = true_cfg_scale if true_cfg_scale is not None else guidance_scale
-        if scale == 1.0:
-            return noise_pred_pos
-        return noise_pred_neg + scale * (noise_pred_pos - noise_pred_neg)
+        raise NotImplementedError("H3 distilled CFG into the checkpoint; the forward is unguided")
