@@ -39,7 +39,7 @@ Usage:
     # train/rollout alignment diagnostic: freeze the weights so log_prob_mean_abs_diff
     # measures pure train-vs-rollout deviation rather than parameter drift
     python3 scripts/run_diffusion_grpo_h3_t2va_2gpu.py --num-rollout 2 \
-        --eval-interval 0 --debug-alignment
+        --eval-interval 0 --extra-args "--debug-skip-optimizer-step"
 """
 
 from dataclasses import dataclass
@@ -68,7 +68,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
     eval_size: int = 16
     save_interval: int = 10
     data_dir: str = "/root/datasets"
-    debug_alignment: bool = False
     extra_args: str = ""
 
 
@@ -175,8 +174,6 @@ def execute(args: ScriptArgs, prompt_dir: str) -> None:
 
     perf_args = "--gradient-checkpointing "
 
-    debug_args = "--debug-skip-optimizer-step " if args.debug_alignment else ""
-
     misc_args = (
         "--actor-num-nodes 1 "
         "--actor-num-gpus-per-node 2 "
@@ -193,7 +190,7 @@ def execute(args: ScriptArgs, prompt_dir: str) -> None:
         train_args=(
             f"{ckpt_args} {rollout_args} {diffusion_args} {eval_args} {grpo_args} {optimizer_args} "
             f"{lora_args} {reward_args} {wandb_args} {sglang_args} {train_backend_args} {perf_args} "
-            f"{debug_args} {misc_args} {args.extra_args}"
+            f"{misc_args} {args.extra_args}"
         ),
         num_gpus_per_node=2,
         config=args,
