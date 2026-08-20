@@ -57,12 +57,13 @@ Two packages cannot be reproduced at all: `deep_ep` and `flash_mla` are compiled
 an unresolvable `file://` path. `refresh.sh` rewrites it to the release asset the Dockerfile
 pulls from (`FA3_WHEELS_REPO` / `FA3_WHEELS_TAG`), so pip installs it like any other pin.
 
-## sglang and miles are anchored to main
+## sglang and miles are anchored to the refs the Dockerfile builds from
 
-Both come from `main` upstream, as in the Dockerfile (`SGLANG_DIFFUSION_BRANCH=main`,
-`MILES_DIFFUSION_COMMIT=main`). The difference is that the Dockerfile follows the branch tip at
-build time while this pins a commit and checks it is an ancestor of the branch. That check
-matters: the first capture pinned a local cherry-pick that exists in no remote.
+sglang comes from the `sglang-miles-h3` integration branch and miles from `main`, as in the
+Dockerfile (`SGLANG_DIFFUSION_BRANCH=sglang-miles-h3`, `MILES_DIFFUSION_COMMIT=main`). The
+difference is that the Dockerfile follows the branch tip at build time while this pins a commit
+and checks it is an ancestor of the branch. That check matters: the first capture pinned a local
+cherry-pick that exists in no remote.
 
 Because the ancestor check needs real history, the checkout is a blob-filtered full clone rather
 than the image's `--depth=1`, so setuptools_scm reports a different commit count for the same
