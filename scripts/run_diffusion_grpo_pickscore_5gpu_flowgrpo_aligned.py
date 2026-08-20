@@ -65,7 +65,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         "--diffusion-step-strategy-path miles.rollout.step_strategy_hub.sde_window "
         "--diffusion-num-sde-steps 2 "
         "--diffusion-sde-window-range 3,5 "
-        "--rollout-patch-group sgld "
+        "--rollout-patch-group qwen_image "
     )
 
     eval_args = (
@@ -79,7 +79,11 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
 
     optimizer_args = "--lr 3e-4 --adam-beta2 0.999 --weight-decay 1e-4 "
 
-    lora_args = "--use-lora --lora-ipc-weight-sync --lora-rank 64 --lora-alpha 128 --lora-init-weights gaussian "
+    lora_args = (
+        "--use-lora --lora-ipc-weight-sync --lora-rank 64 --lora-alpha 128 --lora-init-weights gaussian "
+        # PEFT evaluates adapters unmerged; merging rounds differently in bf16.
+        "--sglang-lora-merge-mode dynamic "
+    )
 
     reward_args = (
         "--rm-type pickscore "
@@ -114,6 +118,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         "--num-gpus-per-node 5 "
         "--colocate "
         "--deterministic-mode "
+        "--diffusion-debug-mode "
     )
 
     U.execute_train(

@@ -385,9 +385,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help=(
                     "Comma-separated rollout patch groups applied at sglang-d startup so its "
-                    "forward is numerically aligned with the training side, e.g. 'sgld' "
-                    "(diffusers op parity, small rollout perf hit) or 'ltx' "
-                    "(see sglang_diffusion_utils/monkey_patches)."
+                    "forward is numerically aligned with the training side, e.g. 'qwen_image' "
+                    "or 'ltx' (see sglang_diffusion_utils/monkey_patches)."
                 ),
             )
             parser.add_argument(
@@ -1527,6 +1526,14 @@ def miles_validate_args(args):
         from miles.backends.sglang_diffusion_utils.monkey_patches import validate_rollout_patch_groups
 
         validate_rollout_patch_groups(args.rollout_patch_groups)
+        if args.use_lora and "qwen_image" in args.rollout_patch_groups:
+            # Missing on engines whose ServerArgs predates --lora-merge-mode.
+            if getattr(args, "sglang_lora_merge_mode", None) != "dynamic":
+                logger.warning(
+                    "qwen_image runs LoRA without --sglang-lora-merge-mode dynamic; the engine "
+                    "auto-merges the adapters into the base weights, introducing precision "
+                    "drift against the trainer's unmerged forward — training still works."
+                )
 
     if args.lora_ipc_weight_sync:
         if not args.use_lora:

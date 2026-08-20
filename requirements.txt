@@ -35,7 +35,9 @@ tensorboard==2.20.0
 torch==2.11.0
 torchaudio==2.11.0
 torchvision==0.26.0
-transformers==5.5.4
+# MiniMax H3's Qwen3-VL text encoder imports transformers.vision_utils, which
+# first ships in 5.9.0; 5.12.1 is the version H3 has been run end to end on.
+transformers==5.12.1
 typer==0.23.2
 uvicorn==0.39.0
 wandb==0.28.1

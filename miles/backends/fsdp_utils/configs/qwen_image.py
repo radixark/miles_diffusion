@@ -114,7 +114,7 @@ class QwenImageTrainPipelineConfig(TrainPipelineConfig):
     ) -> dict:
         """Pad+stack per-sample encoder_hidden_states to (M, max_len, D), build
         the corresponding (M, max_len) bool mask from txt_seq_lens, and
-        list-concat img_shapes / txt_seq_lens. Mask isn't transmitted from
+        list-concat img_shapes. Mask isn't transmitted from
         rollout — it is fully derivable from txt_seq_lens which is.
 
         When ``pad_to_len`` is given, pad to ``max(max(seq_lens), pad_to_len)``
@@ -165,7 +165,6 @@ class QwenImageTrainPipelineConfig(TrainPipelineConfig):
         return {
             "encoder_hidden_states": encoder_hidden_states,
             "encoder_hidden_states_mask": mask,
-            "txt_seq_lens": seq_lens,
             "img_shapes": img_shapes,
         }
 
@@ -192,7 +191,7 @@ class QwenImageTrainPipelineConfig(TrainPipelineConfig):
         combined = noise_pred_neg + scale * (noise_pred_pos - noise_pred_neg)
         if true_cfg_scale is not None and true_cfg_scale > 1.0:
             pos_norm = torch.norm(noise_pred_pos, dim=-1, keepdim=True)
-            combined_norm = torch.norm(combined, dim=-1, keepdim=True)
+            combined_norm = torch.norm(combined, dim=-1, keepdim=True).clamp_min(1e-12)
             combined = combined * (pos_norm / combined_norm)
         return combined
 
