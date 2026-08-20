@@ -6,3 +6,6 @@ FSDP_PARALLEL_PLAN = FSDPParallelPlan(
         "*.norm2.*": "fp32",
     },
 )
+
+# No local boundaries: the diffusers model's own _cp_plan is authoritative.
+CP_PLAN = None

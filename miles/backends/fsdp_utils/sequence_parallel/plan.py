@@ -60,6 +60,25 @@ def _resolve_submodule(root, path):
     return module
 
 
+def expand_boundary_wildcards(transformer, boundaries: dict) -> dict:
+    """Expand a trailing ``.*`` boundary path over the parent container's children.
+
+    diffusers writes ``transformer_blocks.*`` for a spec every block repeats;
+    ``SequenceParallelPlan`` takes concrete paths so the hooks resolve one module each.
+    """
+    expanded = {}
+    for path, spec in boundaries.items():
+        if "*" not in path:
+            expanded[path] = spec
+            continue
+        prefix, sep, tail = path.partition(".*")
+        if not sep or tail:
+            raise ValueError(f"only a trailing '.*' boundary path is supported, got {path!r}")
+        for name, _ in _resolve_submodule(transformer, prefix).named_children():
+            expanded[f"{prefix}.{name}"] = spec
+    return expanded
+
+
 def _install_boundary_hooks(transformer, boundaries, parallel_state):
     """Install shard/gather hooks from the plan's boundary specs.
 

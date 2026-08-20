@@ -29,7 +29,7 @@ from diffusers import DiffusionPipeline
 
 from .models.parallel_plan import FSDPParallelPlan
 from .sequence_parallel.diffusers_dispatch import install_diffusers_usp_patch
-from .sequence_parallel.plan import MILES_SP_PLAN_ATTR, SequenceParallelPlan
+from .sequence_parallel.plan import MILES_SP_PLAN_ATTR, SequenceParallelPlan, expand_boundary_wildcards
 
 logger = logging.getLogger(__name__)
 
@@ -273,11 +273,17 @@ class DiffusersModelBackend(BaseModelBackend):
                 )
             return plan
 
-        boundaries = getattr(base, "_cp_plan", None)
+        boundaries = None
+        if self.config is not None and self.config.model_family is not None:
+            from .models.diffusers import load_cp_plan
+
+            boundaries = load_cp_plan(self.config.model_family)
+        if boundaries is None:
+            boundaries = getattr(base, "_cp_plan", None)
         if not boundaries:
             raise ValueError(f"{base.__class__.__name__} declares no _cp_plan; sequence parallelism unavailable")
         plan = SequenceParallelPlan(
-            boundaries=boundaries,
+            boundaries=expand_boundary_wildcards(base, boundaries),
             num_attention_heads=base.config.num_attention_heads,
         )
         setattr(base, MILES_SP_PLAN_ATTR, plan)
