@@ -12,6 +12,8 @@ does not matter. This module must stay import-light (no torch/ray) because it
 anchors each process's import-start time.
 """
 
+from __future__ import annotations
+
 import os
 import time
 from contextlib import contextmanager
