@@ -11,6 +11,7 @@ from torch.distributed.tensor import DTensor
 import miles.backends.fsdp_utils.configs.qwen_image  # noqa: F401 — register pipeline config
 import miles.backends.fsdp_utils.configs.sd3  # noqa: F401 — register pipeline config
 import miles.backends.fsdp_utils.configs.wan2_2  # noqa: F401 — register pipeline config
+import miles.utils.startup_timing as st
 from miles.ray.train_actor import TrainRayActor
 from miles.utils import tracking_utils, train_metric_utils
 from miles.utils.context_utils import with_defer
@@ -69,13 +70,15 @@ class FSDPTrainRayActor(TrainRayActor):
         if args.deterministic_mode:
             _enable_deterministic_training(args)
 
-        self.parallel_state = create_fsdp_parallel_state(args)
+        with st.step("train.parallel_state"):
+            self.parallel_state = create_fsdp_parallel_state(args)
         torch.manual_seed(args.seed)
 
         # Offline dashboard: record Timer phases + (rank 0) NVML GPU util when explicitly enabled.
         from miles.dashboard import hooks
 
-        hooks.register_train_actor(args, role)
+        with st.step("train.dashboard_register"):
+            hooks.register_train_actor(args, role)
 
         self.train_parallel_config = {
             "dp_size": self.parallel_state.get_mesh("dp").size(),
@@ -88,7 +91,8 @@ class FSDPTrainRayActor(TrainRayActor):
             self.args.offload_train = False
 
         if dist.get_rank() == 0:
-            init_tracking(args, primary=False)
+            with st.step("train.wandb_init"):
+                init_tracking(args, primary=False)
 
         if self.args.start_rollout_id is None:
             self.args.start_rollout_id = 0
@@ -98,20 +102,24 @@ class FSDPTrainRayActor(TrainRayActor):
 
         from miles.utils.misc import load_function
 
-        self.train_pipeline_config = load_function(args.train_pipeline_config_path)()
-        self.train_pipeline_config.configure(args)
-        self.model_backend = load_function(args.model_backend_path)(self.train_pipeline_config)
+        with st.step("train.pipeline_config_and_backend"):
+            self.train_pipeline_config = load_function(args.train_pipeline_config_path)()
+            self.train_pipeline_config.configure(args)
+            self.model_backend = load_function(args.model_backend_path)(self.train_pipeline_config)
         if args.deterministic_mode:
             # flash-attn is opaque to torch's determinism flag; backends patch their own dispatch.
             self.model_backend.enable_deterministic_attention(args.fsdp_attention_backend)
-        self.scheduler = self.model_backend.load_scheduler(args)
+        with st.step("train.load_scheduler"):
+            self.scheduler = self.model_backend.load_scheduler(args)
         rank = dist.get_rank()
         materialize_weights = rank == 0
 
         self.models: dict[str, torch.nn.Module] = {}
         for component in args.update_weight_target_modules:
             # per raw component (wan2.2 has two transformers), before LoRA/FSDP wrap
-            with self._model_init_context(materialize_weights=materialize_weights):
+            with st.step(f"train.load_component.{component}"), self._model_init_context(
+                materialize_weights=materialize_weights
+            ):
                 model = self.model_backend.load_component(
                     component,
                     args,
@@ -128,28 +136,34 @@ class FSDPTrainRayActor(TrainRayActor):
                 self.model_backend.enable_gradient_checkpointing(model)
 
             if args.use_lora:
-                model = apply_lora(model, args, self.train_pipeline_config)
+                with st.step(f"train.apply_lora.{component}"):
+                    model = apply_lora(model, args, self.train_pipeline_config)
 
             model.train()
 
             if rank != 0 and any(not parameter.is_meta for parameter in model.parameters()):
                 raise RuntimeError(f"{component} did not honor meta initialization")
-            checkpoint.sync_model_dtypes(model)
-            full_state = model.state_dict() if rank == 0 else {}
-            model = apply_fsdp2(
-                model,
-                self.model_backend.fsdp_parallel_plan(model),
-                mesh=self.parallel_state.get_mesh("fsdp"),
-                cpu_offload=self.args.fsdp_cpu_offload,
-                args=self.args,
-            )
-            checkpoint.broadcast_full_state_to_fsdp(
-                model,
-                full_state,
-                cpu_offload=self.args.fsdp_cpu_offload,
-            )
+            with st.step(f"train.sync_dtypes.{component}"):
+                checkpoint.sync_model_dtypes(model)
+            with st.step(f"train.state_dict.{component}"):
+                full_state = model.state_dict() if rank == 0 else {}
+            with st.step(f"train.apply_fsdp2.{component}"):
+                model = apply_fsdp2(
+                    model,
+                    self.model_backend.fsdp_parallel_plan(model),
+                    mesh=self.parallel_state.get_mesh("fsdp"),
+                    cpu_offload=self.args.fsdp_cpu_offload,
+                    args=self.args,
+                )
+            with st.step(f"train.broadcast_full_state.{component}"):
+                checkpoint.broadcast_full_state_to_fsdp(
+                    model,
+                    full_state,
+                    cpu_offload=self.args.fsdp_cpu_offload,
+                )
             del full_state
-            self.train_pipeline_config.postprocess_model_after_materialize(model)
+            with st.step(f"train.postprocess_model.{component}"):
+                self.train_pipeline_config.postprocess_model_after_materialize(model)
             self.models[component] = model
 
         if self.parallel_state.get_optional_mesh("sp") is not None:
@@ -163,8 +177,9 @@ class FSDPTrainRayActor(TrainRayActor):
                 )
 
         # Force a sync to ensure sharding is complete and old memory is freed.
-        torch.cuda.synchronize()
-        clear_memory()
+        with st.step("train.sync_and_clear_memory"):
+            torch.cuda.synchronize()
+            clear_memory()
 
         if len(self.models) == 1:
             self.model = next(iter(self.models.values()))
@@ -209,7 +224,8 @@ class FSDPTrainRayActor(TrainRayActor):
         self.global_step = 0
         self.micro_step = 0
 
-        checkpoint_payload = checkpoint.load(self)
+        with st.step("train.checkpoint_load"):
+            checkpoint_payload = checkpoint.load(self)
 
         self.ema_shadow = None
         if self.args.use_ema:
@@ -231,11 +247,14 @@ class FSDPTrainRayActor(TrainRayActor):
         else:
             self.weight_updater = DiffusionUpdateWeightFromTensor(self.args, self.models)
 
-        checkpoint.finalize_load(self, checkpoint_payload)
+        with st.step("train.finalize_load"):
+            checkpoint.finalize_load(self, checkpoint_payload)
 
         if self.args.offload_train:
-            self.sleep()
+            with st.step("train.offload_after_init"):
+                self.sleep()
 
+        st.mark("train.init_done")
         return self.args.start_rollout_id
 
     @contextmanager
@@ -293,14 +312,16 @@ class FSDPTrainRayActor(TrainRayActor):
             dist.barrier(group=get_gloo_group())
             return
 
-        rollout_engines, rollout_engine_lock, num_new_engines = ray.get(
-            self.rollout_manager.get_rollout_engines_and_lock.remote()
-        )
+        with st.step("train.uw.get_engines"):
+            rollout_engines, rollout_engine_lock, num_new_engines = ray.get(
+                self.rollout_manager.get_rollout_engines_and_lock.remote()
+            )
         if num_new_engines > 0:
-            self.weight_updater.connect_rollout_engines(rollout_engines, rollout_engine_lock)
-            dist.barrier(group=get_gloo_group())
-            if dist.get_rank() == 0:
-                ray.get(self.rollout_manager.clear_num_new_engines.remote())
+            with st.step("train.uw.connect_engines", num_new_engines=num_new_engines):
+                self.weight_updater.connect_rollout_engines(rollout_engines, rollout_engine_lock)
+                dist.barrier(group=get_gloo_group())
+                if dist.get_rank() == 0:
+                    ray.get(self.rollout_manager.clear_num_new_engines.remote())
 
         ema_shadow = self.ema_shadow
         if ema_shadow is not None:
@@ -310,7 +331,7 @@ class FSDPTrainRayActor(TrainRayActor):
         rollout_weight_context = (
             ema_shadow.swap_in() if ema_shadow is not None and self.args.ema_rollout_policy == "ema" else nullcontext()
         )
-        with rollout_weight_context:
+        with rollout_weight_context, st.step("train.uw.push_weights"):
             self.weight_updater.update_weights()
         clear_memory()
 

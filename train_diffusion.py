@@ -1,6 +1,8 @@
 import logging
 import sys
 
+import miles.utils.startup_timing as st  # noqa: I001  must precede the heavy imports to anchor import cost
+
 import ray
 
 from miles.ray.placement_group import create_placement_groups, create_rollout_manager, create_training_models
@@ -15,25 +17,32 @@ def train(args):
     logger = logging.getLogger(__name__)
     # allocate the GPUs
     logger.info("train: creating placement groups")
-    pgs = create_placement_groups(args)
+    with st.step("driver.create_placement_groups"):
+        pgs = create_placement_groups(args)
     logger.info("train: placement groups ready")
-    init_tracking(args)
+    with st.step("driver.init_tracking"):
+        init_tracking(args)
 
     # create the rollout manager, with sglang engines inside.
     # need to initialize rollout manager first to calculate num_rollout
     logger.info("train: creating rollout manager")
-    rollout_manager, num_rollout_per_epoch = create_rollout_manager(args, pgs["rollout"])
+    with st.step("driver.create_rollout_manager"):
+        rollout_manager, num_rollout_per_epoch = create_rollout_manager(args, pgs["rollout"])
     logger.info("train: rollout manager ready")
 
     logger.info("train: creating training model")
-    actor_model = create_training_models(args, pgs, rollout_manager)
+    with st.step("driver.create_training_models"):
+        actor_model = create_training_models(args, pgs, rollout_manager)
     logger.info("train: training model ready")
 
     if args.offload_rollout:
-        ray.get(rollout_manager.onload_weights.remote())
+        with st.step("driver.onload_rollout_weights"):
+            ray.get(rollout_manager.onload_weights.remote())
 
     # always update weight first so that sglang has the loaded weights from training.
-    actor_model.update_weights()
+    with st.step("driver.first_update_weights"):
+        actor_model.update_weights()
+    st.mark("driver.startup_done")
 
     # special case for eval-only
     if args.num_rollout == 0 and args.eval_interval is not None:
@@ -88,5 +97,8 @@ def train(args):
 if __name__ == "__main__":
     # Ensure stdout is line-buffered so nohup logs show progress immediately.
     sys.stdout.reconfigure(line_buffering=True)
-    args = parse_args()
+    st.set_role("driver")
+    st.mark("driver.main_enter")
+    with st.step("driver.parse_args"):
+        args = parse_args()
     train(args)
