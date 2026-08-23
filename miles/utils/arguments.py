@@ -1489,12 +1489,15 @@ def miles_validate_args(args):
 
     from miles.utils.misc import load_function
 
+    if args.diffusion_model_family is not None:
+        # Downstream lookups compare this exactly (encoder_hub.get_encoder), so normalize once
+        # here rather than at every reader.
+        args.diffusion_model_family = args.diffusion_model_family.strip().lower()
+
     if args.train_pipeline_config_path is not None:
-        if args.diffusion_model_family is not None:
-            raise ValueError("--train-pipeline-config-path and --diffusion-model-family both name a config; pass one.")
-        # Explicit config path IS the identity (custom classes never need registering).
+        # The path names the config class; the family stays whatever was passed, since it is a
+        # separate axis (encoder_hub) and may be unset for a model that customizes that too.
         cfg_cls = load_function(args.train_pipeline_config_path)
-        args.diffusion_model_family = None
     else:
         from miles.backends.fsdp_utils.configs.train_pipeline_config import (
             get_train_pipeline_config_cls,
@@ -1503,10 +1506,6 @@ def miles_validate_args(args):
 
         if args.diffusion_model_family is None:
             args.diffusion_model_family = resolve_diffusion_model_family(args.hf_checkpoint)
-        else:
-            # Downstream lookups compare this exactly (encoder_hub.get_encoder), so normalize
-            # here rather than at every reader.
-            args.diffusion_model_family = args.diffusion_model_family.strip().lower()
         cfg_cls = get_train_pipeline_config_cls(args.diffusion_model_family)
         args.train_pipeline_config_path = f"{cfg_cls.__module__}.{cfg_cls.__qualname__}"
     if args.model_backend_path is None:

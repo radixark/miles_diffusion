@@ -14,4 +14,7 @@ def get_encoder(family: str | None):
         from miles.rollout.encoder_hub import wan2_2
 
         return wan2_2
-    raise ValueError(f"no encoder_hub entry for model family {family!r}")
+    raise ValueError(
+        f"no encoder_hub entry for model family {family!r}; set --diffusion-model-family to one "
+        "that has an entry, or add a module here for it"
+    )
