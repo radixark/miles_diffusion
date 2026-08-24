@@ -28,8 +28,7 @@ def _sample_to_rgb_hwc_uint8(sample: Sample) -> np.ndarray:
         raise ValueError(f"HPS currently supports image outputs only, got F={cfhw.shape[1]}")
 
     frame = cfhw_to_fhwc(cfhw.detach().cpu())[0]
-    # Match DanceGRPO/HPS preprocessing: normalized pixels are multiplied by
-    # 255 and rounded before conversion to uint8.
+    # HPS rounds normalized pixels before uint8 conversion.
     image = image_or_video_to_uint8(frame, round_normalized=True)
     return np.ascontiguousarray(image.numpy())
 
