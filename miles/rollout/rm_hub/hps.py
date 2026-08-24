@@ -100,7 +100,7 @@ class HPSScorer(torch.nn.Module):
 
         if checkpoint_path is None:
             checkpoint_path = huggingface_hub.hf_hub_download("xswu/HPSv2", _HPS_VERSION_TO_FILENAME[hps_version])
-        checkpoint = torch.load(checkpoint_path, map_location=str(self.device))
+        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
         model.load_state_dict(checkpoint["state_dict"])
         self.model = model.to(self.device).eval()
         self.preprocess = _HPSImageTransform(model.visual.image_size, OPENAI_DATASET_MEAN, OPENAI_DATASET_STD)
