@@ -66,17 +66,23 @@ Example from `scripts/run_diffusion_nft_sd3_pickscore.py`:
 
 Implementation: `miles/rollout/rm_hub/hps.py`.
 
-HPSv2 scores prompt-image preference alignment with its preference-tuned
-`ViT-H-14` model. The reward is the aligned-pair diagonal:
+HPSv2 scores text–image alignment using a preference-tuned CLIP model:
+
+- Model: `ViT-H-14`
+- Version: `--hps-version` (`v2.0` or `v2.1`)
+- Checkpoint: `--hps-checkpoint-path` (optional; defaults to `xswu/HPSv2`)
+
+Scoring formula:
 
 ```
 score = diagonal(image_features @ text_features.T)
 ```
 
-HPS runs in a batched Ray actor pool and supports a dedicated reward GPU or
-`--colocate-reward`. The built-in adapter currently accepts image outputs only
-(`generated_output` with one frame); use a custom RM when defining video frame
-aggregation semantics.
+The diagonal pairs each image with its corresponding prompt in the batch.
+
+HPS runs as a **Ray actor pool** (`HPSRewardActor`) with round-robin batching.
+It currently accepts image outputs only (`generated_output` with one frame).
+Use a custom RM when defining video frame aggregation semantics.
 
 | Flag | Default | Description |
 |---|---|---|
@@ -87,6 +93,8 @@ aggregation semantics.
 | `--hps-checkpoint-path` | None | Local checkpoint; unset downloads from `xswu/HPSv2` |
 | `--colocate-reward` | False | Share rollout GPUs (0.05 GPU/worker) |
 
+Example:
+
 ```bash
 --rm-type hps \
 --hps-version v2.1 \
@@ -94,9 +102,6 @@ aggregation semantics.
 --hps-num-gpus-per-worker 1.0 \
 --hps-batch-size 8
 ```
-
-On a multi-node run, `--hps-checkpoint-path` must resolve on every node that
-hosts a reward actor. Leave it unset to use each node's Hugging Face cache.
 
 ### OCR (`--rm-type ocr`)
 
