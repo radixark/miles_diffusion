@@ -26,18 +26,9 @@ def test_sample_to_rgb_hwc_uint8_matches_hps_rounding():
     assert actual.flags.c_contiguous
 
 
-@pytest.mark.parametrize(
-    ("output", "message"),
-    [
-        (None, "generated_output is None"),
-        (torch.zeros(3, 4, 4), "must be 4D"),
-        (torch.zeros(1, 1, 4, 4), "requires RGB"),
-        (torch.zeros(3, 2, 4, 4), "supports image outputs only"),
-    ],
-)
-def test_sample_to_rgb_hwc_uint8_rejects_unsupported_outputs(output, message):
-    with pytest.raises(ValueError, match=message):
-        _sample_to_rgb_hwc_uint8(Sample(generated_output=output))
+def test_sample_to_rgb_hwc_uint8_rejects_video_outputs():
+    with pytest.raises(ValueError, match="supports image outputs only"):
+        _sample_to_rgb_hwc_uint8(Sample(generated_output=torch.zeros(3, 2, 4, 4)))
 
 
 def test_hps_scorer_returns_aligned_diagonal_scores():
@@ -62,7 +53,7 @@ def test_hps_scorer_returns_aligned_diagonal_scores():
 
 
 def test_hps_image_transform_fits_longest_side_and_pads():
-    transform = _HPSImageTransform(image_size=4, mean=(0.0, 0.0, 0.0), std=(1.0, 1.0, 1.0))
+    transform = _HPSImageTransform(image_size=(4, 4), mean=(0.0, 0.0, 0.0), std=(1.0, 1.0, 1.0))
     image = Image.fromarray(np.full((2, 4, 3), 255, dtype=np.uint8))
 
     actual = transform(image)

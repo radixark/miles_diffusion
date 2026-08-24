@@ -24,12 +24,6 @@ _HPS_VERSION_TO_FILENAME = {
 def _sample_to_rgb_hwc_uint8(sample: Sample) -> np.ndarray:
     """Convert a T2I rollout output to the RGB input used by HPSv2."""
     cfhw = sample.generated_output
-    if cfhw is None:
-        raise ValueError("generated_output is None")
-    if cfhw.ndim != 4:
-        raise ValueError(f"generated_output must be 4D [C, F, H, W], got {tuple(cfhw.shape)}")
-    if cfhw.shape[0] != 3:
-        raise ValueError(f"HPS requires RGB output with C=3, got C={cfhw.shape[0]}")
     if cfhw.shape[1] != 1:
         raise ValueError(f"HPS currently supports image outputs only, got F={cfhw.shape[1]}")
 
@@ -43,17 +37,13 @@ def _sample_to_rgb_hwc_uint8(sample: Sample) -> np.ndarray:
 class _HPSImageTransform:
     """HPSv2's inference resize: fit the longest side, then zero-pad."""
 
-    def __init__(self, image_size: int | tuple[int, int], mean: Sequence[float], std: Sequence[float]) -> None:
-        if isinstance(image_size, tuple):
-            if len(image_size) != 2 or image_size[0] != image_size[1]:
-                raise ValueError(f"HPS requires a square model input, got {image_size}")
-            image_size = image_size[0]
-        self.image_size = image_size
+    def __init__(self, image_size: tuple[int, int], mean: Sequence[float], std: Sequence[float]) -> None:
+        self.image_size = image_size[0]
         self.mean = list(mean)
         self.std = list(std)
 
     def __call__(self, image: Image.Image) -> torch.Tensor:
-        tensor = vision_functional.to_tensor(image.convert("RGB"))
+        tensor = vision_functional.to_tensor(image)
         height, width = tensor.shape[-2:]
         scale = self.image_size / float(max(height, width))
         new_height, new_width = (round(height * scale), round(width * scale))
@@ -119,11 +109,6 @@ class HPSScorer(torch.nn.Module):
 
     @torch.no_grad()
     def forward(self, prompts: Sequence[str], images: Sequence[Image.Image]) -> list[float]:
-        if len(prompts) != len(images):
-            raise ValueError(f"prompts/images length mismatch: {len(prompts)} != {len(images)}")
-        if not prompts:
-            return []
-
         image_batch = torch.stack([self.preprocess(image) for image in images]).to(self.device, non_blocking=True)
         text_batch = self.tokenizer(list(prompts)).to(self.device, non_blocking=True)
         with torch.amp.autocast(self.device.type, enabled=self.device.type == "cuda"):
