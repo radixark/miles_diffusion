@@ -48,6 +48,7 @@ count as verification.
     Flow-GRPO + PickScore.
   - `run_diffusion_grpo_h3_t2va_2gpu.py` — MiniMax H3 Flow-GRPO + PickScore.
 - **○ NV**
+  - `run_diffusion_grpo_sd3_hps_sglang.py` — SD3.5 Flow-GRPO + HPS.
   - `run_diffusion_grpo_wan22_pickscore_5gpu.py` — Wan2.2 5-GPU LoRA
     Flow-GRPO + PickScore.
   - `run_diffusion_sft_wan22.py` — Wan2.2 4-GPU LoRA SFT.

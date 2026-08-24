@@ -93,14 +93,14 @@ Use a custom RM when defining video frame aggregation semantics.
 | `--hps-checkpoint-path` | None | Local checkpoint; unset downloads from `xswu/HPSv2` |
 | `--colocate-reward` | False | Share rollout GPUs (0.05 GPU/worker) |
 
-Example:
+Example from `scripts/run_diffusion_grpo_sd3_hps_sglang.py`:
 
 ```bash
 --rm-type hps \
---hps-version v2.1 \
 --hps-num-workers 1 \
---hps-num-gpus-per-worker 1.0 \
---hps-batch-size 8
+--hps-batch-size 8 \
+--hps-version v2.1 \
+--colocate-reward
 ```
 
 ### OCR (`--rm-type ocr`)
