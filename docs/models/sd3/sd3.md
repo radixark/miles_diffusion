@@ -271,12 +271,6 @@ acceptance range:
 
 Online runs: wandb project **`miles-diffusion-grpo`**.
 
-### Flow-GRPO + HPS
-
-No complete reference curve is committed for
-`scripts/run_diffusion_grpo_sd3_hps_sglang.py`; the recipe therefore remains
-at [○ NV](../../user-guide/recipe-verification.md#nv).
-
 ### DiffusionNFT + PickScore
 
 Observed `rollout/reward/raw_mean` from one `scripts/run_diffusion_nft_sd3_pickscore.py` run (100 rollouts):
