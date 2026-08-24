@@ -1,10 +1,13 @@
 """SD3.5-medium HPS GRPO through the sglang-diffusion /rollout/generate path.
 
-2-GPU colocate: FSDP DP=2, two rollout engines, and one HPS worker share the
-same GPUs. SD3.5 is gated, so HF_TOKEN must be set before launch.
+2-GPU colocate: FSDP DP=2, two rollout engines, and one HPS worker share the same GPUs.
+
+SD3.5 is gated, so HF_TOKEN must be set even when the weights are cached — sglang still
+fetches model_index.json from the hub at startup.
 
 Usage:
-    python3 scripts/run_diffusion_grpo_sd3_hps_sglang.py --cuda-visible-devices 0,1
+    python3 scripts/run_diffusion_grpo_sd3_hps_sglang.py
+    MILES_SCRIPT_DEBUG_ALIGNMENT=1 python3 scripts/run_diffusion_grpo_sd3_hps_sglang.py
 """
 
 import os
@@ -19,11 +22,16 @@ DATASET = "rockdu/miles-diffusion-datasets"
 DATASET_SUBSET = "flowgrpo_pickscore"
 WANDB_PROJECT = "miles-diffusion-grpo"
 
+# master_sglang carries native SD3 /rollout/generate support; prepending it to PYTHONPATH
+# shadows the editable install at /sgl-workspace/sglang.
+MASTER_SGLANG_PYTHON = "/sgl-workspace/master_sglang/sglang/python"
+
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
-    num_rollout: int = 50
+    num_rollout: int = 600
     data_dir: str = "/root/datasets"
+    debug_alignment: bool = False
     extra_args: str = ""
 
 
@@ -95,7 +103,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         "--num-gpus-per-node 2 "
         "--colocate "
         "--deterministic-mode "
-    )
+    ) + ("--diffusion-debug-mode --debug-skip-optimizer-step " if args.debug_alignment else "")
 
     U.execute_train(
         train_args=(
@@ -107,7 +115,9 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         config=args,
         extra_env_vars={
             "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
+            "PYTHONPATH": MASTER_SGLANG_PYTHON,
             "HF_TOKEN": os.environ.get("HF_TOKEN", ""),
+            **({"MILES_VERIFY_WEIGHT_SYNC": "1"} if args.debug_alignment else {}),
         },
     )
 
