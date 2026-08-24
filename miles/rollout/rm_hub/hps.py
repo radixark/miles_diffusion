@@ -1,0 +1,173 @@
+from __future__ import annotations
+
+from collections.abc import Sequence
+
+import numpy as np
+import ray
+import torch
+from PIL import Image
+from torchvision.transforms import InterpolationMode
+from torchvision.transforms import functional as vision_functional
+
+from miles.utils.misc import SingletonMeta
+from miles.utils.processing_utils import cfhw_to_fhwc, image_or_video_to_uint8
+from miles.utils.types import Sample
+
+from .core import AsyncRewardActorPool
+
+_HPS_VERSION_TO_FILENAME = {
+    "v2.0": "HPS_v2_compressed.pt",
+    "v2.1": "HPS_v2.1_compressed.pt",
+}
+
+
+def _sample_to_rgb_hwc_uint8(sample: Sample) -> np.ndarray:
+    """Convert a T2I rollout output to the RGB input used by HPSv2."""
+    cfhw = sample.generated_output
+    if cfhw is None:
+        raise ValueError("generated_output is None")
+    if cfhw.ndim != 4:
+        raise ValueError(f"generated_output must be 4D [C, F, H, W], got {tuple(cfhw.shape)}")
+    if cfhw.shape[0] != 3:
+        raise ValueError(f"HPS requires RGB output with C=3, got C={cfhw.shape[0]}")
+    if cfhw.shape[1] != 1:
+        raise ValueError(f"HPS currently supports image outputs only, got F={cfhw.shape[1]}")
+
+    frame = cfhw_to_fhwc(cfhw.detach().cpu())[0]
+    # Match DanceGRPO/HPS preprocessing: normalized pixels are multiplied by
+    # 255 and rounded before conversion to uint8.
+    image = image_or_video_to_uint8(frame, round_normalized=True)
+    return np.ascontiguousarray(image.numpy())
+
+
+class _HPSImageTransform:
+    """HPSv2's inference resize: fit the longest side, then zero-pad."""
+
+    def __init__(self, image_size: int | tuple[int, int], mean: Sequence[float], std: Sequence[float]) -> None:
+        if isinstance(image_size, tuple):
+            if len(image_size) != 2 or image_size[0] != image_size[1]:
+                raise ValueError(f"HPS requires a square model input, got {image_size}")
+            image_size = image_size[0]
+        self.image_size = image_size
+        self.mean = list(mean)
+        self.std = list(std)
+
+    def __call__(self, image: Image.Image) -> torch.Tensor:
+        tensor = vision_functional.to_tensor(image.convert("RGB"))
+        height, width = tensor.shape[-2:]
+        scale = self.image_size / float(max(height, width))
+        new_height, new_width = (round(height * scale), round(width * scale))
+        if (new_height, new_width) != (height, width):
+            tensor = vision_functional.resize(
+                tensor,
+                [new_height, new_width],
+                interpolation=InterpolationMode.BICUBIC,
+            )
+
+        pad_height = self.image_size - new_height
+        pad_width = self.image_size - new_width
+        tensor = vision_functional.pad(
+            tensor,
+            [
+                pad_width // 2,
+                pad_height // 2,
+                pad_width - pad_width // 2,
+                pad_height - pad_height // 2,
+            ],
+            fill=0,
+        )
+        return vision_functional.normalize(tensor, mean=self.mean, std=self.std)
+
+
+class HPSScorer(torch.nn.Module):
+    """HPSv2 scorer for aligned prompt/image batches."""
+
+    def __init__(
+        self,
+        *,
+        device: str = "cuda",
+        hps_version: str = "v2.1",
+        checkpoint_path: str | None = None,
+    ) -> None:
+        super().__init__()
+        import huggingface_hub
+        from open_clip import create_model, get_tokenizer
+        from open_clip.constants import OPENAI_DATASET_MEAN, OPENAI_DATASET_STD
+
+        self.device = torch.device(device)
+        model = create_model(
+            "ViT-H-14",
+            pretrained=None,
+            precision="amp",
+            device=str(self.device),
+            jit=False,
+            force_quick_gelu=False,
+            force_custom_text=False,
+            force_patch_dropout=False,
+            force_image_size=None,
+            pretrained_image=False,
+            output_dict=True,
+        )
+
+        if checkpoint_path is None:
+            checkpoint_path = huggingface_hub.hf_hub_download("xswu/HPSv2", _HPS_VERSION_TO_FILENAME[hps_version])
+        checkpoint = torch.load(checkpoint_path, map_location=str(self.device))
+        model.load_state_dict(checkpoint["state_dict"])
+        self.model = model.to(self.device).eval()
+        self.preprocess = _HPSImageTransform(model.visual.image_size, OPENAI_DATASET_MEAN, OPENAI_DATASET_STD)
+        self.tokenizer = get_tokenizer("ViT-H-14")
+
+    @torch.no_grad()
+    def forward(self, prompts: Sequence[str], images: Sequence[Image.Image]) -> list[float]:
+        if len(prompts) != len(images):
+            raise ValueError(f"prompts/images length mismatch: {len(prompts)} != {len(images)}")
+        if not prompts:
+            return []
+
+        image_batch = torch.stack([self.preprocess(image) for image in images]).to(self.device, non_blocking=True)
+        text_batch = self.tokenizer(list(prompts)).to(self.device, non_blocking=True)
+        with torch.amp.autocast(self.device.type, enabled=self.device.type == "cuda"):
+            outputs = self.model(image_batch, text_batch)
+            scores = torch.diagonal(outputs["image_features"] @ outputs["text_features"].T)
+        return [float(score) for score in scores.detach().float().cpu()]
+
+
+@ray.remote
+class HPSRewardActor:
+    def __init__(self, *, hps_version: str, checkpoint_path: str | None = None) -> None:
+        use_cuda = bool(ray.get_gpu_ids()) and torch.cuda.is_available()
+        if use_cuda:
+            torch.cuda.set_device(0)
+        self.scorer = HPSScorer(
+            device="cuda" if use_cuda else "cpu",
+            hps_version=hps_version,
+            checkpoint_path=checkpoint_path,
+        )
+
+    def score_batch(self, images: list[np.ndarray], prompts: list[str]) -> list[float]:
+        return self.scorer(prompts, [Image.fromarray(image) for image in images])
+
+
+class AsyncHPSPool(AsyncRewardActorPool, metaclass=SingletonMeta):
+    """Ray actor pool for HPS reward inference."""
+
+    def __init__(self, args) -> None:
+        super().__init__(
+            actor_cls=HPSRewardActor,
+            actor_kwargs={
+                "hps_version": args.hps_version,
+                "checkpoint_path": args.hps_checkpoint_path,
+            },
+            num_workers=args.hps_num_workers,
+            batch_size=args.hps_batch_size,
+            num_gpus_per_worker=args.hps_num_gpus_per_worker,
+            colocate=args.colocate_reward,
+            name="HPS",
+        )
+
+
+async def hps_rm(args, samples: Sequence[Sample]) -> list[float]:
+    pool = AsyncHPSPool(args)
+    images = [_sample_to_rgb_hwc_uint8(sample) for sample in samples]
+    prompts = [sample.prompt for sample in samples]
+    return await pool.score(images, prompts)

@@ -1,6 +1,6 @@
 ---
 title: Rewards
-description: Built-in reward models (PickScore, OCR), rm_hub dispatch, and prompt data format.
+description: Built-in reward models (PickScore, HPS, OCR), rm_hub dispatch, and prompt data format.
 ---
 Miles-diffusion scores generated images (or video frames) after each rollout
 microgroup. Reward computation lives in `miles/rollout/rm_hub/` and is invoked
@@ -13,7 +13,7 @@ For `--custom-rm-path`, `--custom-reward-post-process-path`, and other
 
 | Stage | Flag | Role |
 |---|---|---|
-| Reward type | `--rm-type` | Selects built-in scorer (`pickscore`, `ocr`) |
+| Reward type | `--rm-type` | Selects built-in scorer (`pickscore`, `hps`, `ocr`) |
 | Per-sample override | `metadata.rm_type` in JSONL | Overrides global `--rm-type` |
 | Custom reward / norm | see [Customization](customization.md) | `--custom-rm-path`, `--custom-reward-post-process-path` |
 
@@ -62,6 +62,42 @@ Example from `scripts/run_diffusion_nft_sd3_pickscore.py`:
 --pickscore-model-path yuvalkirstain/PickScore_v1
 ```
 
+### HPS (`--rm-type hps`)
+
+Implementation: `miles/rollout/rm_hub/hps.py`.
+
+HPSv2 scores prompt-image preference alignment with its preference-tuned
+`ViT-H-14` model. The reward is the aligned-pair diagonal:
+
+```
+score = diagonal(image_features @ text_features.T)
+```
+
+HPS runs in a batched Ray actor pool and supports a dedicated reward GPU or
+`--colocate-reward`. The built-in adapter currently accepts image outputs only
+(`generated_output` with one frame); use a custom RM when defining video frame
+aggregation semantics.
+
+| Flag | Default | Description |
+|---|---|---|
+| `--hps-num-workers` | 1 | Ray actor count |
+| `--hps-num-gpus-per-worker` | 1.0 | GPU per worker (non-colocate) |
+| `--hps-batch-size` | 8 | Batch size per actor |
+| `--hps-version` | `v2.1` | `v2.0` or `v2.1` checkpoint |
+| `--hps-checkpoint-path` | None | Local checkpoint; unset downloads from `xswu/HPSv2` |
+| `--colocate-reward` | False | Share rollout GPUs (0.05 GPU/worker) |
+
+```bash
+--rm-type hps \
+--hps-version v2.1 \
+--hps-num-workers 1 \
+--hps-num-gpus-per-worker 1.0 \
+--hps-batch-size 8
+```
+
+On a multi-node run, `--hps-checkpoint-path` must resolve on every node that
+hosts a reward actor. Leave it unset to use each node's Hugging Face cache.
+
 ### OCR (`--rm-type ocr`)
 
 Implementation: `miles/rollout/rm_hub/ocr.py`.
@@ -95,7 +131,8 @@ generate_and_rm_microgroup()
   → batched_async_rm(args, microgroup)          # rm_hub/__init__.py
     → custom_rm_path?  user batched function
     → all pickscore?   pickscore_rm (batched)
-    → else             per-sample async_rm → ocr / pickscore / NotImplementedError
+    → all hps?         hps_rm (batched)
+    → else             per-sample async_rm → ocr / pickscore / hps / NotImplementedError
   → sample.reward = score
   → RolloutManager._post_process_rewards()      # GRPO advantage normalization
 ```
@@ -140,4 +177,4 @@ metadata.get("rm_type") or args.rm_type
 ```
 
 Mixed rm_types within one microgroup fall back to per-sample dispatch (no
-batched PickScore fast path).
+batched PickScore/HPS fast path).

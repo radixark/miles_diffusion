@@ -13,6 +13,9 @@ mcp[cli]==1.25.0
 memray==1.19.1
 nvidia-ml-py==13.595.45
 omegaconf==2.3.0
+# HPSv2 vendors OpenCLIP 2.16, whose ViT-H-14 state spec is unchanged in
+# 2.24; 2.24 also removes the old protobuf<4 dependency constraint.
+open_clip_torch==2.24.0
 openai==2.6.1
 opencv-python-headless==4.10.0.84
 paddleocr==2.9.1

@@ -265,7 +265,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 
 | Flag | Type | Default | Notes |
 |---|---|---|---|
-| `--rm-type` | enum | – | `pickscore` / `ocr`. Overridable per sample via `metadata.rm_type`. |
+| `--rm-type` | enum | – | `pickscore` / `hps` / `ocr`. Overridable per sample via `metadata.rm_type`. |
 | `--reward-key` | str | – | When the reward is a dict. |
 | `--group-rm` | flag | off | Score a whole prompt group at once. |
 | `--custom-rm-path` | str | – | `async def rm(args, samples) -> list[float]`. Batched only. |
@@ -277,6 +277,11 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--pickscore-num-gpus-per-worker` | float | `1.0` | Fractional values allowed. |
 | `--pickscore-batch-size` | int | `8` | |
 | `--pickscore-num-frames` | int | – | Frames scored per video; unset = all. |
+| `--hps-num-workers` | int | `1` | |
+| `--hps-num-gpus-per-worker` | float | `1.0` | Fractional values allowed. |
+| `--hps-batch-size` | int | `8` | |
+| `--hps-version` | enum | `v2.1` | `v2.0` / `v2.1`. |
+| `--hps-checkpoint-path` | str | – | Local checkpoint; unset downloads from Hugging Face. |
 | `--ocr-num-workers` | int | `4` | |
 | `--rollout-parser-num-workers` | int | `1` | Ray actors deserializing rollout responses. Raise when trajectory tensors are large. |
 

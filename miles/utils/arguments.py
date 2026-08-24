@@ -1286,6 +1286,37 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help="Hugging Face model path for PickScore. Required when --rm-type pickscore.",
             )
+            parser.add_argument(
+                "--hps-num-workers",
+                type=int,
+                default=1,
+                help="Number of Ray HPS actors used when --rm-type hps.",
+            )
+            parser.add_argument(
+                "--hps-num-gpus-per-worker",
+                type=float,
+                default=1.0,
+                help="GPU resources per HPS actor when reward is not colocated.",
+            )
+            parser.add_argument(
+                "--hps-batch-size",
+                type=int,
+                default=8,
+                help="Batch size per HPS actor call.",
+            )
+            parser.add_argument(
+                "--hps-version",
+                type=str,
+                default="v2.1",
+                choices=["v2.0", "v2.1"],
+                help="HPS checkpoint version used when --rm-type hps.",
+            )
+            parser.add_argument(
+                "--hps-checkpoint-path",
+                type=str,
+                default=None,
+                help="Optional local HPS checkpoint path; otherwise download it from Hugging Face.",
+            )
 
             parser.add_argument(
                 "--rm-url",
@@ -1690,12 +1721,23 @@ def miles_validate_args(args):
     if args.offload_rollout is None:
         args.offload_rollout = False
 
+    if args.hps_num_workers <= 0:
+        raise ValueError(f"--hps-num-workers must be positive, got {args.hps_num_workers}")
+    if args.hps_batch_size <= 0:
+        raise ValueError(f"--hps-batch-size must be positive, got {args.hps_batch_size}")
+    if args.hps_num_gpus_per_worker < 0:
+        raise ValueError(f"--hps-num-gpus-per-worker must be non-negative, got {args.hps_num_gpus_per_worker}")
+
     if args.colocate_reward:
         assert args.colocate, "--colocate-reward requires --colocate."
-        assert args.pickscore_num_workers <= args.rollout_num_gpus, (
-            f"--colocate-reward requires pickscore_num_workers ({args.pickscore_num_workers}) "
-            f"<= rollout_num_gpus ({args.rollout_num_gpus}): the placement group has one bundle per GPU."
-        )
+        for rm_name, num_workers in (
+            ("pickscore", args.pickscore_num_workers),
+            ("hps", args.hps_num_workers),
+        ):
+            assert num_workers <= args.rollout_num_gpus, (
+                f"--colocate-reward requires {rm_name}_num_workers ({num_workers}) "
+                f"<= rollout_num_gpus ({args.rollout_num_gpus}): the placement group has one bundle per GPU."
+            )
 
     if args.eval_function_path is None:
         args.eval_function_path = args.rollout_function_path
