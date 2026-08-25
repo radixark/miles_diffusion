@@ -10,6 +10,7 @@ manager placement group.
 import hashlib
 import logging
 import os
+import subprocess
 import time
 from pathlib import Path
 
@@ -43,6 +44,60 @@ def sft_sample_key(args, item: dict) -> tuple[str, int]:
 IMAGE_EXTENSIONS = {".bmp", ".jpeg", ".jpg", ".png", ".webp"}
 
 
+def _probe_video(path: str) -> tuple[int, int, float]:
+    """(width, height, fps) of the first video stream."""
+    probe = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height,avg_frame_rate",
+            "-of",
+            "csv=p=0:s=,",
+            path,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    try:
+        width, height, rate = probe.stdout.strip().split(",")[:3]
+        num, _, den = rate.partition("/")
+        return int(width), int(height), float(num) / float(den or 1)
+    except (ValueError, ZeroDivisionError):
+        raise ValueError(f"ffprobe could not read {path}: {probe.stderr.strip()[:200]}") from None
+
+
+def _decode_video(path: str) -> tuple[torch.Tensor, float]:
+    """All frames as uint8 [T, C, H, W], plus the stream fps.
+
+    sgl-diffusion reads every media file the same way (``subprocess.run`` on
+    ffmpeg into a raw rgb24 stream, see minimax_h3/reference_encoding.py), and
+    ffmpeg is the only decoder available on every platform this trains on:
+    torchvision 0.26 -- the pinned version -- ships no video API at all, and
+    torchcodec has no Linux ARM build.
+    """
+    import numpy as np
+
+    width, height, fps = _probe_video(path)
+    decoded = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", path, "-map", "0:v:0", "-an", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+        capture_output=True,
+    )
+    if decoded.returncode != 0:
+        raise ValueError(f"ffmpeg failed on {path}: {decoded.stderr.decode()[:200]}")
+    frame_bytes = width * height * 3
+    if not decoded.stdout or len(decoded.stdout) % frame_bytes:
+        raise ValueError(
+            f"{path}: ffmpeg returned {len(decoded.stdout)} bytes, "
+            f"not a whole number of {width}x{height} rgb24 frames"
+        )
+    frames = np.frombuffer(decoded.stdout, dtype=np.uint8).reshape(-1, height, width, 3)
+    return torch.from_numpy(frames.copy()).permute(0, 3, 1, 2), fps
+
+
 def read_media_clip(path: str, *, height: int, width: int, num_frames: int, frame_stride: int) -> torch.Tensor:
     if Path(path).suffix.lower() in IMAGE_EXTENSIONS:
         if num_frames != 1:
@@ -52,9 +107,7 @@ def read_media_clip(path: str, *, height: int, width: int, num_frames: int, fram
 
         frames = torch.from_numpy(np.asarray(Image.open(path).convert("RGB"))).permute(2, 0, 1)[None].float()
     else:
-        import torchvision
-
-        video, _, _ = torchvision.io.read_video(path, pts_unit="sec", output_format="TCHW")
+        video, _ = _decode_video(path)
         span = (num_frames - 1) * frame_stride + 1
         if video.shape[0] < span:
             raise ValueError(f"{path} has {video.shape[0]} frames, need {span}")
