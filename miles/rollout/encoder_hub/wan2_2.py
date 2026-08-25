@@ -36,9 +36,8 @@ def encode_sample(encoder: dict, media_clip: dict, prompt: str, generator: torch
     from diffusers.pipelines.wan.pipeline_wan import prompt_clean
 
     device = encoder["device"]
-    latent = (
-        encoder["vae"].encode(media_clip["video"].unsqueeze(0).to(device, torch.float32)).latent_dist.sample(generator)
-    )
+    pixels = media_clip["video"].unsqueeze(0).to(device, torch.float32) / 127.5 - 1.0
+    latent = encoder["vae"].encode(pixels).latent_dist.sample(generator)
     latent = (latent - encoder["latents_mean"]) / encoder["latents_std"]
 
     inputs = encoder["tokenizer"](

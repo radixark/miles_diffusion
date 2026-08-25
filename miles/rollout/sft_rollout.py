@@ -106,7 +106,7 @@ def read_media_clip(path: str, *, height: int, width: int, num_frames: int, fram
         import numpy as np
         from PIL import Image
 
-        frames = torch.from_numpy(np.asarray(Image.open(path).convert("RGB"))).permute(2, 0, 1)[None].float()
+        frames = torch.from_numpy(np.asarray(Image.open(path).convert("RGB"))).permute(2, 0, 1)[None]
         fps = None
     else:
         video, fps = _decode_video(path)
@@ -114,16 +114,18 @@ def read_media_clip(path: str, *, height: int, width: int, num_frames: int, fram
         if video.shape[0] < span:
             raise ValueError(f"{path} has {video.shape[0]} frames, need {span}")
         start = (video.shape[0] - span) // 2
-        frames = video[start : start + span : frame_stride].float()
-    frames = frames / 127.5 - 1.0
+        frames = video[start : start + span : frame_stride]
 
-    scale = max(height / frames.shape[2], width / frames.shape[3])
-    new_h = max(height, round(frames.shape[2] * scale))
-    new_w = max(width, round(frames.shape[3] * scale))
-    frames = torch.nn.functional.interpolate(frames, size=(new_h, new_w), mode="bilinear", antialias=True)
-    top = (new_h - height) // 2
-    left = (new_w - width) // 2
-    return {"video": frames[:, :, top : top + height, left : left + width].permute(1, 0, 2, 3), "fps": fps}
+    # Always emit uint8; each family owns its preprocessing.
+    if frames.shape[2:] != (height, width):
+        scale = max(height / frames.shape[2], width / frames.shape[3])
+        new_h = max(height, round(frames.shape[2] * scale))
+        new_w = max(width, round(frames.shape[3] * scale))
+        resized = torch.nn.functional.interpolate(frames.float(), size=(new_h, new_w), mode="bilinear", antialias=True)
+        top = (new_h - height) // 2
+        left = (new_w - width) // 2
+        frames = resized[:, :, top : top + height, left : left + width].round().clamp(0, 255).to(torch.uint8)
+    return {"video": frames.permute(1, 0, 2, 3), "fps": fps}
 
 
 def _relocate(obj, device: torch.device):

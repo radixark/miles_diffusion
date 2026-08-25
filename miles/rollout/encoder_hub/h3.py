@@ -150,8 +150,7 @@ def encode_sample(encoder: dict, media_clip: dict, prompt: str, generator: torch
     if media_clip["fps"] is not None and abs(media_clip["fps"] - H3_FPS) > 0.01:
         raise ValueError(f'H3 encode requires {H3_FPS:g} fps clips, got {media_clip["fps"]:g}')
 
-    # Engine input is uint8 frames: invert the reader's [-1, 1] normalization (exact roundtrip).
-    frames = ((media_clip["video"].permute(1, 2, 3, 0) + 1.0) * 127.5).round().clamp(0, 255).to(torch.uint8).numpy()
+    frames = media_clip["video"].permute(1, 2, 3, 0).numpy()
 
     rows, latent_t, latent_h, latent_w = minimax_h3_encode_reference_video_rows(
         encoder["vae"], frames, encoder["vae_arch"]

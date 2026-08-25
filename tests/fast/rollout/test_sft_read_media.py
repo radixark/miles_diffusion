@@ -1,13 +1,14 @@
 """read_media_clip: file -> media dict.
 
     image  --PIL-------------------.
-                                    >-- [-1,1] float -- scale/crop -- {"video", "fps"}
+                                    >-- uint8 [C,T,H,W] -- scale/crop -- {"video", "fps"}
     video  --ffmpeg rgb24 (+fps)---'
 
 What each test pins:
-  image branch      single frame, exact passthrough, fps None, multi-frame rejected
+  image branch      single frame, byte-exact passthrough, fps None, multi-frame rejected
   window selection  which source frames survive num_frames x frame_stride (mocked decode)
   decoder           bit-exact rgb24 round trip through real ffmpeg, probed fps
+  canvas rule       exact-size clips pass through uint8-untouched; others resize+requantize
 """
 
 from tests.ci.ci_register import register_cpu_ci
@@ -51,7 +52,7 @@ def test_image_reads_as_single_frame(tmp_path):
     _write_png(path, 120, 200)
     media_clip = read_media_clip(str(path), height=64, width=64, num_frames=1, frame_stride=1)
     assert media_clip["video"].shape == (3, 1, 64, 64)
-    assert media_clip["video"].min() >= -1.0 and media_clip["video"].max() <= 1.0
+    assert media_clip["video"].dtype == torch.uint8
 
 
 def test_image_rejects_multi_frame(tmp_path):
@@ -65,8 +66,8 @@ def test_image_no_resize_when_exact(tmp_path):
     path = tmp_path / "a.png"
     _write_png(path, 64, 64)
     media_clip = read_media_clip(str(path), height=64, width=64, num_frames=1, frame_stride=1)
-    original = torch.from_numpy(np.asarray(Image.open(path))).permute(2, 0, 1).float() / 127.5 - 1.0
-    assert torch.allclose(media_clip["video"][:, 0], original)
+    original = torch.from_numpy(np.asarray(Image.open(path))).permute(2, 0, 1)
+    assert torch.equal(media_clip["video"][:, 0], original)
 
 
 def _patch_decoder(monkeypatch, num_frames=100):
@@ -84,7 +85,7 @@ def test_video_window_is_centered_and_strided(tmp_path, monkeypatch):
     assert media_clip["video"].shape == (3, 21, 8, 8)
     assert media_clip["fps"] == 24.0
     # frame values encode their source index, so the window is verifiable
-    kept = [int(round(float(v) * 127.5 + 127.5)) for v in media_clip["video"][0, :, 0, 0]]
+    kept = [int(v) for v in media_clip["video"][0, :, 0, 0]]
     assert kept == list(range(29, 70, 2))
 
 
@@ -166,7 +167,7 @@ def test_read_media_clip_on_a_real_file(tmp_path):
     )
     media_clip = read_media_clip(str(path), height=32, width=32, num_frames=9, frame_stride=2)
     assert media_clip["video"].shape == (3, 9, 32, 32)
-    assert media_clip["video"].min() >= -1.0 and media_clip["video"].max() <= 1.0
+    assert media_clip["video"].dtype == torch.uint8
     # testsrc animates, so the kept frames must differ from one another
     assert not torch.equal(media_clip["video"][:, 0], media_clip["video"][:, -1])
 

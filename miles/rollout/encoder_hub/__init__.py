@@ -4,7 +4,7 @@ Each family module provides:
 - ``load_encoder(args, device)``: load the frozen encode components (tokenizer/text
   encoder/VAE) from the ``--sft-encoder-checkpoint`` HF name or path;
 - ``encode_sample(encoder, media_clip, prompt, generator)``: encode one decoded media dict
-  ``{"video": [C, T, H, W] in [-1, 1], "fps": float | None}`` into a cached train
+  ``{"video": [C, T, H, W] uint8, "fps": float | None}`` into a cached train
   sample (clean latent + cond kwargs);
 - ``validate_args(args)``: family-specific encode constraints.
 """
