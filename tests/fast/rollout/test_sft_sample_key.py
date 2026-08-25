@@ -12,6 +12,7 @@ from miles.rollout.sft_rollout import sft_sample_key
 
 def _args(**overrides):
     base = dict(
+        diffusion_model_family="wan2_2",
         sft_encoder_checkpoint="ckpt",
         diffusion_height=480,
         diffusion_width=832,
@@ -61,3 +62,12 @@ def test_key_is_per_sample(tmp_path):
     name_a, _ = sft_sample_key(_args(), {"media": str(a), "prompt": "p"})
     name_b, _ = sft_sample_key(_args(), {"media": str(b), "prompt": "p"})
     assert name_a != name_b
+
+
+def test_key_changes_with_model_family(tmp_path):
+    video = tmp_path / "a.mp4"
+    video.write_bytes(b"x" * 100)
+    item = {"media": str(video), "prompt": "p"}
+    name_wan, _ = sft_sample_key(_args(), item)
+    name_other, _ = sft_sample_key(_args(diffusion_model_family="other"), item)
+    assert name_wan != name_other

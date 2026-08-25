@@ -34,7 +34,8 @@ def sft_sample_key(args, item: dict) -> tuple[str, int]:
     """Content-addressed cache filename and latent-sampling seed for one (media, prompt) item."""
     stat = Path(item["media"]).stat()
     digest = hashlib.sha256(
-        f"{args.sft_encoder_checkpoint}|{args.diffusion_height}x{args.diffusion_width}"
+        f"{args.diffusion_model_family}|{args.sft_encoder_checkpoint}"
+        f"|{args.diffusion_height}x{args.diffusion_width}"
         f"|{args.diffusion_output_num_frames}s{args.sft_frame_stride}"
         f"|{item['media']}|{stat.st_size}|{stat.st_mtime_ns}|{item['prompt']}".encode()
     ).digest()
@@ -98,7 +99,7 @@ def _decode_video(path: str) -> tuple[torch.Tensor, float]:
     return torch.from_numpy(frames.copy()).permute(0, 3, 1, 2), fps
 
 
-def read_media_clip(path: str, *, height: int, width: int, num_frames: int, frame_stride: int) -> torch.Tensor:
+def read_media_clip(path: str, *, height: int, width: int, num_frames: int, frame_stride: int) -> dict:
     if Path(path).suffix.lower() in IMAGE_EXTENSIONS:
         if num_frames != 1:
             raise ValueError(f"{path} is an image, which requires --diffusion-output-num-frames 1")
@@ -106,8 +107,9 @@ def read_media_clip(path: str, *, height: int, width: int, num_frames: int, fram
         from PIL import Image
 
         frames = torch.from_numpy(np.asarray(Image.open(path).convert("RGB"))).permute(2, 0, 1)[None].float()
+        fps = None
     else:
-        video, _ = _decode_video(path)
+        video, fps = _decode_video(path)
         span = (num_frames - 1) * frame_stride + 1
         if video.shape[0] < span:
             raise ValueError(f"{path} has {video.shape[0]} frames, need {span}")
@@ -121,22 +123,42 @@ def read_media_clip(path: str, *, height: int, width: int, num_frames: int, fram
     frames = torch.nn.functional.interpolate(frames, size=(new_h, new_w), mode="bilinear", antialias=True)
     top = (new_h - height) // 2
     left = (new_w - width) // 2
-    return frames[:, :, top : top + height, left : left + width].permute(1, 0, 2, 3)
+    return {"video": frames[:, :, top : top + height, left : left + width].permute(1, 0, 2, 3), "fps": fps}
+
+
+def _relocate(obj, device: torch.device):
+    """Move every module/tensor found in a family's encoder structure."""
+    if isinstance(obj, (torch.nn.Module, torch.Tensor)):
+        return obj.to(device)
+    if isinstance(obj, dict):
+        return {key: _relocate(value, device) for key, value in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return type(obj)(_relocate(value, device) for value in obj)
+    return obj
 
 
 @ray.remote
 class SftEncodeActor:
+    """Loads the family encoder once; with --sft-offload-encoder it sleeps in
+    host RAM between encode bursts instead of holding the GPU for the whole run."""
+
     def __init__(self, args):
         from miles.rollout.encoder_hub import get_encoder
 
         self.args = args
         self.encoder_module = get_encoder(args.diffusion_model_family)
         self.encoder = self.encoder_module.load_encoder(args, torch.device("cuda"))
+        if args.sft_offload_encoder:
+            self.encoder = _relocate(self.encoder, torch.device("cpu"))
+            torch.cuda.empty_cache()
 
     def encode(self, items: list[dict], cache_dir: str) -> int:
         args = self.args
+        encoder = self.encoder
+        if args.sft_offload_encoder:
+            encoder = _relocate(encoder, torch.device("cuda"))
         for item in items:
-            pixels = read_media_clip(
+            media_clip = read_media_clip(
                 item["media"],
                 height=args.diffusion_height,
                 width=args.diffusion_width,
@@ -144,12 +166,15 @@ class SftEncodeActor:
                 frame_stride=args.sft_frame_stride,
             )
             generator = torch.Generator().manual_seed(item["latent_seed"])
-            pair = self.encoder_module.encode_sample(self.encoder, pixels, item["prompt"], generator)
+            pair = self.encoder_module.encode_sample(encoder, media_clip, item["prompt"], generator)
             out_path = Path(cache_dir) / item["cache_name"]
             # Temp-then-rename so an interrupted write never leaves a loadable-looking cache entry.
             tmp_path = out_path.with_name(out_path.name + ".tmp")
             torch.save(pair, tmp_path)
             os.replace(tmp_path, out_path)
+        if args.sft_offload_encoder:
+            self.encoder = _relocate(encoder, torch.device("cpu"))
+            torch.cuda.empty_cache()
         return len(items)
 
 

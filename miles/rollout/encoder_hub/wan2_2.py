@@ -32,11 +32,13 @@ def load_encoder(args, device: torch.device) -> dict:
 
 
 @torch.no_grad()
-def encode_sample(encoder: dict, pixels: torch.Tensor, prompt: str, generator: torch.Generator) -> dict:
+def encode_sample(encoder: dict, media_clip: dict, prompt: str, generator: torch.Generator) -> dict:
     from diffusers.pipelines.wan.pipeline_wan import prompt_clean
 
     device = encoder["device"]
-    latent = encoder["vae"].encode(pixels.unsqueeze(0).to(device, torch.float32)).latent_dist.sample(generator)
+    latent = (
+        encoder["vae"].encode(media_clip["video"].unsqueeze(0).to(device, torch.float32)).latent_dist.sample(generator)
+    )
     latent = (latent - encoder["latents_mean"]) / encoder["latents_std"]
 
     inputs = encoder["tokenizer"](
