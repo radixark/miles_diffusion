@@ -75,7 +75,15 @@ def prepare_sft_batch(
     sigma_exp = sigmas.view(bsz, *([1] * (x0.ndim - 1)))
     latents = (1.0 - sigma_exp) * x0 + sigma_exp * noise
 
-    cond_list = [{key: value.to(device) for key, value in pair["cond_kwargs"].items()} for pair in batch]
+    # Only top-level tensors move here. A family whose cond values nest tensors
+    # inside dicts moves them itself in its collate/forward.
+    cond_list = [
+        {
+            key: value.to(device) if isinstance(value, torch.Tensor) else value
+            for key, value in pair["cond_kwargs"].items()
+        }
+        for pair in batch
+    ]
     pos_cond = config.collate_cond_for_sample_batch(cond_list, device, pad_to_len=pad_to_len)
 
     return PreparedBatch(

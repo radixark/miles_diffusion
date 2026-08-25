@@ -15,4 +15,8 @@ def get_encoder(family: str | None):
         from miles.rollout.encoder_hub import wan2_2
 
         return wan2_2
+    if family == "h3":
+        from miles.rollout.encoder_hub import h3
+
+        return h3
     raise ValueError(f"no encoder_hub entry for model family {family!r}")

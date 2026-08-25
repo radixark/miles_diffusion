@@ -207,7 +207,12 @@ def _get_scheduler_grid(args) -> tuple[torch.Tensor, torch.Tensor]:
     if _scheduler_grid is None:
         config = load_function(args.train_pipeline_config_path)()
         scheduler = load_function(args.model_backend_path)(config).load_scheduler(args)
-        num_train_timesteps = int(scheduler.config.num_train_timesteps)
+        # Shift-only flow schedulers (H3) carry no num_train_timesteps; use the
+        # conventional 1000-point grid for them.
+        if hasattr(scheduler.config, "num_train_timesteps"):
+            num_train_timesteps = int(scheduler.config.num_train_timesteps)
+        else:
+            num_train_timesteps = 1000
         shift = args.fsdp_flow_shift
         sigmas = torch.linspace(1.0, 1.0 / num_train_timesteps, num_train_timesteps, dtype=torch.float64)
         sigmas = shift * sigmas / (1.0 + (shift - 1.0) * sigmas)

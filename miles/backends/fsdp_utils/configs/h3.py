@@ -37,7 +37,8 @@ class H3TrainPipelineConfig(TrainPipelineConfig):
         # sglang's H3 DiT renames modules and fuses Q/K/V, so weights only reach the
         # rollout through the LoRA IPC path's layer grouper; any other sync mode would
         # push names the engine drops with a warning, silently training nothing.
-        if not (args.use_lora and args.lora_ipc_weight_sync):
+        # SFT (--train-only) has no rollout engine and therefore no sync constraint.
+        if not args.train_only and not (args.use_lora and args.lora_ipc_weight_sync):
             raise ValueError("H3 training requires --use-lora with --lora-ipc-weight-sync")
 
     @classmethod
