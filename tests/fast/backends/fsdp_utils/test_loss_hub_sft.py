@@ -47,7 +47,7 @@ def _ctx(models, rollout_id=3, microbatch_id=0, dp_rank=0, config=None):
         train_pipeline_config=config if config is not None else _Config(),
         sde_backend=None,
         scheduler=_scheduler(),
-        args=Namespace(seed=42),
+        args=Namespace(seed=42, log_loss_sigma_bucket=5),
         forward_dtype=torch.float32,
         device=torch.device("cpu"),
         rollout_id=rollout_id,
@@ -68,7 +68,8 @@ class _Metrics:
         self.seen = {}
 
     def emit_mean(self, key, *, total, count):
-        self.seen[key] = (float(total), count)
+        prev_total, prev_count = self.seen.get(key, (0.0, 0))
+        self.seen[key] = (prev_total + float(total), prev_count + count)
 
 
 class TestPrepareSftBatch:
@@ -203,3 +204,27 @@ class TestSftLossFormula:
         )
         assert torch.allclose(loss, torch.tensor(float(len(batch))))
         assert metrics.seen["loss"] == (float(len(batch)), len(batch))
+
+    def test_sigma_buckets_partition_the_loss(self):
+        torch.manual_seed(0)
+        ctx = _ctx({"transformer": nn.Identity()})
+        batch = _batch()
+        prepared = prepare_sft_batch(ctx, batch)
+        metrics = _Metrics()
+        loss = sft_loss_formula(
+            ctx,
+            batch,
+            prepared,
+            new_pred=prepared.extras["target"] + 1.0,
+            ref_pred=None,
+            metrics=metrics,
+        )
+        from miles.backends.fsdp_utils.metrics import new_metric_buffer, sigma_bucket_key
+
+        bucket_keys = [key for key in metrics.seen if key.startswith("loss_sigma_")]
+        declared = new_metric_buffer(None, torch.device("cpu"), ["transformer"], sigma_buckets=5)._schema
+        assert set(bucket_keys) <= set(declared), "emitted buckets must be pre-declared for the DP reduce layout"
+        expected = {sigma_bucket_key(min(int(float(s) * 5), 4), 5) for s in prepared.extras["sigmas"]}
+        assert set(bucket_keys) == expected
+        total = sum(metrics.seen[key][0] for key in bucket_keys)
+        assert torch.allclose(torch.tensor(total), loss)

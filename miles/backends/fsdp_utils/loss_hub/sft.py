@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 
 from miles.backends.fsdp_utils.loss_hub.types import DiffusionLossContext, PreparedBatch
+from miles.backends.fsdp_utils.metrics import sigma_bucket_key
 from miles.utils.hash_utils import stable_hash
 from miles.utils.metric_buffer import MetricBuffer
 
@@ -91,7 +92,7 @@ def prepare_sft_batch(
         neg_cond=None,
         joint_cond=None,
         advantage=torch.ones(bsz, device=device, dtype=torch.float32),
-        extras={"target": noise - x0},
+        extras={"target": noise - x0, "sigmas": sigmas},
     )
 
 
@@ -113,4 +114,8 @@ def sft_loss_formula(
 
     with torch.no_grad():
         metrics.emit_mean("loss", total=loss_sum, count=len(batch))
+        num_buckets = ctx.args.log_loss_sigma_bucket
+        for pair_loss, sigma in zip(per_pair, prepared.extras["sigmas"], strict=True):
+            bucket = min(int(float(sigma) * num_buckets), num_buckets - 1)
+            metrics.emit_mean(sigma_bucket_key(bucket, num_buckets), total=pair_loss, count=1)
     return loss_sum

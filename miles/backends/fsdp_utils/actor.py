@@ -416,7 +416,12 @@ class FSDPTrainRayActor(TrainRayActor):
         if self.args.diffusion_recompute_old_log_prob:
             with timer("recompute_old_log_prob"), torch.no_grad():
                 # write_old_log_prob returns before recording; this is never reduced.
-                unused_metrics = new_metric_buffer(self.parallel_state.dp_group, device, self.models)
+                unused_metrics = new_metric_buffer(
+                    self.parallel_state.dp_group,
+                    device,
+                    self.models,
+                    sigma_buckets=self.args.log_loss_sigma_bucket,
+                )
                 # Skip window 0: its training forward runs on the same pre-update weights and doubles as the recompute.
                 # Start the id after window 0's micro-batches to stay aligned with the training loop.
                 microbatch_id = len(microbatch_schedule[0])
@@ -446,7 +451,12 @@ class FSDPTrainRayActor(TrainRayActor):
                 # LEGACY 2D parity: pad cond to the whole-window width. TODO: remove with legacy 2D path.
                 legacy_pad_to_len = self._maybe_legacy_window_pad_len(train_pairs, microbatch_ranges)
 
-                metrics = new_metric_buffer(self.parallel_state.dp_group, device, self.models)
+                metrics = new_metric_buffer(
+                    self.parallel_state.dp_group,
+                    device,
+                    self.models,
+                    sigma_buckets=self.args.log_loss_sigma_bucket,
+                )
 
                 for pair_lo, pair_hi in microbatch_ranges:
                     chunk = train_pairs[pair_lo:pair_hi]

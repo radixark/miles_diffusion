@@ -608,6 +608,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             # cached next to the jsonl under .sft_cache/, one content-addressed file per sample.
             parser.add_argument("--sft-frame-stride", type=int, default=1, help="SFT encode temporal stride")
             parser.add_argument(
+                "--log-loss-sigma-bucket",
+                type=int,
+                default=10,
+                help="number of sigma buckets for per-bucket loss curves (0 disables; emitted by the SFT loss today)",
+            )
+            parser.add_argument(
                 "--sft-offload-encoder",
                 action="store_true",
                 help="keep the frozen encoder in host RAM, on the GPU only during encode bursts",

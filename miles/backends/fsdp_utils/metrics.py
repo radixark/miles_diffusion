@@ -34,9 +34,19 @@ SCHEMA = {
 }
 
 
-def new_metric_buffer(group, device: torch.device, components: Collection[str]) -> MetricBuffer:
+def sigma_bucket_key(bucket: int, num_buckets: int) -> str:
+    return f"loss_sigma_{bucket / num_buckets:g}_{(bucket + 1) / num_buckets:g}"
+
+
+def new_metric_buffer(
+    group, device: torch.device, components: Collection[str], sigma_buckets: int = 0
+) -> MetricBuffer:
     """Buffer for one optimizer step, reducing over the DP group."""
     schema = dict(SCHEMA)
+    # SFT loss by sigma bucket: velocity-MSE magnitude varies strongly with the
+    # corruption level, so only bucketed curves are comparable across steps.
+    for bucket in range(sigma_buckets):
+        schema[sigma_bucket_key(bucket, sigma_buckets)] = MetricReduce.MEAN
     for component in components if len(components) > 1 else ():
         schema[f"log_prob_mean_abs_diff_{component}"] = MetricReduce.MEAN
         schema[f"model_output_mean_abs_diff_{component}"] = MetricReduce.MEAN
