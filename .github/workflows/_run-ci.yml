@@ -200,6 +200,11 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
           df -h
 
+      # The SFT media reader shells out to ffmpeg; ubuntu-latest stopped shipping it.
+      - name: Install ffmpeg
+        shell: bash
+        run: sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
+
       - name: Checkout miles-diffusion
         uses: actions/checkout@v4
         with:
