@@ -69,7 +69,8 @@ RUN pip install -r /tmp/requirements.txt
 # --no-deps avoids HPSv2's obsolete protobuf and pytest constraints.
 ARG HPSV2_REFERENCE_COMMIT=866735ecaae999fa714bd9edfa05aa2672669ee3
 RUN pip install --no-deps args==0.1.0 clint==0.5.1 && \
-    pip install --no-deps "git+https://github.com/tgxs002/HPSv2.git@${HPSV2_REFERENCE_COMMIT}"
+    pip install --no-deps "git+https://github.com/tgxs002/HPSv2.git@${HPSV2_REFERENCE_COMMIT}" && \
+    python3 -c "import hpsv2.src.open_clip"
 
 # ====================================== Install main package ============================================
 

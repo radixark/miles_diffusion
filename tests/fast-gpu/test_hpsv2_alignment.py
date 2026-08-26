@@ -25,6 +25,7 @@ def _make_image(height: int, width: int, offset: int) -> Image.Image:
 
 
 def _official_hpsv2(checkpoint_path: str, prompts: list[str], images: list[Image.Image]):
+    # The strict HPS checkpoint load replaces every parameter, so skip the official scorer's redundant LAION preload.
     model, _, preprocess = create_model_and_transforms(
         "ViT-H-14",
         pretrained=None,
@@ -48,6 +49,7 @@ def _official_hpsv2(checkpoint_path: str, prompts: list[str], images: list[Image
     model.load_state_dict(checkpoint["state_dict"])
     model.eval()
 
+    # The public scorer loops over pairs; batching both paths identically exercises the paired-diagonal fast path.
     image_batch = torch.stack([preprocess(image) for image in images])
     text_batch = get_tokenizer("ViT-H-14")(prompts)
     with torch.no_grad(), torch.amp.autocast("cuda"):
@@ -67,7 +69,7 @@ def test_hps_scorer_matches_official_hpsv2():
     expected_images, expected_scores = _official_hpsv2(checkpoint_path, prompts, images)
 
     assert torch.equal(actual_images, expected_images)
-    assert torch.equal(actual_scores, expected_scores)
+    torch.testing.assert_close(actual_scores, expected_scores, rtol=0, atol=0)
 
 
 if __name__ == "__main__":
