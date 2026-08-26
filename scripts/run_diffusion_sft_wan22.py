@@ -30,6 +30,9 @@ LORA_TARGET_MODULES = (
 )
 
 
+ROLLOUT_BATCH_SIZE = 64
+
+
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
     data_jsonl: str = ""
@@ -41,11 +44,15 @@ class ScriptArgs(U.ExecuteTrainConfig):
 def execute(args: ScriptArgs) -> None:
     if not args.data_jsonl:
         raise SystemExit("set --data-jsonl (or MILES_SCRIPT_DATA_JSONL) to a jsonl with prompt + metadata.video")
+    # Default save cadence: once per epoch; override with --save-interval in extra_args.
+    with open(args.data_jsonl) as f:
+        num_samples = sum(1 for line in f if line.strip())
+    save_interval = max(1, num_samples // ROLLOUT_BATCH_SIZE)
     run_name = f"diffusion_sft_wan22_{U.create_run_id()}"
 
     ckpt_args = (
         f"--hf-checkpoint {MODEL} --sft-encoder-checkpoint {MODEL} "
-        f"--save {args.output_dir}/{run_name}/ckpt --save-interval 20 "
+        f"--save {args.output_dir}/{run_name}/ckpt --save-interval {save_interval} "
     )
     if args.resume_ckpt:
         ckpt_args += f"--load {args.resume_ckpt} "
@@ -56,7 +63,7 @@ def execute(args: ScriptArgs) -> None:
         "--rollout-function-path miles.rollout.sft_rollout.generate_rollout "
         f"--prompt-data {args.data_jsonl} "
         "--input-key prompt "
-        "--rollout-batch-size 64 "
+        f"--rollout-batch-size {ROLLOUT_BATCH_SIZE} "
         "--num-epoch 3 "
         "--num-steps-per-rollout 4 "
         "--diffusion-height 480 "
