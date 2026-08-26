@@ -17,7 +17,7 @@ Measured against the 8-GPU reference run at these defaults, same dataset. Both r
 sft_cache_miss: 0, and the step figures are perf/actor_train_time -- the training loop only,
 with encoding excluded (it lands in perf/train_wait_time):
 
-    GPU peak      35.3 GB of 139.8 GB -- the rest of the card is headroom
+    GPU peak      39.5 GB of 139.8 GB, activations only -- see the note below
     host RAM      ~313 GB while FSDP materializes the shards, ~188 GB steady after
     init          ~12 min to load, shard, and broadcast the fp32 state
     optim step    278 s, against 30.5 s on 8 GPUs
@@ -29,9 +29,17 @@ simply having an eighth of the ranks.
 
 Encoding is the other single-worker cost, and it shows up outside those figures: one encode
 actor instead of eight at ~13.5 s per clip, measured as ~480 s of train_wait_time per
-rollout (32 misses) on a cold cache against 1-16 s once warm. Cache entries are
-content-addressed on the media and the encode settings and are identical to the ones the
-8-GPU recipe writes, so a directory that recipe already filled is reused as-is.
+rollout (32 misses) on a cold cache against 1-16 s once warm. It also owns the run's GPU
+peak while it runs -- the encoder is ~67 GB against the 39.5 GB train step -- and a fully
+warm cache never constructs the pool at all. Cache entries are content-addressed on the
+media and the encode settings and are identical to the ones the 8-GPU recipe writes, so a
+directory that recipe already filled is reused as-is.
+
+--fsdp-master-dtype is not a lever on the GPU number: under --fsdp-cpu-offload no weights
+are resident and the gathered copy is bf16 either way, so the 39.5 GB is activations plus
+one block. Setting it to bf16 halves host RAM instead (~134 GB to ~67 GB for the frozen
+base; PEFT keeps the trainable LoRA in fp32 regardless), which is the knob for a low-RAM
+host rather than a low-memory card.
 
 Usage:
     python3 scripts/run_diffusion_sft_h3_t2va_1gpu.py   # downloads DATASET on first run
