@@ -34,7 +34,7 @@ def _dispersal_order(
             return (1, 0, gpu_id, position)
         return (0, position_in_actor, gpu_id, position)
 
-    slots = zip(range(len(bundle_indices)), bundle_indices, gpu_ids, strict=False)
+    slots = zip(range(len(bundle_indices)), bundle_indices, gpu_ids, strict=True)
     return tuple(bundle_index for _, bundle_index, _ in sorted(slots, key=key))
 
 
@@ -49,6 +49,7 @@ class ColocatedRewardSlots:
     def __init__(self, order: tuple[int, ...]) -> None:
         self._order = order
         self._owners: dict[int, str] = {}
+        # Keep zero-worker claims and failed pool initialization from re-entering.
         self._pool_names: set[str] = set()
 
     def allocate(self, name: str, num_workers: int) -> list[int]:
