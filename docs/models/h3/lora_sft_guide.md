@@ -87,8 +87,11 @@ Performance reference (8×H200, 254 windows):
 | Encoding | ~15 s/clip/GPU; per-rollout bursts pipeline with training — only the first burst is a pure wait (~4.5 min); with a fully warm cache the encoder never loads at all |
 | Cache | content-addressed, ≈2× dataset size, lives in `.sft_cache/` next to the jsonl, reused across runs |
 | Encoder residency | `--sft-offload-encoder`: the ~70 GB encoder sleeps in host RAM and only occupies the GPU during encode bursts |
-| Training | ~61 s per optimizer step; 10 epochs = 70 rollouts = 280 steps ≈ 3 h |
+| Training | ~31 s per optimizer step, `--num-steps-per-rollout` 4 of them per encoded batch |
 | Checkpoints | saved at every epoch boundary and on the final rollout; iter_N means N rollouts completed |
+
+End to end, the default 3 epochs (21 rollouts, 84 steps) take 66 min from a cold cache;
+10 epochs (70 rollouts, 280 steps) take 2 h 50 min cold, 2 h 31 min on a warm one.
 
 Training leaves DCP checkpoints only. Export the LoRA with one single command:
 
