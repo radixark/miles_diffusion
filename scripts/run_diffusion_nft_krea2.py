@@ -1,17 +1,21 @@
-"""Krea-2-Raw DiffusionNFT training with PickScore.
+"""Krea-2-Raw DiffusionNFT training (OCR by default, PickScore via --reward).
 
 Same NFT shape as run_diffusion_nft_sd3_pickscore.py: EMA reference (--ref-mode ema),
 rollout under pi_old (--ema-rollout-policy ema), deterministic ODE rollout
 (noise_level=0, sde_type=ode) with no CFG. Krea-2 specifics: bf16, 1024px, and one
 sample per rollout request (the engine's krea2 pipeline has no per-request output
-expansion).
+expansion). Rollout debug tensors are collected (--diffusion-debug-mode).
 
-Smoke mode swaps in the small OCR dataset and a tiny batch, for checking the pipeline
-end to end without a real run.
+OCR is the default reward: text rendering improves visibly and its accuracy curve is
+steep, so both the metric and the wandb images validate the run. It needs no reward
+GPU. --reward pickscore switches to the aesthetic direction on one extra GPU.
+
+Smoke mode shrinks the batch for checking the pipeline end to end without a real run.
 
 Usage:
-    python3 scripts/run_diffusion_nft_krea2_pickscore.py
-    MILES_SCRIPT_SMOKE=1 python3 scripts/run_diffusion_nft_krea2_pickscore.py
+    python3 scripts/run_diffusion_nft_krea2.py
+    python3 scripts/run_diffusion_nft_krea2.py --reward pickscore
+    MILES_SCRIPT_SMOKE=1 python3 scripts/run_diffusion_nft_krea2.py
 """
 
 import os
@@ -23,7 +27,7 @@ import miles.utils.external_utils.command_utils as U
 
 MODEL = "krea/Krea-2-Raw"
 DATASET = "rockdu/miles-diffusion-datasets"
-WANDB_PROJECT = "miles-diffusion-nft"
+WANDB_PROJECT = "diffusionNFT"
 
 
 @dataclass
@@ -31,11 +35,20 @@ class ScriptArgs(U.ExecuteTrainConfig):
     num_rollout: int = 0  # 0 picks the smoke/full default
     data_dir: str = "/root/datasets"
     smoke: bool = False
+    reward: str = "ocr"  # ocr | pickscore
     extra_args: str = ""
 
 
+def _use_ocr(args: ScriptArgs) -> bool:
+    return args.smoke or args.reward == "ocr"
+
+
 def _subset(args: ScriptArgs) -> str:
-    return "flowgrpo_ocr" if args.smoke else "flowgrpo_pickscore"
+    return "flowgrpo_ocr" if _use_ocr(args) else "flowgrpo_pickscore"
+
+
+def _num_gpus(args: ScriptArgs) -> int:
+    return 2 if _use_ocr(args) else 3
 
 
 def prepare(args: ScriptArgs) -> str:
@@ -44,7 +57,7 @@ def prepare(args: ScriptArgs) -> str:
 
 
 def execute(args: ScriptArgs, data_dir: str) -> None:
-    run_name = f"diffusion_nft_krea2_pickscore_{U.create_run_id()}"
+    run_name = f"diffusion_nft_krea2_{args.reward}_{U.create_run_id()}"
     num_rollout = args.num_rollout or (1 if args.smoke else 100)
 
     ckpt_args = f"--hf-checkpoint {MODEL} --save {args.output_dir}/{run_name}/ckpt --save-interval 20 "
@@ -61,6 +74,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         "--diffusion-sde-type ode "
         "--diffusion-height 1024 "
         "--diffusion-width 1024 "
+        "--diffusion-debug-mode "
         "--rollout-microgroup-size 1 "
     ) + (
         "--rollout-batch-size 2 --n-samples-per-prompt 2 "
@@ -69,7 +83,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
     )
 
     eval_args = "--diffusion-eval-num-steps 52 --skip-eval-before-train " + (
-        "" if args.smoke else f"--eval-prompt-data pickscore_test {data_dir}/test.jsonl --eval-interval 30 "
+        "" if args.smoke else f"--eval-prompt-data {args.reward}_test {data_dir}/test.jsonl --eval-interval 30 "
     )
 
     grpo_args = (
@@ -96,7 +110,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
 
     reward_args = (
         "--rm-type ocr "
-        if args.smoke
+        if _use_ocr(args)
         else (
             "--rm-type pickscore "
             "--pickscore-num-workers 1 "
@@ -127,7 +141,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         "--actor-num-gpus-per-node 2 "
         "--rollout-num-gpus 2 "
         "--rollout-num-gpus-per-engine 1 "
-        f"--num-gpus-per-node {2 if args.smoke else 3} "
+        f"--num-gpus-per-node {_num_gpus(args)} "
         "--colocate "
         "--deterministic-mode "
     )
@@ -138,7 +152,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
             f"{optimizer_args} {lora_args} {reward_args} {wandb_args} {sglang_args} "
             f"{train_backend_args} {perf_args} {misc_args} {args.extra_args}"
         ),
-        num_gpus_per_node=2 if args.smoke else 3,
+        num_gpus_per_node=_num_gpus(args),
         config=args,
         extra_env_vars={
             "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
