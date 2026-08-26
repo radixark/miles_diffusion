@@ -6,7 +6,7 @@ VAE), writing one content-addressed file per sample into .sft_cache/ next to the
 The encoder is non-resident: it is dropped after every miss burst, so train steps never
 share the GPU with its ~70GB of weights.
 
-Dataset rows: {"prompt": "...", "metadata": {"video": "/abs/path.mp4"}}
+Dataset rows: {"prompt": "...", "metadata": {"video": "clips/x.mp4"}}, relative to the jsonl
 Videos must already sit on H3's serving grid: short_edge=768 canvas, 24 fps, and a
 17n+5 frame count (the default spec is 1344x768 / 107 frames, ~4.46 s). See
 docs/models/h3/lora_sft_guide.md sections 2-3 for how DATASET was built to this spec.
