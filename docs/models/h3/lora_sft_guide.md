@@ -67,10 +67,13 @@ on it you skip both sections and go straight to training below.
 ## 4. Training
 
 ```bash
+export WANDB_API_KEY=...                       # without it the recipe submits no wandb flags at all
 python3 scripts/run_diffusion_sft_h3_t2va.py   # zero arguments: downloads the dataset above on first run and trains
 # custom data:      --extra-args "--prompt-data /abs/train.jsonl"
 # delivery config:  --num-epoch 10   (recipe default is 3)
 ```
+
+Watch the run's log in wandb (project `miles-diffusion-sft`).
 
 The recipe defaults are exactly the validated optimum: **lr 3e-5, weight decay 0.01,
 LoRA rank 64 / alpha 128, rollout batch 32 (1 sample per GPU per optimizer step)**,
