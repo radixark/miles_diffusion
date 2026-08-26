@@ -3,21 +3,21 @@
 No sglang engines: the sft_rollout plugin lazily encodes each round's cache misses
 through a colocated encoder actor pool (Qwen3-VL-32B layer-50 text encoder + H3 video
 VAE), writing one content-addressed file per sample into .sft_cache/ next to the jsonl.
-Epoch 2 onward is all cache hits. The encoder is non-resident: it is dropped after every
-miss burst, so train steps never share the GPU with its ~70GB of weights. Prefer running
-scripts/precompute_sft_cache.py first so the whole dataset is encoded with one encoder
-load per GPU instead of one per rollout round.
+The encoder is non-resident: it is dropped after every miss burst, so train steps never
+share the GPU with its ~70GB of weights.
 
-Dataset rows: {"prompt": "...", "metadata": {"video": "/abs/path.mp4"}}
+Dataset rows: {"prompt": "...", "metadata": {"video": "clips/x.mp4"}}, relative to the jsonl
 Videos must already sit on H3's serving grid: short_edge=768 canvas, 24 fps, and a
 17n+5 frame count (the default spec is 1344x768 / 107 frames, ~4.46 s). See
-scripts/prepare_wisa_h3_lighting.py for a dataset pipeline that produces this format.
+docs/models/h3/lora_sft_guide.md sections 2-3 for how DATASET was built to this spec.
 
-Per rollout step: 64 samples, num_steps_per_rollout=4, so 16 samples per optimizer
-step over 8 dp ranks is 2 samples per rank at mbs=1.
+Per rollout step: 32 samples, num_steps_per_rollout=4, so 8 samples per optimizer
+step over 8 dp ranks is 1 sample per rank at mbs=1 (the batch size the reference
+lr/wd defaults were validated with).
 
 Usage:
-    MILES_SCRIPT_DATA_JSONL=/abs/data.jsonl python3 scripts/run_diffusion_sft_h3_t2va.py
+    python3 scripts/run_diffusion_sft_h3_t2va.py   # downloads DATASET on first run
+    # custom data: append --prompt-data /abs/train.jsonl via --extra-args (last flag wins)
 """
 
 from dataclasses import dataclass
@@ -27,6 +27,7 @@ import typer
 import miles.utils.external_utils.command_utils as U
 
 MODEL = "MiniMaxAI/MiniMax-H3"
+DATASET = "rockdu/WISA-80K-Practical-Dynamics-254"
 WANDB_PROJECT = "miles-diffusion-sft"
 
 # H3 DiT LoRA targets: packed self-attn and FFN (miles-side diffusers module names).
@@ -35,16 +36,18 @@ LORA_TARGET_MODULES = "attn.to_q attn.to_k attn.to_v attn.to_out.0 ff.net.0.proj
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
-    data_jsonl: str = ""
+    data_dir: str = "/root/datasets"
     resume_ckpt: str = ""
     start_rollout: int = -1
     num_epoch: int = 3
     extra_args: str = ""
 
 
+def prepare(args: ScriptArgs):
+    U.hf_download_dataset(DATASET, data_dir=args.data_dir)
+
+
 def execute(args: ScriptArgs) -> None:
-    if not args.data_jsonl:
-        raise SystemExit("set --data-jsonl (or MILES_SCRIPT_DATA_JSONL) to a jsonl with prompt + metadata.video")
     run_name = f"diffusion_sft_h3_t2va_{U.create_run_id()}"
 
     ckpt_args = (
@@ -58,9 +61,9 @@ def execute(args: ScriptArgs) -> None:
 
     rollout_args = (
         "--rollout-function-path miles.rollout.sft_rollout.generate_rollout "
-        f"--prompt-data {args.data_jsonl} "
+        f"--prompt-data {args.data_dir}/{DATASET.split('/')[1]}/train.jsonl "
         "--input-key prompt "
-        "--rollout-batch-size 64 "
+        "--rollout-batch-size 32 "
         f"--num-epoch {args.num_epoch} "
         "--num-steps-per-rollout 4 "
         # H3 serving grid: 16:9 canvas at short_edge=768, 24 fps, 17n+5 frames.
@@ -120,6 +123,7 @@ def execute(args: ScriptArgs) -> None:
 
 @U.dataclass_cli
 def main(args: ScriptArgs) -> None:
+    prepare(args)
     execute(args)
 
 

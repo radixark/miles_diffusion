@@ -228,3 +228,10 @@ class TestSftLossFormula:
         assert set(bucket_keys) == expected
         total = sum(metrics.seen[key][0] for key in bucket_keys)
         assert torch.allclose(torch.tensor(total), loss)
+
+
+def test_sigma_bucket_key_edges_are_floats():
+    from miles.backends.fsdp_utils.metrics import sigma_bucket_key
+
+    assert sigma_bucket_key(0, 10) == "loss_sigma_0.0_0.1"
+    assert sigma_bucket_key(9, 10) == "loss_sigma_0.9_1.0"

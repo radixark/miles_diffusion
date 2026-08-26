@@ -35,7 +35,12 @@ SCHEMA = {
 
 
 def sigma_bucket_key(bucket: int, num_buckets: int) -> str:
-    return f"loss_sigma_{bucket / num_buckets:g}_{(bucket + 1) / num_buckets:g}"
+    # Keep integer edges as floats (0.0, 1.0) so key names stay stable across bucket counts.
+    def edge(value: float) -> str:
+        text = f"{value:g}"
+        return text if "." in text else f"{value:.1f}"
+
+    return f"loss_sigma_{edge(bucket / num_buckets)}_{edge((bucket + 1) / num_buckets)}"
 
 
 def new_metric_buffer(

@@ -30,6 +30,13 @@ logger = logging.getLogger(__name__)
 ENCODE_GPU_FRACTION = 0.3
 
 
+def resolve_media_path(media: str, prompt_data: str) -> str:
+    """Relative media paths are anchored at the dataset jsonl's directory (portable datasets)."""
+    if os.path.isabs(media):
+        return media
+    return str(Path(prompt_data).parent / media)
+
+
 def sft_sample_key(args, item: dict) -> tuple[str, int]:
     """Content-addressed cache filename and latent-sampling seed for one (media, prompt) item."""
     stat = Path(item["media"]).stat()
@@ -239,7 +246,7 @@ def generate_rollout(args, rollout_id, data_source, evaluation: bool = False) ->
         media = sample.metadata.get("video") or sample.metadata.get("image")
         if media is None:
             raise ValueError(f"sample {sample.index} metadata has neither 'video' nor 'image': {sample.metadata}")
-        item = {"media": media, "prompt": sample.prompt}
+        item = {"media": resolve_media_path(media, args.prompt_data), "prompt": sample.prompt}
         item["cache_name"], item["latent_seed"] = sft_sample_key(args, item)
         items.append(item)
 
