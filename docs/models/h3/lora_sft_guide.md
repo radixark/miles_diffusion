@@ -80,6 +80,11 @@ LoRA rank 64 / alpha 128, rollout batch 32 (1 sample per GPU per optimizer step)
 `--fsdp-flow-shift 12.0`, `--diffusion-guidance-scale 1.0` (H3 has no CFG),
 `--sft-offload-encoder`.
 
+miles-diffusion started with RL and later grew to cover SFT. Read a rollout here as whatever
+produces the next batch of training samples — RL generates them, SFT encodes them. Each batch is
+then consumed by `--num-steps-per-rollout` 4 optimizer steps. Both fit the same loop, which is
+why `iter_N` counts rollouts rather than steps.
+
 Performance reference (8×H200, 254 windows):
 
 | Stage | Cost |
