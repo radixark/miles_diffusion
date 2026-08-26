@@ -51,3 +51,4 @@ count as verification.
   - `run_diffusion_grpo_wan22_pickscore_5gpu.py` — Wan2.2 5-GPU LoRA
     Flow-GRPO + PickScore.
   - `run_diffusion_sft_wan22.py` — Wan2.2 4-GPU LoRA SFT.
+  - `run_diffusion_sft_h3_t2va_1gpu.py` — MiniMax H3 1-GPU LoRA SFT.
