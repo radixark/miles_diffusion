@@ -84,7 +84,7 @@ Performance reference (8×H200, 254 windows):
 
 | Stage | Cost |
 |---|---|
-| Encoding | ~15 s/clip/GPU; per-rollout bursts pipeline with training — only the first burst is a pure wait (~4.5 min); with a fully warm cache the encoder never loads at all |
+| Encoding | ~15 s/clip/GPU; the first 8 rollouts (one dataset pass) each stall ~110 s on their own misses, 230 s for rollout 0 which builds the pool; warm from rollout 8 |
 | Cache | content-addressed, ≈2× dataset size, lives in `.sft_cache/` next to the jsonl, reused across runs |
 | Encoder residency | `--sft-offload-encoder`: the ~70 GB encoder sleeps in host RAM and only occupies the GPU during encode bursts |
 | Training | ~31 s per optimizer step, `--num-steps-per-rollout` 4 of them per encoded batch |
