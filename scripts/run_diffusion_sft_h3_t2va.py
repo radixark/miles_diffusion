@@ -3,15 +3,13 @@
 No sglang engines: the sft_rollout plugin lazily encodes each round's cache misses
 through a colocated encoder actor pool (Qwen3-VL-32B layer-50 text encoder + H3 video
 VAE), writing one content-addressed file per sample into .sft_cache/ next to the jsonl.
-Epoch 2 onward is all cache hits. The encoder is non-resident: it is dropped after every
-miss burst, so train steps never share the GPU with its ~70GB of weights. Prefer running
-scripts/precompute_sft_cache.py first so the whole dataset is encoded with one encoder
-load per GPU instead of one per rollout round.
+The encoder is non-resident: it is dropped after every miss burst, so train steps never
+share the GPU with its ~70GB of weights.
 
 Dataset rows: {"prompt": "...", "metadata": {"video": "/abs/path.mp4"}}
 Videos must already sit on H3's serving grid: short_edge=768 canvas, 24 fps, and a
 17n+5 frame count (the default spec is 1344x768 / 107 frames, ~4.46 s). See
-scripts/prepare_wisa_h3_lighting.py for a dataset pipeline that produces this format.
+docs/models/h3/lora_sft_guide.md sections 2-3 for how DATASET was built to this spec.
 
 Per rollout step: 32 samples, num_steps_per_rollout=4, so 8 samples per optimizer
 step over 8 dp ranks is 1 sample per rank at mbs=1 (the batch size the reference
