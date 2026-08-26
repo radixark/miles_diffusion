@@ -152,12 +152,19 @@ def execute(args: ScriptArgs) -> None:
 
     perf_args = "--micro-batch-size 1 --gradient-checkpointing "
 
+    # One rank has no cross-rank reduction order to vary, so determinism here is
+    # reachable and cheap to keep: it makes this recipe a reproducible reference for
+    # the 8-GPU one, whose curve is not bit-reproducible across topologies anyway.
+    # No --fsdp-attention-backend is set, so validate_attention_args takes the
+    # torch-native path rather than rejecting an opaque kernel.
+    determinism_args = "--deterministic-mode "
+
     misc_args = "--actor-num-gpus-per-node 1 --num-gpus-per-node 1 "
 
     U.execute_train(
         train_args=(
             f"{ckpt_args} {rollout_args} {sft_args} {optimizer_args} {lora_args} "
-            f"{wandb_args} {train_backend_args} {perf_args} {misc_args} {args.extra_args}"
+            f"{wandb_args} {train_backend_args} {perf_args} {determinism_args} {misc_args} {args.extra_args}"
         ),
         num_gpus_per_node=1,
         config=args,
