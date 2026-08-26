@@ -54,7 +54,11 @@ class RolloutManager:
         from miles.dashboard import hooks
 
         hooks.register_rollout_manager(args)
-        set_manager_placement_group(pg)
+        set_manager_placement_group(
+            pg,
+            num_gpus_per_node=args.num_gpus_per_node,
+            num_gpus_per_engine=args.rollout_num_gpus_per_engine,
+        )
         if not args.train_only:
             logger.info("RolloutManager: starting router...")
             _start_router(args)
