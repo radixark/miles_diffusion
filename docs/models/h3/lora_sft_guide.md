@@ -33,8 +33,10 @@ WISA-80K (79,480)
 - **The GSB blind test is the final quality gate**: randomized sides per pair, opaque
   video URLs (untraceable even from devtools), source revealed after each vote. It
   answers one question — "is this clip actually better than what H3 generates itself?" —
-  and only winners enter the training set. Win rates: splash 55% / smoke 52% /
-  explosion 47%; even after VLM screening, only ~40% of candidates pass.
+  and only winners enter the training set. Of the 500 pairs, 198 went to the dataset, 187 to
+  H3, and 115 were draws; a draw does not enter either, so only ~40% of screened candidates
+  survive (splash 40% / smoke 41% / explosion 38%). On the pairs that were decided the
+  dataset only just edges H3 out, 51%.
 - Long clips yield up to two non-overlapping windows (one 10 s source = 2 training
   samples sharing a caption).
 
