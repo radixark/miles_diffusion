@@ -6,12 +6,21 @@ changes is only how those 8 samples are laid out: 8 dp ranks x 1 micro-batch bec
 1 rank x 8 gradient-accumulation micro-batches, still at micro_batch_size=1. Optimizer,
 LoRA, sigma grid, dtypes, and the loss are the 8-GPU recipe's, flag for flag.
 
-Why --fsdp-cpu-offload is not optional here: H3 is a 33.5B-parameter model, so the fp32
-master copy the recipe trains against is ~134 GB. Sharded 8 ways that is the ~16 GB/rank
-the 8-GPU run reports; on one 139.8 GB H200 it leaves nothing for activations.
-CPUOffloadPolicy keeps the fp32 shard and the (LoRA-only) optimizer state in host RAM and
-all-gathers one transformer block at a time as bf16, so GPU residency is activations plus a
-single block. This preserves the master/forward dtypes rather than trading them away.
+Two flags differ from the 8-GPU recipe, both forced by having one card.
+
+--fsdp-cpu-offload is not optional: H3 is a 33.5B-parameter model, so even a bf16 master is
+~66 GB, and CPUOffloadPolicy is what keeps it (and the LoRA-only optimizer state) off a
+139.8 GB card that also has to hold activations. FSDP all-gathers one transformer block at a
+time as bf16, so GPU residency is activations plus a single block.
+
+--fsdp-master-dtype bf16 rather than fp32, because under this configuration fp32 buys
+nothing. Only the LoRA adapters train, and PEFT keeps those in fp32 whatever the base dtype
+(measured: base bf16 -> lora_A/lora_B float32, requires_grad=True). The frozen base is
+gathered as bf16 for the forward at either setting, since MixedPrecisionPolicy uses
+param_dtype=bf16 on every wrap and H3 declares no param_dtype_patterns. What fp32 does cost
+is 66 GB of host RAM. diffusers' _keep_in_fp32_modules -- proj_in, proj_out, audio_proj_in,
+audio_proj_out, time_embedder, rope -- keeps the tensors MiniMax shipped as fp32 in fp32
+regardless. --fsdp-reduce-dtype stays fp32: that one governs the LoRA gradients.
 
 Measured against the 8-GPU reference run at these defaults, same dataset. Both runs report
 sft_cache_miss: 0, and the step figures are perf/actor_train_time -- the training loop only,
@@ -37,9 +46,9 @@ directory that recipe already filled is reused as-is.
 
 --fsdp-master-dtype is not a lever on the GPU number: under --fsdp-cpu-offload no weights
 are resident and the gathered copy is bf16 either way, so the 39.5 GB is activations plus
-one block. Setting it to bf16 halves host RAM instead (~134 GB to ~67 GB for the frozen
-base; PEFT keeps the trainable LoRA in fp32 regardless), which is the knob for a low-RAM
-host rather than a low-memory card.
+one block. It is a host-RAM lever, which is why this recipe sets bf16; pass
+--fsdp-master-dtype fp32 via --extra-args to match the 8-GPU recipe byte for byte at twice
+the host cost.
 
 Usage:
     python3 scripts/run_diffusion_sft_h3_t2va_1gpu.py   # downloads DATASET on first run
@@ -125,13 +134,19 @@ def execute(args: ScriptArgs) -> None:
 
     train_backend_args = (
         "--train-backend fsdp "
-        "--fsdp-master-dtype fp32 "
+        # bf16 master, unlike the 8-GPU recipe: only the LoRA adapters train, PEFT keeps
+        # those in fp32 whatever the base dtype, and the frozen base is gathered as bf16
+        # for the forward at either setting -- so fp32 buys nothing here and costs 66GB of
+        # host RAM. diffusers' _keep_in_fp32_modules still protects proj_in/proj_out/
+        # audio_proj_in/audio_proj_out/time_embedder/rope. Reduce stays fp32: that one
+        # governs the LoRA gradients.
+        "--fsdp-master-dtype bf16 "
         "--fsdp-reduce-dtype fp32 "
         "--diffusion-forward-dtype bf16 "
         # Match the engine's t2va serving schedule (video shift 12) so training
         # sigmas cover the same grid inference will sample.
         "--fsdp-flow-shift 12.0 "
-        # The 134GB fp32 master has nowhere to live on one card; see the module docstring.
+        # Even a bf16 master has nowhere to live on one card; see the module docstring.
         "--fsdp-cpu-offload "
     )
 
