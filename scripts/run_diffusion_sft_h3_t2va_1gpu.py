@@ -13,7 +13,9 @@ CPUOffloadPolicy keeps the fp32 shard and the (LoRA-only) optimizer state in hos
 all-gathers one transformer block at a time as bf16, so GPU residency is activations plus a
 single block. This preserves the master/forward dtypes rather than trading them away.
 
-Measured against the 8-GPU reference run at these defaults, same dataset:
+Measured against the 8-GPU reference run at these defaults, same dataset. Both runs report
+sft_cache_miss: 0, and the step figures are perf/actor_train_time -- the training loop only,
+with encoding excluded (it lands in perf/train_wait_time):
 
     GPU peak      35.3 GB of 139.8 GB -- the rest of the card is headroom
     host RAM      ~313 GB while FSDP materializes the shards, ~188 GB steady after
@@ -25,10 +27,11 @@ So the offload costs ~14% per micro-batch -- the PCIe round trip for every block
 the forward and the gradient-checkpoint recompute. The remaining 9x wall-clock gap is
 simply having an eighth of the ranks.
 
-Encoding is the other single-worker cost: one encode actor instead of eight, ~13.5 s per
-clip, which on a cold cache adds ~7 min per rollout through the first epoch. Cache entries
-are content-addressed on the media and the encode settings and are identical to the ones
-the 8-GPU recipe writes, so a directory that recipe already filled is reused as-is.
+Encoding is the other single-worker cost, and it shows up outside those figures: one encode
+actor instead of eight at ~13.5 s per clip, measured as ~480 s of train_wait_time per
+rollout (32 misses) on a cold cache against 1-16 s once warm. Cache entries are
+content-addressed on the media and the encode settings and are identical to the ones the
+8-GPU recipe writes, so a directory that recipe already filled is reused as-is.
 
 Usage:
     python3 scripts/run_diffusion_sft_h3_t2va_1gpu.py   # downloads DATASET on first run
