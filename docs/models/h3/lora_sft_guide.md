@@ -106,7 +106,8 @@ python3 scripts/export_lora.py --ckpt-dir <run>/ckpt/iter_0000070 \
 ```
 
 This writes the safetensors plus an `adapter_config.json` sidecar; sgl-diffusion loads it
-directly via `--lora-path`.
+directly via `--lora-path`. Keep the two files together — the sidecar is looked up in the
+safetensors' own directory, and without it alpha falls back to rank, i.e. half strength.
 
 Reference loss (8×H200, same figure as the repo docs):
 
