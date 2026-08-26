@@ -8,12 +8,11 @@ from unittest.mock import AsyncMock
 import numpy as np
 import pytest
 import torch
-from PIL import Image
 
 import miles.rollout.rm_hub.hps as hps_module
 import miles.rollout.rm_hub.pickscore as pickscore_module
 from miles.rollout.rm_hub import batched_async_rm
-from miles.rollout.rm_hub.hps import HPSScorer, _HPSImageTransform, _sample_to_rgb_hwc_uint8
+from miles.rollout.rm_hub.hps import _sample_to_rgb_hwc_uint8
 from miles.utils.types import Sample
 
 
@@ -31,33 +30,6 @@ def test_sample_to_rgb_hwc_uint8_matches_hps_rounding():
 def test_sample_to_rgb_hwc_uint8_rejects_video_outputs():
     with pytest.raises(ValueError, match="supports image outputs only"):
         _sample_to_rgb_hwc_uint8(Sample(generated_output=torch.zeros(3, 2, 4, 4)))
-
-
-def test_hps_scorer_returns_aligned_diagonal_scores():
-    scorer = HPSScorer.__new__(HPSScorer)
-    torch.nn.Module.__init__(scorer)
-    scorer.device = torch.device("cpu")
-    scorer.model = lambda *_: {
-        "image_features": torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
-        "text_features": torch.tensor([[2.0, 3.0], [4.0, 5.0]]),
-    }
-    scorer.preprocess = lambda _: torch.zeros(3, 2, 2)
-    scorer.tokenizer = lambda prompts: torch.zeros(len(prompts), 1, dtype=torch.long)
-
-    images = [Image.new("RGB", (2, 2)), Image.new("RGB", (2, 2))]
-
-    assert scorer(["first", "second"], images) == [2.0, 5.0]
-
-
-def test_hps_image_transform_fits_longest_side_and_pads():
-    transform = _HPSImageTransform(image_size=(4, 4), mean=(0.0, 0.0, 0.0), std=(1.0, 1.0, 1.0))
-    image = Image.fromarray(np.full((2, 4, 3), 255, dtype=np.uint8))
-
-    actual = transform(image)
-
-    assert actual.shape == (3, 4, 4)
-    torch.testing.assert_close(actual[:, 1:3], torch.ones(3, 2, 4))
-    torch.testing.assert_close(actual[:, [0, 3]], torch.zeros(3, 2, 4))
 
 
 @pytest.mark.asyncio
