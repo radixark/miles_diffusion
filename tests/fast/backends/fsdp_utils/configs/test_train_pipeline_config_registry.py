@@ -5,6 +5,7 @@ register_cpu_ci(est_time=30, suite="stage-a-cpu", labels=[])
 import pytest
 import torch
 
+from miles.backends.fsdp_utils.configs.krea2 import Krea2TrainPipelineConfig
 from miles.backends.fsdp_utils.configs.qwen_image import QwenImageTrainPipelineConfig
 from miles.backends.fsdp_utils.configs.sd3 import SD3TrainPipelineConfig
 from miles.backends.fsdp_utils.configs.train_pipeline_config import TrainPipelineConfig, resolve_diffusion_model_family
@@ -20,6 +21,7 @@ class TestFamilyResolution:
             ("Qwen/Qwen-Image", "qwen_image"),
             ("Wan-AI/Wan2.2-T2V-A14B", "wan2_2"),
             ("/data/ckpts/SD3.5-Medium-Finetune", "sd3"),
+            ("krea/Krea-2-Raw", "krea2"),
         ],
     )
     def test_known_patterns(self, ref, family):
@@ -94,11 +96,13 @@ class TestProcessTimestepAsInput:
     # What a family hands its DiT as the timestep, given the trajectory's t and the
     # scheduler range N. Each family must reproduce the arithmetic its sglang-d DiT runs.
     #
-    #   sd3, wan2_2   t         the DiT takes the trajectory timestep unchanged
-    #   qwen_image    t / 1000  the model's own normalizer, which Timesteps(scale=1000) undoes
+    #   sd3, wan2_2, krea2   t         the DiT takes the trajectory timestep unchanged
+    #   qwen_image           t / 1000  the model's own normalizer, which Timesteps(scale=1000) undoes
     TIMESTEPS = torch.tensor([978.2581787109375, 500.0])
 
-    @pytest.mark.parametrize("config_cls", [SD3TrainPipelineConfig, Wan2_2TrainPipelineConfig])
+    @pytest.mark.parametrize(
+        "config_cls", [SD3TrainPipelineConfig, Wan2_2TrainPipelineConfig, Krea2TrainPipelineConfig]
+    )
     def test_raw_trajectory_timestep(self, config_cls):
         out = config_cls.process_timestep_as_input(config_cls, self.TIMESTEPS)
         assert torch.equal(out, self.TIMESTEPS)
@@ -122,11 +126,14 @@ class TestProcessSigmaAsTimestepsInput:
         )
         assert torch.equal(out, self.SIGMAS * float(self.NUM_TRAIN_TIMESTEPS))
 
-    def test_qwen_image_passes_the_sigma_through(self):
-        out = QwenImageTrainPipelineConfig.process_sigma_as_timesteps_input(
-            QwenImageTrainPipelineConfig, self.SIGMAS, num_train_timesteps=self.NUM_TRAIN_TIMESTEPS
+    @pytest.mark.parametrize("config_cls", [QwenImageTrainPipelineConfig, Krea2TrainPipelineConfig])
+    def test_passes_the_sigma_through(self, config_cls):
+        out = config_cls.process_sigma_as_timesteps_input(
+            config_cls, self.SIGMAS, num_train_timesteps=self.NUM_TRAIN_TIMESTEPS
         )
         assert torch.equal(out, self.SIGMAS)
+
+    def test_qwen_image_round_trip_is_not_identity(self):
         # Asserted so the equal() above keeps its teeth.
         round_tripped = QwenImageTrainPipelineConfig.process_timestep_as_input(
             QwenImageTrainPipelineConfig, self.SIGMAS * float(self.NUM_TRAIN_TIMESTEPS)

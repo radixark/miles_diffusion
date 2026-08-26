@@ -8,6 +8,7 @@ import torch
 import torch.distributed as dist
 from torch.distributed.tensor import DTensor
 
+import miles.backends.fsdp_utils.configs.krea2  # noqa: F401 — register pipeline config
 import miles.backends.fsdp_utils.configs.qwen_image  # noqa: F401 — register pipeline config
 import miles.backends.fsdp_utils.configs.sd3  # noqa: F401 — register pipeline config
 import miles.backends.fsdp_utils.configs.wan2_2  # noqa: F401 — register pipeline config

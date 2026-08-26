@@ -28,7 +28,7 @@ def prepare_nft_batch(
 ) -> PreparedBatch:
     """Corrupt clean x0 at each pair's sigma; CFG-free cond."""
     if len(ctx.models) != 1:
-        raise ValueError("DiffusionNFT currently supports a single DiT component (SD3)")
+        raise ValueError("DiffusionNFT currently supports a single DiT component")
     device = ctx.device
     config = ctx.train_pipeline_config
     bsz = len(batch)
