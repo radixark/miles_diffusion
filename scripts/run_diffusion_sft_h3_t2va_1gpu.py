@@ -1,54 +1,51 @@
-"""1-GPU MiniMax H3 t2va LoRA SFT — the 8-GPU recipe's batch schedule on a single card.
+"""scripts/run_diffusion_sft_h3_t2va.py on one card, with the same training math.
 
-Same training math as scripts/run_diffusion_sft_h3_t2va.py: 32 samples per rollout,
-num_steps_per_rollout=4, so global_batch_size stays 8 samples per optimizer step. What
-changes is only how those 8 samples are laid out: 8 dp ranks x 1 micro-batch becomes
-1 rank x 8 gradient-accumulation micro-batches, still at micro_batch_size=1. Optimizer,
-LoRA, sigma grid, dtypes, and the loss are the 8-GPU recipe's, flag for flag.
+The 8-GPU recipe's schedule is preserved exactly, not approximated. global_batch_size is 8
+either way -- arguments.py derives it as rollout_batch_size x n_samples_per_prompt /
+num_steps_per_rollout, with no world-size term -- so the only thing one card changes is the
+layout: 8 dp ranks x 1 micro-batch becomes 1 rank x 8 gradient-accumulation micro-batches,
+still at micro_batch_size=1, still 4 optimizer steps per rollout. The gradient scale follows:
+actor.py divides by num_local_pairs, which is 8 on the single rank and 1 on each of eight
+ranks before FSDP2's mesh-mean divides by 8 again. Optimizer, LoRA, sigma grid, and loss are
+the 8-GPU recipe's flag for flag.
 
-Two flags differ from the 8-GPU recipe, both forced by having one card.
+Two flags do differ, both forced by having one card:
 
---fsdp-cpu-offload is not optional: H3 is a 33.5B-parameter model, so even a bf16 master is
-~66 GB, and CPUOffloadPolicy is what keeps it (and the LoRA-only optimizer state) off a
-139.8 GB card that also has to hold activations. FSDP all-gathers one transformer block at a
-time as bf16, so GPU residency is activations plus a single block.
+--fsdp-cpu-offload. H3 is 33.5B parameters, so even a bf16 master is ~66 GB and leaves no
+room for activations on a 139.8 GB H200. CPUOffloadPolicy keeps the master shard and the
+LoRA-only optimizer state in host RAM and all-gathers one transformer block at a time as
+bf16, so GPU residency is activations plus a single block.
 
---fsdp-master-dtype bf16 rather than fp32, because under this configuration fp32 buys
-nothing. Only the LoRA adapters train, and PEFT keeps those in fp32 whatever the base dtype
-(measured: base bf16 -> lora_A/lora_B float32, requires_grad=True). The frozen base is
-gathered as bf16 for the forward at either setting, since MixedPrecisionPolicy uses
-param_dtype=bf16 on every wrap and H3 declares no param_dtype_patterns. What fp32 does cost
-is 66 GB of host RAM. diffusers' _keep_in_fp32_modules -- proj_in, proj_out, audio_proj_in,
-audio_proj_out, time_embedder, rope -- keeps the tensors MiniMax shipped as fp32 in fp32
-regardless. --fsdp-reduce-dtype stays fp32: that one governs the LoRA gradients.
+--fsdp-master-dtype bf16 instead of fp32, which under that offload changes no math. Only the
+LoRA adapters train, and PEFT keeps those in fp32 whatever the base dtype; the frozen base is
+gathered as bf16 for the forward at either setting, because MixedPrecisionPolicy applies
+param_dtype=bf16 to every wrap and H3 declares no param_dtype_patterns. Measured: step 1 of
+an otherwise identical run reproduces the fp32 loss to every digit logged (3.276656e-01).
+diffusers' _keep_in_fp32_modules still holds proj_in, proj_out, audio_proj_in,
+audio_proj_out, time_embedder and rope in fp32. --fsdp-reduce-dtype stays fp32 -- that one
+governs the LoRA gradients, which do train.
 
-Measured against the 8-GPU reference run at these defaults, same dataset. Both runs report
-sft_cache_miss: 0, and the step figures are perf/actor_train_time -- the training loop only,
-with encoding excluded (it lands in perf/train_wait_time):
+What one card costs, measured against the 8-GPU reference run on the same dataset with a
+warm cache (per-step figures are perf/actor_train_time, so encoding is excluded):
 
-    GPU peak      39.5 GB of 139.8 GB, activations only -- see the note below
-    host RAM      ~313 GB while FSDP materializes the shards, ~188 GB steady after
-    init          ~12 min to load, shard, and broadcast the fp32 state
-    optim step    278 s, against 30.5 s on 8 GPUs
-    micro-batch   34.8 s, against 30.5 s on 8 GPUs
+    GPU peak         39.5 GB, activations plus one block -- no weights are resident
+    host RAM         217 GB peak through FSDP init, 99 GB steady (~95 GB of it pinned)
+    init             ~6 min
+    optimizer step   278 s against 30.5 s
+    rollout          17.3 min against 122 s
 
-So the offload costs ~14% per micro-batch -- the PCIe round trip for every block, on both
-the forward and the gradient-checkpoint recompute. The remaining 9x wall-clock gap is
-simply having an eighth of the ranks.
+The 9x wall-clock gap is 8x rank count and ~14% for the PCIe round trip the offload adds to
+every block, on both the forward and the gradient-checkpoint recompute. A cold .sft_cache
+adds more, and only here: one encode worker instead of eight, ~480-590 s per rollout through
+the first epoch, during which the ~67 GB encoder rather than the train step owns the GPU
+peak. Cache entries are content-addressed on the media and the encode settings and are
+identical to the 8-GPU recipe's, so a directory it already filled is reused as-is.
 
-Encoding is the other single-worker cost, and it shows up outside those figures: one encode
-actor instead of eight at ~13.5 s per clip, measured as ~480 s of train_wait_time per
-rollout (32 misses) on a cold cache against 1-16 s once warm. It also owns the run's GPU
-peak while it runs -- the encoder is ~67 GB against the 39.5 GB train step -- and a fully
-warm cache never constructs the pool at all. Cache entries are content-addressed on the
-media and the encode settings and are identical to the ones the 8-GPU recipe writes, so a
-directory that recipe already filled is reused as-is.
-
---fsdp-master-dtype is not a lever on the GPU number: under --fsdp-cpu-offload no weights
-are resident and the gathered copy is bf16 either way, so the 39.5 GB is activations plus
-one block. It is a host-RAM lever, which is why this recipe sets bf16; pass
---fsdp-master-dtype fp32 via --extra-args to match the 8-GPU recipe byte for byte at twice
-the host cost.
+What is not reproducible across the two, and cannot be: prepare_sft_batch seeds the sigma and
+noise draw on (rollout_id, microbatch_id, dp_rank), so every sample lands on a different sigma
+when the topology changes. Compare the two runs on trend and on the per-sigma buckets, never
+point by point. Within one topology, --extra-args "--deterministic-mode" does pin the run
+bit-for-bit; it costs ~25% per step and ~3.6 GB of GPU.
 
 Usage:
     python3 scripts/run_diffusion_sft_h3_t2va_1gpu.py   # downloads DATASET on first run
@@ -152,19 +149,12 @@ def execute(args: ScriptArgs) -> None:
 
     perf_args = "--micro-batch-size 1 --gradient-checkpointing "
 
-    # One rank has no cross-rank reduction order to vary, so determinism here is
-    # reachable and cheap to keep: it makes this recipe a reproducible reference for
-    # the 8-GPU one, whose curve is not bit-reproducible across topologies anyway.
-    # No --fsdp-attention-backend is set, so validate_attention_args takes the
-    # torch-native path rather than rejecting an opaque kernel.
-    determinism_args = "--deterministic-mode "
-
     misc_args = "--actor-num-gpus-per-node 1 --num-gpus-per-node 1 "
 
     U.execute_train(
         train_args=(
             f"{ckpt_args} {rollout_args} {sft_args} {optimizer_args} {lora_args} "
-            f"{wandb_args} {train_backend_args} {perf_args} {determinism_args} {misc_args} {args.extra_args}"
+            f"{wandb_args} {train_backend_args} {perf_args} {misc_args} {args.extra_args}"
         ),
         num_gpus_per_node=1,
         config=args,
