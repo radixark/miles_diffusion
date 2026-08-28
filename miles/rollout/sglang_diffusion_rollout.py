@@ -60,6 +60,7 @@ def build_rollout_sampling_params(
                 "rollout_noise_level": args.diffusion_noise_level,
                 "rollout_log_prob_no_const": args.diffusion_log_prob_no_const,
                 "rollout_debug_mode": args.diffusion_debug_mode,
+                "rollout_video_dtype": args.rollout_video_dtype,
                 "rollout_return_denoising_env": True,
                 "rollout_return_dit_trajectory": True,
             }
@@ -121,13 +122,14 @@ class GenerateState(metaclass=SingletonMeta):
             for _ in range(args.rollout_parser_num_workers)
         ]
         self._parser_rr = 0
+        self.parser_inflight = [0] * args.rollout_parser_num_workers
 
         self.reset()
 
-    def next_parser(self):
-        parser = self.response_parsers[self._parser_rr % len(self.response_parsers)]
+    def next_parser_idx(self) -> int:
+        i = self._parser_rr % len(self.response_parsers)
         self._parser_rr += 1
-        return parser
+        return i
 
     @contextmanager
     def dp_rank_context(self):
@@ -195,8 +197,16 @@ async def generate_microgroup(
     with st.stage("generate"):
         raw = await post(url, payload, raw=True)
     with st.stage("deserialize"):
-        ref = state.next_parser().apply_raw.remote(microgroup, raw)
-        microgroup = await asyncio.to_thread(ray.get, ref)
+        i = state.next_parser_idx()
+        queued = state.parser_inflight[i]
+        state.parser_inflight[i] += 1
+        ref = state.response_parsers[i].apply_raw.remote(microgroup, raw)
+        try:
+            microgroup = await asyncio.to_thread(ray.get, ref)
+        finally:
+            state.parser_inflight[i] -= 1
+        for sample in microgroup:
+            sample.parser_max_queue_depth = float(queued)
     st.attach(microgroup)
 
     # Stash the SDE/training step indices on each sample so _train_core can

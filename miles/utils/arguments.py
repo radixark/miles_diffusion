@@ -253,6 +253,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Samples per prompt sent in one rollout request (sub-batch of the group).",
             )
             parser.add_argument(
+                "--rollout-video-dtype",
+                type=str,
+                choices=["keep", "uint8"],
+                default="keep",
+                help=(
+                    "Dtype of the decoded video in rollout responses. 'keep' returns the "
+                    "engine's raw float tensor; 'uint8' quantises engine-side with the same "
+                    "formula the reward path applies, cutting the response body ~4x. Use "
+                    "'keep' for any consumer that needs the unquantised tensor."
+                ),
+            )
+            parser.add_argument(
                 "--diffusion-fps",
                 type=float,
                 default=None,

@@ -64,6 +64,7 @@ class MilesRouter:
         """Setup all the HTTP routes"""
         # sglang-router api
         self.app.post("/add_worker")(self.add_worker)
+        self.app.post("/remove_worker")(self.remove_worker)
         self.app.get("/list_workers")(self.list_workers)
         # Catch-all route for proxying to SGLang - must be registered LAST
         self.app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])(self.proxy)
@@ -175,6 +176,30 @@ class MilesRouter:
             if self.verbose:
                 print(f"[miles-router] Added new worker: {worker_url}")
 
+        return {"status": "success", "worker_urls": self.worker_request_counts}
+
+    async def remove_worker(self, request: Request):
+        """Drop a worker from the routing pool, same URL forms as add_worker.
+
+        Engines call this on shutdown. Without the route it fell through to the
+        catch-all and was proxied to a worker as if it were a generate request.
+        """
+        worker_url = request.query_params.get("url") or request.query_params.get("worker_url")
+        if not worker_url:
+            body = await request.body()
+            payload = json.loads(body) if body else {}
+            worker_url = payload.get("url") or payload.get("worker_url")
+
+        if not worker_url:
+            return JSONResponse(
+                status_code=400, content={"error": "worker_url is required (use query ?url=... or JSON body)"}
+            )
+
+        self.worker_request_counts.pop(worker_url, None)
+        self.worker_failure_counts.pop(worker_url, None)
+        self.dead_workers.discard(worker_url)
+        if self.verbose:
+            print(f"[miles-router] Removed worker: {worker_url}")
         return {"status": "success", "worker_urls": self.worker_request_counts}
 
     async def list_workers(self, request: Request):

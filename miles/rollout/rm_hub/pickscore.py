@@ -39,9 +39,11 @@ def _sample_to_rgb_hwc_uint8_frames(sample: Sample, num_frames: int | None) -> l
     if cfhw is None:
         raise ValueError("generated_output is None")
 
-    fhwc = image_or_video_to_uint8(cfhw_to_fhwc(cfhw.detach().cpu()))
-    indices = sample_frame_indices(fhwc.shape[0], num_frames)
-    return [np.ascontiguousarray(fhwc[i].numpy()) for i in indices]
+    # Convert only the frames that survive: a 107-frame clip yields 8 here, and
+    # converting the whole clip first cost several full-size float32 copies of it
+    indices = sample_frame_indices(cfhw.shape[1], num_frames)
+    fhwc = cfhw_to_fhwc(image_or_video_to_uint8(cfhw[:, indices].detach().cpu()))
+    return [np.ascontiguousarray(fhwc[i].numpy()) for i in range(len(indices))]
 
 
 class PickScoreScorer(torch.nn.Module):
@@ -142,7 +144,9 @@ async def pickscore_rm(args, samples: Sequence[Sample]) -> list[float]:
         prompts.extend([sample.prompt] * len(frames))
         frame_counts.append(len(frames))
 
-    flat_scores = await pool.score(images, prompts)
+    flat_scores, max_queue_depth = await pool.score(images, prompts)
+    for sample in samples:
+        sample.reward_max_queue_depth = float(max_queue_depth)
     scores: list[float] = []
     offset = 0
     for count in frame_counts:

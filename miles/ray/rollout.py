@@ -713,6 +713,13 @@ def compute_perf_metrics_from_samples(args, samples, rollout_time):
     if max(non_generation_time) > 0:
         log_dict |= dict_add_prefix(compute_statistics(non_generation_time), "non_generation_time/")
 
+    parser_depths = [s.parser_max_queue_depth for s in samples if s.parser_max_queue_depth is not None]
+    if parser_depths:
+        log_dict |= dict_add_prefix(compute_statistics(parser_depths), "parser_max_queue_depth/")
+    reward_depths = [s.reward_max_queue_depth for s in samples if s.reward_max_queue_depth is not None]
+    if reward_depths:
+        log_dict |= dict_add_prefix(compute_statistics(reward_depths), "reward_max_queue_depth/")
+
     return log_dict
 
 
