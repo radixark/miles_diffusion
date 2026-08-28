@@ -10,7 +10,7 @@ from torchvision.transforms import InterpolationMode
 from torchvision.transforms import functional as vision_functional
 
 from miles.utils.misc import SingletonMeta
-from miles.utils.processing_utils import cfhw_to_fhwc, image_or_video_to_uint8
+from miles.utils.processing_utils import sample_to_rgb_hwc_uint8_frames
 from miles.utils.types import Sample
 
 from .core import AsyncRewardActorPool
@@ -19,18 +19,6 @@ _HPS_VERSION_TO_FILENAME = {
     "v2.0": "HPS_v2_compressed.pt",
     "v2.1": "HPS_v2.1_compressed.pt",
 }
-
-
-def _sample_to_rgb_hwc_uint8(sample: Sample) -> np.ndarray:
-    """Convert a T2I rollout output to the RGB input used by HPSv2."""
-    cfhw = sample.generated_output
-    if cfhw.shape[1] != 1:
-        raise ValueError(f"HPS currently supports image outputs only, got F={cfhw.shape[1]}")
-
-    frame = cfhw_to_fhwc(cfhw.detach().cpu())[0]
-    # HPS rounds normalized pixels before uint8 conversion.
-    image = image_or_video_to_uint8(frame, round_normalized=True)
-    return np.ascontiguousarray(image.numpy())
 
 
 class _HPSImageTransform:
@@ -152,6 +140,9 @@ class AsyncHPSPool(AsyncRewardActorPool, metaclass=SingletonMeta):
 
 async def hps_rm(args, samples: Sequence[Sample]) -> list[float]:
     pool = AsyncHPSPool(args)
-    images = [_sample_to_rgb_hwc_uint8(sample) for sample in samples]
+    images = []
+    for sample in samples:
+        (image,) = sample_to_rgb_hwc_uint8_frames(sample, None, round_normalized=True)
+        images.append(image)
     prompts = [sample.prompt for sample in samples]
     return await pool.score(images, prompts)

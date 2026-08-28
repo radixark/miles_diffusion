@@ -12,24 +12,25 @@ import torch
 import miles.rollout.rm_hub.hps as hps_module
 import miles.rollout.rm_hub.pickscore as pickscore_module
 from miles.rollout.rm_hub import batched_async_rm
-from miles.rollout.rm_hub.hps import _sample_to_rgb_hwc_uint8
 from miles.utils.types import Sample
 
 
-def test_sample_to_rgb_hwc_uint8_matches_hps_rounding():
+@pytest.mark.asyncio
+async def test_hps_rm_rounds_image_output(monkeypatch):
+    pool = AsyncMock()
+    pool.score.return_value = [1.0]
+    monkeypatch.setattr(hps_module, "AsyncHPSPool", lambda args: pool)
     channel = torch.tensor([0.0, 0.5, 1.0]).reshape(1, 1, 1, 3)
-    sample = Sample(generated_output=channel.repeat(3, 1, 1, 1))
+    sample = Sample(prompt="prompt", generated_output=channel.repeat(3, 1, 1, 1))
 
-    actual = _sample_to_rgb_hwc_uint8(sample)
+    assert await hps_module.hps_rm(Namespace(), [sample]) == [1.0]
 
-    expected = np.array([[[0, 0, 0], [128, 128, 128], [255, 255, 255]]], dtype=np.uint8)
-    np.testing.assert_array_equal(actual, expected)
-    assert actual.flags.c_contiguous
-
-
-def test_sample_to_rgb_hwc_uint8_rejects_video_outputs():
-    with pytest.raises(ValueError, match="supports image outputs only"):
-        _sample_to_rgb_hwc_uint8(Sample(generated_output=torch.zeros(3, 2, 4, 4)))
+    images, prompts = pool.score.await_args.args
+    np.testing.assert_array_equal(
+        images[0],
+        np.array([[[0, 0, 0], [128, 128, 128], [255, 255, 255]]], dtype=np.uint8),
+    )
+    assert prompts == ["prompt"]
 
 
 @pytest.mark.asyncio

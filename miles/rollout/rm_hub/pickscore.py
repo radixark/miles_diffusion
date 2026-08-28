@@ -8,21 +8,10 @@ import torch
 from PIL import Image
 
 from miles.utils.misc import SingletonMeta
-from miles.utils.processing_utils import cfhw_to_fhwc, image_or_video_to_uint8
+from miles.utils.processing_utils import sample_to_rgb_hwc_uint8_frames
 from miles.utils.types import Sample
 
 from .core import AsyncRewardActorPool
-
-
-def sample_frame_indices(num_total_frames: int, num_frames: int | None) -> list[int]:
-    if num_total_frames <= 0:
-        raise ValueError(f"video has no frames: {num_total_frames}")
-    if num_frames is None or num_total_frames <= num_frames:
-        return list(range(num_total_frames))
-    if num_frames == 1:
-        return [num_total_frames // 2]
-    step = (num_total_frames - 1) / (num_frames - 1)
-    return [int(round(i * step)) for i in range(num_frames)]
 
 
 def _feature_tensor(features):
@@ -32,18 +21,6 @@ def _feature_tensor(features):
     if hasattr(features, "pooler_output") and isinstance(features.pooler_output, torch.Tensor):
         return features.pooler_output
     raise TypeError(f"Cannot extract embedding tensor from {type(features)!r}")
-
-
-def _sample_to_rgb_hwc_uint8_frames(sample: Sample, num_frames: int | None) -> list[np.ndarray]:
-    cfhw = sample.generated_output
-    if cfhw is None:
-        raise ValueError("generated_output is None")
-
-    # Convert only the frames that survive: a 107-frame clip yields 8 here, and
-    # converting the whole clip first cost several full-size float32 copies of it
-    indices = sample_frame_indices(cfhw.shape[1], num_frames)
-    fhwc = cfhw_to_fhwc(image_or_video_to_uint8(cfhw[:, indices].detach().cpu()))
-    return [np.ascontiguousarray(fhwc[i].numpy()) for i in range(len(indices))]
 
 
 class PickScoreScorer(torch.nn.Module):
@@ -139,7 +116,7 @@ async def pickscore_rm(args, samples: Sequence[Sample]) -> list[float]:
     prompts: list[str] = []
     frame_counts: list[int] = []
     for sample in samples:
-        frames = _sample_to_rgb_hwc_uint8_frames(sample, args.pickscore_num_frames)
+        frames = sample_to_rgb_hwc_uint8_frames(sample, args.pickscore_num_frames)
         images.extend(frames)
         prompts.extend([sample.prompt] * len(frames))
         frame_counts.append(len(frames))
