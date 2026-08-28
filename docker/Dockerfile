@@ -65,11 +65,8 @@ COPY requirements.txt /tmp/requirements.txt
 RUN pip install --ignore-installed PyJWT
 RUN pip install -r /tmp/requirements.txt
 
-# Pinned upstream reference used only by the HPSv2 live-alignment GPU test.
-# --no-deps avoids HPSv2's obsolete protobuf and pytest constraints.
-ARG HPSV2_REFERENCE_COMMIT=866735ecaae999fa714bd9edfa05aa2672669ee3
-RUN pip install --no-deps args==0.1.0 clint==0.5.1 && \
-    pip install --no-deps "git+https://github.com/tgxs002/HPSv2.git@${HPSV2_REFERENCE_COMMIT}" && \
+# Official HPSv2 reference for the alignment test; its protobuf<4 pin conflicts with wandb.
+RUN pip install --no-deps args==0.1.0 clint==0.5.1 hpsv2==1.2.0 && \
     python3 -c "import hpsv2.src.open_clip"
 
 # ====================================== Install main package ============================================
