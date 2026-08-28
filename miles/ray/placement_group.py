@@ -177,9 +177,12 @@ def create_rollout_manager(args, pg):
         logger.info("Computed num_rollout=%s (num_rollout_per_epoch=%s)", args.num_rollout, num_rollout_per_epoch)
 
     if args.offload_rollout:
-        # blocks until RolloutManager.__init__ (and every sglang engine) is up
-        with st.step("driver.rollout_manager.first_offload"):
-            ray.get(rollout_manager.offload.remote())
+        # Fire-and-forget: RolloutManager actor tasks run in order, so this
+        # offload executes after deferred engine init finishes, while the
+        # driver goes on to build the training models. Anything that needs the
+        # engines later (onload/update_weights/generate) queues behind it.
+        with st.step("driver.rollout_manager.first_offload_submit"):
+            rollout_manager.offload.remote()
 
     logger.info("Rollout manager created.")
     return rollout_manager, num_rollout_per_epoch

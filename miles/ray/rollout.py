@@ -101,6 +101,7 @@ class RolloutManager:
 
         logger.info("RolloutManager rollout_num_gpus=%s", self.args.rollout_num_gpus)
 
+        self._engine_init_handles = []
         if self.args.train_only:
             self.all_rollout_engines = []
             self.num_new_engines = 0
@@ -110,7 +111,9 @@ class RolloutManager:
             num_engines = args.rollout_num_gpus // num_gpu_per_engine
             self.all_rollout_engines = [None] * num_engines
             with st.step("rm.init_rollout_engines", num_engines=num_engines):
-                self.num_new_engines = init_rollout_engines(args, pg, self.all_rollout_engines)
+                self.num_new_engines, self._engine_init_handles = init_rollout_engines(
+                    args, pg, self.all_rollout_engines, defer_init=not args.debug_rollout_only
+                )
             logger.info("RolloutManager started %s rollout engines", len(self.all_rollout_engines))
         logger.info("RolloutManager: creating lock...")
         self.nodes_per_engine = max(1, args.rollout_num_gpus_per_engine // args.num_gpus_per_node)
@@ -160,7 +163,16 @@ class RolloutManager:
         # when doing multi-node serving, we will only send request to node-0 for each engine.
         return self.all_rollout_engines[:: self.nodes_per_engine]
 
+    def _ensure_engines_ready(self):
+        """Block until deferred engine init (see init_rollout_engines) has finished."""
+        if not self._engine_init_handles:
+            return
+        with st.step("rm.engines.init_wait"):
+            ray.get(self._engine_init_handles)
+        self._engine_init_handles = []
+
     def get_rollout_engines_and_lock(self):
+        self._ensure_engines_ready()
         return self.rollout_engines, self.rollout_engine_lock, self.num_new_engines
 
     def get_num_rollout_per_epoch(self):
@@ -170,6 +182,7 @@ class RolloutManager:
     def generate(self, rollout_id):
         from miles.dashboard import hooks
 
+        self._ensure_engines_ready()
         start_time = time.time()
         self.rollout_id = rollout_id
         hooks.set_rollout_id(rollout_id)
@@ -210,6 +223,7 @@ class RolloutManager:
         if self.args.train_only:
             # if debug train only, we don't generate evaluation data
             return
+        self._ensure_engines_ready()
         self.health_monitoring_resume()
 
         result = call_rollout_fn(self.eval_generate_rollout, self.args, rollout_id, self.data_source, evaluation=True)
@@ -240,12 +254,14 @@ class RolloutManager:
 
     def offload(self):
         self.health_monitoring_pause()
+        self._ensure_engines_ready()
         with timer("rollout_offload"), st.step("rm.offload"):
             return ray.get(
                 [engine.release_memory_occupation.remote() for engine in self.rollout_engines if engine is not None]
             )
 
     def onload(self, tags: list[str] | None = None):
+        self._ensure_engines_ready()
         with timer("rollout_onload"), st.step("rm.onload", tags=tags):
             return ray.get(
                 [
@@ -265,7 +281,7 @@ class RolloutManager:
             return self.rollout_engines, self.rollout_engine_lock, self.num_new_engines
 
         dead_indices = [i for i, engine in enumerate(self.all_rollout_engines) if engine is None]
-        self.num_new_engines = init_rollout_engines(self.args, self.pg, self.all_rollout_engines)
+        self.num_new_engines, _ = init_rollout_engines(self.args, self.pg, self.all_rollout_engines)
         logger.info(f"Recovered {self.num_new_engines} dead rollout engines")
         assert self.num_new_engines == len(dead_indices), "num_new_engines does not match dead_indices length"
         if self.args.offload_rollout and dead_indices:
@@ -480,9 +496,9 @@ class RolloutManager:
         self.train_parallel_config = config
 
 
-def init_rollout_engines(args, pg, all_rollout_engines):
+def init_rollout_engines(args, pg, all_rollout_engines, defer_init=False):
     if args.train_only:
-        return 0
+        return 0, []
 
     num_gpu_per_engine = min(args.rollout_num_gpus_per_engine, args.num_gpus_per_node)
     num_engines = args.rollout_num_gpus // num_gpu_per_engine
@@ -540,20 +556,25 @@ def init_rollout_engines(args, pg, all_rollout_engines):
     num_new_engines = len(rollout_engines)
 
     if num_new_engines == 0:
-        return num_new_engines
+        return num_new_engines, []
 
     with st.step("rm.engines.allocate_ports"):
         addr_and_ports = _allocate_rollout_engine_addr_and_ports_normal(
             args=args, num_engines=num_engines, rollout_engines=rollout_engines
         )
 
-    # TODO: don't ray.get here to overlap train actor init with rollout engine init.
-    # somehow if we don't sync here, the --debug-rollout-only mode will crash.
+    init_handles = [engine.init.remote(**(addr_and_ports[rank])) for rank, engine in rollout_engines]
+    if defer_init:
+        # Let engines boot in the background so train-actor init overlaps with
+        # engine startup; callers must sync via the returned handles before
+        # touching the engines. --debug-rollout-only keeps the old sync (it
+        # crashes without it, see the git history of this TODO).
+        return num_new_engines, init_handles
+
     with st.step("rm.engines.init_wait"):
-        init_handles = [engine.init.remote(**(addr_and_ports[rank])) for rank, engine in rollout_engines]
         ray.get(init_handles)
 
-    return num_new_engines
+    return num_new_engines, []
 
 
 def _allocate_rollout_engine_addr_and_ports_normal(*, args, num_engines, rollout_engines):
