@@ -52,10 +52,11 @@ class TrainRayActor(RayActor):
         os.environ["CUDA_VISIBLE_DEVICES"] = str(local_gpu_id)
         os.environ["LOCAL_RANK"] = "0"
 
-    def init(self, args, role, with_ref=False):
+    def init(self, args, role, with_ref=False, rollout_manager=None):
         self.args = args
         self.role = role
         self.with_ref = with_ref
+        self.rollout_manager = rollout_manager
 
         torch.serialization.add_safe_globals([miles.utils.eval_config.EvalDatasetConfig])
         st.mark("train.init_enter")

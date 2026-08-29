@@ -64,8 +64,9 @@ class FSDPTrainRayActor(TrainRayActor):
     """
 
     @with_defer(lambda: Timer().start("train_wait"))
-    def init(self, args: Namespace, role: str, with_ref: bool = False) -> int:  # type: ignore[override]
-        super().init(args, role, with_ref)
+    def init(self, args: Namespace, role: str, with_ref: bool = False, rollout_manager=None) -> int:  # type: ignore[override]
+        super().init(args, role, with_ref, rollout_manager=rollout_manager)
+        self._engines_evicted = False
 
         if args.deterministic_mode:
             _enable_deterministic_training(args)
@@ -147,6 +148,11 @@ class FSDPTrainRayActor(TrainRayActor):
                 checkpoint.sync_model_dtypes(model)
             with st.step(f"train.state_dict.{component}"):
                 full_state = model.state_dict() if rank == 0 else {}
+            # Up to here the loop only touches CPU memory, so it may overlap
+            # engine boot; FSDP wrap and the rank-0 broadcast below are the
+            # first large GPU allocations and must not coexist with the
+            # boot-time engine weights under colocate.
+            self._wait_rollout_engines_evicted()
             with st.step(f"train.apply_fsdp2.{component}"):
                 model = apply_fsdp2(
                     model,
@@ -256,6 +262,20 @@ class FSDPTrainRayActor(TrainRayActor):
 
         st.mark("train.init_done")
         return self.args.start_rollout_id
+
+    def _wait_rollout_engines_evicted(self) -> None:
+        """Colocate VRAM safety for the overlapped engine boot: engine weights
+        (e.g. ~66GB/GPU for H3 tp=2) plus the FSDP broadcast peak can exceed
+        GPU memory, so the first big train-side allocation waits until the
+        engines have offloaded. No-op when the rollout side keeps its weights
+        resident (disaggregated placement has its own GPUs)."""
+        if self._engines_evicted:
+            return
+        self._engines_evicted = True
+        if self.rollout_manager is None or not self.args.offload_rollout:
+            return
+        with st.step("train.wait_engines_evicted"):
+            ray.get(self.rollout_manager.wait_engines_offloaded.remote())
 
     @contextmanager
     def _model_init_context(self, *, materialize_weights: bool):

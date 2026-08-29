@@ -142,7 +142,9 @@ def create_training_models(args, pgs, rollout_manager):
             pg=pgs["actor"],
         )
     with st.step("driver.train_group.init_wait"):
-        start_rollout_ids = ray.get(actor_model.async_init(args, role="actor", with_ref=False))
+        start_rollout_ids = ray.get(
+            actor_model.async_init(args, role="actor", with_ref=False, rollout_manager=rollout_manager)
+        )
     logger.info("Actor model initialized.")
 
     assert len(set(start_rollout_ids)) == 1
