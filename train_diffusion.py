@@ -1,10 +1,9 @@
 import logging
 import sys
 
-import miles.utils.startup_timing as st  # noqa: I001  must precede the heavy imports to anchor import cost
-
 import ray
 
+import miles.utils.startup_timing as st  # anchors PROC_T0 before the heavy miles/torch/sglang import chain
 from miles.ray.placement_group import create_placement_groups, create_rollout_manager, create_training_models
 from miles.utils.arguments import parse_args
 from miles.utils.logging_utils import configure_logger
