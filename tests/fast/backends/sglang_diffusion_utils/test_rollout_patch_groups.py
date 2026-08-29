@@ -44,6 +44,7 @@ class TestRolloutPatchGroups:
     def test_builtin_group_registered(self):
         # The decorator ran at import time for the in-repo groups.
         assert "qwen_image" in mp._ROLLOUT_PATCH_APPLIERS
+        assert "cosmos3_bitwise" in mp._ROLLOUT_PATCH_APPLIERS
         assert "wan" in mp._ROLLOUT_PATCH_APPLIERS
         assert "ltx" in mp._ROLLOUT_PATCH_APPLIERS
 

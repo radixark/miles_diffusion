@@ -1572,11 +1572,12 @@ def miles_validate_args(args):
         from miles.backends.sglang_diffusion_utils.monkey_patches import validate_rollout_patch_groups
 
         validate_rollout_patch_groups(args.rollout_patch_groups)
-        if args.use_lora and "qwen_image" in args.rollout_patch_groups:
+        bitwise_lora_groups = {"qwen_image", "cosmos3_bitwise"}.intersection(args.rollout_patch_groups)
+        if args.use_lora and bitwise_lora_groups:
             # Missing on engines whose ServerArgs predates --lora-merge-mode.
             if getattr(args, "sglang_lora_merge_mode", None) != "dynamic":
                 logger.warning(
-                    "qwen_image runs LoRA without --sglang-lora-merge-mode dynamic; the engine "
+                    f"{'/'.join(sorted(bitwise_lora_groups))} runs LoRA without --sglang-lora-merge-mode dynamic; the engine "
                     "auto-merges the adapters into the base weights, introducing precision "
                     "drift against the trainer's unmerged forward — training still works."
                 )
