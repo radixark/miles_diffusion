@@ -1,6 +1,7 @@
 import itertools
 import logging
 import multiprocessing
+import os
 import random
 import time
 from pathlib import Path
@@ -536,6 +537,11 @@ def init_rollout_engines(args, pg, all_rollout_engines, defer_init=False):
             "SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT": "true",
             "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION": "false",
             "SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE": "false",
+            # mmap (safe_open) beats the RunAI streamer's read+clone pipeline when the
+            # checkpoint sits on local disk / warm page cache (88s -> 63s per H3 engine);
+            # the streamer's parallel prefetch still wins on cold remote FS, so an
+            # operator can re-enable it by exporting this var in the launcher env.
+            "SGLANG_USE_RUNAI_MODEL_STREAMER": os.environ.get("SGLANG_USE_RUNAI_MODEL_STREAMER", "false"),
         }
         if args.lora_ipc_weight_sync:
             # Merge in the train forward dtype, not fp32, to cut train/rollout consistency error.
