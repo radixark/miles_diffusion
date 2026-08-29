@@ -103,6 +103,7 @@ class RolloutManager:
         logger.info("RolloutManager rollout_num_gpus=%s", self.args.rollout_num_gpus)
 
         self._engine_init_handles = []
+        self._boot_offload_done = False
         if self.args.train_only:
             self.all_rollout_engines = []
             self.num_new_engines = 0
@@ -176,11 +177,19 @@ class RolloutManager:
         self._ensure_engines_ready()
         return self.rollout_engines, self.rollout_engine_lock, self.num_new_engines
 
-    def wait_engines_offloaded(self):
-        """Colocate barrier: actor tasks run in submission order, and the driver
-        queues the first offload right after __init__, so by the time this task
-        runs the boot-time engine weights have been released."""
+    def boot_offload(self):
+        """Release the engines' boot-time weights, exactly once.
+
+        Both the driver (right after this actor is created) and the first train
+        actor reaching its GPU-allocation gate call this. Ray only orders actor
+        tasks per caller, so the two calls can arrive in either order; doing the
+        offload here — instead of relying on a previously queued offload — is
+        what makes the colocate memory invariant hold regardless.
+        """
         self._ensure_engines_ready()
+        if not self._boot_offload_done:
+            self._boot_offload_done = True
+            self.offload()
         return True
 
     def get_num_rollout_per_epoch(self):

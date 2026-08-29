@@ -265,17 +265,19 @@ class FSDPTrainRayActor(TrainRayActor):
 
     def _wait_rollout_engines_evicted(self) -> None:
         """Colocate VRAM safety for the overlapped engine boot: engine weights
-        (e.g. ~66GB/GPU for H3 tp=2) plus the FSDP broadcast peak can exceed
-        GPU memory, so the first big train-side allocation waits until the
-        engines have offloaded. No-op when the rollout side keeps its weights
-        resident (disaggregated placement has its own GPUs)."""
+        (e.g. ~66GB/GPU for H3 tp=2) plus the FSDP broadcast peak can exceed GPU
+        memory, so the first big train-side allocation blocks until the engines
+        have released them. boot_offload is idempotent and performs the offload
+        itself, so this holds even if the driver's own submission has not run
+        yet. No-op when the rollout side keeps its weights resident
+        (disaggregated placement has its own GPUs)."""
         if self._engines_evicted:
             return
         self._engines_evicted = True
         if self.rollout_manager is None or not self.args.offload_rollout:
             return
         with st.step("train.wait_engines_evicted"):
-            ray.get(self.rollout_manager.wait_engines_offloaded.remote())
+            ray.get(self.rollout_manager.boot_offload.remote())
 
     @contextmanager
     def _model_init_context(self, *, materialize_weights: bool):
