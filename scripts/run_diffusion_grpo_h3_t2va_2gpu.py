@@ -61,7 +61,6 @@ WANDB_PROJECT = "miles-diffusion-grpo"
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
-    cuda_visible_devices: str = "0,1"
     num_rollout: int = 30
     rollout_batch_size: int = 2
     n_samples_per_prompt: int = 8
