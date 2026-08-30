@@ -9,8 +9,8 @@ Mental model (10-step rollout, SDE window S=[2,3]):
            array adjacency
 
 Covered: the windowed trajectory yields bitwise the same train-pair tensors as
-the full trajectory (1), full trajectories without provenance keep the legacy
-behaviour (2), a missing window latent raises instead of mispairing (3), and a
+the full trajectory (1), a trajectory without provenance is fatal rather than
+guessed (2), a missing window latent raises instead of mispairing (3), and a
 non-contiguous kept set still pairs correctly (4).
 """
 
@@ -34,6 +34,7 @@ def _full_traj() -> DiTTrajectory:
         latents=torch.randn(T + 1, 4, 6, generator=g),
         timesteps=torch.linspace(1000.0, 0.0, T + 1),
         sigmas=torch.linspace(1.0, 0.0, T + 1),
+        latent_step_indices=torch.arange(T + 1, dtype=torch.long),
     )
 
 
@@ -65,13 +66,14 @@ def test_windowed_matches_full_bitwise():
         assert torch.equal(feats_full[key], feats_win[key]), key
 
 
-def test_full_trajectory_without_provenance_is_legacy():
-    feats, idx = _build(_full_traj())
-    assert idx.tolist() == SDE
+def test_missing_provenance_is_fatal():
+    """An engine that ships a filtered window without echoing which steps it kept
+    cannot be paired: array position equals step number only for a window starting
+    at 0. Guessing there mispairs silently, so the converter refuses."""
     full = _full_traj()
-    assert torch.equal(feats["latent"], full.latents[SDE])
-    assert torch.equal(feats["next_latent"], full.latents[[s + 1 for s in SDE]])
-    assert torch.equal(feats["log_prob_old"], torch.linspace(-1.0, -2.0, T)[SDE])
+    blind = DiTTrajectory(latents=full.latents, timesteps=full.timesteps, sigmas=full.sigmas)
+    with pytest.raises(RuntimeError, match="latent_step_indices"):
+        _build(blind)
 
 
 def test_terminal_step_next_timestep_is_zero():

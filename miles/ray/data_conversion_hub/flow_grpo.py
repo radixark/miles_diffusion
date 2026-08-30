@@ -99,9 +99,9 @@ def _build_per_timestep_features(
 ) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
     """Fields with one row per selected denoising step.
 
-    ``traj.latents`` is either the full 0..T trajectory or the filtered window
-    the rollout requested; ``latent_step_indices`` maps original step numbers
-    to array positions, so pairing never assumes the array is contiguous.
+    ``traj.latents`` is the window the rollout requested, and
+    ``latent_step_indices`` -- which the engine must echo -- maps original step
+    numbers to array positions, so pairing never assumes the array is contiguous.
     Timesteps are the full [T+1] schedule (terminal included) and log_probs
     the full [T]; both are indexed by original step number.
     """
@@ -112,9 +112,13 @@ def _build_per_timestep_features(
     timesteps = traj.timesteps
 
     if traj.latent_step_indices is None:
-        position = {step: step for step in range(int(all_latents.shape[0]))}
-    else:
-        position = {int(step): pos for pos, step in enumerate(traj.latent_step_indices.tolist())}
+        raise RuntimeError(
+            "rollout engine returned trajectory latents without `latent_step_indices`; "
+            "the trainer cannot map step numbers to array positions. This engine predates "
+            "sgl-project/sglang#36994 and is no longer supported: pull the latest "
+            "radixark/miles_diffusion image, or rebuild sglang past that PR."
+        )
+    position = {int(step): pos for pos, step in enumerate(traj.latent_step_indices.tolist())}
     needed = sorted({int(s) for s in sde_idx} | {int(s) + 1 for s in sde_idx})
     missing = [step for step in needed if step not in position]
     if missing:
