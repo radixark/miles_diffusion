@@ -10,8 +10,9 @@ Mental model (10-step rollout, SDE window S=[2,3]):
 
 Covered: the windowed trajectory yields bitwise the same train-pair tensors as
 the full trajectory (1), full trajectories without provenance keep the legacy
-behaviour (2), a missing window latent raises instead of mispairing (3), and a
-non-contiguous kept set still pairs correctly (4).
+behaviour (2), a missing window latent raises instead of mispairing (3), a
+non-contiguous kept set still pairs correctly (4), and NFT refuses a windowed
+trajectory rather than reading some x_t as its x0 (5).
 """
 
 from tests.ci.ci_register import register_cpu_ci
@@ -90,3 +91,17 @@ def test_non_contiguous_kept_set_pairs_by_provenance():
     feats, _ = _build(win, sde=[2, 3, 7])
     assert torch.equal(feats["latent"], full.latents[[2, 3, 7]])
     assert torch.equal(feats["next_latent"], full.latents[[3, 4, 8]])
+
+
+def test_nft_refuses_a_windowed_trajectory():
+    """NFT reads x0 as the last latent, which a window would silently replace."""
+    from miles.ray.data_conversion_hub.nft import _clean_x0_from_sample
+
+    full = _full_traj()
+    sample = _sample()
+    sample.dit_trajectory = full
+    assert torch.equal(_clean_x0_from_sample(sample), full.latents[-1].float())
+
+    sample.dit_trajectory = _windowed(full, [2, 3, 4])
+    with pytest.raises(ValueError, match="needs x0"):
+        _clean_x0_from_sample(sample)

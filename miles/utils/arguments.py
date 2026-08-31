@@ -1273,6 +1273,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--rollout-return-full-trajectory",
+                action="store_true",
+                default=False,
+                help=(
+                    "Ask the engine for the whole denoising trajectory instead of just the "
+                    "SDE window the trainer consumes. The train pairs are identical either "
+                    "way; this keeps the unfiltered path available for debugging and A/B runs."
+                ),
+            )
+            parser.add_argument(
                 "--pickscore-num-gpus-per-worker",
                 type=float,
                 default=1.0,

@@ -64,6 +64,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         "--diffusion-step-strategy-path miles.rollout.step_strategy_hub.sde_window "
         "--diffusion-num-sde-steps 10 "
         "--diffusion-sde-window-range 0,10 "
+        "--rollout-return-full-trajectory "
     )
 
     eval_args = "--diffusion-eval-num-steps 40 "

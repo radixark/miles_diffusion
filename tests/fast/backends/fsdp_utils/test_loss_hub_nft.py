@@ -60,6 +60,7 @@ class TestNftHooks:
                 self.timesteps = torch.tensor([999.0, 500.0, 0.0])
                 self.sigmas = torch.tensor([1.0, 0.5, 0.0])
                 self.latents = torch.zeros(3, 2, 2)
+                self.latent_step_indices = None
 
         class _Env:
             pos_cond_kwargs = {}
@@ -86,6 +87,7 @@ class TestNftHooks:
                 self.timesteps = torch.tensor([999.0, 500.0, 0.0])
                 self.sigmas = torch.tensor([1.0, 0.5, 0.0])
                 self.latents = torch.zeros(3, 2, 2)
+                self.latent_step_indices = None
 
         class _Env:
             pos_cond_kwargs = {}
@@ -110,6 +112,7 @@ class TestNftHooks:
                 self.timesteps = torch.tensor([999.0, 500.0, 0.0])
                 self.sigmas = None
                 self.latents = torch.zeros(3, 2, 2)
+                self.latent_step_indices = None
 
         class _Env:
             pos_cond_kwargs = {}
@@ -214,6 +217,7 @@ class TestNftDeterminism:
                 self.timesteps = torch.tensor([999.0, 750.0, 500.0, 250.0, 0.0])
                 self.sigmas = torch.tensor([1.0, 0.75, 0.5, 0.25, 0.0])
                 self.latents = torch.zeros(5, 2, 2)
+                self.latent_step_indices = None
 
         return _Traj()
 

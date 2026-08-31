@@ -183,7 +183,7 @@ async def generate_microgroup(
         )
         # The trainer consumes (x_i, x_{i+1}, log_prob_i) per SDE step, so the
         # engine only needs the window latents plus their boundary: S U (S+1).
-        if return_indices is None and sde_indices is not None:
+        if return_indices is None and sde_indices is not None and not args.rollout_return_full_trajectory:
             return_indices = sorted({int(i) for i in sde_indices} | {int(i) + 1 for i in sde_indices})
         sampling_params["rollout_sde_step_indices"] = sde_indices
         sampling_params["rollout_return_step_indices"] = return_indices
