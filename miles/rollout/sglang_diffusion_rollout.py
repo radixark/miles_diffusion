@@ -189,6 +189,9 @@ async def generate_microgroup(
         sampling_params["rollout_return_step_indices"] = return_indices
     else:
         sde_indices = None
+        if args.loss_type == "nft" and not args.rollout_return_full_trajectory:
+            # NFT trains on the clean x0 alone, so the rest of the trajectory is dead weight.
+            sampling_params["rollout_return_step_indices"] = [int(sampling_params["num_inference_steps"])]
 
     payload = build_rollout_generate_payload(
         sampling_params, microgroup[0].prompt, num_outputs_per_prompt=len(microgroup)

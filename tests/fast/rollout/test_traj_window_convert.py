@@ -11,8 +11,8 @@ Mental model (10-step rollout, SDE window S=[2,3]):
 Covered: the windowed trajectory yields bitwise the same train-pair tensors as
 the full trajectory (1), full trajectories without provenance keep the legacy
 behaviour (2), a missing window latent raises instead of mispairing (3), a
-non-contiguous kept set still pairs correctly (4), and NFT refuses a windowed
-trajectory rather than reading some x_t as its x0 (5).
+non-contiguous kept set still pairs correctly (4), and NFT reads x0 off a
+final-step-only trajectory but rejects one ending anywhere else (5).
 """
 
 from tests.ci.ci_register import register_cpu_ci
@@ -93,8 +93,8 @@ def test_non_contiguous_kept_set_pairs_by_provenance():
     assert torch.equal(feats["next_latent"], full.latents[[3, 4, 8]])
 
 
-def test_nft_refuses_a_windowed_trajectory():
-    """NFT reads x0 as the last latent, which a window would silently replace."""
+def test_nft_x0_comes_from_the_final_step():
+    """NFT requests the final step alone; a tail from any other step is not x0."""
     from miles.ray.data_conversion_hub.nft import _clean_x0_from_sample
 
     full = _full_traj()
