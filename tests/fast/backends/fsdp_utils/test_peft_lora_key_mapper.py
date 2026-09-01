@@ -66,3 +66,22 @@ class TestPeftLoRAKeyMapper:
         assert num_layers == 1
         assert sample_layers == ["transformer_blocks.0.attn.to_q"]
         assert unmapped == ["base_model.model.weird.lora_A.default.weight.extra"]
+
+    def test_h3_peft_keys_stay_diffusers_shaped(self):
+        """H3 IPC no longer pre-fuses names; sglang-d maps transformer_blocks → blocks."""
+        state_dict = {
+            "base_model.model.transformer_blocks.0.attn.to_q.lora_A.default.weight": torch.zeros(4, 8),
+            "base_model.model.transformer_blocks.0.attn.to_q.lora_B.default.weight": torch.zeros(8, 4),
+            "base_model.model.transformer_blocks.0.ff.net.0.proj.lora_A.default.weight": torch.zeros(4, 8),
+            "base_model.model.transformer_blocks.0.ff.net.0.proj.lora_B.default.weight": torch.zeros(8, 4),
+            "base_model.model.token_refiner.refiner_blocks.1.attn.to_k.lora_A.default.weight": torch.zeros(4, 8),
+            "base_model.model.token_refiner.refiner_blocks.1.attn.to_k.lora_B.default.weight": torch.zeros(8, 4),
+        }
+        assert PeftLoRAKeyMapper.collect_sgld_names(state_dict) == {
+            "transformer_blocks.0.attn.to_q.lora_A",
+            "transformer_blocks.0.attn.to_q.lora_B",
+            "transformer_blocks.0.ff.net.0.proj.lora_A",
+            "transformer_blocks.0.ff.net.0.proj.lora_B",
+            "token_refiner.refiner_blocks.1.attn.to_k.lora_A",
+            "token_refiner.refiner_blocks.1.attn.to_k.lora_B",
+        }
