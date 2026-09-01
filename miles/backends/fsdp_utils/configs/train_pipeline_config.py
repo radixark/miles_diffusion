@@ -113,9 +113,6 @@ class TrainPipelineConfig(abc.ABC):
         """
 
     sde_timestep_divisor = 1.0
-    # LoRA IPC layer grouper for families whose rollout module names or tensor layout
-    # differ from the trained diffusers ones; None keeps the generic PEFT grouping.
-    lora_layer_group_collector_path: str | None = None
 
     def configure(self, args) -> None:  # noqa: B027  optional no-op hook, not abstract
         """Bind the request constants a family needs at train time; default binds none."""

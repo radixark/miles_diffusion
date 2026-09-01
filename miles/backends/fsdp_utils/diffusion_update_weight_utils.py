@@ -459,31 +459,14 @@ class DiffusionUpdateWeightFromTensorLoRAIPC(DiffusionUpdateWeightFromTensor):
     def _collect_layer_groups(
         self, model: torch.nn.Module
     ) -> tuple[list[list[tuple[str, torch.Tensor]]], list[str], int]:
-        """Group this model's LoRA tensors into rollout layer names, per model family."""
-        from miles.utils.misc import load_function
+        """Group PEFT LoRA tensors so each layer's A/B pair stays in one IPC bucket.
 
-        collector_path = None
-        if self.args.train_pipeline_config_path:
-            collector_path = load_function(self.args.train_pipeline_config_path).lora_layer_group_collector_path
-        if collector_path is None:
-            return collect_lora_layer_groups(model.state_dict())
-
-        # A family whose rollout fuses several projections into one layer (H3's
-        # qkv_proj) combines adapters here, so DTensor shards must resolve first.
-        lora_state = {
-            name: self._prepare_lora_param(param)
-            for name, param in model.state_dict().items()
-            if PeftLoRAKeyMapper.is_lora_key(name)
-        }
-        layer_groups, unmapped_keys, num_lora_keys = load_function(collector_path)(lora_state)
-        if unmapped_keys:
-            # The rollout only warns about a name it cannot resolve, which would
-            # leave that adapter frozen at its checkpoint value.
-            raise ValueError(
-                f"{collector_path} could not map {len(unmapped_keys)} adapter modules to "
-                f"rollout layer names (first 5: {unmapped_keys[:5]})"
-            )
-        return layer_groups, unmapped_keys, num_lora_keys
+        Names stay PEFT/diffusers-shaped (``transformer_blocks.0.attn.to_q.lora_A``).
+        sglang-d's ``lora_merge`` path applies ``param_names_mapping`` and the
+        disk-load FFN swap, so fused families such as H3 do not need a trainer-side
+        collector.
+        """
+        return collect_lora_layer_groups(model.state_dict())
 
     def update_weights(self) -> None:
         self.weight_version += 1
