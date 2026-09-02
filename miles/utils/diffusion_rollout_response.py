@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -165,6 +166,7 @@ def _parse_dit_trajectory(
         latents=deserialize_func(data.get("latents")),
         timesteps=deserialize_func(data.get("timesteps")),
         sigmas=deserialize_func(data.get("sigmas")),
+        latent_step_indices=deserialize_func(data.get("latent_step_indices")),
     )
 
 
@@ -215,6 +217,47 @@ def apply_rollout_image_response(
 
 @ray.remote(num_cpus=1)
 class RolloutImageResponseParserActor:
+    def __init__(self) -> None:
+        import httpx
+
+        # Keep-alive off: a pooled connection reused as the server's 5s idle timeout fires dies mid-read
+        self._client = httpx.Client(limits=httpx.Limits(max_keepalive_connections=0), timeout=httpx.Timeout(None))
+
     def apply_raw(self, samples: list[Sample], raw: bytes) -> list[Sample]:
         bodies = msgpack.unpackb(raw, raw=False)
+        return [apply_rollout_image_response(s, b) for s, b in zip(samples, bodies, strict=True)]
+
+    def fetch_and_apply(
+        self, samples: list[Sample], router_url: str, payload: dict, max_retries: int = 60
+    ) -> list[Sample]:
+        """Fetch the rollout response straight from an engine and parse it in this process.
+
+        Args:
+            samples: samples to fill from the response, positionally paired with its bodies.
+            router_url: router base URL, used to pick a least-loaded engine and to ack completion.
+            payload: JSON body of the generate request.
+            max_retries: attempts before giving up; each retry re-picks, so failures re-balance.
+
+        Returns:
+            The filled samples.
+        """
+        for attempt in range(max_retries):
+            try:
+                picked = self._client.get(f"{router_url}/pick_worker_for_request")
+                picked.raise_for_status()
+                worker = picked.json()["url"]
+                try:
+                    response = self._client.post(f"{worker}/rollout/generate", json=payload)
+                    response.raise_for_status()
+                finally:
+                    try:
+                        self._client.post(f"{router_url}/worker_finish_request", params={"url": worker})
+                    except Exception:
+                        pass  # a lost ack costs one count; failing the request costs the sample
+                break
+            except Exception:
+                if attempt + 1 >= max_retries:
+                    raise
+                time.sleep(1)
+        bodies = msgpack.unpackb(response.content, raw=False)
         return [apply_rollout_image_response(s, b) for s, b in zip(samples, bodies, strict=True)]

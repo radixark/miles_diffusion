@@ -100,6 +100,8 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
 
     sglang_args = (
         "--use-miles-router "
+        "--rollout-fetch-in-parser "
+        "--rollout-parser-num-workers 16 "
         "--sglang-server-concurrency 4 "
         "--sglang-attention-backend torch_sdpa "
         "--update-weight-buffer-size 2147483648 "

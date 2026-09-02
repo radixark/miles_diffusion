@@ -89,7 +89,7 @@ def execute_train(
             # it never reaches the scheduler, which then places work on excluded GPUs.
             f"{_cvd_export(config, num_gpus_per_node)}"
             # keeps ray from buffering stdout/stderr
-            "export PYTHONBUFFERED=16 && "
+            "export PYTHONUNBUFFERED=1 && "
             f"ray start --head --node-ip-address {master_addr} "
             f"--num-gpus {num_gpus_per_node} --disable-usage-stats"
         )
@@ -103,6 +103,8 @@ def execute_train(
         f()
 
     runtime_env_vars = {
+        # exported for the submitting client too, but only the runtime env reaches the ray workers
+        "PYTHONUNBUFFERED": "1",
         "NCCL_NVLS_ENABLE": os.environ.get("NCCL_NVLS_ENABLE", str(int(check_has_nvlink()))),
         **{
             k: os.environ[k]
@@ -132,7 +134,7 @@ def execute_train(
         return
 
     exec_command(
-        "export no_proxy=127.0.0.1 && export PYTHONBUFFERED=16 && "
+        "export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && "
         f"""ray job submit {'' if 'RAY_ADDRESS' in os.environ else '--address="http://127.0.0.1:8265" '}"""
         f"--runtime-env-json={shlex.quote(runtime_env_json)} "
         f"-- python3 {shlex.quote(train_script)} {train_args}"

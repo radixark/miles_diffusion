@@ -89,6 +89,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
 
     sglang_args = (
         "--use-miles-router "
+        "--rollout-fetch-in-parser "
         "--sglang-server-concurrency 4 "
         "--sglang-attention-backend torch_sdpa "
         "--sglang-dit-precision bf16 "
@@ -107,7 +108,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         "--gradient-checkpointing "
         "--micro-batch-size-sample 1 "
         "--micro-batch-size-tstep 1 "
-        "--rollout-parser-num-workers 8 "
+        "--rollout-parser-num-workers 16 "
     )
 
     misc_args = (

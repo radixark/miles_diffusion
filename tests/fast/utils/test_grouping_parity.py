@@ -110,7 +110,7 @@ def _mk_sample(index: int, num_steps: int, sde_idx, chan: int = 4, with_debug=Tr
     # fixed seed (not the per-sample one) -- the converter now verifies this; a per-sample
     # seed here would (correctly) raise.
     sigmas = torch.randn(num_steps + 1, generator=torch.Generator().manual_seed(7)) if with_sigmas else None
-    traj = SimpleNamespace(latents=latents, timesteps=timesteps, sigmas=sigmas)
+    traj = SimpleNamespace(latents=latents, timesteps=timesteps, sigmas=sigmas, latent_step_indices=None)
     rollout_log_probs = torch.randn(num_steps, generator=g)  # (T,)
     dbg = None
     if with_debug:

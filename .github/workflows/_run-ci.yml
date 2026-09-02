@@ -8,8 +8,8 @@ name: CI Job
 #   * PR-body magic for `ci-megatron-pr:` removed for the same reason.
 #   * sglang checkout/install preserved (miles-D imports
 #     sglang.multimodal_gen.runtime.* and sglang.srt.*), fetched from
-#     sgl-project/sglang main now that the diffusion RPCs have landed
-#     upstream (`ci-sglang-repo:` / `ci-sglang-pr:` PR-body overrides).
+#     the branch the image is built from (env: DEFAULT_SGLANG_REF), with
+#     `ci-sglang-repo:` / `ci-sglang-pr:` PR-body overrides.
 #   * GPU `run:` job uses the radixark/miles-diffusion image (not
 #     radixark/miles) and the h200 runner fleet on the dedicated CI node
 #     (labels: h200 + 3gpu/5gpu).
@@ -42,6 +42,12 @@ on:
         required: false
         default: false
         description: 'Upload tests/ci/fixtures/e2e_standards/ as a build artifact for the author to review and commit (record-e2e-standards.yml)'
+
+env:
+  # Unless you know the consequences, change this together with docker/Dockerfile's
+  # SGLANG_DIFFUSION_BRANCH.
+  DEFAULT_SGLANG_REF: sglang-miles-h3
+  DEFAULT_SGLANG_REPO: sgl-project/sglang
 
 jobs:
   run:
@@ -136,8 +142,8 @@ jobs:
             PR_SGLANG_REPO=$(echo "$PR_BODY" | grep -m1 -oP '^ci-sglang-repo:\s+\K\S+' || true)
             [ -z "$SGLANG_REPO" ] && [ -n "$PR_SGLANG_REPO" ] && SGLANG_REPO="$PR_SGLANG_REPO"
           fi
-          [ -z "$SGLANG_PR" ] && SGLANG_PR="main"
-          [ -z "$SGLANG_REPO" ] && SGLANG_REPO="sgl-project/sglang"
+          [ -z "$SGLANG_PR" ] && SGLANG_PR="$DEFAULT_SGLANG_REF"
+          [ -z "$SGLANG_REPO" ] && SGLANG_REPO="$DEFAULT_SGLANG_REPO"
           resolve_fetch_ref() {
             local ref="$1"
             if [[ "$ref" =~ ^#([0-9]+)$ ]]; then
@@ -242,8 +248,8 @@ jobs:
             PR_SGLANG_REPO=$(echo "$PR_BODY" | grep -m1 -oP '^ci-sglang-repo:\s+\K\S+' || true)
             [ -z "$SGLANG_REPO" ] && [ -n "$PR_SGLANG_REPO" ] && SGLANG_REPO="$PR_SGLANG_REPO"
           fi
-          [ -z "$SGLANG_PR" ] && SGLANG_PR="main"
-          [ -z "$SGLANG_REPO" ] && SGLANG_REPO="sgl-project/sglang"
+          [ -z "$SGLANG_PR" ] && SGLANG_PR="$DEFAULT_SGLANG_REF"
+          [ -z "$SGLANG_REPO" ] && SGLANG_REPO="$DEFAULT_SGLANG_REPO"
           resolve_fetch_ref() {
             local ref="$1"
             if [[ "$ref" =~ ^#([0-9]+)$ ]]; then
