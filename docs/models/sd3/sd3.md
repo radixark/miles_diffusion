@@ -45,19 +45,18 @@ hf download stabilityai/stable-diffusion-3.5-medium \
   --local-dir /root/models/stable-diffusion-3.5-medium
 ```
 
-Prompt datasets live under
-[`rockdu/miles-diffusion-datasets`](https://huggingface.co/datasets/rockdu/miles-diffusion-datasets):
+Prompt datasets are downloaded from Hugging Face by the launch scripts:
 
-| Recipe | Subset | Train path |
+| Recipe | Dataset | Train path |
 |---|---|---|
-| GRPO + OCR | `flowgrpo_ocr` | `.../flowgrpo_ocr/train.jsonl` |
-| GRPO + HPS | `flowgrpo_pickscore` | `.../flowgrpo_pickscore/train.jsonl` |
-| NFT + PickScore | `flowgrpo_pickscore` | `.../flowgrpo_pickscore/train.jsonl` |
+| GRPO + OCR | `rockdu/miles-diffusion-datasets/flowgrpo_ocr` | `.../flowgrpo_ocr/train.jsonl` |
+| GRPO + HPS | [`ymhao/HPDv2`](https://huggingface.co/datasets/ymhao/HPDv2) | `.../HPDv2/train.jsonl` |
+| NFT + PickScore | `rockdu/miles-diffusion-datasets/flowgrpo_pickscore` | `.../flowgrpo_pickscore/train.jsonl` |
 
-Launch scripts download the matching subset automatically via
-`command_utils.hf_download_dataset`. Override the download root with
-`--data-dir` (default `/root/datasets` →
-`/root/datasets/miles-diffusion-datasets`).
+The HPS launcher downloads only HPDv2's `train.json` annotation, deduplicates
+its pairwise rows by prompt, and caches the prompt-only `train.jsonl` locally;
+it does not download the image archives. Override the download root with
+`--data-dir` (default `/root/datasets`).
 
 ## 4. Family config
 
@@ -135,8 +134,8 @@ python3 scripts/run_diffusion_grpo_sd3_hps_sglang.py \
 ```
 
 The recipe uses the same SD3 Flow-GRPO configuration as the OCR recipe, swaps
-in the `flowgrpo_pickscore` prompts and `--rm-type hps`, and colocates one HPS
-reward actor with the train and rollout workers.
+in deduplicated HPDv2 training prompts and `--rm-type hps`, and colocates one
+HPS reward actor with the train and rollout workers.
 
 ### 5.4 DiffusionNFT + PickScore (3 GPU)
 
@@ -210,7 +209,7 @@ the OCR recipe, with these reward-specific settings:
 | Reward | `--rm-type hps --hps-version v2.1` |
 | Reward worker | One actor, batch size 8 |
 | Placement | `--colocate-reward` |
-| Prompt subset | `flowgrpo_pickscore` |
+| Prompt dataset | `ymhao/HPDv2` training annotations (deduplicated) |
 
 **DiffusionNFT + PickScore:**
 

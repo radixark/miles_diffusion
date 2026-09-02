@@ -10,16 +10,18 @@ Usage:
     MILES_SCRIPT_DEBUG_ALIGNMENT=1 python3 scripts/run_diffusion_grpo_sd3_hps_sglang.py
 """
 
+import json
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 import typer
 
 import miles.utils.external_utils.command_utils as U
 
 MODEL = "stabilityai/stable-diffusion-3.5-medium"
-DATASET = "rockdu/miles-diffusion-datasets"
-DATASET_SUBSET = "flowgrpo_pickscore"
+DATASET = "ymhao/HPDv2"
+DATASET_ANNOTATION = "train.json"
 WANDB_PROJECT = "miles-diffusion-grpo"
 
 # master_sglang carries native SD3 /rollout/generate support; prepending it to PYTHONPATH
@@ -35,9 +37,38 @@ class ScriptArgs(U.ExecuteTrainConfig):
     extra_args: str = ""
 
 
+def _materialize_hpdv2_prompts(source: Path, output: Path) -> Path:
+    """Convert HPDv2 pairwise annotations into a cached prompt-only JSONL."""
+    if output.exists() and output.stat().st_size > 0 and output.stat().st_mtime_ns >= source.stat().st_mtime_ns:
+        return output
+
+    # Use the local generic JSON reader, not HPDv2's remote loading script: the
+    # latter downloads and extracts the image archives, which reward training
+    # does not need.
+    from datasets import load_dataset
+
+    dataset = load_dataset("json", data_files=str(source), split="train")
+    temporary = output.with_name(f".{output.name}.{os.getpid()}.tmp")
+    seen: set[str] = set()
+    try:
+        with temporary.open("w", encoding="utf-8") as f:
+            for value in dataset.unique("prompt"):
+                if not isinstance(value, str) or not (prompt := value.strip()) or prompt in seen:
+                    continue
+                seen.add(prompt)
+                f.write(json.dumps({"prompt": prompt}, ensure_ascii=False) + "\n")
+        if not seen:
+            raise ValueError(f"HPDv2 annotation {source} contains no non-empty prompts")
+        os.replace(temporary, output)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return output
+
+
 def prepare(args: ScriptArgs) -> str:
-    local_dir = U.hf_download_dataset(DATASET, include=f"{DATASET_SUBSET}/**", data_dir=args.data_dir)
-    return f"{local_dir}/{DATASET_SUBSET}"
+    local_dir = Path(U.hf_download_dataset(DATASET, include=DATASET_ANNOTATION, data_dir=args.data_dir))
+    _materialize_hpdv2_prompts(local_dir / DATASET_ANNOTATION, local_dir / "train.jsonl")
+    return str(local_dir)
 
 
 def execute(args: ScriptArgs, data_dir: str) -> None:
@@ -48,7 +79,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
     rollout_args = (
         "--rollout-function-path miles.rollout.sglang_diffusion_rollout.generate_rollout "
         f"--prompt-data {data_dir}/train.jsonl "
-        "--input-key input "
+        "--input-key prompt "
         "--rollout-batch-size 8 "
         "--n-samples-per-prompt 16 "
         f"--num-rollout {args.num_rollout} "
