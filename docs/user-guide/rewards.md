@@ -172,12 +172,6 @@ Dataset repo: [`rockdu/miles-diffusion-datasets`](https://huggingface.co/dataset
 | `flowgrpo_pickscore/` | PickScore recipes (SD3 NFT, Qwen-Image, Wan2.2, LTX) |
 | `flowgrpo_ocr/` | SD3 OCR Flow-GRPO, NFT smoke test |
 
-The SD3 HPS recipe instead downloads the official
-[`ymhao/HPDv2`](https://huggingface.co/datasets/ymhao/HPDv2) `train.json`
-annotation directly. Its launcher deduplicates the pairwise annotation rows by
-prompt and caches a prompt-only `train.jsonl`; HPDv2 image archives are not
-downloaded.
-
 ### Per-sample rm_type override
 
 JSONL `metadata.rm_type` overrides the global `--rm-type` for that sample:
