@@ -1,6 +1,7 @@
 import itertools
 import logging
 import multiprocessing
+import os
 import random
 import threading
 import time
@@ -573,7 +574,10 @@ def _allocate_rollout_engine_addr_and_ports_normal(*, args, num_engines, rollout
         def get_addr_and_ports(engine):
             # use small ports to prevent ephemeral port between 32768 and 65536.
             # also, ray uses port 10002-19999, thus we avoid near-10002 to avoid racing condition
-            start_port = 15000
+            # MILES_ROLLOUT_START_PORT: shift the range so concurrent miles runs
+            # on one host don't collide (the free-port probe can miss servers
+            # bound to a specific interface).
+            start_port = int(os.environ.get("MILES_ROLLOUT_START_PORT", "15000"))
 
             def port(consecutive=1):
                 nonlocal start_port
