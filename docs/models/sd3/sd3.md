@@ -51,7 +51,7 @@ Prompt datasets live under
 | Recipe | Subset | Train path |
 |---|---|---|
 | GRPO + OCR | `flowgrpo_ocr` | `.../flowgrpo_ocr/train.jsonl` |
-| GRPO + HPS | `flowgrpo_pickscore` | `.../flowgrpo_pickscore/train.jsonl` |
+| GRPO + HPS | `hpdv2` | `.../hpdv2/train.jsonl` |
 | NFT + PickScore | `flowgrpo_pickscore` | `.../flowgrpo_pickscore/train.jsonl` |
 
 Launch scripts download the matching subset automatically via
@@ -135,7 +135,7 @@ python3 scripts/run_diffusion_grpo_sd3_hps_sglang.py \
 ```
 
 The recipe uses the same SD3 Flow-GRPO configuration as the OCR recipe, swaps
-in the `flowgrpo_pickscore` prompts and `--rm-type hps`, and colocates one HPS
+in the deduplicated `hpdv2` prompts and `--rm-type hps`, and colocates one HPS
 reward actor with the train and rollout workers.
 
 ### 5.4 DiffusionNFT + PickScore (3 GPU)
@@ -210,7 +210,7 @@ the OCR recipe, with these reward-specific settings:
 | Reward | `--rm-type hps --hps-version v2.1` |
 | Reward worker | One actor, batch size 8 |
 | Placement | `--colocate-reward` |
-| Prompt subset | `flowgrpo_pickscore` |
+| Prompt subset | `hpdv2` |
 
 **DiffusionNFT + PickScore:**
 

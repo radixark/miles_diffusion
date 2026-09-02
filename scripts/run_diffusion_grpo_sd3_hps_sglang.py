@@ -19,7 +19,7 @@ import miles.utils.external_utils.command_utils as U
 
 MODEL = "stabilityai/stable-diffusion-3.5-medium"
 DATASET = "rockdu/miles-diffusion-datasets"
-DATASET_SUBSET = "flowgrpo_pickscore"
+DATASET_SUBSET = "hpdv2"
 WANDB_PROJECT = "miles-diffusion-grpo"
 
 # master_sglang carries native SD3 /rollout/generate support; prepending it to PYTHONPATH

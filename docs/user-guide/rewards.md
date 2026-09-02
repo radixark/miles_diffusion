@@ -169,6 +169,7 @@ Dataset repo: [`rockdu/miles-diffusion-datasets`](https://huggingface.co/dataset
 
 | Subset | Used by |
 |---|---|
+| `hpdv2/` | SD3 HPS Flow-GRPO |
 | `flowgrpo_pickscore/` | PickScore recipes (SD3 NFT, Qwen-Image, Wan2.2, LTX) |
 | `flowgrpo_ocr/` | SD3 OCR Flow-GRPO, NFT smoke test |
 
