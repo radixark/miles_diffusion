@@ -145,4 +145,7 @@ async def hps_rm(args, samples: Sequence[Sample]) -> list[float]:
         (image,) = sample_to_rgb_hwc_uint8_frames(sample, None, round_normalized=True)
         images.append(image)
     prompts = [sample.prompt for sample in samples]
-    return await pool.score(images, prompts)
+    scores, max_queue_depth = await pool.score(images, prompts)
+    for sample in samples:
+        sample.reward_max_queue_depth = float(max_queue_depth)
+    return scores

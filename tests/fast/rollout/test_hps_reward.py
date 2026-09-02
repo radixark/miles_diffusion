@@ -18,12 +18,13 @@ from miles.utils.types import Sample
 @pytest.mark.asyncio
 async def test_hps_rm_rounds_image_output(monkeypatch):
     pool = AsyncMock()
-    pool.score.return_value = [1.0]
+    pool.score.return_value = ([1.0], 2)
     monkeypatch.setattr(hps_module, "AsyncHPSPool", lambda args: pool)
     channel = torch.tensor([0.0, 0.5, 1.0]).reshape(1, 1, 1, 3)
     sample = Sample(prompt="prompt", generated_output=channel.repeat(3, 1, 1, 1))
 
     assert await hps_module.hps_rm(Namespace(), [sample]) == [1.0]
+    assert sample.reward_max_queue_depth == 2.0
 
     images, prompts = pool.score.await_args.args
     np.testing.assert_array_equal(
