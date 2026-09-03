@@ -193,6 +193,13 @@ async def generate_microgroup(
     payload = build_rollout_generate_payload(
         sampling_params, microgroup[0].prompt, num_outputs_per_prompt=len(microgroup)
     )
+    image_path = (microgroup[0].metadata or {}).get("image_path")
+    if image_path is not None:
+        # A request group shares one conditioning input across its outputs.
+        if isinstance(image_path, str):
+            payload["image_path"] = [image_path]
+        else:
+            payload["image_path"] = image_path
 
     st = hooks.StageTimer()
     if args.rollout_fetch_in_parser:
