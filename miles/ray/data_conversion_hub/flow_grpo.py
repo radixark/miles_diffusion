@@ -118,9 +118,10 @@ def _build_per_timestep_features(
     needed = sorted({int(s) for s in sde_idx} | {int(s) + 1 for s in sde_idx})
     missing = [step for step in needed if step not in position]
     if missing:
+        provenance = "echoed" if traj.latent_step_indices is not None else "absent (engine must echo it)"
         raise ValueError(
             f"trajectory lacks latents for steps {missing} (have {sorted(position)}); "
-            "the rollout's return_step_indices and the SDE window disagree"
+            f"latent_step_indices {provenance}"
         )
 
     idx = torch.as_tensor(sde_idx, dtype=torch.long)

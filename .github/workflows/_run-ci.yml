@@ -8,8 +8,8 @@ name: CI Job
 #   * PR-body magic for `ci-megatron-pr:` removed for the same reason.
 #   * sglang checkout/install preserved (miles-D imports
 #     sglang.multimodal_gen.runtime.* and sglang.srt.*), fetched from
-#     sgl-project/sglang main now that the diffusion RPCs have landed
-#     upstream (`ci-sglang-repo:` / `ci-sglang-pr:` PR-body overrides).
+#     the branch the image is built from (env: DEFAULT_SGLANG_REF), with
+#     `ci-sglang-repo:` / `ci-sglang-pr:` PR-body overrides.
 #   * GPU `run:` job uses the radixark/miles-diffusion image (not
 #     radixark/miles) and the h200 runner fleet on the dedicated CI node
 #     (labels: h200 + 3gpu/5gpu).
@@ -42,6 +42,12 @@ on:
         required: false
         default: false
         description: 'Upload tests/ci/fixtures/e2e_standards/ as a build artifact for the author to review and commit (record-e2e-standards.yml)'
+
+env:
+  # Unless you know the consequences, change this together with docker/Dockerfile's
+  # SGLANG_DIFFUSION_BRANCH.
+  DEFAULT_SGLANG_REF: sglang-miles-h3
+  DEFAULT_SGLANG_REPO: sgl-project/sglang
 
 jobs:
   run:
@@ -136,8 +142,8 @@ jobs:
             PR_SGLANG_REPO=$(echo "$PR_BODY" | grep -m1 -oP '^ci-sglang-repo:\s+\K\S+' || true)
             [ -z "$SGLANG_REPO" ] && [ -n "$PR_SGLANG_REPO" ] && SGLANG_REPO="$PR_SGLANG_REPO"
           fi
-          [ -z "$SGLANG_PR" ] && SGLANG_PR="main"
-          [ -z "$SGLANG_REPO" ] && SGLANG_REPO="sgl-project/sglang"
+          [ -z "$SGLANG_PR" ] && SGLANG_PR="$DEFAULT_SGLANG_REF"
+          [ -z "$SGLANG_REPO" ] && SGLANG_REPO="$DEFAULT_SGLANG_REPO"
           resolve_fetch_ref() {
             local ref="$1"
             if [[ "$ref" =~ ^#([0-9]+)$ ]]; then
@@ -242,8 +248,8 @@ jobs:
             PR_SGLANG_REPO=$(echo "$PR_BODY" | grep -m1 -oP '^ci-sglang-repo:\s+\K\S+' || true)
             [ -z "$SGLANG_REPO" ] && [ -n "$PR_SGLANG_REPO" ] && SGLANG_REPO="$PR_SGLANG_REPO"
           fi
-          [ -z "$SGLANG_PR" ] && SGLANG_PR="main"
-          [ -z "$SGLANG_REPO" ] && SGLANG_REPO="sgl-project/sglang"
+          [ -z "$SGLANG_PR" ] && SGLANG_PR="$DEFAULT_SGLANG_REF"
+          [ -z "$SGLANG_REPO" ] && SGLANG_REPO="$DEFAULT_SGLANG_REPO"
           resolve_fetch_ref() {
             local ref="$1"
             if [[ "$ref" =~ ^#([0-9]+)$ ]]; then
@@ -270,22 +276,11 @@ jobs:
           UV_SYSTEM_PYTHON: "1"
         run: |
           SGLANG_BUILD_RUST_EXTS=none uv pip install -e sglang/python --no-deps
-          uv pip install -r requirements.txt
+          # sglang is installed --no-deps; its pinned pure-python runtime deps
+          # live in requirements-ci-cpu.txt (same pattern as radixark/miles).
+          # One resolve for both files so neither can move the other's pins.
+          uv pip install -r requirements.txt -r tests/ci/requirements-ci-cpu.txt
           uv pip install -e . --no-deps
-          # sglang is installed --no-deps above, but miles-D's import chain
-          # loads many sglang modules. Install sglang's pure-python runtime
-          # deps upfront; skip GPU-only ones (cuda-python, flashinfer,
-          # flash-attn-4, sglang-kernel, torchao, torchcodec,
-          # torch_memory_saver, quack-kernels, nvidia-cutlass-dsl,
-          # apache-tvm-ffi, kernels, decord2, av). torch itself comes via
-          # accelerate (in requirements.txt).
-          uv pip install \
-            IPython aiohttp anthropic build compressed-tensors einops fastapi \
-            gguf interegular jsonschema llguidance mistral_common modelscope \
-            msgspec ninja nvidia-ml-py openai openai-harmony orjson outlines \
-            partial_json_parser prometheus-client psutil py-spy pybase64 pydantic \
-            python-multipart pyzmq scipy sentencepiece setproctitle soundfile \
-            tiktoken timm torchvision==0.26.0 uvicorn uvloop watchfiles xgrammar
           # sglang's memory_pool_host.py unconditionally imports sgl_kernel
           # on non-NPU/XPU/MPS hardware. sgl_kernel is GPU-only. multimodal_gen
           # similarly hard-imports cache_dit at package load. Install local
