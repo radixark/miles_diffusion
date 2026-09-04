@@ -12,6 +12,7 @@ from tests.ci.e2e_metrics_registry import register_e2e_ci
 register_e2e_ci(
     est_time=3000,
     suite="stage-c-3-gpu-h200",
+    labels=["e2e"],
     script="scripts/run_diffusion_grpo_h3_t2va_2gpu.py",
     args=["--num-rollout", "2", "--n-samples-per-prompt", "4", "--eval-interval", "0"],
     metrics=[
