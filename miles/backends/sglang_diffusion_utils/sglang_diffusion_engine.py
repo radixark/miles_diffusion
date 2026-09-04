@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 import requests
 from sglang.srt.utils.common import kill_process_tree
 
+import miles.utils.startup_timing as st
 from miles.ray.ray_actor import RayActor
 from miles.utils.http_utils import get_host_info
 
@@ -70,16 +71,18 @@ def launch_server_process(
     # use spawn to avoid potential risks of fork in terms of subthreads or CUDA.
     multiprocessing.set_start_method("spawn", force=True)
     server_args.host = server_args.host.strip("[]")
-    p = multiprocessing.Process(
-        target=_launch_server_target,
-        args=(server_args, apply_rollout_patches),
-    )
-    p.start()
+    with st.step("engine.spawn_server_process"):
+        p = multiprocessing.Process(
+            target=_launch_server_target,
+            args=(server_args, apply_rollout_patches),
+        )
+        p.start()
 
-    _wait_server_healthy(
-        base_url=server_args.url(),
-        is_process_alive=lambda: p.is_alive(),
-    )
+    with st.step("engine.wait_server_healthy"):
+        _wait_server_healthy(
+            base_url=server_args.url(),
+            is_process_alive=lambda: p.is_alive(),
+        )
 
     return p
 
@@ -111,6 +114,8 @@ class SGLangDiffusionEngine(RayActor):
         self.base_gpu_id = base_gpu_id
 
     def init(self, dist_init_addr, port, nccl_port, host=None):
+        st.set_role(f"engine{self.rank}")
+        st.mark("engine.init_enter")
         # SGL-D runs single-node per engine; accept dist_init_addr for caller compat, then drop.
         del dist_init_addr
         self.router_ip = self.args.sglang_router_ip
@@ -161,10 +166,11 @@ class SGLangDiffusionEngine(RayActor):
 
         if self.node_rank == 0 and self.router_ip and self.router_port:
             if self.args.use_miles_router:
-                response = requests.post(
-                    f"http://{self.router_ip}:{self.router_port}/add_worker?url=http://{self.server_host}:{self.server_port}"
-                )
-                response.raise_for_status()
+                with st.step("engine.router_register"):
+                    response = requests.post(
+                        f"http://{self.router_ip}:{self.router_port}/add_worker?url=http://{self.server_host}:{self.server_port}"
+                    )
+                    response.raise_for_status()
             else:
                 # SGL-D router TODO: add_worker path for the non-miles router
                 logger.warning("Skipping router add_worker: only miles_router is supported for now")

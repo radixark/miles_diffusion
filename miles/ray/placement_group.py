@@ -5,6 +5,8 @@ import ray
 from ray.util.placement_group import placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
+import miles.utils.startup_timing as st
+
 from .actor_group import RayTrainGroup
 from .rollout import RolloutManager
 
@@ -41,26 +43,28 @@ def sort_key(x):
 def _create_placement_group(num_gpus):
     """Create a placement group with the specified number of GPUs."""
     bundles = [{"GPU": 1, "CPU": 1} for _ in range(num_gpus)]
-    pg = placement_group(bundles, strategy="PACK")
-    num_bundles = len(bundles)
+    with st.step("driver.pg.create_and_ready", num_gpus=num_gpus):
+        pg = placement_group(bundles, strategy="PACK")
+        num_bundles = len(bundles)
 
-    logger.info("Waiting for placement group to be ready...")
-    ray.get(pg.ready())
+        logger.info("Waiting for placement group to be ready...")
+        ray.get(pg.ready())
     logger.info("Placement group is ready.")
     # use info actor to get the GPU id
-    info_actors = []
-    for i in range(num_bundles):
-        info_actors.append(
-            InfoActor.options(
-                scheduling_strategy=PlacementGroupSchedulingStrategy(
-                    placement_group=pg,
-                    placement_group_bundle_index=i,
-                )
-            ).remote()
-        )
-    gpu_ids = ray.get([actor.get_ip_and_gpu_id.remote() for actor in info_actors])
-    for actor in info_actors:
-        ray.kill(actor)
+    with st.step("driver.pg.info_actors"):
+        info_actors = []
+        for i in range(num_bundles):
+            info_actors.append(
+                InfoActor.options(
+                    scheduling_strategy=PlacementGroupSchedulingStrategy(
+                        placement_group=pg,
+                        placement_group_bundle_index=i,
+                    )
+                ).remote()
+            )
+        gpu_ids = ray.get([actor.get_ip_and_gpu_id.remote() for actor in info_actors])
+        for actor in info_actors:
+            ray.kill(actor)
 
     bundle_infos = [(i, gpu_ids[i][0], gpu_ids[i][1]) for i in range(num_bundles)]
     sorted_bundle_infos = sorted(bundle_infos, key=sort_key)
@@ -130,44 +134,59 @@ def allocate_train_group(args, num_nodes, num_gpus_per_node, pg):
 
 def create_training_models(args, pgs, rollout_manager):
     logger.info("Initializing actor model...")
-    actor_model = allocate_train_group(
-        args=args,
-        num_nodes=args.actor_num_nodes,
-        num_gpus_per_node=args.actor_num_gpus_per_node,
-        pg=pgs["actor"],
-    )
-    start_rollout_ids = ray.get(actor_model.async_init(args, role="actor", with_ref=False))
+    with st.step("driver.train_group.spawn_actors"):
+        actor_model = allocate_train_group(
+            args=args,
+            num_nodes=args.actor_num_nodes,
+            num_gpus_per_node=args.actor_num_gpus_per_node,
+            pg=pgs["actor"],
+        )
+    with st.step("driver.train_group.init_wait"):
+        start_rollout_ids = ray.get(
+            actor_model.async_init(args, role="actor", with_ref=False, rollout_manager=rollout_manager)
+        )
     logger.info("Actor model initialized.")
 
     assert len(set(start_rollout_ids)) == 1
     if args.start_rollout_id is None:
         args.start_rollout_id = start_rollout_ids[0]
 
-    actor_model.set_rollout_manager(rollout_manager)
+    with st.step("driver.train_group.set_rollout_manager"):
+        actor_model.set_rollout_manager(rollout_manager)
     if args.rollout_global_dataset:
-        ray.get(rollout_manager.load.remote(args.start_rollout_id - 1))
+        with st.step("driver.rollout_dataset.load"):
+            ray.get(rollout_manager.load.remote(args.start_rollout_id - 1))
 
     return actor_model
 
 
 def create_rollout_manager(args, pg):
     logger.info("Creating rollout manager (num_gpus=%s)", 0)
-    rollout_manager = RolloutManager.options(
-        num_cpus=1,
-        num_gpus=0,
-    ).remote(args, pg)
+    with st.step("driver.rollout_manager.ctor"):
+        rollout_manager = RolloutManager.options(
+            num_cpus=1,
+            num_gpus=0,
+        ).remote(args, pg)
 
     # calculate num_rollout from num_epoch
     num_rollout_per_epoch = None
     if args.num_rollout is None:
         logger.info("Fetching num_rollout_per_epoch from rollout manager...")
-        num_rollout_per_epoch = ray.get(rollout_manager.get_num_rollout_per_epoch.remote())
+        with st.step("driver.rollout_manager.get_num_rollout_per_epoch"):
+            num_rollout_per_epoch = ray.get(rollout_manager.get_num_rollout_per_epoch.remote())
         args.num_rollout = num_rollout_per_epoch * args.num_epoch
         assert args.num_rollout > 0
         logger.info("Computed num_rollout=%s (num_rollout_per_epoch=%s)", args.num_rollout, num_rollout_per_epoch)
 
     if args.offload_rollout:
-        ray.get(rollout_manager.offload.remote())
+        # Start the boot-time offload as early as possible without blocking the
+        # driver, so train-actor init overlaps engine boot. Under colocate the
+        # memory invariant is not enforced here: the train side gates its first
+        # large GPU allocation on the same idempotent boot_offload (see
+        # FSDPTrainRayActor._wait_rollout_engines_evicted), which holds whichever
+        # of the two calls the actor dequeues first.
+        with st.step("driver.rollout_manager.boot_offload_submit"):
+            rollout_manager.boot_offload.remote()
 
     logger.info("Rollout manager created.")
     return rollout_manager, num_rollout_per_epoch

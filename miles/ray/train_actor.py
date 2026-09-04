@@ -9,6 +9,7 @@ import torch
 import torch.distributed as dist
 
 import miles.utils.eval_config
+import miles.utils.startup_timing as st
 from miles.ray.ray_actor import RayActor
 from miles.utils.distributed_utils import init_gloo_group
 from miles.utils.logging_utils import configure_logger
@@ -29,6 +30,8 @@ class TrainRayActor(RayActor):
     def __init__(self, world_size, rank, master_addr, master_port):
         configure_logger()
 
+        st.set_role(f"train_rank{rank}")
+        st.mark("train.ctor_enter")
         self._world_size = world_size
         self._rank = rank
         if master_addr:
@@ -49,15 +52,18 @@ class TrainRayActor(RayActor):
         os.environ["CUDA_VISIBLE_DEVICES"] = str(local_gpu_id)
         os.environ["LOCAL_RANK"] = "0"
 
-    def init(self, args, role, with_ref=False):
+    def init(self, args, role, with_ref=False, rollout_manager=None):
         self.args = args
         self.role = role
         self.with_ref = with_ref
+        self.rollout_manager = rollout_manager
 
         torch.serialization.add_safe_globals([miles.utils.eval_config.EvalDatasetConfig])
+        st.mark("train.init_enter")
 
         local_rank = int(os.environ.get("LOCAL_RANK", 0))
-        torch.cuda.set_device(f"cuda:{local_rank}")
+        with st.step("train.cuda_set_device"):
+            torch.cuda.set_device(f"cuda:{local_rank}")
         logger.info(
             "TrainRayActor rank=%s local_rank=%s CUDA_VISIBLE_DEVICES=%s cuda_device=%s",
             os.environ.get("RANK"),
@@ -76,12 +82,14 @@ class TrainRayActor(RayActor):
         device_id = None
         if torch.cuda.is_available() and "cuda" in str(backend):
             device_id = torch.device(f"cuda:{local_rank}")
-        dist.init_process_group(
-            backend=backend,
-            timeout=timedelta(minutes=args.distributed_timeout_minutes),
-            device_id=device_id,
-        )
-        init_gloo_group()
+        with st.step("train.init_process_group"):
+            dist.init_process_group(
+                backend=backend,
+                timeout=timedelta(minutes=args.distributed_timeout_minutes),
+                device_id=device_id,
+            )
+        with st.step("train.init_gloo_group"):
+            init_gloo_group()
 
         args.rank = dist.get_rank()
         args.world_size = dist.get_world_size()

@@ -1,6 +1,7 @@
 import itertools
 import logging
 import multiprocessing
+import os
 import random
 import threading
 import time
@@ -13,6 +14,7 @@ import torch
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 
+import miles.utils.startup_timing as st
 from miles.backends.sglang_diffusion_utils.sglang_diffusion_engine import SGLangDiffusionEngine
 from miles.ray.data_conversion_hub.flow_grpo import (
     expand_samples_to_train_pairs as flow_grpo_expand_samples_to_train_pairs,
@@ -49,29 +51,37 @@ class RolloutManager:
     def __init__(self, args, pg):
         configure_logger()
 
+        st.set_role("rollout_manager")
         logger.info("RolloutManager init start")
+        st.mark("rm.init_enter")
         self.args = args
         self.pg = pg
         from miles.dashboard import hooks
 
-        hooks.register_rollout_manager(args)
+        with st.step("rm.dashboard_register"):
+            hooks.register_rollout_manager(args)
         set_manager_placement_group(pg)
         if not args.train_only:
             logger.info("RolloutManager: starting router...")
-            _start_router(args)
+            with st.step("rm.start_router"):
+                _start_router(args)
         logger.info("RolloutManager: router started, init tracking...")
         # TODO make args immutable
-        init_tracking(args, primary=False, router_addr=f"http://{args.sglang_router_ip}:{args.sglang_router_port}")
+        with st.step("rm.init_tracking"):
+            init_tracking(args, primary=False, router_addr=f"http://{args.sglang_router_ip}:{args.sglang_router_port}")
         logger.info("RolloutManager: init http client...")
-        init_http_client(args)
+        with st.step("rm.init_http_client"):
+            init_http_client(args)
         logger.info("RolloutManager: loading data source...")
 
-        data_source_cls = load_function(self.args.data_source_path)
-        self.data_source = data_source_cls(args)
+        with st.step("rm.load_data_source"):
+            data_source_cls = load_function(self.args.data_source_path)
+            self.data_source = data_source_cls(args)
         logger.info("RolloutManager: data source loaded, loading rollout functions...")
 
-        self.generate_rollout = load_function(self.args.rollout_function_path)
-        self.eval_generate_rollout = load_function(self.args.eval_function_path)
+        with st.step("rm.load_rollout_functions"):
+            self.generate_rollout = load_function(self.args.rollout_function_path)
+            self.eval_generate_rollout = load_function(self.args.eval_function_path)
         self.custom_reward_post_process_func = (
             load_function(self.args.custom_reward_post_process_path)
             if self.args.custom_reward_post_process_path is not None
@@ -93,6 +103,8 @@ class RolloutManager:
 
         logger.info("RolloutManager rollout_num_gpus=%s", self.args.rollout_num_gpus)
 
+        self._engine_init_handles = []
+        self._boot_offload_done = False
         if self.args.train_only:
             self.all_rollout_engines = []
             self.num_new_engines = 0
@@ -101,7 +113,10 @@ class RolloutManager:
             num_gpu_per_engine = min(args.rollout_num_gpus_per_engine, args.num_gpus_per_node)
             num_engines = args.rollout_num_gpus // num_gpu_per_engine
             self.all_rollout_engines = [None] * num_engines
-            self.num_new_engines = init_rollout_engines(args, pg, self.all_rollout_engines)
+            with st.step("rm.init_rollout_engines", num_engines=num_engines):
+                self.num_new_engines, self._engine_init_handles = init_rollout_engines(
+                    args, pg, self.all_rollout_engines, defer_init=not args.debug_rollout_only
+                )
             logger.info("RolloutManager started %s rollout engines", len(self.all_rollout_engines))
         logger.info("RolloutManager: creating lock...")
         self.nodes_per_engine = max(1, args.rollout_num_gpus_per_engine // args.num_gpus_per_node)
@@ -151,8 +166,32 @@ class RolloutManager:
         # when doing multi-node serving, we will only send request to node-0 for each engine.
         return self.all_rollout_engines[:: self.nodes_per_engine]
 
+    def _ensure_engines_ready(self):
+        """Block until deferred engine init (see init_rollout_engines) has finished."""
+        if not self._engine_init_handles:
+            return
+        with st.step("rm.engines.init_wait"):
+            ray.get(self._engine_init_handles)
+        self._engine_init_handles = []
+
     def get_rollout_engines_and_lock(self):
+        self._ensure_engines_ready()
         return self.rollout_engines, self.rollout_engine_lock, self.num_new_engines
+
+    def boot_offload(self):
+        """Release the engines' boot-time weights, exactly once.
+
+        Both the driver (right after this actor is created) and the first train
+        actor reaching its GPU-allocation gate call this. Ray only orders actor
+        tasks per caller, so the two calls can arrive in either order; doing the
+        offload here — instead of relying on a previously queued offload — is
+        what makes the colocate memory invariant hold regardless.
+        """
+        self._ensure_engines_ready()
+        if not self._boot_offload_done:
+            self._boot_offload_done = True
+            self.offload()
+        return True
 
     def get_num_rollout_per_epoch(self):
         assert self.args.rollout_global_dataset
@@ -161,6 +200,7 @@ class RolloutManager:
     def generate(self, rollout_id):
         from miles.dashboard import hooks
 
+        self._ensure_engines_ready()
         start_time = time.time()
         self.rollout_id = rollout_id
         hooks.set_rollout_id(rollout_id)
@@ -201,6 +241,7 @@ class RolloutManager:
         if self.args.train_only:
             # if debug train only, we don't generate evaluation data
             return
+        self._ensure_engines_ready()
         self.health_monitoring_resume()
 
         result = call_rollout_fn(self.eval_generate_rollout, self.args, rollout_id, self.data_source, evaluation=True)
@@ -231,13 +272,15 @@ class RolloutManager:
 
     def offload(self):
         self.health_monitoring_pause()
-        with timer("rollout_offload"):
+        self._ensure_engines_ready()
+        with timer("rollout_offload"), st.step("rm.offload"):
             return ray.get(
                 [engine.release_memory_occupation.remote() for engine in self.rollout_engines if engine is not None]
             )
 
     def onload(self, tags: list[str] | None = None):
-        with timer("rollout_onload"):
+        self._ensure_engines_ready()
+        with timer("rollout_onload"), st.step("rm.onload", tags=tags):
             return ray.get(
                 [
                     engine.resume_memory_occupation.remote(tags=tags)
@@ -256,7 +299,7 @@ class RolloutManager:
             return self.rollout_engines, self.rollout_engine_lock, self.num_new_engines
 
         dead_indices = [i for i, engine in enumerate(self.all_rollout_engines) if engine is None]
-        self.num_new_engines = init_rollout_engines(self.args, self.pg, self.all_rollout_engines)
+        self.num_new_engines, _ = init_rollout_engines(self.args, self.pg, self.all_rollout_engines)
         logger.info(f"Recovered {self.num_new_engines} dead rollout engines")
         assert self.num_new_engines == len(dead_indices), "num_new_engines does not match dead_indices length"
         if self.args.offload_rollout and dead_indices:
@@ -475,9 +518,9 @@ class RolloutManager:
         self.train_parallel_config = config
 
 
-def init_rollout_engines(args, pg, all_rollout_engines):
+def init_rollout_engines(args, pg, all_rollout_engines, defer_init=False):
     if args.train_only:
-        return 0
+        return 0, []
 
     num_gpu_per_engine = min(args.rollout_num_gpus_per_engine, args.num_gpus_per_node)
     num_engines = args.rollout_num_gpus // num_gpu_per_engine
@@ -515,6 +558,11 @@ def init_rollout_engines(args, pg, all_rollout_engines):
             "SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT": "true",
             "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION": "false",
             "SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE": "false",
+            # mmap (safe_open) beats the RunAI streamer's read+clone pipeline when the
+            # checkpoint sits on local disk / warm page cache (88s -> 63s per H3 engine);
+            # the streamer's parallel prefetch still wins on cold remote FS, so an
+            # operator can re-enable it by exporting this var in the launcher env.
+            "SGLANG_USE_RUNAI_MODEL_STREAMER": os.environ.get("SGLANG_USE_RUNAI_MODEL_STREAMER", "false"),
         }
         if args.lora_ipc_weight_sync:
             # Merge in the train forward dtype, not fp32, to cut train/rollout consistency error.
@@ -535,18 +583,25 @@ def init_rollout_engines(args, pg, all_rollout_engines):
     num_new_engines = len(rollout_engines)
 
     if num_new_engines == 0:
-        return num_new_engines
+        return num_new_engines, []
 
-    addr_and_ports = _allocate_rollout_engine_addr_and_ports_normal(
-        args=args, num_engines=num_engines, rollout_engines=rollout_engines
-    )
+    with st.step("rm.engines.allocate_ports"):
+        addr_and_ports = _allocate_rollout_engine_addr_and_ports_normal(
+            args=args, num_engines=num_engines, rollout_engines=rollout_engines
+        )
 
-    # TODO: don't ray.get here to overlap train actor init with rollout engine init.
-    # somehow if we don't sync here, the --debug-rollout-only mode will crash.
     init_handles = [engine.init.remote(**(addr_and_ports[rank])) for rank, engine in rollout_engines]
-    ray.get(init_handles)
+    if defer_init:
+        # Let engines boot in the background so train-actor init overlaps with
+        # engine startup; callers must sync via the returned handles before
+        # touching the engines. --debug-rollout-only keeps the old sync (it
+        # crashes without it, see the git history of this TODO).
+        return num_new_engines, init_handles
 
-    return num_new_engines
+    with st.step("rm.engines.init_wait"):
+        ray.get(init_handles)
+
+    return num_new_engines, []
 
 
 def _allocate_rollout_engine_addr_and_ports_normal(*, args, num_engines, rollout_engines):
@@ -642,7 +697,8 @@ def _start_router(args):
     process.daemon = True  # Set the process as a daemon
     process.start()
     # Wait 3 seconds
-    time.sleep(3)
+    with st.step("rm.router.fixed_sleep3"):
+        time.sleep(3)
     assert process.is_alive()
     logger.info(f"Router launched at {args.sglang_router_ip}:{args.sglang_router_port}")
 
