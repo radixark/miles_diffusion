@@ -60,6 +60,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         "--diffusion-guidance-scale 1.0 "
         "--diffusion-noise-level 0.0 "
         "--diffusion-sde-type ode "
+        "--diffusion-step-strategy-path miles.rollout.step_strategy_hub.ode_and_return_last "
         "--diffusion-height 512 "
         "--diffusion-width 512 "
     ) + (

@@ -17,6 +17,15 @@ def _clean_x0_from_sample(sample: Sample) -> torch.Tensor:
             f"sample {sample.index} missing dit_trajectory.latents; "
             "NFT needs the final clean latent x0 from rollout"
         )
+    if traj.latent_step_indices is not None:
+        # NFT asks the rollout for the final step alone, so the last latent must be x0.
+        final_step = int(traj.latent_step_indices[-1])
+        num_steps = int(traj.sigmas.shape[0]) - 1 if traj.sigmas is not None else final_step
+        if final_step != num_steps:
+            raise ValueError(
+                f"sample {sample.index} trajectory ends at step {final_step}, not the final "
+                f"step {num_steps}; NFT needs x0"
+            )
     return traj.latents[-1].detach().cpu().float()
 
 
