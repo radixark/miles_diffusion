@@ -1,6 +1,8 @@
 import abc
+import base64
 import logging
 import os
+import pickle
 import re
 from argparse import Namespace
 from collections.abc import Mapping, Sequence
@@ -584,7 +586,9 @@ class DiffusionUpdateWeightFromTensorLoRACPU(DiffusionUpdateWeightFromTensorLoRA
                     "metadata": bucket.get_metadata(),
                 }
             }
-            serialized = MultiprocessingSerializer.serialize(payload, output_str=True)
+            # Plain pickle embeds the CPU tensor bytes; ForkingPickler would ship
+            # shared-memory handles that unrelated engine processes cannot open.
+            serialized = base64.b64encode(pickle.dumps(payload)).decode()
             kwargs = {
                 # A single unlabeled payload: every engine worker deserializes the same
                 # full adapter set (no shared-GPU visibility required).
