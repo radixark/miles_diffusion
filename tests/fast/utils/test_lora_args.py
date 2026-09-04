@@ -18,6 +18,7 @@ def _server_args(**overrides):
         use_lora=True,
         lora_ipc_weight_sync=True,
         lora_target_modules=["to_q", "to_k"],
+        colocate=True,
     )
     base.update(overrides)
     return Namespace(**base)
@@ -33,3 +34,8 @@ class TestLoRATargetModulesServerArgs:
         args = _server_args(lora_ipc_weight_sync=False)
         kwargs = _compute_server_args(args, "127.0.0.1", 15000, 15001)
         assert "lora_target_modules" not in kwargs
+
+    def test_lora_disaggregated_uses_resolved_args(self):
+        args = _server_args(lora_ipc_weight_sync=False, colocate=False)
+        kwargs = _compute_server_args(args, "127.0.0.1", 15000, 15001)
+        assert kwargs["lora_target_modules"] == ["to_q", "to_k"]

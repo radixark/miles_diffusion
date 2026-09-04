@@ -32,6 +32,7 @@ from . import checkpoint
 from .diffusion_update_weight_utils import (
     DiffusionUpdateWeightFromTensor,
     DiffusionUpdateWeightFromTensorLoRA,
+    DiffusionUpdateWeightFromTensorLoRACPU,
     DiffusionUpdateWeightFromTensorLoRAIPC,
 )
 from .ema import EmaShadow
@@ -227,6 +228,8 @@ class FSDPTrainRayActor(TrainRayActor):
             self.weight_updater = None
         elif self.args.use_lora and self.args.lora_ipc_weight_sync:
             self.weight_updater = DiffusionUpdateWeightFromTensorLoRAIPC(self.args, self.models)
+        elif self.args.use_lora and not self.args.colocate:
+            self.weight_updater = DiffusionUpdateWeightFromTensorLoRACPU(self.args, self.models)
         elif self.args.use_lora:
             self.weight_updater = DiffusionUpdateWeightFromTensorLoRA(self.args, self.models)
         else:

@@ -1735,6 +1735,12 @@ def miles_validate_args(args):
     if args.offload_rollout is None:
         args.offload_rollout = False
 
+    if not args.colocate and not args.train_only and not args.debug_rollout_only:
+        if args.lora_ipc_weight_sync:
+            raise ValueError("--lora-ipc-weight-sync requires --colocate: CUDA IPC needs shared train/rollout GPUs")
+        if not args.use_lora:
+            raise ValueError("disaggregated train/rollout weight sync supports LoRA only; pass --use-lora or --colocate")
+
     if args.colocate_reward:
         assert args.colocate, "--colocate-reward requires --colocate."
         assert args.pickscore_num_workers <= args.rollout_num_gpus, (
