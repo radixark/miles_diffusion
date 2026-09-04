@@ -44,9 +44,14 @@ def train(args):
         if args.rollout_global_dataset:
             ray.get(rollout_manager.save.remote(rollout_id))
 
-    def log_step_metrics(rollout_id, durations):
-        log_dict = {f"perf/{name}": value for name, value in durations.items()}
-        log_dict["rollout/step"] = compute_rollout_step(args, rollout_id)
+    def log_drain_wait(rollout_id, drain_wait):
+        # The actor already logs perf/train_time, perf/step_time and perf/wait_time_ratio;
+        # drain_wait (time spent waiting for the prefetched rollout at the barrier) is the
+        # only phase invisible to it.
+        log_dict = {
+            "perf/drain_wait_time": drain_wait,
+            "rollout/step": compute_rollout_step(args, rollout_id),
+        }
         tracking_utils.log(args, log_dict, step_key="rollout/step")
 
     if args.eval_interval is not None and not args.skip_eval_before_train and args.num_rollout > 0:
@@ -62,8 +67,6 @@ def train(args):
 
     rollout_data_ref = None
     for rollout_id in range(args.start_rollout_id, args.num_rollout):
-        step_start = time.time()
-
         if generate_future is not None:
             rollout_data_ref = ray.get(generate_future)
         if rollout_id + 1 < args.num_rollout:
@@ -94,15 +97,7 @@ def train(args):
         if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch):
             ray.get(rollout_manager.eval.remote(rollout_id))
 
-        log_step_metrics(
-            rollout_id,
-            {
-                "train_wall": train_wall,
-                "drain_wait": drain_wait,
-                "update_weights_wall": update_wall,
-                "step_time": time.time() - step_start,
-            },
-        )
+        log_drain_wait(rollout_id, drain_wait)
         logger.info(
             f"train_async: rollout {rollout_id} done "
             f"train_wall={train_wall:.1f}s drain_wait={drain_wait:.1f}s update={update_wall:.1f}s"
