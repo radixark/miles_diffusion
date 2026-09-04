@@ -36,6 +36,12 @@ class DataSource(abc.ABC):
         Load the state of the data source
         """
 
+    def snapshot(self, rollout_id):
+        """
+        Record the cursor state right after generating rollout_id, so a later
+        save(rollout_id) persists it even if a prefetched rollout advanced the cursor
+        """
+
 
 # TODO may further refactor data-loading part later
 class RolloutDataSource(DataSource):
@@ -48,6 +54,7 @@ class RolloutDataSource(DataSource):
         self.sample_offset = 0
         # TODO remove this
         self.metadata = {}
+        self._cursor_snapshots: dict[int, dict] = {}
 
         if args.rollout_global_dataset:
             from miles.utils.diffusion_data import Dataset as DiffusionDataset
@@ -89,17 +96,23 @@ class RolloutDataSource(DataSource):
             samples.append(group)
         return samples
 
-    def save(self, rollout_id):
-        if not self.args.rollout_global_dataset:
-            return
-
-        state_dict = {
+    def snapshot(self, rollout_id):
+        self._cursor_snapshots = {rid: state for rid, state in self._cursor_snapshots.items() if rid > rollout_id - 2}
+        self._cursor_snapshots[rollout_id] = {
             "sample_offset": self.sample_offset,
             "epoch_id": self.epoch_id,
             "sample_group_index": self.sample_group_index,
             "sample_index": self.sample_index,
-            "metadata": self.metadata,
+            "metadata": copy.deepcopy(self.metadata),
         }
+
+    def save(self, rollout_id):
+        if not self.args.rollout_global_dataset:
+            return
+
+        if rollout_id not in self._cursor_snapshots:
+            raise ValueError(f"no cursor snapshot for rollout {rollout_id}: save must follow generate")
+        state_dict = self._cursor_snapshots[rollout_id]
         path = os.path.join(self.args.save, f"rollout/global_dataset_state_dict_{rollout_id}.pt")
         os.makedirs(os.path.dirname(path), exist_ok=True)
         torch.save(state_dict, path)

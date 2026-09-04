@@ -172,6 +172,7 @@ class RolloutManager:
 
         with timer("rollout"):
             data, metrics = self._get_rollout_data(rollout_id=rollout_id)
+        self.data_source.snapshot(rollout_id)
         with timer("save_debug_dump"):
             self._save_debug_rollout_data(data, rollout_id=rollout_id, evaluation=False)
         _log_rollout_data(rollout_id, self.args, data, metrics, time.time() - start_time)
