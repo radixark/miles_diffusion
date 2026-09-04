@@ -1277,8 +1277,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
                 default=False,
                 help=(
-                    "Ask the engine for the whole denoising trajectory instead of just the "
-                    "SDE window the trainer consumes. The train pairs are identical either "
+                    "Ask the engine for the whole denoising trajectory instead of the steps "
+                    "the step strategy requests. The train tensors are identical either "
                     "way; this keeps the unfiltered path available for debugging and A/B runs."
                 ),
             )

@@ -181,17 +181,12 @@ async def generate_microgroup(
             int(sampling_params["num_inference_steps"]),
             int(sampling_params["seed"]),
         )
-        # The trainer consumes (x_i, x_{i+1}, log_prob_i) per SDE step, so the
-        # engine only needs the window latents plus their boundary: S U (S+1).
-        if return_indices is None and sde_indices is not None and not args.rollout_return_full_trajectory:
-            return_indices = sorted({int(i) for i in sde_indices} | {int(i) + 1 for i in sde_indices})
+        if args.rollout_return_full_trajectory:
+            return_indices = None  # None asks the engine for every step
         sampling_params["rollout_sde_step_indices"] = sde_indices
         sampling_params["rollout_return_step_indices"] = return_indices
     else:
         sde_indices = None
-        if args.loss_type == "nft" and not args.rollout_return_full_trajectory:
-            # NFT trains on the clean x0 alone, so the rest of the trajectory is dead weight.
-            sampling_params["rollout_return_step_indices"] = [int(sampling_params["num_inference_steps"])]
 
     payload = build_rollout_generate_payload(
         sampling_params, microgroup[0].prompt, num_outputs_per_prompt=len(microgroup)

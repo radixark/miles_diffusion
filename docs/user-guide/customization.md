@@ -90,21 +90,26 @@ async def custom_generate(
 
 ### `--diffusion-step-strategy-path`
 
-Select which denoising steps contribute SDE log-probs / train pairs. Stock
-implementations live in `miles/rollout/step_strategy_hub.py`.
+Select which denoising steps contribute SDE log-probs / train pairs, and which
+latents the engine ships back for the trainer. Stock implementations live in
+`miles/rollout/step_strategy_hub.py`.
 
 ```python
 def strategy(args, sample, num_steps, seed) -> tuple[list[int] | None, list[int] | None]:
-    # returns (sde_step_indices, return_step_indices); return must be None today
+    # returns (sde_step_indices, return_step_indices)
+    # sde None = no SDE steps (pure ODE rollout)
+    # return None = the engine returns every step's latent
     ...
 ```
 
+`--rollout-return-full-trajectory` overrides `return_step_indices` back to all
+steps for debugging / A-B runs.
+
 | Stock | Behavior |
 |---|---|
-| `sde_window` | Random contiguous window (`--diffusion-num-sde-steps`, `--diffusion-sde-window-range`) |
-| `epoch_global_random_choice` | Per-epoch subset of `--diffusion-sde-candidate-steps` |
-
-Details: [SDE step backend](../advanced/sde-backend.md).
+| `sde_window` | Random contiguous window (`--diffusion-num-sde-steps`, `--diffusion-sde-window-range`); returns all latents its steps touch |
+| `epoch_global_random_choice` | Per-epoch subset of `--diffusion-sde-candidate-steps`; returns all latents its steps touch |
+| `ode_and_return_last` | No SDE steps, return only the final clean `x0` (DiffusionNFT) |
 
 ***
 

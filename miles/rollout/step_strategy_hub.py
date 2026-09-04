@@ -1,8 +1,11 @@
 """Library of functions that fill ``rollout_sde_step_indices`` /
 ``rollout_return_step_indices`` for one sglang-diffusion rollout request.
 
-Each function has signature ``(args, sample, num_steps, seed) -> (sde, ret)``
-where ``sde`` and ``ret`` are ``list[int] | None`` (``None`` = all steps).
+Each function has signature ``(args, sample, num_steps, seed) -> (sde, ret)``,
+both ``list[int] | None``. A strategy owns both halves of the request:
+``sde`` picks the steps sampled as SDE (``None`` = no SDE steps, a pure ODE
+rollout), and ``ret`` picks the trajectory latents the engine ships back for
+the trainer (``None`` = all steps).
 Point ``--diffusion-step-strategy-path`` at any such function.
 """
 
@@ -16,14 +19,17 @@ import torch
 from miles.utils.types import Sample
 
 
+def _sde_steps_to_latent_indices(indices: list[int]) -> list[int]:
+    # The GRPO trainer consumes (x_i, x_{i+1}, log_prob_i) per SDE step, so the
+    # engine must return every latent those steps touch: S U (S+1).
+    return sorted({int(i) for i in indices} | {int(i) + 1 for i in indices})
+
+
 def sde_window(
     args: Namespace, sample: Sample, num_steps: int, seed: int
 ) -> tuple[list[int] | None, list[int] | None]:
-    """flow_grpo-style random contiguous SDE window. Returns (sde=window, return=None)
-    so sglang-d returns the full trajectory and log_probs; the trainer then slices
-    to the window for loss / backprop. Keeping the full trajectory avoids the
-    sglang-d-side trailing ``x_final`` aliasing issue when the window ends before
-    the last denoising step."""
+    """flow_grpo-style random contiguous SDE window; the engine returns all
+    latents the window's steps touch (x_i and x_{i+1} for each step i)."""
     window_size = int(args.diffusion_num_sde_steps)
     if window_size <= 0:
         raise ValueError("sde_window requires --diffusion-num-sde-steps > 0")
@@ -42,7 +48,7 @@ def sde_window(
     rng = np.random.default_rng(seed)
     start = int(rng.integers(lo, hi - window_size + 1))
     indices = list(range(start, start + window_size))
-    return indices, None
+    return indices, _sde_steps_to_latent_indices(indices)
 
 
 def epoch_global_random_choice(
@@ -56,11 +62,21 @@ def epoch_global_random_choice(
     if num_sde_steps <= 0:
         raise ValueError("epoch_global_random_choice requires --diffusion-num-sde-steps > 0")
     if num_sde_steps >= len(candidates):
-        return sorted(candidates), None
-    epoch = int(sample.group_index or 0) // int(args.rollout_batch_size)
-    generator = torch.Generator().manual_seed(epoch + int(args.rollout_seed))
-    selected = torch.randperm(len(candidates), generator=generator)[:num_sde_steps]
-    return sorted(candidates[i] for i in selected.tolist()), None
+        indices = sorted(candidates)
+    else:
+        epoch = int(sample.group_index or 0) // int(args.rollout_batch_size)
+        generator = torch.Generator().manual_seed(epoch + int(args.rollout_seed))
+        selected = torch.randperm(len(candidates), generator=generator)[:num_sde_steps]
+        indices = sorted(candidates[i] for i in selected.tolist())
+    return indices, _sde_steps_to_latent_indices(indices)
+
+
+def ode_and_return_last(
+    args: Namespace, sample: Sample, num_steps: int, seed: int
+) -> tuple[list[int] | None, list[int] | None]:
+    """DiffusionNFT-style request: no SDE steps (pure ODE rollout) and only
+    the final clean x0 shipped back."""
+    return None, [num_steps]
 
 
 def _sde_candidate_steps(args: Namespace, num_steps: int) -> list[int]:
