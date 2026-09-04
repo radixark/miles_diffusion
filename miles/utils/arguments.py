@@ -1113,6 +1113,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=0,
                 help="Steps the decay holds at --ema-decay-init before the ramp begins.",
             )
+            parser.add_argument(
+                "--ema-ref-lagged",
+                action="store_true",
+                default=False,
+                help=(
+                    "Use the pre-update EMA snapshot as the reference policy. Under one-step "
+                    "async training this matches the reference to the weights that generated "
+                    "the batch being trained."
+                ),
+            )
             return parser
 
         def add_dashboard_arguments(parser):
@@ -1612,6 +1622,8 @@ def miles_validate_args(args):
         raise ValueError("--use-ema has no consumer; set --ref-mode ema or --ema-rollout-policy ema")
     if args.ema_rollout_policy == "ema" and not args.use_ema:
         raise ValueError("--ema-rollout-policy ema requires --use-ema")
+    if args.ema_ref_lagged and args.ref_mode != "ema":
+        raise ValueError("--ema-ref-lagged requires --ref-mode ema")
 
     if args.loss_type == "sft_loss":
         if not args.train_only:

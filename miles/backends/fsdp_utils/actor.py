@@ -221,6 +221,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 uprate=self.args.ema_decay_ramp,
                 uphold=self.args.ema_decay_max,
                 flat_steps=self.args.ema_decay_flat_steps,
+                keep_lagged=self.args.ema_ref_lagged,
             )
 
         # sglang-d now supports /update_weights_from_tensor (PR #20464).
@@ -558,7 +559,7 @@ class FSDPTrainRayActor(TrainRayActor):
         ref_mode = self.args.ref_mode
         if ref_mode != "none":
             if ref_mode == "ema":
-                ref_ctx = self.ema_shadow.swap_in()
+                ref_ctx = self.ema_shadow.swap_in(lagged=self.args.ema_ref_lagged)
             else:
                 ref_ctx = prepared.model.disable_adapter()
             with torch.no_grad(), ref_ctx:

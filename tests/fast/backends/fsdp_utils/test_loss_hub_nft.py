@@ -286,3 +286,20 @@ class TestEmaShadow:
         with ema.swap_in():
             assert torch.equal(m.weight.detach(), live)
         assert torch.equal(m.weight.detach(), live + 2.0)
+
+    def test_lagged_snapshot_tracks_pre_update_ema(self):
+        m = self._model()
+        ema = EmaShadow(m.parameters(), decay=0.5, uprate=0.001, uphold=0.5, flat_steps=10, keep_lagged=True)
+        init = m.weight.detach().clone()
+        with torch.no_grad():
+            m.weight.add_(1.0)
+        ema.update()
+        assert torch.equal(ema.lagged[0], init)
+        assert torch.allclose(ema.shadow[0], init + 0.5)
+        with ema.swap_in(lagged=True):
+            assert torch.equal(m.weight.detach(), init)
+        assert torch.equal(m.weight.detach(), init + 1.0)
+
+    def test_lagged_disabled_by_default(self):
+        ema = EmaShadow(self._model().parameters(), decay=0.1)
+        assert ema.lagged is None
