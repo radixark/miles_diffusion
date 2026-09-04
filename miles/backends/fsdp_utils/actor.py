@@ -667,6 +667,7 @@ def apply_fsdp2(
     logger.info(
         f"FSDP: wrapping {len(modules)} modules of type {layer_cls_to_wrap}, "
         f"param_dtype={param_dtype}, reduce_dtype={reduce_dtype}, "
+        f"reshard_after_forward={args.fsdp_reshard_after_forward}, "
         f"param_dtype_overrides={param_dtype_maps.override_count} "
         f"({param_dtype_maps.override_numel:,} parameters)"
     )
@@ -674,6 +675,7 @@ def apply_fsdp2(
     fsdp_kwargs = {
         "offload_policy": offload_policy,
         "mesh": mesh,
+        "reshard_after_forward": args.fsdp_reshard_after_forward,
     }
 
     # input_dtype_policy owns boundary casts; autocast owns compute and keeps grad-ckpt recompute consistent.
