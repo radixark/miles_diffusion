@@ -8,26 +8,15 @@ import logging
 import ray
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
-_manager_placement_group = None
 logger = logging.getLogger(__name__)
 
 
-def set_manager_placement_group(pg) -> None:
-    """Publish the manager's (pg, bundle_indices, gpu_ids) for colocated actor pools."""
-    global _manager_placement_group
-    _manager_placement_group = pg
-
-
-def get_manager_placement_group():
-    return _manager_placement_group
-
-
-set_reward_placement_group = set_manager_placement_group
-get_reward_placement_group = get_manager_placement_group
-
-
 class AsyncRewardActorPool:
-    """Round-robin pool for Ray reward actors exposing ``score_batch``."""
+    """Round-robin pool for Ray reward actors exposing ``score_batch``.
+
+    ``placement_group`` is the rollout manager's ``(pg, bundle_indices, gpu_ids)``;
+    a colocated pool seats one worker per bundle on it.
+    """
 
     def __init__(
         self,
@@ -38,10 +27,16 @@ class AsyncRewardActorPool:
         batch_size: int,
         num_gpus_per_worker: float,
         colocate: bool,
+        placement_group=None,
         name: str,
     ) -> None:
         if colocate:
-            pg, bundle_indices, _ = get_reward_placement_group()
+            if placement_group is None:
+                raise RuntimeError(
+                    f"--colocate-reward: the {name} pool must be seated on the rollout placement group "
+                    "before the first reward call; mixed GPU reward types need dedicated reward GPUs."
+                )
+            pg, bundle_indices, _ = placement_group
             # bundle_indices is sorted by (node, gpu); stride so workers spread across nodes
             # instead of stacking onto the first node's GPUs.
             stride = max(1, len(bundle_indices) // num_workers)

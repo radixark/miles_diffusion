@@ -24,6 +24,15 @@ async def async_rm(args, sample: Sample, **kwargs):
         raise NotImplementedError(f"Rule-based RM for {rm_type!r} is not implemented.")
 
 
+def create_reward_pool(args, placement_group):
+    """Seat the GPU reward pool for ``--rm-type`` on the rollout placement group."""
+    if args.rm_type == "pickscore":
+        from .pickscore import AsyncPickScorePool
+
+        return AsyncPickScorePool(args, placement_group=placement_group)
+    raise ValueError(f"--colocate-reward needs a GPU reward pool, but --rm-type {args.rm_type!r} has none.")
+
+
 async def batched_async_rm(
     args,
     samples: list[Sample],

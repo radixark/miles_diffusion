@@ -1,3 +1,4 @@
+import inspect
 from dataclasses import dataclass
 from typing import Any
 
@@ -16,7 +17,10 @@ class RolloutFnEvalOutput:
     metrics: dict[str, Any] = None
 
 
-def call_rollout_fn(fn, *args, evaluation: bool, **kwargs):
+def call_rollout_fn(fn, *args, evaluation: bool, placement_group=None, **kwargs):
+    # custom rollout functions predate this kwarg, so it is passed only to signatures that take it
+    if "placement_group" in inspect.signature(fn).parameters:
+        kwargs["placement_group"] = placement_group
     output = fn(*args, **kwargs, evaluation=evaluation)
 
     # compatibility for legacy version

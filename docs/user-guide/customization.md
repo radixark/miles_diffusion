@@ -55,6 +55,12 @@ def generate_rollout(
 Legacy list/dict returns are still wrapped into the corresponding output dataclass by
 `miles.rollout.base_types.call_rollout_fn`.
 
+A rollout function that seats its own GPU actors on the rollout GPUs (e.g. the SFT
+encode pool) declares an extra `placement_group=None` keyword; `call_rollout_fn`
+passes the manager's `(pg, bundle_indices, gpu_ids)` only to signatures that take it.
+The colocated reward pool is seated by `RolloutManager` itself, not by the rollout
+function.
+
 ### `--eval-function-path`
 
 Same shape as the rollout function. Defaults to `--rollout-function-path` when

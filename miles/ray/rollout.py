@@ -18,7 +18,7 @@ from miles.ray.data_conversion_hub.flow_grpo import (
     expand_samples_to_train_pairs as flow_grpo_expand_samples_to_train_pairs,
 )
 from miles.rollout.base_types import call_rollout_fn
-from miles.rollout.rm_hub.core import set_manager_placement_group
+from miles.rollout.rm_hub import create_reward_pool
 from miles.utils import tracking_utils
 from miles.utils.health_monitor import RolloutHealthMonitor
 from miles.utils.http_utils import _wrap_ipv6, find_available_port, get_host_info, init_http_client
@@ -55,7 +55,6 @@ class RolloutManager:
         from miles.dashboard import hooks
 
         hooks.register_rollout_manager(args)
-        set_manager_placement_group(pg)
         if not args.train_only:
             logger.info("RolloutManager: starting router...")
             _start_router(args)
@@ -103,6 +102,8 @@ class RolloutManager:
             self.all_rollout_engines = [None] * num_engines
             self.num_new_engines = init_rollout_engines(args, pg, self.all_rollout_engines)
             logger.info("RolloutManager started %s rollout engines", len(self.all_rollout_engines))
+        # The pool outlives every rollout call, so the manager seats it; rm_hub's singleton lookup then finds it.
+        self.reward_pool = create_reward_pool(args, pg) if args.colocate_reward else None
         logger.info("RolloutManager: creating lock...")
         self.nodes_per_engine = max(1, args.rollout_num_gpus_per_engine // args.num_gpus_per_node)
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
@@ -203,7 +204,14 @@ class RolloutManager:
             return
         self.health_monitoring_resume()
 
-        result = call_rollout_fn(self.eval_generate_rollout, self.args, rollout_id, self.data_source, evaluation=True)
+        result = call_rollout_fn(
+            self.eval_generate_rollout,
+            self.args,
+            rollout_id,
+            self.data_source,
+            evaluation=True,
+            placement_group=self.pg,
+        )
         data = result.data
         self._save_debug_rollout_data(data, rollout_id=rollout_id, evaluation=True)
         metrics = _log_eval_rollout_data(rollout_id, self.args, data, result.metrics)
@@ -297,7 +305,14 @@ class RolloutManager:
                 )
             metrics = None
         else:
-            data = call_rollout_fn(self.generate_rollout, self.args, rollout_id, self.data_source, evaluation=False)
+            data = call_rollout_fn(
+                self.generate_rollout,
+                self.args,
+                rollout_id,
+                self.data_source,
+                evaluation=False,
+                placement_group=self.pg,
+            )
             metrics = data.metrics
             data = data.samples
             # flatten the data if it is a list of lists
