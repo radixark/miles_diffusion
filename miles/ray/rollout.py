@@ -2,6 +2,7 @@ import itertools
 import logging
 import multiprocessing
 import random
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -208,7 +209,7 @@ class RolloutManager:
         metrics = _log_eval_rollout_data(rollout_id, self.args, data, result.metrics)
         max_images = self.args.wandb_log_num_images
         if max_images > 0:
-            self._log_images(
+            self._log_images_async(
                 {
                     f"eval_media/{name}_images": payload["samples"]
                     for name, payload in data.items()
@@ -400,7 +401,7 @@ class RolloutManager:
         max_images = self.args.wandb_log_num_images
         interval = self.args.wandb_log_image_interval
         if max_images > 0 and self.rollout_id % interval == 0:
-            self._log_images(
+            self._log_images_async(
                 {"rollout_media/sample_images": samples},
                 max_images=max_images,
                 step_key="rollout/step",
@@ -411,6 +412,10 @@ class RolloutManager:
         if self.custom_expand_samples_to_train_pairs_func is not None:
             return self.custom_expand_samples_to_train_pairs_func(self.args, samples, rewards, raw_rewards)
         return flow_grpo_expand_samples_to_train_pairs(self.args, samples, rewards, raw_rewards)
+
+    def _log_images_async(self, *args, **kwargs) -> None:
+        # mp4 encode + wandb upload take ~1min per log round; keep them off the train barrier
+        threading.Thread(target=self._log_images, args=args, kwargs=kwargs, daemon=True).start()
 
     def _log_images(
         self,
@@ -708,6 +713,13 @@ def compute_perf_metrics_from_samples(args, samples, rollout_time):
     log_dict["rollout_time"] = rollout_time
     if max(non_generation_time) > 0:
         log_dict |= dict_add_prefix(compute_statistics(non_generation_time), "non_generation_time/")
+
+    parser_depths = [s.parser_max_queue_depth for s in samples if s.parser_max_queue_depth is not None]
+    if parser_depths:
+        log_dict["parser_max_queue_depth"] = max(parser_depths)
+    reward_depths = [s.reward_max_queue_depth for s in samples if s.reward_max_queue_depth is not None]
+    if reward_depths:
+        log_dict["reward_max_queue_depth"] = max(reward_depths)
 
     return log_dict
 

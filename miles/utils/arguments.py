@@ -253,6 +253,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Samples per prompt sent in one rollout request (sub-batch of the group).",
             )
             parser.add_argument(
+                "--rollout-video-dtype",
+                type=str,
+                choices=["keep", "uint8"],
+                default="keep",
+                help=(
+                    "Dtype of the decoded video in rollout responses. 'keep' returns the "
+                    "engine's raw float tensor; 'uint8' quantises engine-side with the same "
+                    "formula the reward path applies, cutting the response body ~4x. Use "
+                    "'keep' for any consumer that needs the unquantised tensor."
+                ),
+            )
+            parser.add_argument(
                 "--diffusion-fps",
                 type=float,
                 default=None,
@@ -1249,6 +1261,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "engines fed when trajectory tensors are large.",
             )
             parser.add_argument(
+                "--rollout-fetch-in-parser",
+                action="store_true",
+                default=False,
+                help=(
+                    "Parser actors pick a least-loaded engine via the miles router, fetch the "
+                    "rollout response straight from it and parse it in place, so bodies skip "
+                    "both the router's data plane and the manager's event loop. Requires "
+                    "--use-miles-router and at least as many parser workers as concurrency "
+                    "slots, since a fetch occupies its actor for the whole generation."
+                ),
+            )
+            parser.add_argument(
                 "--pickscore-num-gpus-per-worker",
                 type=float,
                 default=1.0,
@@ -1471,6 +1495,17 @@ def miles_validate_args(args):
 
     if args.save_interval is not None:
         assert args.save is not None, "'--save' is required when save_interval is set."
+
+    if args.rollout_fetch_in_parser and not args.use_miles_router:
+        raise ValueError("--rollout-fetch-in-parser requires --use-miles-router for its pick/ack endpoints")
+
+    if args.rollout_fetch_in_parser and args.rollout_num_gpus:
+        slots = args.sglang_server_concurrency * args.rollout_num_gpus // args.rollout_num_gpus_per_engine
+        if args.rollout_parser_num_workers < slots:
+            raise ValueError(
+                f"--rollout-fetch-in-parser needs --rollout-parser-num-workers >= the "
+                f"{slots} concurrency slots, got {args.rollout_parser_num_workers}"
+            )
 
     if (args.micro_batch_size_sample is None) != (args.micro_batch_size_tstep is None):
         raise ValueError("--micro-batch-size-sample and --micro-batch-size-tstep must be set together")

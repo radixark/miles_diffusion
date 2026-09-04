@@ -68,6 +68,7 @@ class AsyncRewardActorPool:
         ]
         self._batch_size = batch_size
         self._round_robin_index = 0
+        self._inflight = [0] * num_workers
         logger.info(
             "Initialized %s actor pool with %d workers, %.3f GPUs/worker, batch_size=%d.",
             name,
@@ -76,17 +77,26 @@ class AsyncRewardActorPool:
             batch_size,
         )
 
-    def _next_actor(self):
-        actor = self._actors[self._round_robin_index % len(self._actors)]
+    def _next_actor_idx(self) -> int:
+        i = self._round_robin_index % len(self._actors)
         self._round_robin_index += 1
-        return actor
+        return i
 
-    async def score(self, images: list, prompts: list[str]) -> list[float]:
-        refs = []
+    async def score(self, images: list, prompts: list[str]) -> tuple[list[float], int]:
+        """Score in batches; also report the deepest dispatch-time backlog this call saw."""
+        refs, idxs, max_queue_depth = [], [], 0
         for start in range(0, len(images), self._batch_size):
             end = start + self._batch_size
-            refs.append(self._next_actor().score_batch.remote(images[start:end], prompts[start:end]))
+            i = self._next_actor_idx()
+            max_queue_depth = max(max_queue_depth, self._inflight[i])
+            self._inflight[i] += 1
+            idxs.append(i)
+            refs.append(self._actors[i].score_batch.remote(images[start:end], prompts[start:end]))
 
         loop = asyncio.get_running_loop()
-        chunked_scores = await loop.run_in_executor(None, ray.get, refs)
-        return [float(score) for chunk in chunked_scores for score in chunk]
+        try:
+            chunked_scores = await loop.run_in_executor(None, ray.get, refs)
+        finally:
+            for i in idxs:
+                self._inflight[i] -= 1
+        return [float(score) for chunk in chunked_scores for score in chunk], max_queue_depth

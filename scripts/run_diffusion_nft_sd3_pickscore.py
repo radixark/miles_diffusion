@@ -113,6 +113,8 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
 
     sglang_args = (
         "--use-miles-router "
+        "--rollout-fetch-in-parser "
+        "--rollout-parser-num-workers 16 "
         "--sglang-server-concurrency 8 "
         "--sglang-dit-precision fp16 "
         "--sglang-vae-slicing "

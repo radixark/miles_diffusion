@@ -60,6 +60,7 @@ def build_rollout_sampling_params(
                 "rollout_noise_level": args.diffusion_noise_level,
                 "rollout_log_prob_no_const": args.diffusion_log_prob_no_const,
                 "rollout_debug_mode": args.diffusion_debug_mode,
+                "rollout_video_dtype": args.rollout_video_dtype,
                 "rollout_return_denoising_env": True,
                 "rollout_return_dit_trajectory": True,
             }
@@ -121,13 +122,14 @@ class GenerateState(metaclass=SingletonMeta):
             for _ in range(args.rollout_parser_num_workers)
         ]
         self._parser_rr = 0
+        self.parser_inflight = [0] * args.rollout_parser_num_workers
 
         self.reset()
 
-    def next_parser(self):
-        parser = self.response_parsers[self._parser_rr % len(self.response_parsers)]
+    def next_parser_idx(self) -> int:
+        i = self._parser_rr % len(self.response_parsers)
         self._parser_rr += 1
-        return parser
+        return i
 
     @contextmanager
     def dp_rank_context(self):
@@ -179,9 +181,10 @@ async def generate_microgroup(
             int(sampling_params["num_inference_steps"]),
             int(sampling_params["seed"]),
         )
-        # Keep return_step_indices None: sgl-d only filters trajectory latents by it, not
-        # log_probs, and the trainer needs the full trajectory for (x_i, x_{i+1}) pairs.
-        assert return_indices is None, "rollout_return_step_indices must be None for now"
+        # The trainer consumes (x_i, x_{i+1}, log_prob_i) per SDE step, so the
+        # engine only needs the window latents plus their boundary: S U (S+1).
+        if return_indices is None and sde_indices is not None:
+            return_indices = sorted({int(i) for i in sde_indices} | {int(i) + 1 for i in sde_indices})
         sampling_params["rollout_sde_step_indices"] = sde_indices
         sampling_params["rollout_return_step_indices"] = return_indices
     else:
@@ -192,11 +195,34 @@ async def generate_microgroup(
     )
 
     st = hooks.StageTimer()
-    with st.stage("generate"):
-        raw = await post(url, payload, raw=True)
-    with st.stage("deserialize"):
-        ref = state.next_parser().apply_raw.remote(microgroup, raw)
-        microgroup = await asyncio.to_thread(ray.get, ref)
+    if args.rollout_fetch_in_parser:
+        with st.stage("generate"):
+            router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
+            i = state.next_parser_idx()
+            queued = state.parser_inflight[i]
+            state.parser_inflight[i] += 1
+            parser, pending = state.response_parsers[i], microgroup
+            try:
+                microgroup = await asyncio.to_thread(
+                    lambda: ray.get(parser.fetch_and_apply.remote(pending, router_url, payload))
+                )
+            finally:
+                state.parser_inflight[i] -= 1
+    else:
+        with st.stage("generate"):
+            raw = await post(url, payload, raw=True)
+        with st.stage("deserialize"):
+            i = state.next_parser_idx()
+            queued = state.parser_inflight[i]
+            state.parser_inflight[i] += 1
+            # .remote() copies the ~1GB body into plasma in the calling thread; keep it off the event loop
+            parser, pending = state.response_parsers[i], microgroup
+            try:
+                microgroup = await asyncio.to_thread(lambda: ray.get(parser.apply_raw.remote(pending, raw)))
+            finally:
+                state.parser_inflight[i] -= 1
+    for sample in microgroup:
+        sample.parser_max_queue_depth = float(queued)
     st.attach(microgroup)
 
     # Stash the SDE/training step indices on each sample so _train_core can

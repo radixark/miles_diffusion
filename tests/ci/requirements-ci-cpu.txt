@@ -1,0 +1,52 @@
+# SGLang runtime imports reached by the hosted CPU suite (same pattern as
+# radixark/miles tests/ci/requirements-ci-cpu.txt). GPU runners get these from
+# the miles-diffusion image; sglang itself is installed --no-deps because its
+# full dependency set includes GPU-only packages that cannot install on
+# ubuntu-latest (cuda-python, flashinfer, flash-attn-4, sgl-kernel, torchao,
+# torchcodec, torch_memory_saver, quack-kernels, nvidia-cutlass-dsl,
+# apache-tvm-ffi, kernels, decord2, av). torch itself comes via accelerate
+# (in requirements.txt).
+#
+# Everything here is pinned so a PyPI release can never move the resolve —
+# xgrammar 0.2.5.post1 (transformers<5) silently downgraded transformers
+# 5.12.1 -> 4.57.6 and broke the sglang import chain in the 2026-09-03
+# nightly. xgrammar mirrors sglang's own pyproject pin.
+aiohttp==3.14.3
+anthropic==1.3.0
+build==1.6.0
+compressed-tensors==0.18.0
+einops==0.8.2
+fastapi==0.128.8
+gguf==0.19.0
+interegular==0.3.3
+ipython==9.17.1
+jsonschema==4.26.0
+llguidance==1.8.0
+mistral-common==1.11.7
+modelscope==1.39.1
+msgspec==0.21.1
+ninja==1.13.2
+nvidia-ml-py==13.595.45
+openai==2.6.1
+openai-harmony==0.0.8
+orjson==3.12.0
+outlines==1.3.3
+partial-json-parser==0.2.1.1.post7
+prometheus-client==0.26.0
+psutil==7.2.2
+py-spy==0.4.2
+pybase64==1.5.0
+pydantic==2.12.5
+python-multipart==0.0.32
+pyzmq==27.2.0
+scipy==1.17.1
+sentencepiece==0.2.2
+setproctitle==1.3.7
+soundfile==0.14.0
+tiktoken==0.14.0
+timm==1.0.29
+torchvision==0.26.0
+uvicorn==0.39.0
+uvloop==0.22.1
+watchfiles==1.2.0
+xgrammar==0.2.1

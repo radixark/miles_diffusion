@@ -54,10 +54,9 @@ class DenoisingEnv:
 class DiTTrajectory:
     latents: torch.Tensor | None = None
     timesteps: torch.Tensor | None = None
-    # Rollout's scheduler.sigmas snapshot [T+1] (post-shift, includes terminal 0).
-    # Required for training — converters raise if missing; recomputing from
-    # `timesteps / num_train_timesteps` drifts 1-2 ULPs (~3e-5 log_prob diff).
     sigmas: torch.Tensor | None = None
+    # [K] original step index of each latent; None means the full 0..T trajectory.
+    latent_step_indices: torch.Tensor | None = None
 
 
 @dataclass
@@ -84,6 +83,9 @@ class Sample:
     dit_trajectory: DiTTrajectory | None = None
 
     inference_time_s: float | None = None
+    # dispatch-time backlog observed when this sample's parse / reward was submitted
+    parser_max_queue_depth: float | None = None
+    reward_max_queue_depth: float | None = None
     peak_memory_mb: float | None = None
 
     # Scalar from single RM (e.g. pickscore) or dict when combining multiple RMs

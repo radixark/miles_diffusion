@@ -130,6 +130,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
 
     sglang_args = (
         "--use-miles-router "
+        "--rollout-fetch-in-parser "
         "--sglang-server-concurrency 8 "
         "--miles-router-health-check-failure-threshold 30 "
         "--update-weight-buffer-size 4294967296 "
@@ -149,6 +150,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
             "--num-gpus-per-node 4 "
             "--rollout-num-gpus 4 "
             "--rollout-num-gpus-per-engine 2 "
+            "--rollout-parser-num-workers 16 "
             "--dp-replicate-size 1 "
         )
         if args.four_gpu_ci
@@ -158,6 +160,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
             "--num-gpus-per-node 8 "
             "--rollout-num-gpus 16 "
             "--rollout-num-gpus-per-engine 2 "
+            "--rollout-parser-num-workers 64 "
             "--dp-replicate-size 2 "
         )
     ) + (

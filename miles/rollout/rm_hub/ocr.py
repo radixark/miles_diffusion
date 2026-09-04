@@ -1,4 +1,3 @@
-import asyncio
 import logging
 
 import numpy as np
@@ -11,6 +10,8 @@ from PIL import Image
 from miles.utils.misc import SingletonMeta
 from miles.utils.processing_utils import cfhw_to_fhwc, image_or_video_to_uint8
 from miles.utils.types import Sample
+
+from .core import AsyncRewardActorPool
 
 logger = logging.getLogger(__name__)
 
@@ -84,32 +85,24 @@ class OcrRewardActor:
     def __init__(self, use_gpu: bool = False):
         self.scorer = OcrScorer(use_gpu=use_gpu)
 
-    def score_single(self, image: np.ndarray, prompt: str) -> float:
-        return self.scorer([image], [prompt])[0]
+    def score_batch(self, images: list, prompts: list[str]) -> list[float]:
+        assert len(images) == 1, f"OCR scores one image per call, got {len(images)}"
+        return self.scorer(images, prompts)
 
 
-class AsyncOcrPool(metaclass=SingletonMeta):
-    """Ray-backed round-robin pool of :class:`OcrRewardActor` (same lifetime pattern as ``GenerateState``)."""
+class AsyncOcrPool(AsyncRewardActorPool, metaclass=SingletonMeta):
+    """Ray actor pool for CPU PaddleOCR reward inference."""
 
     def __init__(self, args) -> None:
-        if not ray.is_initialized():
-            raise RuntimeError("Ray is not initialized. OCR RM requires Ray for OcrRewardActor.")
-        num_workers = args.ocr_num_workers
-        if num_workers <= 0:
-            raise ValueError(f"ocr_num_workers must be > 0, got {num_workers}")
-        self._actors = [OcrRewardActor.options(num_cpus=1).remote(use_gpu=False) for _ in range(num_workers)]
-        self._round_robin_index = 0
-        logger.info("Initialized OCR reward actor pool with %d workers.", num_workers)
-
-    def _next_actor(self):
-        i = self._round_robin_index % len(self._actors)
-        self._round_robin_index += 1
-        return self._actors[i]
-
-    async def score(self, image: np.ndarray, prompt: str) -> float:
-        ref = self._next_actor().score_single.remote(image, prompt)
-        loop = asyncio.get_running_loop()
-        return float(await loop.run_in_executor(None, ray.get, ref))
+        super().__init__(
+            actor_cls=OcrRewardActor,
+            actor_kwargs={"use_gpu": False},
+            num_workers=args.ocr_num_workers,
+            batch_size=1,
+            num_gpus_per_worker=0,
+            colocate=False,
+            name="OCR",
+        )
 
 
 def _rgb_hwc_from_generated(sample: Sample) -> np.ndarray:
@@ -141,5 +134,6 @@ def _rgb_hwc_from_generated(sample: Sample) -> np.ndarray:
 async def ocr_rm(args, sample: Sample):
     pool = AsyncOcrPool(args)
     image = _rgb_hwc_from_generated(sample)
-    score = await pool.score(image, sample.prompt)
-    return score
+    scores, max_queue_depth = await pool.score([image], [sample.prompt])
+    sample.reward_max_queue_depth = float(max_queue_depth)
+    return scores[0]

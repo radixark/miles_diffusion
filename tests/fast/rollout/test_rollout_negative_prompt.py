@@ -30,6 +30,7 @@ def _args(**overrides):
         diffusion_noise_level=0.7,
         diffusion_log_prob_no_const=False,
         diffusion_debug_mode=False,
+        rollout_video_dtype="keep",
         train_pipeline_config_path=None,
     )
     values.update(overrides)

@@ -24,7 +24,6 @@ def _expand_samples_to_train_pairs(
     raw_rewards: list[float],
 ) -> tuple[list[dict[str, Any]], dict[str, torch.Tensor]]:
     """Flat train pairs in sample-major order (all pairs for sample 0, then sample 1, ...)."""
-    device = torch.device("cpu")
     train_data: list[dict[str, Any]] = []
     scheduler_meta = scheduler_meta_from_samples(samples)
 
@@ -40,7 +39,6 @@ def _expand_samples_to_train_pairs(
             sample,
             traj=traj,
             rollout_log_probs=rollout_log_probs,
-            device=device,
         )
         pair_debug_steps = None
         if sample.rollout_debug_tensors is not None:
@@ -98,24 +96,42 @@ def _build_per_timestep_features(
     *,
     traj,
     rollout_log_probs: torch.Tensor,
-    device: torch.device,
 ) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
-    """Fields with one row per selected denoising step."""
-    all_latents = traj.latents.to(device, dtype=torch.float32)
-    latents = all_latents[:-1]
-    next_latents = all_latents[1:]
-    timesteps = traj.timesteps.to(device, dtype=torch.float32)
-    # The terminal next timestep is zero.
-    next_timesteps = torch.cat([timesteps[1:], timesteps.new_zeros(1)])
+    """Fields with one row per selected denoising step.
 
+    ``traj.latents`` is either the full 0..T trajectory or the filtered window
+    the rollout requested; ``latent_step_indices`` maps original step numbers
+    to array positions, so pairing never assumes the array is contiguous.
+    Timesteps are the full [T+1] schedule (terminal included) and log_probs
+    the full [T]; both are indexed by original step number.
+    """
     sde_idx = (sample.train_metadata or {}).get("sde_step_indices")
     assert sde_idx is not None, "SDE step indices are required for training"
+    # Keep producer dtype: the train actor casts on consumption (loss_hub _stack_pair_field).
+    all_latents = traj.latents
+    timesteps = traj.timesteps
+
+    if traj.latent_step_indices is None:
+        position = {step: step for step in range(int(all_latents.shape[0]))}
+    else:
+        position = {int(step): pos for pos, step in enumerate(traj.latent_step_indices.tolist())}
+    needed = sorted({int(s) for s in sde_idx} | {int(s) + 1 for s in sde_idx})
+    missing = [step for step in needed if step not in position]
+    if missing:
+        provenance = "echoed" if traj.latent_step_indices is not None else "absent (engine must echo it)"
+        raise ValueError(
+            f"trajectory lacks latents for steps {missing} (have {sorted(position)}); "
+            f"latent_step_indices {provenance}"
+        )
+
     idx = torch.as_tensor(sde_idx, dtype=torch.long)
+    latent_pos = torch.as_tensor([position[int(s)] for s in sde_idx], dtype=torch.long)
+    next_pos = torch.as_tensor([position[int(s) + 1] for s in sde_idx], dtype=torch.long)
     return {
-        "latent": latents[idx],
-        "next_latent": next_latents[idx],
+        "latent": all_latents[latent_pos],
+        "next_latent": all_latents[next_pos],
         "timestep": timesteps[idx],
-        "next_timestep": next_timesteps[idx],
+        "next_timestep": timesteps[idx + 1],
         "log_prob_old": rollout_log_probs[idx],
     }, idx
 
