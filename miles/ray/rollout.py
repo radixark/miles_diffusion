@@ -10,6 +10,7 @@ from typing import Any
 import numpy as np
 import ray
 import torch
+import wandb
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 
@@ -144,6 +145,9 @@ class RolloutManager:
             self._metric_checker.dispose()
         if self._health_monitor is not None:
             self._health_monitor.stop()
+        if self.args.use_wandb:
+            # Flush buffered logs: a final-step eval logs moments before teardown.
+            wandb.finish()
 
     # TODO maybe rename "rollout_engines" and "all_rollout_engines" later
     @property
@@ -172,6 +176,7 @@ class RolloutManager:
 
         with timer("rollout"):
             data, metrics = self._get_rollout_data(rollout_id=rollout_id)
+        self.data_source.snapshot(rollout_id)
         with timer("save_debug_dump"):
             self._save_debug_rollout_data(data, rollout_id=rollout_id, evaluation=False)
         _log_rollout_data(rollout_id, self.args, data, metrics, time.time() - start_time)
@@ -516,7 +521,7 @@ def init_rollout_engines(args, pg, all_rollout_engines):
             "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION": "false",
             "SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE": "false",
         }
-        if args.lora_ipc_weight_sync:
+        if args.use_lora and (args.lora_ipc_weight_sync or not args.colocate):
             # Merge in the train forward dtype, not fp32, to cut train/rollout consistency error.
             env_vars["SGLANG_DIFFUSION_LORA_MERGE_FP32"] = "1" if args.diffusion_forward_dtype == "fp32" else "0"
 

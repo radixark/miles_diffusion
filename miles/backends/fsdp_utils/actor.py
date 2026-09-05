@@ -32,6 +32,7 @@ from . import checkpoint
 from .diffusion_update_weight_utils import (
     DiffusionUpdateWeightFromTensor,
     DiffusionUpdateWeightFromTensorLoRA,
+    DiffusionUpdateWeightFromTensorLoRACPU,
     DiffusionUpdateWeightFromTensorLoRAIPC,
 )
 from .ema import EmaShadow
@@ -220,6 +221,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 uprate=self.args.ema_decay_ramp,
                 uphold=self.args.ema_decay_max,
                 flat_steps=self.args.ema_decay_flat_steps,
+                keep_lagged=self.args.ema_ref_lagged,
             )
 
         # sglang-d now supports /update_weights_from_tensor (PR #20464).
@@ -227,6 +229,8 @@ class FSDPTrainRayActor(TrainRayActor):
             self.weight_updater = None
         elif self.args.use_lora and self.args.lora_ipc_weight_sync:
             self.weight_updater = DiffusionUpdateWeightFromTensorLoRAIPC(self.args, self.models)
+        elif self.args.use_lora and not self.args.colocate:
+            self.weight_updater = DiffusionUpdateWeightFromTensorLoRACPU(self.args, self.models)
         elif self.args.use_lora:
             self.weight_updater = DiffusionUpdateWeightFromTensorLoRA(self.args, self.models)
         else:
@@ -555,7 +559,7 @@ class FSDPTrainRayActor(TrainRayActor):
         ref_mode = self.args.ref_mode
         if ref_mode != "none":
             if ref_mode == "ema":
-                ref_ctx = self.ema_shadow.swap_in()
+                ref_ctx = self.ema_shadow.swap_in(lagged=self.args.ema_ref_lagged)
             else:
                 ref_ctx = prepared.model.disable_adapter()
             with torch.no_grad(), ref_ctx:

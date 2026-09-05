@@ -1,6 +1,8 @@
 import abc
+import base64
 import logging
 import os
+import pickle
 import re
 from argparse import Namespace
 from collections.abc import Mapping, Sequence
@@ -524,7 +526,7 @@ class DiffusionUpdateWeightFromTensorLoRAIPC(DiffusionUpdateWeightFromTensor):
                 num_layers = len(layer_groups)
                 sample_layers = [PeftLoRAKeyMapper.layer_prefix(group[0][0]) for group in layer_groups[:3]]
                 logger.info(
-                    "LoRA IPC weight sync v%s [%s]: pushed %d lora tensors, "
+                    "LoRA weight sync v%s [%s]: pushed %d lora tensors, "
                     "%d layer prefixes in %d buckets (unmapped=%d)",
                     self.weight_version,
                     target_module,
@@ -535,18 +537,69 @@ class DiffusionUpdateWeightFromTensorLoRAIPC(DiffusionUpdateWeightFromTensor):
                 )
                 if sample_layers:
                     logger.info(
-                        "LoRA IPC [%s] sample layer prefixes: %s",
+                        "LoRA weight sync [%s] sample layer prefixes: %s",
                         target_module,
                         sample_layers,
                     )
                 if unmapped_keys:
                     logger.warning(
-                        "LoRA IPC unmapped PEFT keys [%s] (first 5): %s",
+                        "LoRA weight sync unmapped PEFT keys [%s] (first 5): %s",
                         target_module,
                         unmapped_keys[:5],
                     )
                 if num_lora_keys == 0:
                     logger.error(
-                        "LoRA IPC [%s]: no lora tensors found in training state_dict",
+                        "LoRA weight sync [%s]: no lora tensors found in training state_dict",
                         target_module,
                     )
+
+
+class DiffusionUpdateWeightFromTensorLoRACPU(DiffusionUpdateWeightFromTensorLoRAIPC):
+    """LoRA sync for disaggregated rollout: rank 0 posts CPU-staged adapters to every engine."""
+
+    def connect_rollout_engines(
+        self,
+        rollout_engines: Sequence[ActorHandle],
+        rollout_engine_lock: ActorHandle | None,
+    ) -> None:
+        self.rollout_engines = rollout_engines
+
+    def update_bucket_weights(
+        self,
+        named_tensors,
+        target_module: str,
+        weight_version=None,
+        weight_update_mode: str | None = None,
+    ) -> None:
+        if dist.get_rank() != 0:
+            return
+
+        named_tensors_by_dtype: dict[torch.dtype, list[tuple[str, torch.Tensor]]] = {}
+        for name, tensor in named_tensors:
+            named_tensors_by_dtype.setdefault(tensor.dtype, []).append((name, tensor.cpu()))
+
+        for group in named_tensors_by_dtype.values():
+            bucket = FlattenedTensorBucket(named_tensors=group)
+            payload = {
+                target_module: {
+                    "flattened_tensor": bucket.get_flattened_tensor(),
+                    "metadata": bucket.get_metadata(),
+                }
+            }
+            # Plain pickle embeds the CPU tensor bytes; ForkingPickler would ship
+            # shared-memory handles that unrelated engine processes cannot open.
+            serialized = base64.b64encode(pickle.dumps(payload)).decode()
+            kwargs = {
+                # A single unlabeled payload: every engine worker deserializes the same
+                # full adapter set (no shared-GPU visibility required).
+                "serialized_named_tensors": [serialized],
+                "payload_gpu_uuids": None,
+                "load_format": "flattened_bucket",
+                "target_modules": [target_module],
+                "weight_version": str(weight_version),
+            }
+            if weight_update_mode is not None:
+                kwargs["weight_update_mode"] = weight_update_mode
+                kwargs["lora_alpha"] = self.args.lora_alpha
+                kwargs["lora_rank"] = self.args.lora_rank
+            ray.get([engine.update_weights_from_tensor.remote(**kwargs) for engine in self.rollout_engines])

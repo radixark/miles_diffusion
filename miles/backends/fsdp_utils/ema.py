@@ -25,6 +25,7 @@ class EmaShadow:
         uprate: float = 0.001,
         uphold: float = 0.5,
         flat_steps: int = 0,
+        keep_lagged: bool = False,
     ) -> None:
         self.decay = float(decay)
         self.uprate = float(uprate)
@@ -37,6 +38,7 @@ class EmaShadow:
         if not self.params:
             raise ValueError("EmaShadow: model has no trainable parameters")
         self.shadow = [_local(p.detach()).clone() for p in self.params]
+        self.lagged = [sh.clone() for sh in self.shadow] if keep_lagged else None
 
     def decay_at(self, t: int) -> float:
         if t <= self.flat_steps:
@@ -50,24 +52,28 @@ class EmaShadow:
             raise RuntimeError("EmaShadow.update called while swapped in")
         self.step += 1
         delta = self.decay_at(self.step)
+        if self.lagged is not None:
+            for lg, sh in zip(self.lagged, self.shadow, strict=True):
+                lg.copy_(sh)
         for live, sh in zip(self.params, self.shadow, strict=True):
             sh.mul_(delta).add_(_local(live.detach()).to(sh.device), alpha=1.0 - delta)
         return delta
 
     @contextmanager
-    def swap_in(self):
-        """Temporarily expose EMA weights as the live parameters."""
-        self._swap()
+    def swap_in(self, lagged: bool = False):
+        """Temporarily expose EMA weights (or the pre-update EMA snapshot) as the live parameters."""
+        buffers = self.lagged if lagged else self.shadow
+        self._swap(buffers)
         self._swapped = True
         try:
             yield
         finally:
-            self._swap()
+            self._swap(buffers)
             self._swapped = False
 
     @torch.no_grad()
-    def _swap(self) -> None:
-        for live, sh in zip(self.params, self.shadow, strict=True):
+    def _swap(self, buffers: list[torch.Tensor]) -> None:
+        for live, sh in zip(self.params, buffers, strict=True):
             live_local = _local(live.data)
             tmp = live_local.clone()
             live_local.copy_(sh)

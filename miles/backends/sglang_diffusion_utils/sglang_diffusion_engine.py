@@ -234,7 +234,7 @@ class SGLangDiffusionEngine(RayActor):
     def update_weights_from_tensor(
         self,
         serialized_named_tensors: list[str],
-        payload_gpu_uuids: list[str],
+        payload_gpu_uuids: list[str] | None,
         load_format: str | None = None,
         target_modules: list[str] | None = None,
         weight_version: str | None = None,
@@ -339,7 +339,7 @@ def _compute_server_args(args, host, port, nccl_port):
         if hasattr(args, f"sglang_{attr.name}") and attr.name not in kwargs:
             kwargs[attr.name] = getattr(args, f"sglang_{attr.name}")
 
-    if getattr(args, "use_lora", False) and getattr(args, "lora_ipc_weight_sync", False):
+    if args.use_lora and (args.lora_ipc_weight_sync or not args.colocate):
         kwargs["lora_target_modules"] = args.lora_target_modules
     # dit_precision / vae_precision are PipelineConfig fields, not ServerArgs, so forward them explicitly (only when changed from the class default, to avoid clobbering a subclass override).
     from sglang.multimodal_gen.configs.pipeline_configs.base import PipelineConfig
