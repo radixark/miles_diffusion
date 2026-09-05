@@ -10,6 +10,7 @@ from typing import Any
 import numpy as np
 import ray
 import torch
+import wandb
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 
@@ -144,6 +145,9 @@ class RolloutManager:
             self._metric_checker.dispose()
         if self._health_monitor is not None:
             self._health_monitor.stop()
+        if self.args.use_wandb:
+            # Flush buffered logs: a final-step eval logs moments before teardown.
+            wandb.finish()
 
     # TODO maybe rename "rollout_engines" and "all_rollout_engines" later
     @property
