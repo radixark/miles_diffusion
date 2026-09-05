@@ -265,10 +265,11 @@ See [Dtype Control](../advanced/dtype-control.md).
 
 | Flag | Type | Default | Notes |
 |---|---|---|---|
-| `--rm-type` | enum | – | `pickscore` / `hps` / `ocr`. Overridable per sample via `metadata.rm_type`. |
+| `--rm-type` | enum | – | `pickscore` / `hps` / `ocr`. Overridable per sample via `metadata.rm_type`. Ignored when `--custom-rm-path` is set. |
 | `--reward-key` | str | – | When the reward is a dict. |
 | `--group-rm` | flag | off | Score a whole prompt group at once. |
-| `--custom-rm-path` | str | – | `async def rm(args, samples) -> list[float]`. Batched only. |
+| `--custom-rm-path` | str | – | `async def rm(args, samples) -> list[float]`. Batched only; replaces the `--rm-type` dispatch entirely. Shipped: `miles.rollout.rm_hub.weighted_mixture_rm.weighted_mixture_rm` (weighted sum of built-in rewards). |
+| `--custom-rm-args` | str | – | Opaque config string for the custom RM, read as `args.custom_rm_args`; e.g. `"hps=0.7,pickscore=0.3"` for `rm_hub.weighted_mixture_rm`. |
 | `--custom-reward-post-process-path` | str | – | Replace advantage normalisation. |
 | `--pickscore-model-path` | str | – | Required for `--rm-type pickscore`. |
 | `--pickscore-processor-path` | str | – | Required for `--rm-type pickscore`. |

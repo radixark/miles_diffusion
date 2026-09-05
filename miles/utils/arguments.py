@@ -1221,7 +1221,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--rm-type",
                 type=str,
                 default=None,
-                help="Type of the reward model",
+                help="Built-in reward model (pickscore / hps / ocr). Ignored when --custom-rm-path is set.",
             )
             parser.add_argument(
                 "--reward-key",
@@ -1368,7 +1368,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "Signature: `async def custom_rm(args, samples: list[Sample], **kwargs) -> list[float]`. "
                     "Wired in batched_async_rm only — per-sample async_rm dispatch was deliberately "
                     "removed to avoid the (args, sample) vs (args, list) signature ambiguity. "
-                    "If you want per-sample routing, do it inside your batched function."
+                    "If you want per-sample routing, do it inside your batched function. "
+                    "Shipped: miles.rollout.rm_hub.weighted_mixture_rm.weighted_mixture_rm, a weighted sum of "
+                    'built-in rewards configured by --custom-rm-args "hps=0.7,pickscore=0.3" --reward-key weighted.'
+                ),
+            )
+            parser.add_argument(
+                "--custom-rm-args",
+                type=str,
+                default=None,
+                help=(
+                    "Opaque config string handed to the --custom-rm-path function as `args.custom_rm_args`; "
+                    'e.g. "hps=0.7,pickscore=0.3" for miles.rollout.rm_hub.weighted_mixture_rm.'
                 ),
             )
             parser.add_argument(
@@ -1785,6 +1796,8 @@ def miles_validate_args(args):
             f"colocated reward workers ({sum(colocated_reward_workers.values())}) exceed rollout_num_gpus "
             f"({args.rollout_num_gpus}): the placement group has one reward slot per GPU."
         )
+    if args.custom_rm_args is not None and args.custom_rm_path is None:
+        raise ValueError("--custom-rm-args requires --custom-rm-path.")
 
     if args.eval_function_path is None:
         args.eval_function_path = args.rollout_function_path

@@ -13,7 +13,7 @@ For `--custom-rm-path`, `--custom-reward-post-process-path`, and other
 
 | Stage | Flag | Role |
 |---|---|---|
-| Reward type | `--rm-type` | Selects built-in scorer (`pickscore`, `hps`, `ocr`) |
+| Reward type | `--rm-type` | Selects built-in scorer (`pickscore`, `hps`, `ocr`); ignored when `--custom-rm-path` is set |
 | Per-sample override | `metadata.rm_type` in JSONL | Overrides global `--rm-type` |
 | Custom reward / norm | see [Customization](customization.md) | `--custom-rm-path`, `--custom-reward-post-process-path` |
 
@@ -116,6 +116,23 @@ Every GPU reward pool is placed one of two ways:
 
 `RolloutManager` seats the colocated pools before the first rollout; standalone pools are
 built on first use.
+
+### Combining rewards
+
+`--custom-rm-path` receives `(args, samples)` and can call the built-in scorers
+directly; `--custom-rm-args` is an opaque string the framework hands to that function
+through `args`, so the function owns its own config grammar. The shipped example
+`miles/rollout/rm_hub/weighted_mixture_rm.py` reads `name=weight,name=weight`:
+
+```bash
+--custom-rm-path miles.rollout.rm_hub.weighted_mixture_rm.weighted_mixture_rm \
+--custom-rm-args "hps=0.7,pickscore=0.3" \
+--hps-reward-colocate --pickscore-reward-colocate   # each reward keeps its own placement flags
+```
+
+Weights apply to raw scores (HPSv2.1 ≈ 0.25–0.35, PickScore/26 ≈ 0.8–0.9), so pick them
+with the scales in mind. Colocated pools share one slot ledger, so several rewards can
+colocate without overlapping.
 
 ### OCR (`--rm-type ocr`)
 
