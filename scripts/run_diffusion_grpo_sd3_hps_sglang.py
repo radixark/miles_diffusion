@@ -77,7 +77,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
     lora_args = "--use-lora --lora-ipc-weight-sync --lora-rank 32 --lora-alpha 64 --lora-init-weights gaussian "
 
     reward_args = (
-        "--rm-type hps " "--hps-num-workers 1 " "--hps-batch-size 8 " "--hps-version v2.1 " "--colocate-reward "
+        "--rm-type hps " "--hps-num-workers 1 " "--hps-batch-size 8 " "--hps-version v2.1 " "--hps-reward-colocate "
     )
 
     wandb_args = U.get_default_wandb_args(

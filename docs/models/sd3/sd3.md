@@ -173,8 +173,8 @@ MILES_SCRIPT_SMOKE=1 python3 scripts/run_diffusion_nft_sd3_pickscore.py
 
 **GRPO + OCR (default script):** 2 GPUs colocated (`--colocate`); OCR on CPU Ray actors.
 
-**GRPO + HPS:** 2 GPUs colocated (`--colocate --colocate-reward`); one HPS
-actor requests a 0.05 GPU slot on the rollout placement group.
+**GRPO + HPS:** 2 GPUs colocated (`--colocate --hps-reward-colocate`); one HPS
+actor shares the rollout GPUs.
 
 **NFT + PickScore:**
 
@@ -184,9 +184,9 @@ actor requests a 0.05 GPU slot on the rollout placement group.
 | PickScore reward | 1 | `--pickscore-num-workers 1`, `--pickscore-num-gpus-per-worker 1.0` |
 | **Total** | **3** | `--num-gpus-per-node 3` |
 
-PickScore runs as a Ray actor pool on a dedicated GPU. With `--colocate-reward`
-(not used in the default script), reward workers share rollout GPUs at 0.05 GPU
-per worker — useful only when GPU count is tight.
+PickScore runs as a Ray actor pool on a dedicated GPU. With `--pickscore-reward-colocate`
+(not used in the default script), reward workers share the rollout GPUs
+instead — useful only when GPU count is tight.
 
 ### Algorithm flags
 
@@ -209,7 +209,7 @@ the OCR recipe, with these reward-specific settings:
 |---|---|
 | Reward | `--rm-type hps --hps-version v2.1` |
 | Reward worker | One actor, batch size 8 |
-| Placement | `--colocate-reward` |
+| Placement | `--hps-reward-colocate` |
 | Prompt subset | `hpdv2` |
 
 **DiffusionNFT + PickScore:**

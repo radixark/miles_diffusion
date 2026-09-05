@@ -28,6 +28,20 @@ async def async_rm(args, sample: Sample, **kwargs):
         raise NotImplementedError(f"Rule-based RM for {rm_type!r} is not implemented.")
 
 
+def create_colocated_reward_pools(args, placement_group, slots) -> list:
+    """Seat every colocated pool; the rm functions' singleton lookup then finds them."""
+    pools = []
+    if args.pickscore_reward_colocate:
+        from .pickscore import AsyncPickScorePool
+
+        pools.append(AsyncPickScorePool(args, placement_group=placement_group, slots=slots))
+    if args.hps_reward_colocate:
+        from .hps import AsyncHPSPool
+
+        pools.append(AsyncHPSPool(args, placement_group=placement_group, slots=slots))
+    return pools
+
+
 async def batched_async_rm(
     args,
     samples: list[Sample],

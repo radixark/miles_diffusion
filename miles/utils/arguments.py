@@ -1280,11 +1280,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "Use a fractional value below 1.0 for lightweight single-GPU reward models.",
             )
             parser.add_argument(
-                "--colocate-reward",
+                "--pickscore-reward-colocate",
                 action="store_true",
                 default=False,
-                help="Colocate reward actors onto rollout GPUs (train 0.7 + rollout 0.25 + reward 0.05). "
-                "Requires --colocate.",
+                help="Seat PickScore actors on the rollout GPUs, one per placement-group bundle. Requires --colocate.",
             )
             parser.add_argument(
                 "--pickscore-batch-size",
@@ -1321,6 +1320,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=float,
                 default=1.0,
                 help="GPU resources per HPS actor when reward is not colocated.",
+            )
+            parser.add_argument(
+                "--hps-reward-colocate",
+                action="store_true",
+                default=False,
+                help="Seat HPS actors on the rollout GPUs, one per placement-group bundle. Requires --colocate.",
             )
             parser.add_argument(
                 "--hps-batch-size",
@@ -1763,16 +1768,23 @@ def miles_validate_args(args):
     if args.hps_num_gpus_per_worker < 0:
         raise ValueError(f"--hps-num-gpus-per-worker must be non-negative, got {args.hps_num_gpus_per_worker}")
 
-    if args.colocate_reward:
-        assert args.colocate, "--colocate-reward requires --colocate."
-        for rm_name, num_workers in (
-            ("pickscore", args.pickscore_num_workers),
-            ("hps", args.hps_num_workers),
-        ):
-            assert num_workers <= args.rollout_num_gpus, (
-                f"--colocate-reward requires {rm_name}_num_workers ({num_workers}) "
-                f"<= rollout_num_gpus ({args.rollout_num_gpus}): the placement group has one bundle per GPU."
-            )
+    colocated_reward_workers = {
+        name: num_workers
+        for name, colocate, num_workers in (
+            ("pickscore", args.pickscore_reward_colocate, args.pickscore_num_workers),
+            ("hps", args.hps_reward_colocate, args.hps_num_workers),
+        )
+        if colocate
+    }
+    if colocated_reward_workers and not args.colocate:
+        raise ValueError(
+            f"{', '.join(f'--{name}-reward-colocate' for name in colocated_reward_workers)} requires --colocate."
+        )
+    if sum(colocated_reward_workers.values()) > args.rollout_num_gpus:
+        raise ValueError(
+            f"colocated reward workers ({sum(colocated_reward_workers.values())}) exceed rollout_num_gpus "
+            f"({args.rollout_num_gpus}): the placement group has one reward slot per GPU."
+        )
 
     if args.eval_function_path is None:
         args.eval_function_path = args.rollout_function_path

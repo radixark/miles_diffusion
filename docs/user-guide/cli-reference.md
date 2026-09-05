@@ -270,15 +270,16 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--group-rm` | flag | off | Score a whole prompt group at once. |
 | `--custom-rm-path` | str | – | `async def rm(args, samples) -> list[float]`. Batched only. |
 | `--custom-reward-post-process-path` | str | – | Replace advantage normalisation. |
-| `--colocate-reward` | flag | off | Reward actors onto rollout GPUs (train 0.7 + rollout 0.25 + reward 0.05). Requires `--colocate`. |
 | `--pickscore-model-path` | str | – | Required for `--rm-type pickscore`. |
 | `--pickscore-processor-path` | str | – | Required for `--rm-type pickscore`. |
 | `--pickscore-num-workers` | int | `1` | |
-| `--pickscore-num-gpus-per-worker` | float | `1.0` | Fractional values allowed. |
+| `--pickscore-num-gpus-per-worker` | float | `1.0` | Standalone workers only; fractional values allowed. |
+| `--pickscore-reward-colocate` | flag | off | One worker per rollout GPU, sharing it with the train actor and rollout engine. Requires `--colocate`. |
 | `--pickscore-batch-size` | int | `8` | |
 | `--pickscore-num-frames` | int | – | Frames scored per video; unset = all. |
 | `--hps-num-workers` | int | `1` | |
-| `--hps-num-gpus-per-worker` | float | `1.0` | Fractional values allowed. |
+| `--hps-num-gpus-per-worker` | float | `1.0` | Standalone workers only; fractional values allowed. |
+| `--hps-reward-colocate` | flag | off | One worker per rollout GPU, sharing it with the train actor and rollout engine. Requires `--colocate`. |
 | `--hps-batch-size` | int | `8` | |
 | `--hps-version` | enum | `v2.1` | `v2.0` / `v2.1`. |
 | `--hps-checkpoint-path` | str | – | Local checkpoint; unset downloads from Hugging Face. |

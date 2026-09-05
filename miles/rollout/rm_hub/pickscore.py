@@ -95,7 +95,7 @@ class PickScoreRewardActor:
 class AsyncPickScorePool(AsyncRewardActorPool, metaclass=SingletonMeta):
     """Ray actor pool for GPU PickScore reward inference."""
 
-    def __init__(self, args) -> None:
+    def __init__(self, args, placement_group=None, slots=None) -> None:
         super().__init__(
             actor_cls=PickScoreRewardActor,
             actor_kwargs={
@@ -105,8 +105,10 @@ class AsyncPickScorePool(AsyncRewardActorPool, metaclass=SingletonMeta):
             num_workers=args.pickscore_num_workers,
             batch_size=args.pickscore_batch_size,
             num_gpus_per_worker=args.pickscore_num_gpus_per_worker,
-            colocate=args.colocate_reward,
-            name="PickScore",
+            colocate=args.pickscore_reward_colocate,
+            name="pickscore",
+            placement_group=placement_group,
+            slots=slots,
         )
 
 

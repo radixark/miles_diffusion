@@ -49,7 +49,7 @@ batching. For video outputs, frames are uniformly sampled
 | `--pickscore-processor-path` | — | Required for pickscore |
 | `--pickscore-model-path` | — | Required for pickscore |
 | `--pickscore-num-frames` | None | Video frame sampling count |
-| `--colocate-reward` | False | Share rollout GPUs (0.05 GPU/worker) |
+| `--pickscore-reward-colocate` | False | One worker per rollout GPU (requires `--colocate`) |
 
 Example from `scripts/run_diffusion_nft_sd3_pickscore.py`:
 
@@ -91,7 +91,7 @@ Use a custom RM when defining video frame aggregation semantics.
 | `--hps-batch-size` | 8 | Batch size per actor |
 | `--hps-version` | `v2.1` | `v2.0` or `v2.1` checkpoint |
 | `--hps-checkpoint-path` | None | Local checkpoint; unset downloads from `xswu/HPSv2` |
-| `--colocate-reward` | False | Share rollout GPUs (0.05 GPU/worker) |
+| `--hps-reward-colocate` | False | One worker per rollout GPU (requires `--colocate`) |
 
 Example from `scripts/run_diffusion_grpo_sd3_hps_sglang.py`:
 
@@ -100,8 +100,22 @@ Example from `scripts/run_diffusion_grpo_sd3_hps_sglang.py`:
 --hps-num-workers 1 \
 --hps-batch-size 8 \
 --hps-version v2.1 \
---colocate-reward
+--hps-reward-colocate
 ```
+
+### Reward placement
+
+Every GPU reward pool is placed one of two ways:
+
+- `--<rm>-reward-colocate`: every worker takes one **slot** on a rollout placement-group bundle,
+  sharing that GPU with the train actor and the rollout engine. Colocated pools share one slot ledger, so `hps` and `pickscore` can both colocate without
+  overlapping; more workers than bundles is rejected at parse time. Requires `--colocate`.
+- Otherwise the pool is **standalone**: default-scheduled at `--<rm>-num-gpus-per-worker`,
+  which only lands on GPUs outside every placement group (placement groups reserve their
+  GPUs, so Ray never packs these onto rollout GPUs).
+
+`RolloutManager` seats the colocated pools before the first rollout; standalone pools are
+built on first use.
 
 ### OCR (`--rm-type ocr`)
 

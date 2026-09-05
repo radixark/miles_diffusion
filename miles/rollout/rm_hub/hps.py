@@ -123,7 +123,7 @@ class HPSRewardActor:
 class AsyncHPSPool(AsyncRewardActorPool, metaclass=SingletonMeta):
     """Ray actor pool for HPS reward inference."""
 
-    def __init__(self, args) -> None:
+    def __init__(self, args, placement_group=None, slots=None) -> None:
         super().__init__(
             actor_cls=HPSRewardActor,
             actor_kwargs={
@@ -133,8 +133,10 @@ class AsyncHPSPool(AsyncRewardActorPool, metaclass=SingletonMeta):
             num_workers=args.hps_num_workers,
             batch_size=args.hps_batch_size,
             num_gpus_per_worker=args.hps_num_gpus_per_worker,
-            colocate=args.colocate_reward,
-            name="HPS",
+            colocate=args.hps_reward_colocate,
+            name="hps",
+            placement_group=placement_group,
+            slots=slots,
         )
 
 
