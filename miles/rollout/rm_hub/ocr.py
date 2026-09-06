@@ -10,7 +10,7 @@ from miles.utils.misc import SingletonMeta
 from miles.utils.processing_utils import generated_output_to_rgb_hwc_uint8_frames
 from miles.utils.types import Sample
 
-from .core import AsyncRewardActorPool
+from .core import AsyncRewardActorPool, record_reward_queue_depth
 
 logger = logging.getLogger(__name__)
 
@@ -101,12 +101,12 @@ class AsyncOcrPool(AsyncRewardActorPool, metaclass=SingletonMeta):
             batch_size=1,
             num_gpus_per_worker=0,
             colocate=False,
-            name="OCR",
+            name="ocr",
         )
 
 
 async def ocr_rm(args, sample: Sample):
     pool = AsyncOcrPool(args)
     scores, max_queue_depth = await pool.score([sample.generated_output], [sample.prompt])
-    sample.reward_max_queue_depth = float(max_queue_depth)
+    record_reward_queue_depth([sample], "ocr", max_queue_depth)
     return scores[0]

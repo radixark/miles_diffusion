@@ -732,9 +732,9 @@ def compute_perf_metrics_from_samples(args, samples, rollout_time):
     parser_depths = [s.parser_max_queue_depth for s in samples if s.parser_max_queue_depth is not None]
     if parser_depths:
         log_dict["parser_max_queue_depth"] = max(parser_depths)
-    reward_depths = [s.reward_max_queue_depth for s in samples if s.reward_max_queue_depth is not None]
-    if reward_depths:
-        log_dict["reward_max_queue_depth"] = max(reward_depths)
+    reward_depths = [s.reward_max_queue_depth for s in samples if s.reward_max_queue_depth]
+    for name in sorted({name for depths in reward_depths for name in depths}):
+        log_dict[f"reward_max_queue_depth_{name}"] = max(depths[name] for depths in reward_depths if name in depths)
 
     return log_dict
 

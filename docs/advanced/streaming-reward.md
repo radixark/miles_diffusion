@@ -76,7 +76,7 @@ seen over the rollout:
 | Metric | Meaning |
 |---|---|
 | `perf/parser_max_queue_depth` | Deepest backlog on a parser actor when a response was handed to it |
-| `perf/reward_max_queue_depth` | Deepest backlog on a reward actor when a batch was handed to it |
+| `perf/reward_max_queue_depth_<pool>` | Deepest backlog on that reward pool's actors when a batch was handed to them, one metric per pool (`hps`, `pickscore`, `ocr`) |
 
 `0` means every dispatch found its worker idle — that stage never made anything wait. A number that climbs with the
 number of concurrent microgroups means the stage is saturated and requests are lining up behind it.
@@ -86,9 +86,9 @@ Read them together with `perf/rollout_time`:
 | Symptom | Look at | Likely fix |
 |---|---|---|
 | `perf/rollout_time` high | `perf/parser_max_queue_depth` > 0 | Deserialization is the bottleneck; raise `--rollout-parser-num-workers` |
-| `perf/rollout_time` high | `perf/reward_max_queue_depth` > 0 | Scoring is the bottleneck; add reward workers, or give them a dedicated GPU |
+| `perf/rollout_time` high | `perf/reward_max_queue_depth_<pool>` > 0 | That pool's scoring is the bottleneck; add its workers, or give it a dedicated GPU |
 | `perf/rollout_time` high, both depths `0` | Neither pool is holding anything up | The engines themselves are the limit — check `--rollout-microgroup-size` and `--sglang-server-concurrency` |
 
 Both metrics are emitted only when the corresponding pool ran, so a reward with no actor pool leaves
-`perf/reward_max_queue_depth` absent rather than zero.
+its `perf/reward_max_queue_depth_<pool>` absent rather than zero.
 

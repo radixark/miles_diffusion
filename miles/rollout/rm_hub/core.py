@@ -71,6 +71,14 @@ class ColocatedRewardSlots:
         return ", ".join(f"bundle {bundle}: {self._owners.get(bundle)}" for bundle in sorted(self._order))
 
 
+def record_reward_queue_depth(samples, name: str, max_queue_depth: int) -> None:
+    """Store the backlog per pool so the perf log shows which reward lags when several score one batch."""
+    for sample in samples:
+        depths = sample.reward_max_queue_depth or {}
+        depths[name] = float(max_queue_depth)
+        sample.reward_max_queue_depth = depths
+
+
 class AsyncRewardActorPool:
     """Round-robin pool for Ray reward actors exposing ``score_batch(outputs, prompts)``.
 

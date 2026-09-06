@@ -10,7 +10,7 @@ from miles.utils.misc import SingletonMeta
 from miles.utils.processing_utils import generated_output_to_rgb_hwc_uint8_frames, sample_frame_indices
 from miles.utils.types import Sample
 
-from .core import AsyncRewardActorPool
+from .core import AsyncRewardActorPool, record_reward_queue_depth
 
 
 def _feature_tensor(features):
@@ -136,6 +136,5 @@ async def pickscore_rm(args, samples: Sequence[Sample]) -> list[float]:
         for s in samples
     ]
     scores, max_queue_depth = await pool.score(outputs, [s.prompt for s in samples])
-    for sample in samples:
-        sample.reward_max_queue_depth = float(max_queue_depth)
+    record_reward_queue_depth(samples, "pickscore", max_queue_depth)
     return scores

@@ -68,7 +68,7 @@ def test_pickscore_actor_truncates_and_averages_frames_per_sample():
 async def test_rm_functions_hand_the_raw_tensor_to_their_pool(monkeypatch):
     """Decoding belongs to the actor, and each pool records its own backlog instead of overwriting a shared one."""
     pool = AsyncMock()
-    pool.score.return_value = ([1.0], 2)
+    pool.score.side_effect = [([1.0], 2), ([1.0], 1)]
     monkeypatch.setattr(hps_module, "AsyncHPSPool", lambda args: pool)
     monkeypatch.setattr(pickscore_module, "AsyncPickScorePool", lambda args: pool)
     sample = Sample(prompt="prompt", generated_output=_ROW)
@@ -79,7 +79,7 @@ async def test_rm_functions_hand_the_raw_tensor_to_their_pool(monkeypatch):
     calls = pool.score.await_args_list
     assert [call.args[1] for call in calls] == [["prompt"]] * 2
     assert all(torch.equal(call.args[0][0], _ROW) for call in calls)
-    assert sample.reward_max_queue_depth == 2.0
+    assert sample.reward_max_queue_depth == {"hps": 2.0, "pickscore": 1.0}
 
 
 @pytest.mark.asyncio

@@ -12,7 +12,7 @@ from miles.utils.misc import SingletonMeta
 from miles.utils.processing_utils import generated_output_to_rgb_hwc_uint8_frames
 from miles.utils.types import Sample
 
-from .core import AsyncRewardActorPool
+from .core import AsyncRewardActorPool, record_reward_queue_depth
 
 _HPS_VERSION_TO_FILENAME = {
     "v2.0": "HPS_v2_compressed.pt",
@@ -146,6 +146,5 @@ class AsyncHPSPool(AsyncRewardActorPool, metaclass=SingletonMeta):
 async def hps_rm(args, samples: Sequence[Sample]) -> list[float]:
     pool = AsyncHPSPool(args)
     scores, max_queue_depth = await pool.score([s.generated_output for s in samples], [s.prompt for s in samples])
-    for sample in samples:
-        sample.reward_max_queue_depth = float(max_queue_depth)
+    record_reward_queue_depth(samples, "hps", max_queue_depth)
     return scores
