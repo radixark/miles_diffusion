@@ -1787,14 +1787,20 @@ def miles_validate_args(args):
         )
         if colocate
     }
-    if colocated_reward_workers and not args.colocate:
+    if colocated_reward_workers:
+        if not args.colocate:
+            raise ValueError(
+                f"{', '.join(f'--{name}-reward-colocate' for name in colocated_reward_workers)} requires --colocate."
+            )
+        if sum(colocated_reward_workers.values()) > args.rollout_num_gpus:
+            raise ValueError(
+                f"colocated reward workers ({sum(colocated_reward_workers.values())}) exceed rollout_num_gpus "
+                f"({args.rollout_num_gpus}): the placement group has one reward slot per GPU."
+            )
+    if args.pickscore_reward_colocate and not (args.pickscore_model_path and args.pickscore_processor_path):
         raise ValueError(
-            f"{', '.join(f'--{name}-reward-colocate' for name in colocated_reward_workers)} requires --colocate."
-        )
-    if sum(colocated_reward_workers.values()) > args.rollout_num_gpus:
-        raise ValueError(
-            f"colocated reward workers ({sum(colocated_reward_workers.values())}) exceed rollout_num_gpus "
-            f"({args.rollout_num_gpus}): the placement group has one reward slot per GPU."
+            "--pickscore-reward-colocate builds the PickScore actors at startup; set --pickscore-model-path "
+            "and --pickscore-processor-path."
         )
     if args.custom_rm_args is not None and args.custom_rm_path is None:
         raise ValueError("--custom-rm-args requires --custom-rm-path.")
