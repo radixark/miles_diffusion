@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-import numpy as np
 import ray
 import torch
 from PIL import Image
@@ -10,7 +9,7 @@ from torchvision.transforms import InterpolationMode
 from torchvision.transforms import functional as vision_functional
 
 from miles.utils.misc import SingletonMeta
-from miles.utils.processing_utils import sample_to_rgb_hwc_uint8_frames
+from miles.utils.processing_utils import generated_output_to_rgb_hwc_uint8_frames
 from miles.utils.types import Sample
 
 from .core import AsyncRewardActorPool
@@ -104,7 +103,6 @@ class HPSScorer(torch.nn.Module):
         return [float(score) for score in scores.detach().float().cpu()]
 
 
-@ray.remote
 class HPSRewardActor:
     def __init__(self, *, hps_version: str, checkpoint_path: str | None = None) -> None:
         use_cuda = bool(ray.get_gpu_ids()) and torch.cuda.is_available()
@@ -116,8 +114,13 @@ class HPSRewardActor:
             checkpoint_path=checkpoint_path,
         )
 
-    def score_batch(self, images: list[np.ndarray], prompts: list[str]) -> list[float]:
-        return self.scorer(prompts, [Image.fromarray(image) for image in images])
+    def score_batch(self, outputs: list[torch.Tensor], prompts: list[str]) -> list[float]:
+        # HPSv2 rounds when quantising to uint8; matching it keeps scores comparable with the reference
+        images = []
+        for output in outputs:
+            (image,) = generated_output_to_rgb_hwc_uint8_frames(output, None, round_normalized=True)
+            images.append(Image.fromarray(image))
+        return self.scorer(prompts, images)
 
 
 class AsyncHPSPool(AsyncRewardActorPool, metaclass=SingletonMeta):
@@ -142,12 +145,7 @@ class AsyncHPSPool(AsyncRewardActorPool, metaclass=SingletonMeta):
 
 async def hps_rm(args, samples: Sequence[Sample]) -> list[float]:
     pool = AsyncHPSPool(args)
-    images = []
-    for sample in samples:
-        (image,) = sample_to_rgb_hwc_uint8_frames(sample, None, round_normalized=True)
-        images.append(image)
-    prompts = [sample.prompt for sample in samples]
-    scores, max_queue_depth = await pool.score(images, prompts)
+    scores, max_queue_depth = await pool.score([s.generated_output for s in samples], [s.prompt for s in samples])
     for sample in samples:
         sample.reward_max_queue_depth = float(max_queue_depth)
     return scores

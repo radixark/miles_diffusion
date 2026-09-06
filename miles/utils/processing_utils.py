@@ -5,8 +5,6 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from miles.utils.types import Sample
-
 
 def cfhw_to_fhwc(tensor: torch.Tensor) -> torch.Tensor:
     """Convert a per-sample tensor from ``[C, F, H, W]`` to ``[F, H, W, C]``."""
@@ -43,16 +41,12 @@ def sample_frame_indices(num_total_frames: int, num_frames: int | None) -> list[
     return [int(round(i * step)) for i in range(num_frames)]
 
 
-def sample_to_rgb_hwc_uint8_frames(
-    sample: Sample,
+def generated_output_to_rgb_hwc_uint8_frames(
+    cfhw: torch.Tensor,
     num_frames: int | None,
     *,
     round_normalized: bool = False,
 ) -> list[np.ndarray]:
-    cfhw = sample.generated_output
-    if cfhw is None:
-        raise ValueError("generated_output is None")
-
     indices = sample_frame_indices(cfhw.shape[1], num_frames)
     selected = image_or_video_to_uint8(cfhw[:, indices].detach().cpu(), round_normalized=round_normalized)
     fhwc = cfhw_to_fhwc(selected)

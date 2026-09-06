@@ -130,9 +130,10 @@ through `args`, so the function owns its own config grammar. The shipped example
 --hps-reward-colocate --pickscore-reward-colocate   # each reward keeps its own placement flags
 ```
 
-Weights apply to raw scores (HPSv2.1 ≈ 0.25–0.35, PickScore/26 ≈ 0.8–0.9), so pick them
-with the scales in mind. Colocated pools share one slot ledger, so several rewards can
-colocate without overlapping.
+Weights apply to raw scores (HPSv2.1 ≈ 0.25–0.35, PickScore/26 ≈ 0.8–0.9, OCR ∈ [0, 1]), so
+pick them with the scales in mind. Colocated pools share one slot ledger, so several rewards
+can colocate without overlapping. Rewards receive `generated_output` itself, and every reward actor
+quantises it to uint8 on its own terms.
 
 ### OCR (`--rm-type ocr`)
 

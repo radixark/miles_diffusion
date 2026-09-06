@@ -139,7 +139,7 @@ Shipped custom RMs:
 
 HTTP / remote scoring: implement a batched custom RM and read `args.rm_url` (or
 your own flags). Encode images from `sample.generated_output` (see
-`sample_to_rgb_hwc_uint8_frames` in `miles/utils/processing_utils.py`):
+`generated_output_to_rgb_hwc_uint8_frames` in `miles/utils/processing_utils.py`):
 
 ```python
 import aiohttp

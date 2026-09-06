@@ -72,8 +72,9 @@ class ColocatedRewardSlots:
 
 
 class AsyncRewardActorPool:
-    """Round-robin pool for Ray reward actors exposing ``score_batch``.
+    """Round-robin pool for Ray reward actors exposing ``score_batch(outputs, prompts)``.
 
+    Actors receive the float ``generated_output`` tensors and quantise to uint8 themselves.
     Colocated pools take one slot per rollout bundle from the manager's
     ``slots``; standalone pools are default-scheduled at ``num_gpus_per_worker``, which
     only lands on GPUs outside every placement group.
@@ -105,11 +106,13 @@ class AsyncRewardActorPool:
             strategies = ["DEFAULT"] * num_workers
 
         self._actors = [
-            actor_cls.options(
+            ray.remote(actor_cls)
+            .options(
                 num_cpus=num_gpus_per_worker,
                 num_gpus=num_gpus_per_worker,
                 scheduling_strategy=strategy,
-            ).remote(**actor_kwargs)
+            )
+            .remote(**actor_kwargs)
             for strategy in strategies
         ]
         self._batch_size = batch_size
@@ -128,16 +131,16 @@ class AsyncRewardActorPool:
         self._round_robin_index += 1
         return i
 
-    async def score(self, images: list, prompts: list[str]) -> tuple[list[float], int]:
-        """Score in batches; also report the deepest dispatch-time backlog this call saw."""
+    async def score(self, outputs: list, prompts: list[str]) -> tuple[list[float], int]:
+        """Score samples in batches; also report the deepest dispatch-time backlog this call saw."""
         refs, idxs, max_queue_depth = [], [], 0
-        for start in range(0, len(images), self._batch_size):
+        for start in range(0, len(outputs), self._batch_size):
             end = start + self._batch_size
             i = self._next_actor_idx()
             max_queue_depth = max(max_queue_depth, self._inflight[i])
             self._inflight[i] += 1
             idxs.append(i)
-            refs.append(self._actors[i].score_batch.remote(images[start:end], prompts[start:end]))
+            refs.append(self._actors[i].score_batch.remote(outputs[start:end], prompts[start:end]))
 
         loop = asyncio.get_running_loop()
         try:

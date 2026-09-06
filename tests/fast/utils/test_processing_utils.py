@@ -9,10 +9,9 @@ import torch
 from miles.utils.processing_utils import (
     cfhw_to_fhwc,
     fhwc_to_cfhw,
+    generated_output_to_rgb_hwc_uint8_frames,
     image_or_video_to_uint8,
-    sample_to_rgb_hwc_uint8_frames,
 )
-from miles.utils.types import Sample
 
 
 def test_cfhw_fhwc_round_trip():
@@ -49,7 +48,7 @@ def test_image_or_video_to_uint8_does_not_round_pixel_values():
     torch.testing.assert_close(actual, torch.tensor([0, 127, 255], dtype=torch.uint8))
 
 
-def test_sample_to_rgb_hwc_uint8_frames_selects_before_conversion():
+def test_generated_output_to_rgb_hwc_uint8_frames_selects_before_conversion():
     frames = torch.tensor(
         [
             [[0.0, 0.0, 0.0]],
@@ -57,9 +56,8 @@ def test_sample_to_rgb_hwc_uint8_frames_selects_before_conversion():
             [[1.0, 1.0, 1.0]],
         ]
     )
-    sample = Sample(generated_output=frames.unsqueeze(0).repeat(3, 1, 1, 1))
 
-    actual = sample_to_rgb_hwc_uint8_frames(sample, 1)
+    actual = generated_output_to_rgb_hwc_uint8_frames(frames.unsqueeze(0).repeat(3, 1, 1, 1), 1)
 
     expected = np.array([[[0, 0, 0], [127, 127, 127], [255, 255, 255]]], dtype=np.uint8)
     assert len(actual) == 1

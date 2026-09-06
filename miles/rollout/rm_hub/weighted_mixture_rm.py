@@ -5,9 +5,10 @@
 
 Each named reward scores the whole batch once and keeps its own placement flags
 (``--<rm>-reward-colocate``, ``--<rm>-num-gpus-per-worker``). Weights apply to raw scores,
-whose scales differ: HPSv2.1 ~0.3, PickScore/26 ~0.85.
+whose scales differ: HPSv2.1 ~0.3, PickScore/26 ~0.85, OCR in [0, 1].
 """
 
+import asyncio
 from collections.abc import Sequence
 
 from miles.utils.types import Sample
@@ -15,7 +16,14 @@ from miles.utils.types import Sample
 from .hps import hps_rm
 from .pickscore import pickscore_rm
 
-_REWARDS = {"hps": hps_rm, "pickscore": pickscore_rm}
+
+async def _ocr_rm(args, samples: Sequence[Sample]) -> list[float]:
+    from .ocr import ocr_rm  # paddleocr is only installed where OCR actually runs
+
+    return list(await asyncio.gather(*(ocr_rm(args, sample) for sample in samples)))
+
+
+_REWARDS = {"hps": hps_rm, "pickscore": pickscore_rm, "ocr": _ocr_rm}
 
 
 def parse_weights(custom_rm_args: str) -> list[tuple[str, float]]:
@@ -32,8 +40,10 @@ def parse_weights(custom_rm_args: str) -> list[tuple[str, float]]:
 
 
 async def weighted_mixture_rm(args, samples: Sequence[Sample], **kwargs) -> list[float]:
+    weights = parse_weights(args.custom_rm_args)
+    per_reward = await asyncio.gather(*(_REWARDS[name](args, samples) for name, _ in weights))
     totals = [0.0] * len(samples)
-    for name, weight in parse_weights(args.custom_rm_args):
-        for i, score in enumerate(await _REWARDS[name](args, samples)):
+    for (_, weight), scores in zip(weights, per_reward, strict=True):
+        for i, score in enumerate(scores):
             totals[i] += weight * score
     return totals

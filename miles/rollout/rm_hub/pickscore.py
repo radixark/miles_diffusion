@@ -2,13 +2,12 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-import numpy as np
 import ray
 import torch
 from PIL import Image
 
 from miles.utils.misc import SingletonMeta
-from miles.utils.processing_utils import sample_to_rgb_hwc_uint8_frames
+from miles.utils.processing_utils import generated_output_to_rgb_hwc_uint8_frames, sample_frame_indices
 from miles.utils.types import Sample
 
 from .core import AsyncRewardActorPool
@@ -68,14 +67,15 @@ class PickScoreScorer(torch.nn.Module):
         return [float(score) for score in scores.detach().cpu()]
 
 
-@ray.remote
 class PickScoreRewardActor:
     def __init__(
         self,
         *,
         processor_path: str,
         model_path: str,
+        frames_per_forward: int,
     ) -> None:
+        self.frames_per_forward = frames_per_forward
         gpu_ids = ray.get_gpu_ids()
         use_cuda = bool(gpu_ids) and torch.cuda.is_available()
         if use_cuda:
@@ -87,9 +87,24 @@ class PickScoreRewardActor:
             model_path=model_path,
         )
 
-    def score_batch(self, images: list, prompts: list[str]) -> list[float]:
-        pil_images = [Image.fromarray(image) if isinstance(image, np.ndarray) else image for image in images]
-        return self.scorer(prompts, pil_images)
+    def score_batch(self, outputs: list[torch.Tensor], prompts: list[str]) -> list[float]:
+        # a video sample is scored on every frame it arrives with and gets their mean
+        images, frame_counts = [], []
+        for output in outputs:
+            frames = generated_output_to_rgb_hwc_uint8_frames(output, None)
+            images.extend(Image.fromarray(frame) for frame in frames)
+            frame_counts.append(len(frames))
+        flat_prompts = [p for p, n in zip(prompts, frame_counts, strict=True) for _ in range(n)]
+        # forwards see --pickscore-batch-size frames, the chunking the e2e standards were recorded with
+        flat_scores = []
+        for start in range(0, len(images), self.frames_per_forward):
+            end = start + self.frames_per_forward
+            flat_scores.extend(self.scorer(flat_prompts[start:end], images[start:end]))
+        scores, offset = [], 0
+        for count in frame_counts:
+            scores.append(float(sum(flat_scores[offset : offset + count]) / count))
+            offset += count
+        return scores
 
 
 class AsyncPickScorePool(AsyncRewardActorPool, metaclass=SingletonMeta):
@@ -101,6 +116,7 @@ class AsyncPickScorePool(AsyncRewardActorPool, metaclass=SingletonMeta):
             actor_kwargs={
                 "processor_path": args.pickscore_processor_path,
                 "model_path": args.pickscore_model_path,
+                "frames_per_forward": args.pickscore_batch_size,
             },
             num_workers=args.pickscore_num_workers,
             batch_size=args.pickscore_batch_size,
@@ -114,21 +130,12 @@ class AsyncPickScorePool(AsyncRewardActorPool, metaclass=SingletonMeta):
 
 async def pickscore_rm(args, samples: Sequence[Sample]) -> list[float]:
     pool = AsyncPickScorePool(args)
-    images: list[np.ndarray] = []
-    prompts: list[str] = []
-    frame_counts: list[int] = []
-    for sample in samples:
-        frames = sample_to_rgb_hwc_uint8_frames(sample, args.pickscore_num_frames)
-        images.extend(frames)
-        prompts.extend([sample.prompt] * len(frames))
-        frame_counts.append(len(frames))
-
-    flat_scores, max_queue_depth = await pool.score(images, prompts)
+    # pick --pickscore-num-frames here so only the scored frames cross the object store
+    outputs = [
+        s.generated_output[:, sample_frame_indices(s.generated_output.shape[1], args.pickscore_num_frames)]
+        for s in samples
+    ]
+    scores, max_queue_depth = await pool.score(outputs, [s.prompt for s in samples])
     for sample in samples:
         sample.reward_max_queue_depth = float(max_queue_depth)
-    scores: list[float] = []
-    offset = 0
-    for count in frame_counts:
-        scores.append(float(sum(flat_scores[offset : offset + count]) / count))
-        offset += count
     return scores

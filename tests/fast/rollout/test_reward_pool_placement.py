@@ -16,6 +16,7 @@ register_cpu_ci(est_time=5, suite="stage-a-cpu", labels=[])
 
 import pytest
 
+import miles.rollout.rm_hub.core as core_module
 from miles.ray.utils import COLOCATED_REWARD_GPU
 from miles.rollout.rm_hub.core import AsyncRewardActorPool, ColocatedRewardSlots
 
@@ -32,6 +33,11 @@ class _FakeActorCls:
 
     def remote(self, **kwargs):
         return object()
+
+
+@pytest.fixture(autouse=True)
+def _no_ray(monkeypatch):
+    monkeypatch.setattr(core_module.ray, "remote", lambda actor_cls: actor_cls)
 
 
 def _pool(actor_cls, *, num_workers, colocate, placement_group=None, slots=None):

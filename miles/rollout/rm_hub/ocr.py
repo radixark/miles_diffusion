@@ -1,14 +1,13 @@
 import logging
 
 import numpy as np
-import ray
 import torch
 from Levenshtein import distance
 from paddleocr import PaddleOCR
 from PIL import Image
 
 from miles.utils.misc import SingletonMeta
-from miles.utils.processing_utils import cfhw_to_fhwc, image_or_video_to_uint8
+from miles.utils.processing_utils import generated_output_to_rgb_hwc_uint8_frames
 from miles.utils.types import Sample
 
 from .core import AsyncRewardActorPool
@@ -80,14 +79,15 @@ class OcrScorer:
         return rewards
 
 
-@ray.remote
 class OcrRewardActor:
     def __init__(self, use_gpu: bool = False):
         self.scorer = OcrScorer(use_gpu=use_gpu)
 
-    def score_batch(self, images: list, prompts: list[str]) -> list[float]:
-        assert len(images) == 1, f"OCR scores one image per call, got {len(images)}"
-        return self.scorer(images, prompts)
+    def score_batch(self, outputs: list[torch.Tensor], prompts: list[str]) -> list[float]:
+        assert len(outputs) == 1, f"OCR scores one image per call, got {len(outputs)}"
+        # flow_grpo feeds PaddleOCR rounded RGB (not BGR) uint8; matching it keeps the reward bit-identical
+        (image,) = generated_output_to_rgb_hwc_uint8_frames(outputs[0], None, round_normalized=True)
+        return self.scorer([image], prompts)
 
 
 class AsyncOcrPool(AsyncRewardActorPool, metaclass=SingletonMeta):
@@ -105,35 +105,8 @@ class AsyncOcrPool(AsyncRewardActorPool, metaclass=SingletonMeta):
         )
 
 
-def _rgb_hwc_from_generated(sample: Sample) -> np.ndarray:
-    """``generated_output``: ``[C, F, H, W]`` or ``[C, H, W]``; use frame index 0.
-
-    Accepts both the local-rollout format ``[C, F, H, W]`` (video frames) and
-    the sglang-diffusion SD3 format ``[C, H, W]`` (static image, no frame dim).
-
-    Feeds PaddleOCR the exact same ``(RGB, uint8 HWC)`` array that flow_grpo's
-    ``ocr_score`` wrapper does — `(images * 255).round().clamp(0,255).to(uint8)`
-    then ``transpose(0, 2, 3, 1)``, no channel swap. PaddleOCR's OpenCV stack
-    would prefer BGR, but flow_grpo trains against the (slightly-off) RGB
-    convention, so we match that to keep the reward signal bit-identical.
-    """
-    t = sample.generated_output
-    if t is None:
-        raise ValueError("generated_output is None")
-    t = t.detach().cpu().float()
-    if t.ndim == 3:
-        t = t.unsqueeze(1)
-    if t.ndim != 4:
-        raise ValueError(f"generated_output must be 3D [C, H, W] or 4D [C, F, H, W], got {tuple(t.shape)}")
-    fhwc = cfhw_to_fhwc(t)
-    if fhwc.shape[0] != 1:
-        raise ValueError(f"generated_output frame dim F must be 1 for image models, got F={fhwc.shape[0]}")
-    return image_or_video_to_uint8(fhwc[0], round_normalized=True).numpy()
-
-
 async def ocr_rm(args, sample: Sample):
     pool = AsyncOcrPool(args)
-    image = _rgb_hwc_from_generated(sample)
-    scores, max_queue_depth = await pool.score([image], [sample.prompt])
+    scores, max_queue_depth = await pool.score([sample.generated_output], [sample.prompt])
     sample.reward_max_queue_depth = float(max_queue_depth)
     return scores[0]
