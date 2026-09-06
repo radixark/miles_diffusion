@@ -68,9 +68,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
 
     eval_args = "--diffusion-eval-num-steps 40 "
 
-    grpo_args = (
-        "--advantage-estimator grpo --globalize-reward-std --diffusion-clip-range 1e-4 --diffusion-kl-beta 0.04 "
-    )
+    grpo_args = "--advantage-estimator grpo --diffusion-clip-range 1e-4 --diffusion-kl-beta 0.01 "
 
     optimizer_args = "--lr 3e-4 --adam-beta2 0.999 --weight-decay 1e-4 "
 

@@ -126,7 +126,8 @@ E2E test: `tests/e2e/short/test_sd3_ocr_grpo_2xGPU.py`.
 
 Canonical script: `scripts/run_diffusion_grpo_sd3_hps_sglang.py`
 
-**Status:** [○ NV — Not verified](../../user-guide/recipe-verification.md#nv)
+**Status:** [📈 V — Verified](../../user-guide/recipe-verification.md#v) — 600 steps on
+2×H200, `rollout/reward/raw_mean` 0.284 → 0.349 (last-100 mean, peak MA10 0.362).
 
 ```bash
 export HF_TOKEN=...
@@ -134,9 +135,11 @@ python3 scripts/run_diffusion_grpo_sd3_hps_sglang.py \
   --cuda-visible-devices 6,7
 ```
 
-The recipe uses the same SD3 Flow-GRPO configuration as the OCR recipe, swaps
-in the deduplicated `hpdv2` prompts and `--rm-type hps`, and colocates one HPS
-reward actor with the train and rollout workers.
+The recipe uses the SD3 Flow-GRPO SDE, LoRA and precision configuration of the OCR
+recipe, swaps in the deduplicated `hpdv2` prompts and `--rm-type hps`, and colocates one
+HPS reward actor with the train and rollout workers. It keeps Flow-GRPO's own KL weight
+(`--diffusion-kl-beta 0.01`) and group-wise advantage std instead of the OCR recipe's
+`--diffusion-kl-beta 0.04 --globalize-reward-std`.
 
 ### 5.4 DiffusionNFT + PickScore (3 GPU)
 
@@ -163,9 +166,9 @@ MILES_SCRIPT_SMOKE=1 python3 scripts/run_diffusion_nft_sd3_pickscore.py
 | Script | `run_diffusion_grpo_sd3_ocr_sglang.py` | `run_diffusion_grpo_sd3_hps_sglang.py` | `run_diffusion_nft_sd3_pickscore.py` |
 | `--loss-type` | `policy_loss` (default) | `policy_loss` (default) | `nft` |
 | SDE | Full window, noise=0.7, CFG=4.5 | Full window, noise=0.7, CFG=4.5 | ODE, noise=0 |
-| Reference | LoRA base KL | LoRA base KL | EMA (`--use-ema`) |
+| Reference | LoRA base KL (β 0.04) | LoRA base KL (β 0.01) | EMA (`--use-ema`) |
 | Reward placement | CPU OCR | Colocated HPS actor | Dedicated PickScore GPU |
-| Verification | FG | NV | FG |
+| Verification | FG | V | FG |
 
 ## 6. Recipe configuration
 
@@ -202,11 +205,13 @@ instead — useful only when GPU count is tight.
 | Weight sync | `--lora-ipc-weight-sync` (colocate IPC merge) |
 | Determinism | `--deterministic-mode` (CI / e2e parity) |
 
-**Flow-GRPO + HPS:** uses the same algorithm, SDE, LoRA and precision flags as
-the OCR recipe, with these reward-specific settings:
+**Flow-GRPO + HPS:** uses the same SDE, LoRA and precision flags as the OCR recipe,
+with these settings of its own:
 
 | Setting | Value |
 |---|---|
+| Reference | `--diffusion-kl-beta 0.01` |
+| Advantage | Group-wise std (no `--globalize-reward-std`) |
 | Reward | `--rm-type hps --hps-version v2.1` |
 | Reward worker | One actor, batch size 8 |
 | Placement | `--hps-reward-colocate` |
