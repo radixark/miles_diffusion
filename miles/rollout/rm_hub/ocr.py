@@ -1,9 +1,8 @@
 import logging
+from collections.abc import Sequence
 
 import numpy as np
 import torch
-from Levenshtein import distance
-from paddleocr import PaddleOCR
 from PIL import Image
 
 from miles.utils.misc import SingletonMeta
@@ -15,7 +14,10 @@ from .core import AsyncRewardActorPool, record_reward_queue_depth
 logger = logging.getLogger(__name__)
 
 
-def _init_paddleocr(use_gpu: bool) -> PaddleOCR:
+def _init_paddleocr(use_gpu: bool):
+    # actor-only dependency: the manager imports this module just to dispatch
+    from paddleocr import PaddleOCR
+
     return PaddleOCR(
         use_angle_cls=False,
         lang="en",
@@ -40,6 +42,8 @@ class OcrScorer:
         :param prompts: Corresponding target text list
         :return: Reward tensor (CPU)
         """
+        from Levenshtein import distance
+
         prompts = [prompt.split('"')[1] for prompt in prompts]
         rewards = []
         # Ensure input lengths are consistent
@@ -105,8 +109,8 @@ class AsyncOcrPool(AsyncRewardActorPool, metaclass=SingletonMeta):
         )
 
 
-async def ocr_rm(args, sample: Sample):
+async def ocr_rm(args, samples: Sequence[Sample]) -> list[float]:
     pool = AsyncOcrPool(args)
-    scores, max_queue_depth = await pool.score([sample.generated_output], [sample.prompt])
-    record_reward_queue_depth([sample], "ocr", max_queue_depth)
-    return scores[0]
+    scores, max_queue_depth = await pool.score([s.generated_output for s in samples], [s.prompt for s in samples])
+    record_reward_queue_depth(samples, "ocr", max_queue_depth)
+    return scores

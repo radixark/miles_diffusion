@@ -16,16 +16,10 @@ from collections.abc import Sequence
 from miles.utils.types import Sample
 
 from .hps import hps_rm
+from .ocr import ocr_rm
 from .pickscore import pickscore_rm
 
-
-async def _ocr_rm(args, samples: Sequence[Sample]) -> list[float]:
-    from .ocr import ocr_rm  # paddleocr is only installed where OCR actually runs
-
-    return list(await asyncio.gather(*(ocr_rm(args, sample) for sample in samples)))
-
-
-_REWARDS = {"hps": hps_rm, "pickscore": pickscore_rm, "ocr": _ocr_rm}
+_REWARDS = {"hps": hps_rm, "pickscore": pickscore_rm, "ocr": ocr_rm}
 
 
 def parse_weights(custom_rm_args: str) -> list[tuple[str, float]]:

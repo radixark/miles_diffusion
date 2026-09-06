@@ -173,6 +173,7 @@ generate_and_rm_microgroup()
     → custom_rm_path?  user batched function
     → all pickscore?   pickscore_rm (batched)
     → all hps?         hps_rm (batched)
+    → all ocr?         ocr_rm (batched, one image per actor call)
     → else             per-sample async_rm → ocr / pickscore / hps / NotImplementedError
   → sample.reward = score
   → RolloutManager._post_process_rewards()      # GRPO advantage normalization
