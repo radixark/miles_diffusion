@@ -15,31 +15,13 @@ async def async_rm(args, sample: Sample, **kwargs):
     if rm_type == "ocr":
         from .ocr import ocr_rm
 
-        return (await ocr_rm(args, [sample]))[0]
+        return await ocr_rm(args, sample)
     elif rm_type == "pickscore":
         from .pickscore import pickscore_rm
 
         return (await pickscore_rm(args, [sample]))[0]
-    elif rm_type == "hps":
-        from .hps import hps_rm
-
-        return (await hps_rm(args, [sample]))[0]
     else:
         raise NotImplementedError(f"Rule-based RM for {rm_type!r} is not implemented.")
-
-
-def create_colocated_reward_pools(args, placement_group, slots) -> list:
-    """Seat every colocated pool; the rm functions' singleton lookup then finds them."""
-    pools = []
-    if args.pickscore_reward_colocate:
-        from .pickscore import AsyncPickScorePool
-
-        pools.append(AsyncPickScorePool(args, placement_group=placement_group, slots=slots))
-    if args.hps_reward_colocate:
-        from .hps import AsyncHPSPool
-
-        pools.append(AsyncHPSPool(args, placement_group=placement_group, slots=slots))
-    return pools
 
 
 async def batched_async_rm(
@@ -57,14 +39,6 @@ async def batched_async_rm(
             from .pickscore import pickscore_rm
 
             return await pickscore_rm(args, samples)
-        if all(rm_type == "hps" for rm_type in rm_types):
-            from .hps import hps_rm
-
-            return await hps_rm(args, samples)
-        if all(rm_type == "ocr" for rm_type in rm_types):
-            from .ocr import ocr_rm
-
-            return await ocr_rm(args, samples)
 
     tasks = [async_rm(args, sample, **kwargs) for sample in samples]
     rewards = await asyncio.gather(*tasks)

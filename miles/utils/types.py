@@ -87,8 +87,7 @@ class Sample:
     inference_time_s: float | None = None
     # dispatch-time backlog observed when this sample's parse / reward was submitted
     parser_max_queue_depth: float | None = None
-    # per reward pool, keyed by pool name
-    reward_max_queue_depth: dict[str, float] | None = None
+    reward_max_queue_depth: float | None = None
     peak_memory_mb: float | None = None
 
     # Scalar from single RM (e.g. pickscore) or dict when combining multiple RMs
