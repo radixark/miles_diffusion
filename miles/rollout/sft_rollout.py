@@ -195,8 +195,17 @@ class SftEncodePool(metaclass=SingletonMeta):
     def __init__(self, args, placement_group=None) -> None:
         if placement_group is None:
             raise RuntimeError("SftEncodePool is seated by RolloutManager; --loss-type sft_loss was not set.")
-        pg, bundle_indices, _ = placement_group
-        self.actors = [
+        self._args = args
+        self._placement_group = placement_group
+        self._actors: list | None = None
+
+    @property
+    def actors(self) -> list:
+        # a fully cached dataset never encodes, so the encoders (tens of GB each) load on the first miss only
+        if self._actors is not None:
+            return self._actors
+        pg, bundle_indices, _ = self._placement_group
+        self._actors = [
             SftEncodeActor.options(
                 num_cpus=ENCODE_GPU_FRACTION,
                 num_gpus=ENCODE_GPU_FRACTION,
@@ -204,10 +213,11 @@ class SftEncodePool(metaclass=SingletonMeta):
                     placement_group=pg,
                     placement_group_bundle_index=i,
                 ),
-            ).remote(args)
+            ).remote(self._args)
             for i in bundle_indices
         ]
-        logger.info("SFT encode pool: %d workers at %.2f GPU each", len(self.actors), ENCODE_GPU_FRACTION)
+        logger.info("SFT encode pool: %d workers at %.2f GPU each", len(self._actors), ENCODE_GPU_FRACTION)
+        return self._actors
 
 
 def _get_scheduler_grid(args) -> tuple[torch.Tensor, torch.Tensor]:
