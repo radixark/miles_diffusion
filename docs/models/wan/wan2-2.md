@@ -18,7 +18,8 @@ temporal compression).
 - **Two guidance scales.** Rollout denoises low-noise steps with `guidance_scale_2` and there is **no fallback** —
   training asserts `--diffusion-guidance-scale-2` is set explicitly, because a silent mismatch against rollout would
   corrupt the ratio.
-- **USP-ready.** Wan was enabled for Ulysses × Ring sequence parallelism.
+- **USP-ready.** Wan was enabled for Ulysses × Ring sequence parallelism; `--fsdp-attention-backend _flash_3`
+  runs both halves on FlashAttention-3, including under `--deterministic-mode`.
 
 ## 2. Supported variants
 

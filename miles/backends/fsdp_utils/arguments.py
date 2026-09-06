@@ -93,20 +93,26 @@ def parse_fsdp_cli(extra_args_provider=None):
 # governs torch-native ops, so an unlisted custom kernel runs nondeterministic
 # silently under deterministic mode.
 #   native / _native_*  (SDPA)      : torch's flag (needs warn_only=False)
-#   flash* / _flash_3*  (flash-attn): patch deterministic= on (flag can't reach it)
+#   _flash_3            (FA3)       : trainer-owned binding (flash_attention_3.py) takes deterministic=
+#   flash*              (flash-attn): patch deterministic= on diffusers' entry points (flag can't reach it)
 #   sage / xformers / flex / aiter  : opaque to torch, no hook -> reject (validate)
 
-# diffusers dispatches flash through these module globals (FA3 op reads them too).
+FLASH3_BACKEND = "_flash_3"
+
+# diffusers dispatches flash-attn 2 through these module globals.
 _FLASH_ATTN_DISPATCH_FNS = (
     "flash_attn_func",
     "flash_attn_varlen_func",
-    "flash_attn_3_func",
-    "flash_attn_3_varlen_func",
 )
 
 
+def is_flash3_backend(backend) -> bool:
+    """True for the FA3 backend, given as the CLI string or diffusers' AttentionBackendName."""
+    return getattr(backend, "value", backend) == FLASH3_BACKEND
+
+
 def deterministic_capable_flash_fns():
-    """diffusers flash entry points whose signature accepts a `deterministic` arg."""
+    """diffusers flash-attn 2 entry points whose signature accepts a `deterministic` arg."""
     import inspect
 
     import diffusers.models.attention_dispatch as ad
@@ -134,6 +140,15 @@ def validate_attention_args(args):
     backend = args.fsdp_attention_backend
     name = "" if backend is None else backend.lower()
     if backend is None or "native" in name or "math" in name:
+        return
+    if is_flash3_backend(name):
+        from . import flash_attention_3
+
+        if not flash_attention_3.is_available():
+            raise RuntimeError(
+                "deterministic_mode with --fsdp-attention-backend _flash_3, but FlashAttention-3 "
+                "(flash_attn_interface) is not installed."
+            )
         return
     if "flash" in name:
         if not deterministic_capable_flash_fns():

@@ -135,8 +135,8 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--fsdp-cpu-backend` | str | `gloo` | CPU process group for the above. |
 | `--dp-replicate-size` | int | `1` | Hybrid sharding: replica count. `dp_shard` takes the ranks left over from this and SP. |
 | `--sequence-parallel-size` | int | `1` | USP = Ulysses × Ring. |
-| `--ulysses-degree` | int | `0` | `0` = auto (Ulysses fills SP). Ring degree > 1 needs torch ≥ 2.11 and a ring-capable attention backend. |
-| `--fsdp-attention-backend` | str | – | diffusers `set_attention_backend` value. |
+| `--ulysses-degree` | int | `0` | `0` = auto (Ulysses fills SP). Ring degree > 1 needs torch ≥ 2.11 and a ring-capable attention backend: unset, `_native_flash`, `_native_cudnn`, or `_flash_3`. |
+| `--fsdp-attention-backend` | str | – | diffusers `set_attention_backend` value. `_flash_3` runs on the trainer's own FlashAttention-3 binding (differentiable, deterministic-mode aware) rather than diffusers' wrapper. |
 | `--fsdp-flow-shift` | float | – | Training-side sigma grid shift, regenerated when no engine supplies scheduler meta (SFT). Distinct from `--diffusion-flow-shift`. |
 | `--gradient-checkpointing` | flag | off | |
 | `--deterministic-mode` | flag | off | See [Deterministic Training](../advanced/deterministic.md). |

@@ -45,7 +45,8 @@ classified explicitly:
 | `--fsdp-attention-backend`             | How determinism is obtained                                                                     |
 | -------------------------------------- | ----------------------------------------------------------------------------------------------- |
 | unset, `*native*`, `*math*` (SDPA)     | torch's global flag covers it. `math` backends are deterministic by construction.               |
-| `*flash*` (flash-attn, FA3)            | torch's flag cannot reach it — miles patches `deterministic=True` onto the kernel entry points. |
+| `_flash_3` (FlashAttention-3)          | torch's flag cannot reach it — the trainer binds FA3 itself and passes `deterministic=True`.      |
+| `flash*` (flash-attn 2)                | torch's flag cannot reach it — miles patches `deterministic=True` onto the kernel entry points. |
 | `sage`, `xformers`, `flex`, `aiter`, … | No hook exists. **Rejected.**                                                                   |
 
 
@@ -54,13 +55,27 @@ misconfiguration fails in seconds instead of after a multi-node startup.
 
 A flash backend that is installed but exposes no `deterministic` parameter is also rejected, with a message naming which kernels were found.
 
-### How the flash patch works
+### How FA3 is bound
 
-For diffusers-backed families, miles wraps the dispatch functions diffusers routes flash through:
+diffusers wraps FA3 in a torch custom op that registers no autograd formula and hardcodes
+`deterministic=False`, so `--fsdp-attention-backend _flash_3` could neither train nor be made
+deterministic through diffusers. The trainer binds `flash_attn_interface` itself
+(`miles/backends/fsdp_utils/flash_attention_3.py`):
+
+- `set_attention_backend(model, "_flash_3")` re-registers diffusers' `_flash_3` backend on that
+  binding, so every processor (self- and cross-attention) gets a differentiable FA3 whose backward
+  takes `deterministic` from the mode.
+- Under USP, Ulysses-only self-attention reaches the same binding through the dispatcher, and ring
+  attention drives FA3's fused forward/backward through torch's ring templates with the same flag.
+
+FA3's forward is always deterministic; the flag only selects its deterministic dQ accumulation.
+
+### How the flash-attn 2 patch works
+
+For diffusers-backed families, miles wraps the dispatch functions diffusers routes flash-attn 2 through:
 
 ```
 flash_attn_func         flash_attn_varlen_func
-flash_attn_3_func       flash_attn_3_varlen_func
 ```
 
 Each entry point with a `deterministic` parameter is replaced by

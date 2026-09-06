@@ -16,9 +16,10 @@ class _USPDispatchConfig:
     """Marker consumed by the wrapped dispatch_attention_fn; models pass it
     through ``_parallel_config`` for self-attention call sites only."""
 
-    def __init__(self, parallel_state):
+    def __init__(self, parallel_state, deterministic=False):
         self.ulysses_group = parallel_state.ulysses_group
         self.ring_group = parallel_state.ring_group
+        self.deterministic = deterministic
 
 
 def _wrap_dispatch(module):
@@ -59,6 +60,7 @@ def _wrap_dispatch(module):
                 parallel_config.ulysses_group,
                 parallel_config.ring_group,
                 ring_backend=arguments.get("backend"),
+                deterministic=parallel_config.deterministic,
             )
 
         def local_attention_fn(local_query, local_key, local_value):
@@ -91,13 +93,14 @@ def _find_dispatch_module(model):
     return None
 
 
-def install_diffusers_usp_patch(transformer, parallel_state):
+def install_diffusers_usp_patch(transformer, parallel_state, *, deterministic=False):
     """Install the Diffusers runtime patch that routes self-attention through USP.
 
     Intercept the model module's dispatch_attention_fn
     so self-attention call sites (which pass ``_parallel_config`` per upstream
     convention) route through usp_attention; the model's own processors and
-    cross-attention stay untouched."""
+    cross-attention stay untouched. ``deterministic`` reaches the ring kernels
+    that take the flag themselves (FA3)."""
     base = transformer.get_base_model() if hasattr(transformer, "get_base_model") else transformer
     # fully_shard swizzles the class (FSDP<Name>, defined in torch's fsdp
     # module); the modeling module that imported dispatch_attention_fn is
@@ -109,6 +112,6 @@ def install_diffusers_usp_patch(transformer, parallel_state):
             "dispatch_attention_fn; its ModelPackage must override install_sequence_parallel_attention"
         )
     _wrap_dispatch(module)
-    config = _USPDispatchConfig(parallel_state)
+    config = _USPDispatchConfig(parallel_state, deterministic=deterministic)
     for processor in base.attn_processors.values():
         processor._parallel_config = config

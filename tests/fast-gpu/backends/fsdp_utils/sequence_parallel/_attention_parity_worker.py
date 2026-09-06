@@ -1,8 +1,10 @@
-"""Four-rank worker for USP parity against full-sequence SDPA.
+"""Four-rank worker for USP parity against full-sequence attention.
 
 This is launched by ``test_attention_parity.py`` rather than discovered as a
 standalone CI test. Every rank constructs the same full Q/K/V reference, then
 runs USP from its sequence shard and compares its local output and input grads.
+``--attention-backend`` selects the kernel family for the reference, the USP
+local attention and the ring steps alike, mirroring ``--fsdp-attention-backend``.
 """
 
 import argparse
@@ -14,6 +16,7 @@ import torch.nn.functional as F
 from torch.distributed.device_mesh import init_device_mesh
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
+from miles.backends.fsdp_utils import flash_attention_3
 from miles.backends.fsdp_utils.parallel import build_sp_groups
 from miles.backends.fsdp_utils.sequence_parallel.attention import usp_attention
 
@@ -23,7 +26,7 @@ SHAPE = (2, 128, 8, 64)  # [batch, global sequence, heads, head dim]
 DTYPE = torch.bfloat16
 
 # These bounds compare production-dtype Ring attention against the same
-# full-sequence flash-SDPA reference. The observed error is at most one bf16
+# full-sequence reference kernel. The observed error is at most one bf16
 # quantization step for this input band; the bounds leave only a small margin.
 # Pure Ulysses is a lossless permutation around per-head attention, so both its
 # forward and dQ/dK/dV are required to remain bitwise identical.
@@ -32,14 +35,18 @@ TOLERANCES = {
     1: {"forward": (8e-3, 1e-3), "backward": (8e-3, 2.5e-4)},
 }
 
-
 _SDPA_BACKENDS = {None: SDPBackend.FLASH_ATTENTION, "_native_cudnn": SDPBackend.CUDNN_ATTENTION}
-_REFERENCE_BACKEND = None
+KERNEL_TAGS = {None: "", "_native_cudnn": "-cudnn", "_flash_3": "-fa3"}
+_ATTENTION_BACKEND = None
+_DETERMINISTIC = False
 
 
-def _sdpa(query, key, value):
+def _local_attention(query, key, value):
+    """Full-sequence attention on [B, S, H, D] with the selected kernel family."""
     scale = query.shape[-1] ** -0.5
-    with sdpa_kernel(_SDPA_BACKENDS[_REFERENCE_BACKEND]):
+    if _ATTENTION_BACKEND == "_flash_3":
+        return flash_attention_3.flash3_attention(query, key, value, scale=scale, deterministic=_DETERMINISTIC)
+    with sdpa_kernel(_SDPA_BACKENDS[_ATTENTION_BACKEND]):
         output = F.scaled_dot_product_attention(
             query.transpose(1, 2),
             key.transpose(1, 2),
@@ -72,12 +79,12 @@ def _run_reference(query, key, value, grad_output):
     query = query.detach().clone().requires_grad_(True)
     key = key.detach().clone().requires_grad_(True)
     value = value.detach().clone().requires_grad_(True)
-    output = _sdpa(query, key, value)
+    output = _local_attention(query, key, value)
     output.backward(grad_output)
     return output.detach(), (query.grad.detach(), key.grad.detach(), value.grad.detach())
 
 
-def _run_usp(query, key, value, grad_output, ulysses_group, ring_group, ring_backend):
+def _run_usp(query, key, value, grad_output, ulysses_group, ring_group):
     rank = dist.get_rank()
     local_sequence = SHAPE[1] // SP_SIZE
     start = rank * local_sequence
@@ -92,8 +99,9 @@ def _run_usp(query, key, value, grad_output, ulysses_group, ring_group, ring_bac
         value,
         ulysses_group=ulysses_group,
         ring_group=ring_group,
-        local_attention_fn=_sdpa,
-        ring_backend=ring_backend,
+        local_attention_fn=_local_attention,
+        ring_backend=_ATTENTION_BACKEND,
+        deterministic=_DETERMINISTIC,
     )
     output.backward(local_grad_output)
     return output.detach(), (query.grad.detach(), key.grad.detach(), value.grad.detach())
@@ -148,18 +156,17 @@ def _enable_deterministic_mode():
 
 
 def main():
+    global _ATTENTION_BACKEND, _DETERMINISTIC
     parser = argparse.ArgumentParser()
     parser.add_argument("--ulysses-degree", type=int, choices=(1, 2, 4), required=True)
-    parser.add_argument("--ring-backend", choices=("_native_cudnn",), default=None)
+    parser.add_argument("--attention-backend", choices=("_native_cudnn", "_flash_3"), default=None)
     parser.add_argument("--deterministic", action="store_true")
     args = parser.parse_args()
 
+    _ATTENTION_BACKEND = args.attention_backend
+    _DETERMINISTIC = args.deterministic
     if args.deterministic:
         _enable_deterministic_mode()
-    if args.ring_backend is not None:
-        # reference must run the same local kernel family as the ring op under test
-        global _REFERENCE_BACKEND
-        _REFERENCE_BACKEND = args.ring_backend
     local_rank = int(os.environ["LOCAL_RANK"])
     torch.cuda.set_device(local_rank)
     device = torch.device("cuda", local_rank)
@@ -168,12 +175,11 @@ def main():
 
     ulysses_group, ring_group = _create_usp_groups(args.ulysses_degree)
     full_inputs = _make_full_inputs(device)
-    kernel_tag = "" if args.ring_backend is None else "-cudnn"
-    topology = f"sp4-u{args.ulysses_degree}r{SP_SIZE // args.ulysses_degree}{kernel_tag}"
+    topology = f"sp4-u{args.ulysses_degree}r{SP_SIZE // args.ulysses_degree}{KERNEL_TAGS[_ATTENTION_BACKEND]}"
 
     if args.deterministic:
-        output_1, grads_1 = _run_usp(*full_inputs, ulysses_group, ring_group, args.ring_backend)
-        output_2, grads_2 = _run_usp(*full_inputs, ulysses_group, ring_group, args.ring_backend)
+        output_1, grads_1 = _run_usp(*full_inputs, ulysses_group, ring_group)
+        output_2, grads_2 = _run_usp(*full_inputs, ulysses_group, ring_group)
         _assert_bitwise(f"{topology} deterministic forward", output_1, output_2)
         for name, actual, expected in zip(("dQ", "dK", "dV"), grads_1, grads_2, strict=True):
             _assert_bitwise(f"{topology} deterministic {name}", actual, expected)
@@ -184,7 +190,7 @@ def main():
         return
 
     reference_output, reference_grads = _run_reference(*full_inputs)
-    usp_output, usp_grads = _run_usp(*full_inputs, ulysses_group, ring_group, args.ring_backend)
+    usp_output, usp_grads = _run_usp(*full_inputs, ulysses_group, ring_group)
     local_reference_output = _local_shard(reference_output)
     if args.ulysses_degree == SP_SIZE:
         _assert_bitwise(f"{topology} forward", usp_output, local_reference_output)

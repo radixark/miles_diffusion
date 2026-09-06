@@ -41,6 +41,27 @@ class TestBackendHierarchy:
         assert plan.no_split_modules == ("TransformerBlock",)
         assert plan.param_dtype_patterns == {}
 
+    def test_diffusers_binds_flash3_with_the_deterministic_flag(self, monkeypatch):
+        from miles.backends.fsdp_utils import flash_attention_3
+
+        installs = []
+        monkeypatch.setattr(flash_attention_3, "install_diffusers_backend", lambda **kw: installs.append(kw))
+        backend = DiffusersModelBackend(None)
+        model = _RecordingModel()
+
+        backend.set_attention_backend(model, "_flash_3")
+        assert installs == [{"deterministic": False}]
+        assert model.selected == "_flash_3"
+
+        # the actor enables deterministic mode before selecting the backend
+        backend.enable_deterministic_attention("_flash_3")
+        backend.set_attention_backend(model, "_flash_3")
+        assert installs[-1] == {"deterministic": True}
+
+        installs.clear()
+        backend.set_attention_backend(model, "native")
+        assert installs == []
+
     def test_all_diffusers_model_plans_load(self):
         assert load_fsdp_parallel_plan("sd3").param_dtype_patterns == {}
         assert load_fsdp_parallel_plan("qwen_image").param_dtype_patterns == {}
