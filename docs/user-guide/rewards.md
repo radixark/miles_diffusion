@@ -126,9 +126,13 @@ through `args`, so the function owns its own config grammar. The shipped example
 
 ```bash
 --custom-rm-path miles.rollout.rm_hub.weighted_mixture_rm.weighted_mixture_rm \
---custom-rm-args "hps=0.7,pickscore=0.3" \
+--custom-rm-args "hps=0.7,pickscore=0.3" --reward-key weighted \
 --hps-reward-colocate --pickscore-reward-colocate   # each reward keeps its own placement flags
 ```
+
+The example returns a dict per sample (`{"hps": ..., "pickscore": ..., "weighted": ...}`).
+`--reward-key` picks the entry GRPO trains on, and every entry of a dict reward gets its own
+`rollout/reward/<name>_mean` panel, so the components stay visible while the sum is optimized.
 
 Weights apply to raw scores (HPSv2.1 ≈ 0.25–0.35, PickScore/26 ≈ 0.8–0.9, OCR ∈ [0, 1]), so
 pick them with the scales in mind. Colocated pools share one slot ledger, so several rewards
