@@ -127,6 +127,8 @@ through `args`, so the function owns its own config grammar. The shipped example
 ```bash
 --custom-rm-path miles.rollout.rm_hub.weighted_mixture_rm.weighted_mixture_rm \
 --custom-rm-args "hps=0.7,pickscore=0.3" --reward-key weighted \
+--pickscore-processor-path laion/CLIP-ViT-H-14-laion2B-s32B-b79K \
+--pickscore-model-path yuvalkirstain/PickScore_v1 \
 --hps-reward-colocate --pickscore-reward-colocate   # each reward keeps its own placement flags
 ```
 

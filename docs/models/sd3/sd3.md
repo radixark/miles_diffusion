@@ -126,8 +126,9 @@ E2E test: `tests/e2e/short/test_sd3_ocr_grpo_2xGPU.py`.
 
 Canonical script: `scripts/run_diffusion_grpo_sd3_hps_sglang.py`
 
-**Status:** [📈 V — Verified](../../user-guide/recipe-verification.md#v) — 600 steps on
-2×H200, `rollout/reward/raw_mean` 0.284 → 0.349 (last-100 mean, peak MA10 0.362).
+**Status:** [📈 V — Verified](../../user-guide/recipe-verification.md#v) — 600 rollouts
+(2 optimizer steps each, 1,200 in total) on 2×H200; `rollout/reward/raw_mean` 0.284 → 0.349
+(mean of the last 100 rollouts, peak 10-rollout moving average 0.362).
 
 ```bash
 export HF_TOKEN=...
