@@ -19,10 +19,9 @@ import torch
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from miles.rollout.base_types import RolloutFnTrainOutput
-from miles.rollout.rm_hub.core import get_manager_placement_group
 from miles.utils import tracking_utils
 from miles.utils.metric_utils import compute_rollout_step
-from miles.utils.misc import load_function
+from miles.utils.misc import SingletonMeta, load_function
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
@@ -187,16 +186,26 @@ class SftEncodeActor:
         return len(items)
 
 
-_encode_actors: list | None = None
 _scheduler_grid: tuple[torch.Tensor, torch.Tensor] | None = None
 
 
-def _encode_pool(args) -> list:
-    global _encode_actors
-    if _encode_actors is None:
-        # Encode is SFT's rollout: the pool takes the rollout placement seats sglang engines use in RL.
-        pg, bundle_indices, _ = get_manager_placement_group()
-        _encode_actors = [
+class SftEncodePool(metaclass=SingletonMeta):
+    """One encode actor per rollout placement-group bundle: encode is SFT's rollout, seated by RolloutManager."""
+
+    def __init__(self, args, placement_group=None) -> None:
+        if placement_group is None:
+            raise RuntimeError("SftEncodePool is seated by RolloutManager; --loss-type sft_loss was not set.")
+        self._args = args
+        self._placement_group = placement_group
+        self._actors: list | None = None
+
+    @property
+    def actors(self) -> list:
+        # a fully cached dataset never encodes, so the encoders (tens of GB each) load on the first miss only
+        if self._actors is not None:
+            return self._actors
+        pg, bundle_indices, _ = self._placement_group
+        self._actors = [
             SftEncodeActor.options(
                 num_cpus=ENCODE_GPU_FRACTION,
                 num_gpus=ENCODE_GPU_FRACTION,
@@ -204,11 +213,11 @@ def _encode_pool(args) -> list:
                     placement_group=pg,
                     placement_group_bundle_index=i,
                 ),
-            ).remote(args)
+            ).remote(self._args)
             for i in bundle_indices
         ]
-        logger.info("SFT encode pool: %d workers at %.2f GPU each", len(_encode_actors), ENCODE_GPU_FRACTION)
-    return _encode_actors
+        logger.info("SFT encode pool: %d workers at %.2f GPU each", len(self._actors), ENCODE_GPU_FRACTION)
+        return self._actors
 
 
 def _get_scheduler_grid(args) -> tuple[torch.Tensor, torch.Tensor]:
@@ -255,7 +264,7 @@ def generate_rollout(args, rollout_id, data_source, evaluation: bool = False) ->
     if missing:
         cache_dir.mkdir(parents=True, exist_ok=True)
         start = time.time()
-        actors = _encode_pool(args)
+        actors = SftEncodePool(args).actors
         miss_items = list(missing.values())
         shards = [miss_items[i :: len(actors)] for i in range(len(actors))]
         ray.get(

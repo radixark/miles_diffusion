@@ -184,7 +184,7 @@ def execute(args: ScriptArgs, prompt_dir: str) -> None:
         "--rollout-num-gpus-per-engine 2 "
         "--num-gpus-per-node 2 "
         "--colocate "
-        "--colocate-reward "
+        "--pickscore-reward-colocate "
         "--deterministic-mode "
         "--rollout-health-check-interval 60 "
         "--miles-router-health-check-failure-threshold 30 "

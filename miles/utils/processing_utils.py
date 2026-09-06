@@ -1,7 +1,8 @@
-"""Tensor layout conversions used by diffusion output consumers."""
+"""Image and video tensor processing used by diffusion output consumers."""
 
 from __future__ import annotations
 
+import numpy as np
 import torch
 
 
@@ -27,3 +28,26 @@ def image_or_video_to_uint8(tensor: torch.Tensor, *, round_normalized: bool = Fa
         if round_normalized:
             output = output.round()
     return output.clamp(0, 255).to(torch.uint8)
+
+
+def sample_frame_indices(num_total_frames: int, num_frames: int | None) -> list[int]:
+    if num_total_frames <= 0:
+        raise ValueError(f"video has no frames: {num_total_frames}")
+    if num_frames is None or num_total_frames <= num_frames:
+        return list(range(num_total_frames))
+    if num_frames == 1:
+        return [num_total_frames // 2]
+    step = (num_total_frames - 1) / (num_frames - 1)
+    return [int(round(i * step)) for i in range(num_frames)]
+
+
+def generated_output_to_rgb_hwc_uint8_frames(
+    cfhw: torch.Tensor,
+    num_frames: int | None,
+    *,
+    round_normalized: bool = False,
+) -> list[np.ndarray]:
+    indices = sample_frame_indices(cfhw.shape[1], num_frames)
+    selected = image_or_video_to_uint8(cfhw[:, indices].detach().cpu(), round_normalized=round_normalized)
+    fhwc = cfhw_to_fhwc(selected)
+    return [np.ascontiguousarray(fhwc[i].numpy()) for i in range(len(indices))]

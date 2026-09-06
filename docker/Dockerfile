@@ -65,6 +65,11 @@ COPY requirements.txt /tmp/requirements.txt
 RUN pip install --ignore-installed PyJWT
 RUN pip install -r /tmp/requirements.txt
 
+# Official HPSv2 reference for the alignment test; its protobuf<4 pin conflicts with wandb.
+# Pinned to git: the PyPI 1.2.0 wheel omits the BPE vocab, so `import hpsv2.src.open_clip` fails.
+RUN pip install --no-deps args==0.1.0 clint==0.5.1 "hpsv2 @ git+https://github.com/tgxs002/HPSv2@866735ecaae9" && \
+    python3 -c "import hpsv2.src.open_clip"
+
 # ====================================== Install main package ============================================
 
 # Install miles_diffusion from a pinned ref (like radixark/miles does for miles),
