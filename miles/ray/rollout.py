@@ -18,7 +18,9 @@ from miles.ray.data_conversion_hub.flow_grpo import (
     expand_samples_to_train_pairs as flow_grpo_expand_samples_to_train_pairs,
 )
 from miles.rollout.base_types import call_rollout_fn
-from miles.rollout.rm_hub.core import set_manager_placement_group
+from miles.rollout.rm_hub import create_colocated_reward_pools
+from miles.rollout.rm_hub.core import ColocatedRewardSlots, bundle_deal_order
+from miles.rollout.sft_rollout import SftEncodePool
 from miles.utils import tracking_utils
 from miles.utils.health_monitor import RolloutHealthMonitor
 from miles.utils.http_utils import _wrap_ipv6, find_available_port, get_host_info, init_http_client
@@ -34,7 +36,7 @@ from miles.utils.train_data_utils import TrainDataDPSplitter, reorder_train_pair
 from miles.utils.train_metric_utils import log_perf_data_raw
 from miles.utils.types import Sample
 
-from .utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST, Lock
+from .utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST, ROLLOUT_ENGINE_GPU, Lock
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
@@ -55,7 +57,6 @@ class RolloutManager:
         from miles.dashboard import hooks
 
         hooks.register_rollout_manager(args)
-        set_manager_placement_group(pg)
         if not args.train_only:
             logger.info("RolloutManager: starting router...")
             _start_router(args)
@@ -103,6 +104,14 @@ class RolloutManager:
             self.all_rollout_engines = [None] * num_engines
             self.num_new_engines = init_rollout_engines(args, pg, self.all_rollout_engines)
             logger.info("RolloutManager started %s rollout engines", len(self.all_rollout_engines))
+        # pools outlive every rollout call, so the manager seats them and the rm functions find them as singletons
+        _, bundle_indices, gpu_ids = pg
+        self.reward_slots = ColocatedRewardSlots(
+            bundle_deal_order(bundle_indices, gpu_ids, args.num_gpus_per_node, args.rollout_num_gpus_per_engine)
+        )
+        self.reward_pools = create_colocated_reward_pools(args, pg, self.reward_slots)
+        logger.info("RolloutManager colocated reward slots: %s", self.reward_slots)
+        self.encode_pool = SftEncodePool(args, pg) if args.loss_type == "sft_loss" else None
         logger.info("RolloutManager: creating lock...")
         self.nodes_per_engine = max(1, args.rollout_num_gpus_per_engine // args.num_gpus_per_node)
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
@@ -388,6 +397,11 @@ class RolloutManager:
             reward_stats["rollout/reward/group_mean_avg"] = float(groups_raw.mean(dim=-1).mean())
             if groups_raw.shape[-1] > 1:
                 reward_stats["rollout/reward/group_std_avg"] = float(groups_raw.std(dim=-1, unbiased=False).mean())
+        # a dict reward (--reward-key) carries components; a per-sample custom RM may give each sample different ones
+        if self.args.reward_key:
+            for key in sorted({key for sample in samples for key in sample.reward}):
+                values = [sample.reward[key] for sample in samples if key in sample.reward]
+                reward_stats[f"rollout/reward/{key}_mean"] = float(np.mean(values))
 
         print(
             f"[reward stats] raw mean={raw_t.mean():.4f} std={raw_t.std():.4f} min={raw_t.min():.4f} max={raw_t.max():.4f} | "
@@ -493,8 +507,7 @@ def init_rollout_engines(args, pg, all_rollout_engines):
         if all_rollout_engines[i] is not None:
             continue
 
-        # Leave 0.05 for a colocated reward actor when --colocate-reward is set.
-        num_gpus = 0.25 if args.colocate_reward else 0.3
+        num_gpus = ROLLOUT_ENGINE_GPU
         num_cpus = num_gpus
 
         # Get the base GPU ID from placement group
@@ -659,6 +672,10 @@ def _log_eval_rollout_data(rollout_id, args, data, extra_metrics: dict[str, Any]
         log_dict[f"eval/{key}"] = sum(rewards) / len(rewards)
         if (samples := data[key].get("samples")) is not None:
             log_dict |= dict_add_prefix(compute_metrics_from_samples(args, samples), f"eval/{key}/")
+            if args.eval_reward_key:
+                for name in sorted({name for sample in samples for name in sample.reward}):
+                    values = [sample.reward[name] for sample in samples if name in sample.reward]
+                    log_dict[f"eval/{key}/{name}"] = sum(values) / len(values)
     logger.info(f"eval {rollout_id}: {log_dict}")
 
     step = compute_rollout_step(args, rollout_id)
@@ -717,9 +734,9 @@ def compute_perf_metrics_from_samples(args, samples, rollout_time):
     parser_depths = [s.parser_max_queue_depth for s in samples if s.parser_max_queue_depth is not None]
     if parser_depths:
         log_dict["parser_max_queue_depth"] = max(parser_depths)
-    reward_depths = [s.reward_max_queue_depth for s in samples if s.reward_max_queue_depth is not None]
-    if reward_depths:
-        log_dict["reward_max_queue_depth"] = max(reward_depths)
+    reward_depths = [s.reward_max_queue_depth for s in samples if s.reward_max_queue_depth]
+    for name in sorted({name for depths in reward_depths for name in depths}):
+        log_dict[f"reward_max_queue_depth_{name}"] = max(depths[name] for depths in reward_depths if name in depths)
 
     return log_dict
 

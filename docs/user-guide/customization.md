@@ -126,15 +126,25 @@ async def custom_rm(args, samples: list[Sample], **kwargs) -> list[float]:
 ```
 
 Wired only through `batched_async_rm` — implement per-sample routing inside your
-batched function if needed.
+batched function if needed. Once set, `--rm-type` and `metadata.rm_type` are ignored: the
+custom function is the whole dispatch.
 
 ```bash
 --custom-rm-path my_project.rewards.aesthetic_rm
 ```
 
+`--custom-rm-args` is an opaque string passed through as `args.custom_rm_args` for the
+custom RM to parse.
+
+Shipped custom RMs:
+
+| Path | What |
+|---|---|
+| `miles.rollout.rm_hub.weighted_mixture_rm.weighted_mixture_rm` | Weighted sum of built-in rewards (`hps`, `pickscore`, `ocr`), weights from `--custom-rm-args "hps=0.7,pickscore=0.3"`; returns a dict per sample, train on it with `--reward-key weighted`. See [Rewards](rewards.md) § Combining rewards. |
+
 HTTP / remote scoring: implement a batched custom RM and read `args.rm_url` (or
 your own flags). Encode images from `sample.generated_output` (see
-`_sample_to_rgb_hwc_uint8_frames` in `miles/rollout/rm_hub/pickscore.py`):
+`generated_output_to_rgb_hwc_uint8_frames` in `miles/utils/processing_utils.py`):
 
 ```python
 import aiohttp

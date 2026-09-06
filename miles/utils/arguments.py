@@ -1221,7 +1221,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--rm-type",
                 type=str,
                 default=None,
-                help="Type of the reward model",
+                help="Built-in reward model (pickscore / hps / ocr). Ignored when --custom-rm-path is set.",
             )
             parser.add_argument(
                 "--reward-key",
@@ -1290,11 +1290,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "Use a fractional value below 1.0 for lightweight single-GPU reward models.",
             )
             parser.add_argument(
-                "--colocate-reward",
+                "--pickscore-reward-colocate",
                 action="store_true",
                 default=False,
-                help="Colocate reward actors onto rollout GPUs (train 0.7 + rollout 0.25 + reward 0.05). "
-                "Requires --colocate.",
+                help="Seat PickScore actors on the rollout GPUs, one per placement-group bundle. Requires --colocate.",
             )
             parser.add_argument(
                 "--pickscore-batch-size",
@@ -1320,6 +1319,43 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help="Hugging Face model path for PickScore. Required when --rm-type pickscore.",
             )
+            parser.add_argument(
+                "--hps-num-workers",
+                type=int,
+                default=1,
+                help="Number of Ray HPS actors used when --rm-type hps.",
+            )
+            parser.add_argument(
+                "--hps-num-gpus-per-worker",
+                type=float,
+                default=1.0,
+                help="GPU resources per HPS actor when reward is not colocated.",
+            )
+            parser.add_argument(
+                "--hps-reward-colocate",
+                action="store_true",
+                default=False,
+                help="Seat HPS actors on the rollout GPUs, one per placement-group bundle. Requires --colocate.",
+            )
+            parser.add_argument(
+                "--hps-batch-size",
+                type=int,
+                default=8,
+                help="Batch size per HPS actor call.",
+            )
+            parser.add_argument(
+                "--hps-version",
+                type=str,
+                default="v2.1",
+                choices=["v2.0", "v2.1"],
+                help="HPS checkpoint version used when --rm-type hps.",
+            )
+            parser.add_argument(
+                "--hps-checkpoint-path",
+                type=str,
+                default=None,
+                help="Optional local HPS checkpoint path; otherwise download it from Hugging Face.",
+            )
 
             parser.add_argument(
                 "--rm-url",
@@ -1342,7 +1378,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "Signature: `async def custom_rm(args, samples: list[Sample], **kwargs) -> list[float]`. "
                     "Wired in batched_async_rm only — per-sample async_rm dispatch was deliberately "
                     "removed to avoid the (args, sample) vs (args, list) signature ambiguity. "
-                    "If you want per-sample routing, do it inside your batched function."
+                    "If you want per-sample routing, do it inside your batched function. "
+                    "Shipped: miles.rollout.rm_hub.weighted_mixture_rm.weighted_mixture_rm, a weighted sum of "
+                    'built-in rewards configured by --custom-rm-args "hps=0.7,pickscore=0.3" --reward-key weighted.'
+                ),
+            )
+            parser.add_argument(
+                "--custom-rm-args",
+                type=str,
+                default=None,
+                help=(
+                    "Opaque config string handed to the --custom-rm-path function as `args.custom_rm_args`; "
+                    'e.g. "hps=0.7,pickscore=0.3" for miles.rollout.rm_hub.weighted_mixture_rm.'
                 ),
             )
             parser.add_argument(
@@ -1735,12 +1782,38 @@ def miles_validate_args(args):
     if args.offload_rollout is None:
         args.offload_rollout = False
 
-    if args.colocate_reward:
-        assert args.colocate, "--colocate-reward requires --colocate."
-        assert args.pickscore_num_workers <= args.rollout_num_gpus, (
-            f"--colocate-reward requires pickscore_num_workers ({args.pickscore_num_workers}) "
-            f"<= rollout_num_gpus ({args.rollout_num_gpus}): the placement group has one bundle per GPU."
+    if args.hps_num_workers <= 0:
+        raise ValueError(f"--hps-num-workers must be positive, got {args.hps_num_workers}")
+    if args.hps_batch_size <= 0:
+        raise ValueError(f"--hps-batch-size must be positive, got {args.hps_batch_size}")
+    if args.hps_num_gpus_per_worker < 0:
+        raise ValueError(f"--hps-num-gpus-per-worker must be non-negative, got {args.hps_num_gpus_per_worker}")
+
+    colocated_reward_workers = {
+        name: num_workers
+        for name, colocate, num_workers in (
+            ("pickscore", args.pickscore_reward_colocate, args.pickscore_num_workers),
+            ("hps", args.hps_reward_colocate, args.hps_num_workers),
         )
+        if colocate
+    }
+    if colocated_reward_workers:
+        if not args.colocate:
+            raise ValueError(
+                f"{', '.join(f'--{name}-reward-colocate' for name in colocated_reward_workers)} requires --colocate."
+            )
+        if sum(colocated_reward_workers.values()) > args.rollout_num_gpus:
+            raise ValueError(
+                f"colocated reward workers ({sum(colocated_reward_workers.values())}) exceed rollout_num_gpus "
+                f"({args.rollout_num_gpus}): the placement group has one reward slot per GPU."
+            )
+    if args.pickscore_reward_colocate and not (args.pickscore_model_path and args.pickscore_processor_path):
+        raise ValueError(
+            "--pickscore-reward-colocate builds the PickScore actors at startup; set --pickscore-model-path "
+            "and --pickscore-processor-path."
+        )
+    if args.custom_rm_args is not None and args.custom_rm_path is None:
+        raise ValueError("--custom-rm-args requires --custom-rm-path.")
 
     if args.eval_function_path is None:
         args.eval_function_path = args.rollout_function_path
