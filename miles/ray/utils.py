@@ -12,6 +12,11 @@ from miles.ray.ray_actor import RayActor
 # https://github.com/ray-project/ray/blob/161849364a784442cc659fb9780f1a6adee85fce/python/ray/_private/accelerators/neuron.py#L108-L109
 # https://github.com/ray-project/ray/blob/161849364a784442cc659fb9780f1a6adee85fce/python/ray/_private/accelerators/tpu.py#L171-L172
 # https://github.com/ray-project/ray/blob/161849364a784442cc659fb9780f1a6adee85fce/python/ray/_private/accelerators/intel_gpu.py#L97-L98
+# GPU shares of one placement-group bundle; Ray admits an actor only while they still fit, so they sum to 1.0
+TRAIN_ACTOR_GPU = 0.7
+ROLLOUT_ENGINE_GPU = 0.25
+COLOCATED_REWARD_GPU = 0.05
+
 NOSET_VISIBLE_DEVICES_ENV_VARS_LIST = [
     "RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES",
     "RAY_EXPERIMENTAL_NOSET_ROCR_VISIBLE_DEVICES",

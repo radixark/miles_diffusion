@@ -48,6 +48,7 @@ count as verification.
     full-finetune Flow-GRPO + PickScore.
 - **📈 V**
   - `run_diffusion_sft_h3_t2va.py` — MiniMax H3 8-GPU LoRA SFT.
+  - `run_diffusion_grpo_sd3_hps_sglang.py` — SD3.5 Flow-GRPO + HPSv2.1.
 - **○ NV**
   - `run_diffusion_grpo_wan22_pickscore_5gpu.py` — Wan2.2 5-GPU LoRA
     Flow-GRPO + PickScore.

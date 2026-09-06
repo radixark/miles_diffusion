@@ -265,18 +265,26 @@ See [Dtype Control](../advanced/dtype-control.md).
 
 | Flag | Type | Default | Notes |
 |---|---|---|---|
-| `--rm-type` | enum | – | `pickscore` / `ocr`. Overridable per sample via `metadata.rm_type`. |
+| `--rm-type` | enum | – | `pickscore` / `hps` / `ocr`. Overridable per sample via `metadata.rm_type`. Ignored when `--custom-rm-path` is set. |
 | `--reward-key` | str | – | When the reward is a dict. |
 | `--group-rm` | flag | off | Score a whole prompt group at once. |
-| `--custom-rm-path` | str | – | `async def rm(args, samples) -> list[float]`. Batched only. |
+| `--custom-rm-path` | str | – | `async def rm(args, samples) -> list[float]`. Batched only; replaces the `--rm-type` dispatch entirely. Shipped: `miles.rollout.rm_hub.weighted_mixture_rm.weighted_mixture_rm` (weighted sum of built-in rewards). |
+| `--custom-rm-args` | str | – | Opaque config string for the custom RM, read as `args.custom_rm_args`; e.g. `"hps=0.7,pickscore=0.3"` for `rm_hub.weighted_mixture_rm`. |
+| `--reward-key` | str | – | For dict-valued rewards: the entry GRPO trains on. Every entry is also logged as `rollout/reward/<key>_mean` and `eval/<dataset>/<key>`. |
 | `--custom-reward-post-process-path` | str | – | Replace advantage normalisation. |
-| `--colocate-reward` | flag | off | Reward actors onto rollout GPUs (train 0.7 + rollout 0.25 + reward 0.05). Requires `--colocate`. |
 | `--pickscore-model-path` | str | – | Required for `--rm-type pickscore`. |
 | `--pickscore-processor-path` | str | – | Required for `--rm-type pickscore`. |
 | `--pickscore-num-workers` | int | `1` | |
-| `--pickscore-num-gpus-per-worker` | float | `1.0` | Fractional values allowed. |
+| `--pickscore-num-gpus-per-worker` | float | `1.0` | Standalone workers only; fractional values allowed. |
+| `--pickscore-reward-colocate` | flag | off | One worker per rollout GPU, sharing it with the train actor and rollout engine. Requires `--colocate`. |
 | `--pickscore-batch-size` | int | `8` | |
 | `--pickscore-num-frames` | int | – | Frames scored per video; unset = all. |
+| `--hps-num-workers` | int | `1` | |
+| `--hps-num-gpus-per-worker` | float | `1.0` | Standalone workers only; fractional values allowed. |
+| `--hps-reward-colocate` | flag | off | One worker per rollout GPU, sharing it with the train actor and rollout engine. Requires `--colocate`. |
+| `--hps-batch-size` | int | `8` | |
+| `--hps-version` | enum | `v2.1` | `v2.0` / `v2.1`. |
+| `--hps-checkpoint-path` | str | – | Local checkpoint; unset downloads from Hugging Face. |
 | `--ocr-num-workers` | int | `4` | |
 | `--rollout-parser-num-workers` | int | `1` | Ray actors deserializing rollout responses. Raise when trajectory tensors are large. |
 
