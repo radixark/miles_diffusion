@@ -152,6 +152,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
             "--rollout-num-gpus-per-engine 2 "
             "--rollout-parser-num-workers 16 "
             "--dp-replicate-size 1 "
+            "--sglang-text-encoder-cpu-offload "
         )
         if args.four_gpu_ci
         else (
