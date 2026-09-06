@@ -21,7 +21,6 @@ class H3TrainPipelineConfig(TrainPipelineConfig):
     supports_cfg_training = False
     sde_timestep_divisor = 1000.0
     optimizer_state_allowed_missing = ["audio"]
-    lora_layer_group_collector_path = "miles.backends.fsdp_utils.h3_weight_key_mapper.collect_h3_lora_layer_groups"
 
     lora_target_modules = [
         "attn.to_q",
@@ -34,10 +33,10 @@ class H3TrainPipelineConfig(TrainPipelineConfig):
 
     @classmethod
     def validate_args(cls, args: Namespace) -> None:
-        # sglang's H3 DiT renames modules and fuses Q/K/V, so weights only reach the
-        # rollout through the LoRA IPC path's layer grouper; any other sync mode would
-        # push names the engine drops with a warning, silently training nothing.
-        # SFT (--train-only) has no rollout engine and therefore no sync constraint.
+        # H3's rollout DiT fuses Q/K/V and rewrites FFN layout. Those transforms
+        # live in sglang-d's lora_merge IPC path; train-side merge / full-weight
+        # sync would push dense names the engine drops. SFT (--train-only) has
+        # no rollout engine and therefore no sync constraint.
         if not args.train_only and not (args.use_lora and args.lora_ipc_weight_sync):
             raise ValueError("H3 training requires --use-lora with --lora-ipc-weight-sync")
 

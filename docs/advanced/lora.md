@@ -83,8 +83,10 @@ sglang-d expects (e.g. `transformer_blocks.0.attn.to_q.weight`).
 
 1. `collect_lora_layer_groups()` groups state-dict entries by layer prefix so
    **lora_A and lora_B for the same layer always stay together**.
-2. `PeftLoRAKeyMapper.to_sgld_name()` maps PEFT keys to sglang-d names
-   (e.g. `transformer_blocks.0.attn.to_q.lora_A`).
+2. `PeftLoRAKeyMapper.to_sgld_name()` strips PEFT wrappers
+   (e.g. `transformer_blocks.0.attn.to_q.lora_A`). Fused families such as H3
+   keep these diffusers names; sglang-d `lora_merge` applies
+   `param_names_mapping` and the disk-load FFN swap.
 3. FSDP shard all-gather → pack into buckets capped by
    **`--update-weight-buffer-size`** (recipes use 2 GB) → CUDA IPC.
 4. Rollout engine receives `weight_update_mode="lora_merge"` with
