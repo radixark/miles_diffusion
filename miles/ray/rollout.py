@@ -397,10 +397,11 @@ class RolloutManager:
             reward_stats["rollout/reward/group_mean_avg"] = float(groups_raw.mean(dim=-1).mean())
             if groups_raw.shape[-1] > 1:
                 reward_stats["rollout/reward/group_std_avg"] = float(groups_raw.std(dim=-1, unbiased=False).mean())
-        # a dict reward (--reward-key) carries every component; each gets its own mean
+        # a dict reward (--reward-key) carries components; a per-sample custom RM may give each sample different ones
         if self.args.reward_key:
-            for key in samples[0].reward:
-                reward_stats[f"rollout/reward/{key}_mean"] = float(np.mean([sample.reward[key] for sample in samples]))
+            for key in sorted({key for sample in samples for key in sample.reward}):
+                values = [sample.reward[key] for sample in samples if key in sample.reward]
+                reward_stats[f"rollout/reward/{key}_mean"] = float(np.mean(values))
 
         print(
             f"[reward stats] raw mean={raw_t.mean():.4f} std={raw_t.std():.4f} min={raw_t.min():.4f} max={raw_t.max():.4f} | "
@@ -672,8 +673,9 @@ def _log_eval_rollout_data(rollout_id, args, data, extra_metrics: dict[str, Any]
         if (samples := data[key].get("samples")) is not None:
             log_dict |= dict_add_prefix(compute_metrics_from_samples(args, samples), f"eval/{key}/")
             if args.eval_reward_key:
-                for name in samples[0].reward:
-                    log_dict[f"eval/{key}/{name}"] = sum(sample.reward[name] for sample in samples) / len(samples)
+                for name in sorted({name for sample in samples for name in sample.reward}):
+                    values = [sample.reward[name] for sample in samples if name in sample.reward]
+                    log_dict[f"eval/{key}/{name}"] = sum(values) / len(values)
     logger.info(f"eval {rollout_id}: {log_dict}")
 
     step = compute_rollout_step(args, rollout_id)
