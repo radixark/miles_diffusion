@@ -116,6 +116,12 @@ def _parse_cond_kwargs(
         text_ids=deserialize_func(data.get("text_ids")),
         text_mask=deserialize_func(data.get("text_mask")),
         fps=data.get("fps"),
+        wan_ti2v_reserved_frames_mask=_deserialize_optional_tensor(
+            data.get("wan_ti2v_reserved_frames_mask"), deserialize_func=deserialize_func
+        ),
+        wan_ti2v_patch_size=tuple(data["wan_ti2v_patch_size"])
+        if data.get("wan_ti2v_patch_size") is not None
+        else None,
     )
 
 
