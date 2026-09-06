@@ -5,7 +5,7 @@ trained via LoRA r64), 832x480 single frame, num_steps=16, eval_steps=35,
 guidance 4.0, Flow-SDE noise_level=0.7, no KL, per-prompt mean + global std.
 
 Layout: train, rollout and PickScore reward all share the same 4 GPUs
-(--colocate --pickscore-reward-colocate, one PickScore worker per rollout engine).
+(--colocate --colocate-reward, one PickScore worker per rollout engine).
 
 SDE schedule: epoch_global_random_choice draws 2 steps per epoch from
 candidates 8-11. The Cosmos3 checkpoint ships a Karras flow-sigma grid whose
@@ -101,7 +101,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
 
     reward_args = (
         "--rm-type pickscore "
-        "--pickscore-reward-colocate "
+        "--colocate-reward "
         "--pickscore-num-workers 4 "
         "--pickscore-batch-size 8 "
         "--pickscore-processor-path laion/CLIP-ViT-H-14-laion2B-s32B-b79K "

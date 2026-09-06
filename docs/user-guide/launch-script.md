@@ -237,7 +237,7 @@ MILES_SCRIPT_EXTERNAL_RAY=1 python3 scripts/run_diffusion_grpo_wan22_pickscore_1
 ```
 
 Reward workers (`--pickscore-num-workers 4 --pickscore-num-gpus-per-worker 0.25`, no
-`--pickscore-reward-colocate`) are default-scheduled and land on the only free GPU: the reward node.
+`--colocate-reward`) are default-scheduled and land on the only free GPU: the reward node.
 
 ### Verify the run is healthy
 

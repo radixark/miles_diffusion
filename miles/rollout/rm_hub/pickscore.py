@@ -2,15 +2,27 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+import numpy as np
 import ray
 import torch
 from PIL import Image
 
 from miles.utils.misc import SingletonMeta
-from miles.utils.processing_utils import generated_output_to_rgb_hwc_uint8_frames, sample_frame_indices
+from miles.utils.processing_utils import cfhw_to_fhwc, image_or_video_to_uint8
 from miles.utils.types import Sample
 
-from .core import AsyncRewardActorPool, record_reward_queue_depth
+from .core import AsyncRewardActorPool
+
+
+def sample_frame_indices(num_total_frames: int, num_frames: int | None) -> list[int]:
+    if num_total_frames <= 0:
+        raise ValueError(f"video has no frames: {num_total_frames}")
+    if num_frames is None or num_total_frames <= num_frames:
+        return list(range(num_total_frames))
+    if num_frames == 1:
+        return [num_total_frames // 2]
+    step = (num_total_frames - 1) / (num_frames - 1)
+    return [int(round(i * step)) for i in range(num_frames)]
 
 
 def _feature_tensor(features):
@@ -20,6 +32,18 @@ def _feature_tensor(features):
     if hasattr(features, "pooler_output") and isinstance(features.pooler_output, torch.Tensor):
         return features.pooler_output
     raise TypeError(f"Cannot extract embedding tensor from {type(features)!r}")
+
+
+def _sample_to_rgb_hwc_uint8_frames(sample: Sample, num_frames: int | None) -> list[np.ndarray]:
+    cfhw = sample.generated_output
+    if cfhw is None:
+        raise ValueError("generated_output is None")
+
+    # Convert only the frames that survive: a 107-frame clip yields 8 here, and
+    # converting the whole clip first cost several full-size float32 copies of it
+    indices = sample_frame_indices(cfhw.shape[1], num_frames)
+    fhwc = cfhw_to_fhwc(image_or_video_to_uint8(cfhw[:, indices].detach().cpu()))
+    return [np.ascontiguousarray(fhwc[i].numpy()) for i in range(len(indices))]
 
 
 class PickScoreScorer(torch.nn.Module):
@@ -67,15 +91,14 @@ class PickScoreScorer(torch.nn.Module):
         return [float(score) for score in scores.detach().cpu()]
 
 
+@ray.remote
 class PickScoreRewardActor:
     def __init__(
         self,
         *,
         processor_path: str,
         model_path: str,
-        frames_per_forward: int,
     ) -> None:
-        self.frames_per_forward = frames_per_forward
         gpu_ids = ray.get_gpu_ids()
         use_cuda = bool(gpu_ids) and torch.cuda.is_available()
         if use_cuda:
@@ -87,54 +110,46 @@ class PickScoreRewardActor:
             model_path=model_path,
         )
 
-    def score_batch(self, outputs: list[torch.Tensor], prompts: list[str]) -> list[float]:
-        # a video sample is scored on every frame it arrives with and gets their mean
-        images, frame_counts = [], []
-        for output in outputs:
-            frames = generated_output_to_rgb_hwc_uint8_frames(output, None)
-            images.extend(Image.fromarray(frame) for frame in frames)
-            frame_counts.append(len(frames))
-        flat_prompts = [p for p, n in zip(prompts, frame_counts, strict=True) for _ in range(n)]
-        # forwards see --pickscore-batch-size frames, the chunking the e2e standards were recorded with
-        flat_scores = []
-        for start in range(0, len(images), self.frames_per_forward):
-            end = start + self.frames_per_forward
-            flat_scores.extend(self.scorer(flat_prompts[start:end], images[start:end]))
-        scores, offset = [], 0
-        for count in frame_counts:
-            scores.append(float(sum(flat_scores[offset : offset + count]) / count))
-            offset += count
-        return scores
+    def score_batch(self, images: list, prompts: list[str]) -> list[float]:
+        pil_images = [Image.fromarray(image) if isinstance(image, np.ndarray) else image for image in images]
+        return self.scorer(prompts, pil_images)
 
 
 class AsyncPickScorePool(AsyncRewardActorPool, metaclass=SingletonMeta):
     """Ray actor pool for GPU PickScore reward inference."""
 
-    def __init__(self, args, placement_group=None, slots=None) -> None:
+    def __init__(self, args) -> None:
         super().__init__(
             actor_cls=PickScoreRewardActor,
             actor_kwargs={
                 "processor_path": args.pickscore_processor_path,
                 "model_path": args.pickscore_model_path,
-                "frames_per_forward": args.pickscore_batch_size,
             },
             num_workers=args.pickscore_num_workers,
             batch_size=args.pickscore_batch_size,
             num_gpus_per_worker=args.pickscore_num_gpus_per_worker,
-            colocate=args.pickscore_reward_colocate,
-            name="pickscore",
-            placement_group=placement_group,
-            slots=slots,
+            colocate=args.colocate_reward,
+            name="PickScore",
         )
 
 
 async def pickscore_rm(args, samples: Sequence[Sample]) -> list[float]:
     pool = AsyncPickScorePool(args)
-    # pick --pickscore-num-frames here so only the scored frames cross the object store
-    outputs = [
-        s.generated_output[:, sample_frame_indices(s.generated_output.shape[1], args.pickscore_num_frames)]
-        for s in samples
-    ]
-    scores, max_queue_depth = await pool.score(outputs, [s.prompt for s in samples])
-    record_reward_queue_depth(samples, "pickscore", max_queue_depth)
+    images: list[np.ndarray] = []
+    prompts: list[str] = []
+    frame_counts: list[int] = []
+    for sample in samples:
+        frames = _sample_to_rgb_hwc_uint8_frames(sample, args.pickscore_num_frames)
+        images.extend(frames)
+        prompts.extend([sample.prompt] * len(frames))
+        frame_counts.append(len(frames))
+
+    flat_scores, max_queue_depth = await pool.score(images, prompts)
+    for sample in samples:
+        sample.reward_max_queue_depth = float(max_queue_depth)
+    scores: list[float] = []
+    offset = 0
+    for count in frame_counts:
+        scores.append(float(sum(flat_scores[offset : offset + count]) / count))
+        offset += count
     return scores

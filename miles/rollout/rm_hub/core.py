@@ -8,85 +8,26 @@ import logging
 import ray
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
-from miles.ray.utils import COLOCATED_REWARD_GPU
-
+_manager_placement_group = None
 logger = logging.getLogger(__name__)
 
 
-def bundle_deal_order(
-    bundle_indices: list[int],
-    gpu_ids: list[int],
-    num_gpus_per_node: int,
-    num_gpus_per_engine: int,
-) -> list[int]:
-    """Order bundles for reward actors: those without a rollout engine's own claim first, spread across GPUs."""
-    span = min(num_gpus_per_engine, num_gpus_per_node)
-    covered = len(bundle_indices) // span * span
-
-    def key(item: tuple[int, int, int]) -> tuple[int, int, int, int]:
-        position, _bundle_index, gpu_id = item
-        if position >= covered:
-            return (0, -1, gpu_id, position)
-        position_in_actor = position % span
-        # an engine declares its claim on the first bundle of its span, so deal those last
-        if position_in_actor == 0:
-            return (1, 0, gpu_id, position)
-        return (0, position_in_actor, gpu_id, position)
-
-    slots = zip(range(len(bundle_indices)), bundle_indices, gpu_ids, strict=True)
-    return [bundle_index for _, bundle_index, _ in sorted(slots, key=key)]
+def set_manager_placement_group(pg) -> None:
+    """Publish the manager's (pg, bundle_indices, gpu_ids) for colocated actor pools."""
+    global _manager_placement_group
+    _manager_placement_group = pg
 
 
-class ColocatedRewardSlots:
-    """Deal placement-group bundles to colocated reward pools, one long-lived actor per bundle.
-
-    Owned by ``RolloutManager`` and shared by every colocated pool.
-    """
-
-    def __init__(self, order: list[int]) -> None:
-        self._order = order
-        self._owners: dict[int, str] = {}
-        self._pool_names: set[str] = set()
-
-    @property
-    def remaining(self) -> int:
-        return len(self._order) - len(self._owners)
-
-    def allocate(self, name: str, num_workers: int) -> list[int]:
-        if name in self._pool_names:
-            raise RuntimeError(f"--{name}-reward-colocate: {name} already owns reward slots")
-        if num_workers > self.remaining:
-            raise RuntimeError(
-                f"--{name}-reward-colocate: {num_workers} slots requested, but only "
-                f"{self.remaining}/{len(self._order)} remain ({self}). "
-                f"Reduce --{name}-num-workers or run the pool on dedicated GPUs."
-            )
-        start = len(self._owners)
-        slots = list(self._order[start : start + num_workers])
-        self._owners.update({slot: name for slot in slots})
-        self._pool_names.add(name)
-        return slots
-
-    def __str__(self) -> str:
-        return ", ".join(f"bundle {bundle}: {self._owners.get(bundle)}" for bundle in sorted(self._order))
+def get_manager_placement_group():
+    return _manager_placement_group
 
 
-def record_reward_queue_depth(samples, name: str, max_queue_depth: int) -> None:
-    """Store the backlog per pool so the perf log shows which reward lags when several score one batch."""
-    for sample in samples:
-        depths = sample.reward_max_queue_depth or {}
-        depths[name] = float(max_queue_depth)
-        sample.reward_max_queue_depth = depths
+set_reward_placement_group = set_manager_placement_group
+get_reward_placement_group = get_manager_placement_group
 
 
 class AsyncRewardActorPool:
-    """Round-robin pool for Ray reward actors exposing ``score_batch(outputs, prompts)``.
-
-    Actors receive the float ``generated_output`` tensors and quantise to uint8 themselves.
-    Colocated pools take one slot per rollout bundle from the manager's
-    ``slots``; standalone pools are default-scheduled at ``num_gpus_per_worker``, which
-    only lands on GPUs outside every placement group.
-    """
+    """Round-robin pool for Ray reward actors exposing ``score_batch``."""
 
     def __init__(
         self,
@@ -98,30 +39,32 @@ class AsyncRewardActorPool:
         num_gpus_per_worker: float,
         colocate: bool,
         name: str,
-        placement_group=None,
-        slots: ColocatedRewardSlots | None = None,
     ) -> None:
         if colocate:
-            if placement_group is None or slots is None:
-                raise RuntimeError(f"--{name}-reward-colocate: the {name} pool was not seated by RolloutManager.")
-            pg, _, _ = placement_group
+            pg, bundle_indices, _ = get_reward_placement_group()
+            # bundle_indices is sorted by (node, gpu); stride so workers spread across nodes
+            # instead of stacking onto the first node's GPUs.
+            stride = max(1, len(bundle_indices) // num_workers)
             strategies = [
-                PlacementGroupSchedulingStrategy(placement_group=pg, placement_group_bundle_index=bundle)
-                for bundle in slots.allocate(name, num_workers)
+                PlacementGroupSchedulingStrategy(
+                    placement_group=pg,
+                    placement_group_bundle_index=bundle_indices[w * stride],
+                )
+                for w in range(num_workers)
             ]
-            num_gpus_per_worker = COLOCATED_REWARD_GPU
+            num_gpus_per_worker = 0.05
+            num_cpus_per_worker = 0.05
         else:
             strategies = ["DEFAULT"] * num_workers
+            num_cpus_per_worker = 1
 
         self._actors = [
-            ray.remote(actor_cls)
-            .options(
-                num_cpus=num_gpus_per_worker,
+            actor_cls.options(
+                num_cpus=num_cpus_per_worker,
                 num_gpus=num_gpus_per_worker,
-                scheduling_strategy=strategy,
-            )
-            .remote(**actor_kwargs)
-            for strategy in strategies
+                scheduling_strategy=strategies[i],
+            ).remote(**actor_kwargs)
+            for i in range(num_workers)
         ]
         self._batch_size = batch_size
         self._round_robin_index = 0
@@ -139,16 +82,16 @@ class AsyncRewardActorPool:
         self._round_robin_index += 1
         return i
 
-    async def score(self, outputs: list, prompts: list[str]) -> tuple[list[float], int]:
-        """Score samples in batches; also report the deepest dispatch-time backlog this call saw."""
+    async def score(self, images: list, prompts: list[str]) -> tuple[list[float], int]:
+        """Score in batches; also report the deepest dispatch-time backlog this call saw."""
         refs, idxs, max_queue_depth = [], [], 0
-        for start in range(0, len(outputs), self._batch_size):
+        for start in range(0, len(images), self._batch_size):
             end = start + self._batch_size
             i = self._next_actor_idx()
             max_queue_depth = max(max_queue_depth, self._inflight[i])
             self._inflight[i] += 1
             idxs.append(i)
-            refs.append(self._actors[i].score_batch.remote(outputs[start:end], prompts[start:end]))
+            refs.append(self._actors[i].score_batch.remote(images[start:end], prompts[start:end]))
 
         loop = asyncio.get_running_loop()
         try:
