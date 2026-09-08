@@ -122,6 +122,9 @@ Walkthrough: [Quick Start](../../getting-started/quick-start.md).
 
 E2E test: `tests/e2e/short/test_sd3_ocr_grpo_2xGPU.py`.
 
+Mixing PickScore into this recipe (0.8 OCR + 0.2 PickScore) is validated in
+[Rewards](../../user-guide/rewards.md#validated-mixture-sd35-ocr-08--pickscore-02).
+
 ### 5.3 Flow-GRPO + HPS (2 GPU colocate)
 
 Canonical script: `scripts/run_diffusion_grpo_sd3_hps_sglang.py`

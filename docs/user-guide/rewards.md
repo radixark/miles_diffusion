@@ -141,6 +141,35 @@ pick them with the scales in mind. Colocated pools share one slot ledger, so sev
 can colocate without overlapping. Rewards receive `generated_output` itself, and every reward actor
 quantises it to uint8 on its own terms.
 
+#### Validated mixture: SD3.5 OCR 0.8 + PickScore 0.2
+
+The OCR recipe with PickScore mixed in, the weighting Stepwise-Flow-GRPO (arXiv 2603.28718) uses
+for its OCR task. Only the reward flags change; everything else is
+`scripts/run_diffusion_grpo_sd3_ocr_sglang.py` as shipped (2×H200, colocated, CFG 4.5,
+`--diffusion-kl-beta 0.04`, 8 prompts × 16 samples per rollout):
+
+```bash
+python3 scripts/run_diffusion_grpo_sd3_ocr_sglang.py --cuda-visible-devices 0,1 --extra-args "\
+  --custom-rm-path miles.rollout.rm_hub.weighted_mixture_rm.weighted_mixture_rm \
+  --custom-rm-args ocr=0.8,pickscore=0.2 --reward-key weighted \
+  --pickscore-num-workers 1 --pickscore-batch-size 8 --pickscore-reward-colocate \
+  --pickscore-processor-path laion/CLIP-ViT-H-14-laion2B-s32B-b79K \
+  --pickscore-model-path yuvalkirstain/PickScore_v1 \
+  --rollout-shuffle"
+```
+
+600 rollouts (110 s each); means over the last 100 rollouts, 10-rollout moving-average peak in
+parentheses:
+
+| Component | Rollout 0 | Last 100 | Peak |
+|---|---|---|---|
+| `ocr_mean` | 0.34 | 0.80 | 0.88 |
+| `pickscore_mean` | 0.80 | 0.83 | 0.85 |
+| `weighted_mean` | 0.43 | 0.81 | 0.87 |
+
+OCR climbs while PickScore holds. `--rollout-shuffle` softens the per-rollout dips that a small
+prompt batch (8 per rollout here) otherwise produces.
+
 ### OCR (`--rm-type ocr`)
 
 Implementation: `miles/rollout/rm_hub/ocr.py`.
