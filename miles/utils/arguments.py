@@ -147,6 +147,19 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--fsdp-reshard-after-forward",
+                action=argparse.BooleanOptionalAction,
+                default=True,
+                help=(
+                    "Whether FSDP2 reshards parameters after forward "
+                    "(fully_shard's reshard_after_forward). True (default) is "
+                    "ZeRO-3; --no-fsdp-reshard-after-forward keeps gathered "
+                    "parameters between forward and backward (ZeRO-2), saving "
+                    "the backward all-gather at the cost of holding unsharded "
+                    "parameters through the step."
+                ),
+            )
+            parser.add_argument(
                 "--fsdp-flow-shift",
                 type=float,
                 default=None,

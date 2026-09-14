@@ -97,6 +97,7 @@ def main():
         args=Namespace(
             diffusion_forward_dtype="bf16",
             fsdp_reduce_dtype="fp32",
+            fsdp_reshard_after_forward=True,
             gradient_checkpointing=False,
         ),
     )

@@ -130,6 +130,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--train-backend` | enum | `fsdp` | Only value. |
 | `--fsdp-master-dtype` | enum | `fp32` | `fp32` / `bf16` / `fp16`. Load, shard, and optimizer-state precision. |
 | `--fsdp-reduce-dtype` | enum | `fp32` | `bf16` matches flow_grpo's all-bf16 policy but adds cross-rank add-noise. |
+| `--fsdp-reshard-after-forward` / `--no-fsdp-reshard-after-forward` | flag | on | On = ZeRO-3. Off keeps gathered params between forward and backward (ZeRO-2): no backward all-gather, higher memory. |
 | `--diffusion-forward-dtype` | enum | `bf16` | `bf16` / `fp16` / `fp32`. |
 | `--fsdp-cpu-offload` | flag | off | Offloads params, grads, optimizer state; the optimizer then runs on CPU. |
 | `--fsdp-cpu-backend` | str | `gloo` | CPU process group for the above. |
