@@ -30,9 +30,11 @@ from miles.utils.train_data_utils import (
 
 from . import checkpoint
 from .diffusion_update_weight_utils import (
+    DiffusionUpdateWeightFromDistributed,
     DiffusionUpdateWeightFromTensor,
     DiffusionUpdateWeightFromTensorLoRA,
     DiffusionUpdateWeightFromTensorLoRAIPC,
+    DiffusionUpdateWeightLoRADistributed,
 )
 from .ema import EmaShadow
 from .input_dtype_policy import apply_input_dtype_policy
@@ -220,6 +222,12 @@ class FSDPTrainRayActor(TrainRayActor):
                 uprate=self.args.ema_decay_ramp,
                 uphold=self.args.ema_decay_max,
                 flat_steps=self.args.ema_decay_flat_steps,
+                # Async prefetch uses the EMA from before the concurrent training update.
+                keep_previous_ema=(
+                    getattr(self.args, "train_async", False)
+                    and self.args.ref_mode == "ema"
+                    and self.args.ema_rollout_policy == "ema"
+                ),
             )
 
         # sglang-d now supports /update_weights_from_tensor (PR #20464).
@@ -227,6 +235,11 @@ class FSDPTrainRayActor(TrainRayActor):
             self.weight_updater = None
         elif self.args.use_lora and self.args.lora_ipc_weight_sync:
             self.weight_updater = DiffusionUpdateWeightFromTensorLoRAIPC(self.args, self.models)
+        elif not self.args.colocate:
+            updater = (
+                DiffusionUpdateWeightLoRADistributed if self.args.use_lora else DiffusionUpdateWeightFromDistributed
+            )
+            self.weight_updater = updater(self.args, self.models)
         elif self.args.use_lora:
             self.weight_updater = DiffusionUpdateWeightFromTensorLoRA(self.args, self.models)
         else:
@@ -304,10 +317,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 ray.get(self.rollout_manager.clear_num_new_engines.remote())
 
         ema_shadow = self.ema_shadow
-        if ema_shadow is not None:
-            delta = ema_shadow.update()
-            if dist.get_rank() == 0:
-                logger.info("EMA shadow updated (decay=%.4f step=%d)", delta, ema_shadow.step)
+        # Publish the current EMA; the previous EMA is only a training reference.
         rollout_weight_context = (
             ema_shadow.swap_in() if ema_shadow is not None and self.args.ema_rollout_policy == "ema" else nullcontext()
         )
@@ -343,6 +353,10 @@ class FSDPTrainRayActor(TrainRayActor):
             if self.args.debug_rollout_only:
                 return
             self._train_core(rollout_id=rollout_id, rollout_data=rollout_data)
+            if self.ema_shadow is not None:
+                delta = self.ema_shadow.update()
+                if dist.get_rank() == 0:
+                    logger.info("EMA shadow updated (decay=%.4f step=%d)", delta, self.ema_shadow.step)
 
         train_metric_utils.log_perf_data_raw(
             rollout_id=rollout_id,
@@ -555,7 +569,8 @@ class FSDPTrainRayActor(TrainRayActor):
         ref_mode = self.args.ref_mode
         if ref_mode != "none":
             if ref_mode == "ema":
-                ref_ctx = self.ema_shadow.swap_in()
+                # Match the EMA that generated the prefetched batch in async mode.
+                ref_ctx = self.ema_shadow.swap_in(use_previous_ema=self.ema_shadow.previous_ema is not None)
             else:
                 ref_ctx = prepared.model.disable_adapter()
             with torch.no_grad(), ref_ctx:

@@ -1788,6 +1788,10 @@ def miles_validate_args(args):
     if args.offload_rollout is None:
         args.offload_rollout = False
 
+    if not args.colocate and not args.train_only and not args.debug_rollout_only:
+        if args.lora_ipc_weight_sync:
+            raise ValueError("--lora-ipc-weight-sync requires --colocate: CUDA IPC needs shared train/rollout GPUs")
+
     if args.hps_num_workers <= 0:
         raise ValueError(f"--hps-num-workers must be positive, got {args.hps_num_workers}")
     if args.hps_batch_size <= 0:
