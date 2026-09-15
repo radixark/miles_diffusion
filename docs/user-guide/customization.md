@@ -115,7 +115,7 @@ steps for debugging / A-B runs.
 
 ## Reward
 
-Built-in scorers (`--rm-type pickscore` / `ocr`) are documented in
+Local scorers and configured API rewards (`--rm-type <name>`) are documented in
 [Rewards](rewards.md). The hooks below replace that dispatch entirely.
 
 ### `--custom-rm-path`
@@ -140,30 +140,20 @@ Shipped custom RMs:
 
 | Path | What |
 |---|---|
-| `miles.rollout.rm_hub.weighted_mixture_rm.weighted_mixture_rm` | Weighted sum of built-in rewards (`hps`, `pickscore`, `ocr`), weights from `--custom-rm-args "hps=0.7,pickscore=0.3"`; returns a dict per sample, train on it with `--reward-key weighted`. See [Rewards](rewards.md) § Combining rewards. |
+| `miles.rollout.rm_hub.weighted_mixture_rm.weighted_mixture_rm` | Weighted sum of rewards (`hps`, `pickscore`, `ocr`, `api`); e.g. `--custom-rm-args "api=0.7,hps=0.3"`; returns a dict per sample, train on it with `--reward-key weighted`. See [Rewards](rewards.md) § Combining rewards. |
 
-HTTP / remote scoring: implement a batched custom RM and read `args.rm_url` (or
-your own flags). Encode images from `sample.generated_output` (see
-`generated_output_to_rgb_hwc_uint8_frames` in `miles/utils/processing_utils.py`):
+For OpenAI/Gemini image judging, use the shared API RM with
+`--api-rm-config` and `--rm-type api`. See [API rewards](rewards.md#api-rewards)
+for configuration and [Combining rewards](rewards.md#combining-rewards) for an
+example that mixes it with local scorers.
 
-```python
-import aiohttp
-from miles.utils.types import Sample
-
-async def api_rm(args, samples: list[Sample], **kwargs) -> list[float]:
-    async with aiohttp.ClientSession() as session:
-        rewards = []
-        for sample in samples:
-            payload = {"prompt": sample.prompt, "image_b64": "<your encoding>"}
-            async with session.post(args.rm_url, json=payload) as resp:
-                rewards.append((await resp.json())["score"])
-        return rewards
-```
-
-```bash
---custom-rm-path my_project.rewards.api_rm \
---rm-url http://localhost:8000/score
-```
+For a service with a different protocol, implement a batched custom RM using
+`sample.generated_output` and your service's request/response format. The
+`generated_output_to_rgb_hwc_uint8_frames` helper in
+`miles/utils/processing_utils.py` converts rollout tensors to RGB image arrays.
+Return one result per input sample in the same order, and propagate request or
+parsing failures. If returning dictionaries to retain component metrics, set
+`--reward-key` to the entry used for training; scalar results need no key.
 
 ### `--custom-reward-post-process-path`
 

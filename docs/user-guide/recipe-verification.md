@@ -51,6 +51,7 @@ count as verification.
   - `run_diffusion_grpo_sd3_hps_sglang.py` — SD3.5 Flow-GRPO + HPSv2.1.
   - `run_diffusion_grpo_sd3_ocr_pickscore_sglang.py` — SD3.5 Flow-GRPO + 0.8 OCR + 0.2 PickScore.
 - **○ NV**
+  - `run_diffusion_grpo_sd3_hps_gemini_sglang.py` — SD3.5 Flow-GRPO + 0.7 Gemini API + 0.3 HPS.
   - `run_diffusion_grpo_wan22_pickscore_5gpu.py` — Wan2.2 5-GPU LoRA
     Flow-GRPO + PickScore.
   - `run_diffusion_sft_wan22.py` — Wan2.2 4-GPU LoRA SFT.

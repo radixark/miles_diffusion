@@ -1,6 +1,6 @@
 ---
 title: Rewards
-description: Built-in reward models (PickScore, HPS, OCR), rm_hub dispatch, and prompt data format.
+description: Local and API reward models, weighted mixtures, rm_hub dispatch, and prompt data format.
 ---
 Miles-diffusion scores generated images (or video frames) after each rollout
 microgroup. Reward computation lives in `miles/rollout/rm_hub/` and is invoked
@@ -13,11 +13,12 @@ For `--custom-rm-path`, `--custom-reward-post-process-path`, and other
 
 | Stage | Flag | Role |
 |---|---|---|
-| Reward type | `--rm-type` | Selects built-in scorer (`pickscore`, `hps`, `ocr`); ignored when `--custom-rm-path` is set |
+| Reward type | `--rm-type` | Selects `pickscore`, `hps`, `ocr`, or `api`; ignored when `--custom-rm-path` is set |
+| API configuration | `--api-rm-config` | YAML configuration for one API reward: model, endpoint, and API key environment variable |
 | Per-sample override | `metadata.rm_type` in JSONL | Overrides global `--rm-type` |
 | Custom reward / norm | see [Customization](customization.md) | `--custom-rm-path`, `--custom-reward-post-process-path` |
 
-## 2. Built-in reward models
+## 2. Reward models
 
 ### PickScore (`--rm-type pickscore`)
 
@@ -103,6 +104,111 @@ Example from `scripts/run_diffusion_grpo_sd3_hps_sglang.py`:
 --hps-reward-colocate
 ```
 
+### API rewards
+
+Implementation: `miles/rollout/rm_hub/api.py`. OpenAI/Gemini API rewards use the OpenAI-compatible
+Chat Completions API. Each request includes the generation prompt and one RGB
+image from `sample.generated_output`, encoded as a PNG data URL. This integration
+currently supports images only; video and audio outputs are rejected.
+
+Set your provider's key in the shell that launches training, then save one of
+the following configurations as `rewards.yaml`. Replace the model placeholder
+with an image-capable model ID/version available to your account.
+
+**OpenAI:**
+
+```bash
+export OPENAI_API_KEY="your-key"
+```
+
+```yaml
+model: YOUR_OPENAI_VISION_MODEL
+base_url: https://api.openai.com/v1
+api_key_env: OPENAI_API_KEY
+```
+
+**Gemini:**
+
+```bash
+export GEMINI_API_KEY="your-key"
+```
+
+```yaml
+model: YOUR_GEMINI_VISION_MODEL
+base_url: https://generativelanguage.googleapis.com/v1beta/openai/
+api_key_env: GEMINI_API_KEY
+```
+
+Add these reward arguments to your image training recipe, replacing its existing
+reward selection:
+
+```bash
+--api-rm-config rewards.yaml \
+--rm-type api
+```
+
+`model` is the provider's model ID/version, `base_url` is the API endpoint, and
+`api_key_env` names the environment variable containing the key. The configuration
+stores the environment variable's name, not the key itself.
+
+Each training job uses one fixed API reward configuration and one pool, including
+for evaluation. Multiple API models or scoring rubrics in the same job are not
+supported. To use a different API metric, change the configuration for a new job.
+
+Pass the key explicitly through your launch script's `execute_train(...,
+extra_env_vars={"GEMINI_API_KEY": os.environ["GEMINI_API_KEY"]})` (use the variable
+named by `api_key_env`). The launcher does not read the reward YAML or automatically
+forward API keys. The shipped Gemini recipe passes its configured key this way.
+If submitting a Ray job yourself, include the key in that job's
+`runtime_env.env_vars` so the reward worker can read it.
+The YAML must be readable by the training driver; the resolved configuration and
+rubric text are carried with the training arguments.
+
+#### Scoring and configuration
+
+The default rubric evaluates prompt adherence: requested subjects, attributes,
+counts, actions, and spatial relationships. It asks for an integer score from
+0 (does not depict the requested content) to 4 (satisfies all observable
+requirements). The response must be a JSON object containing only a numeric
+`score`, for example `{"score": 3}`. Miles validates that the score is finite
+and within the configured range, then returns it as a float.
+
+| YAML field | Default | Meaning |
+|---|---|---|
+| `model` | Required | Provider model ID/version |
+| `base_url` | `https://api.openai.com/v1` | OpenAI-compatible API base URL |
+| `api_key_env` | Required | Environment variable containing the API key |
+| `prompt` / `prompt_path` | Built-in prompt-adherence rubric | Inline rubric or a text file relative to the YAML; set at most one |
+| `score_min` / `score_max` | `0` / `4` | Accepted score range |
+| `timeout_s` | `60` | Request deadline in seconds |
+| `max_concurrency` | `8` | Maximum concurrent requests in one zero-GPU Ray actor, shared across microgroups |
+
+For a custom rubric, add `prompt_path: rubric.txt` to the configuration.
+The rubric should request the same JSON `score` field and describe the score
+range. Scores are returned without rescaling.
+
+API rewards reuse `AsyncRewardActorPool` from `rm_hub/core.py`, like OCR and the
+GPU rewards. The singleton pool owns one zero-GPU Ray actor, using Ray's
+`max_concurrency` to run requests in threads. Other reward actors remain serial
+by default. `ApiRewardActor`
+converts rollout tensors to images, and `OpenAIImageScorer` handles the HTTP
+request and score parsing. The shared pool handles batching, worker selection,
+result ordering, and queue-depth metrics. The API actor does not consume colocated
+GPU reward slots; API credentials must be available in its Ray runtime environment.
+
+HTTP errors, timeouts, refusals, malformed responses, and invalid scores propagate
+to fail the training job after applicable SDK retries (up to two retries for transient errors).
+Failed scores are not replaced with zero or dropped. The API client is reused for the actor's lifetime;
+failures do not explicitly cancel other queued or in-flight requests.
+
+To support another API protocol, implement a scorer and an actor exposing
+`score_batch(outputs, prompts)`, then configure `AsyncRewardActorPool` with that
+actor and zero GPUs, and provide an async RM function. The existing pool's
+dispatch logic can be reused without changing the OpenAI-compatible scorer.
+
+A standalone API reward returns one float per sample, so leave `--reward-key`
+unset. To combine it with local rewards, use the example below.
+
 ### Reward placement
 
 Every GPU reward pool is placed one of two ways:
@@ -115,11 +221,11 @@ Every GPU reward pool is placed one of two ways:
   GPUs, so Ray never packs these onto rollout GPUs).
 
 `RolloutManager` seats the colocated pools before the first rollout; standalone pools are
-built on first use.
+built on first use. API rewards use no local GPU slots.
 
 ### Combining rewards
 
-`--custom-rm-path` receives `(args, samples)` and can call the built-in scorers
+`--custom-rm-path` receives `(args, samples)` and can call local scorers or configured API rewards
 directly; `--custom-rm-args` is an opaque string the framework hands to that function
 through `args`, so the function owns its own config grammar. The shipped example
 `miles/rollout/rm_hub/weighted_mixture_rm.py` reads `name=weight,name=weight`:
@@ -146,6 +252,55 @@ A shipped recipe uses it: `scripts/run_diffusion_grpo_sd3_ocr_pickscore_sglang.p
 curve and numbers. Shuffling matters more than usual there: with 8 prompts per rollout one hard
 batch moves the per-rollout mean visibly.
 
+Using the configuration from [API rewards](#api-rewards),
+add these reward arguments to a colocated image training recipe:
+
+```bash
+--api-rm-config rewards.yaml \
+--custom-rm-path miles.rollout.rm_hub.weighted_mixture_rm.weighted_mixture_rm \
+--custom-rm-args "api=0.7,hps=0.3" \
+--reward-key weighted \
+--hps-version v2.1 \
+--hps-reward-colocate
+```
+
+This example requires the recipe's `--colocate` flag for HPS placement.
+The weights illustrate the syntax; they are not tuned defaults. The API reward can
+also be combined with PickScore or OCR. Each local reward retains its model and
+placement settings; the API reward uses its YAML settings.
+
+For each sample, this function returns a dictionary such as:
+
+```python
+{
+    "hps": 0.3,
+    "api": 3.0,
+    "weighted": 2.19,  # 0.7 * 3.0 + 0.3 * 0.3
+}
+```
+
+The three custom-reward flags have separate roles:
+
+- `--custom-rm-path` selects the Python function implementing the calculation.
+- `--custom-rm-args` supplies the weights interpreted by this example function.
+- `--reward-key weighted` selects `sample.reward["weighted"]` for advantage
+  computation and training. `weighted` is a dictionary key defined by the
+  example, not an instruction to the framework to perform weighting.
+
+All components remain available in reward logs. Selecting `--reward-key hps`
+would still compute all components but train on the HPS score alone. A custom RM
+that returns a scalar per sample does not need `--reward-key`.
+
+The mixture applies the same raw weighted sum to API scores (default range
+[0, 4]) and local scores. Existing advantage normalization is unchanged.
+Results are matched to input samples in input order, regardless of request
+completion order. A failure in any required component fails the job.
+
+For a complete 0.7 Gemini API + 0.3 HPS example, use
+`scripts/run_diffusion_grpo_sd3_hps_gemini_sglang.py` with its inline API
+configuration. See [SD3](../models/sd3/sd3.md) § 5.6 for launch instructions and
+verification status.
+
 ### OCR (`--rm-type ocr`)
 
 Implementation: `miles/rollout/rm_hub/ocr.py`.
@@ -168,9 +323,10 @@ SD3 Flow-GRPO recipe (`scripts/run_diffusion_grpo_sd3_ocr_sglang.py`).
 
 ### Remote RM (`--rm-type remote_rm`)
 
-The CLI exposes `--rm-url` for a remote reward service, but **`rm_hub` does not
-implement `remote_rm` today** — selecting it raises `NotImplementedError`.
-Use `--custom-rm-path` to call an external service instead (see below).
+The CLI exposes `--rm-url` for a remote reward service, but `rm_hub` has no
+built-in `remote_rm` implementation. Selecting it raises `NotImplementedError`.
+For OpenAI-compatible image scoring, use [API rewards](#api-rewards).
+For other service protocols, use `--custom-rm-path` (see [Customization](customization.md)).
 
 ## 3. Call chain
 
@@ -181,7 +337,8 @@ generate_and_rm_microgroup()
     → all pickscore?   pickscore_rm (batched)
     → all hps?         hps_rm (batched)
     → all ocr?         ocr_rm (batched, one image per actor call)
-    → else             per-sample async_rm → ocr / pickscore / hps / NotImplementedError
+    → all api?         api_rm (batched)
+    → else             per-sample async_rm → local scorer / api / NotImplementedError
   → sample.reward = score
   → RolloutManager._post_process_rewards()      # GRPO advantage normalization
 ```
@@ -228,4 +385,4 @@ metadata.get("rm_type") or args.rm_type
 ```
 
 Mixed rm_types within one microgroup fall back to per-sample dispatch (no
-batched PickScore/HPS fast path).
+batched local/API fast path).

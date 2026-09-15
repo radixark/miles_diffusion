@@ -7,6 +7,7 @@ import json
 import os
 import random
 import shlex
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -128,17 +129,19 @@ def execute_train(
         **_parse_extra_env_vars(config.extra_env_vars),
     }
     runtime_env_vars["PYTHONPATH"] = _pythonpath_with_sources(runtime_env_vars.get("PYTHONPATH"))
-    runtime_env_json = json.dumps({"env_vars": runtime_env_vars})
-
     if not get_bool_env_var("MILES_SCRIPT_ENABLE_RAY_SUBMIT", "1"):
         return
 
-    exec_command(
-        "export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && "
-        f"""ray job submit {'' if 'RAY_ADDRESS' in os.environ else '--address="http://127.0.0.1:8265" '}"""
-        f"--runtime-env-json={shlex.quote(runtime_env_json)} "
-        f"-- python3 {shlex.quote(train_script)} {train_args}"
-    )
+    # Keep environment secrets out of the logged command line.
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json") as runtime_env_file:
+        json.dump({"env_vars": runtime_env_vars}, runtime_env_file)
+        runtime_env_file.flush()
+        exec_command(
+            "export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && "
+            f"""ray job submit {'' if 'RAY_ADDRESS' in os.environ else '--address="http://127.0.0.1:8265" '}"""
+            f"--runtime-env={shlex.quote(runtime_env_file.name)} "
+            f"-- python3 {shlex.quote(train_script)} {train_args}"
+        )
 
 
 def _pythonpath_with_sources(*additional_pythonpaths: str | None) -> str:

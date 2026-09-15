@@ -98,6 +98,7 @@ class AsyncRewardActorPool:
         num_gpus_per_worker: float,
         colocate: bool,
         name: str,
+        actor_max_concurrency: int = 1,
         placement_group=None,
         slots: ColocatedRewardSlots | None = None,
     ) -> None:
@@ -119,6 +120,7 @@ class AsyncRewardActorPool:
                 num_cpus=num_gpus_per_worker,
                 num_gpus=num_gpus_per_worker,
                 scheduling_strategy=strategy,
+                max_concurrency=actor_max_concurrency,
             )
             .remote(**actor_kwargs)
             for strategy in strategies

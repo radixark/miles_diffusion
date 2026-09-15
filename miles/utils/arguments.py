@@ -14,12 +14,14 @@ import argparse
 import json
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 import yaml
 
 from miles.backends.sglang_diffusion_utils.arguments import add_sglang_diffusion_arguments
 from miles.backends.sglang_diffusion_utils.arguments import validate_args as sglang_validate_args
+from miles.utils.api_rm_config import ApiRewardConfig
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
 from miles.utils.logging_utils import configure_logger
 
@@ -1227,7 +1229,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--rm-type",
                 type=str,
                 default=None,
-                help="Built-in reward model (pickscore / hps / ocr). Ignored when --custom-rm-path is set.",
+                help="Built-in reward (pickscore / hps / ocr / api). Ignored when --custom-rm-path is set.",
+            )
+            parser.add_argument(
+                "--api-rm-config",
+                type=str,
+                default=None,
+                help="YAML configuration for one API reward: model, base_url, api_key_env, and optional prompt_path, "
+                "score_min/score_max, timeout_s, max_concurrency. Images only; failures stop the job.",
             )
             parser.add_argument(
                 "--reward-key",
@@ -1522,6 +1531,20 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
         args.eval_prompt_data = None
 
     return eval_datasets
+
+
+def load_api_rm_config(path: str) -> ApiRewardConfig:
+    config_path = Path(path)
+    config = yaml.safe_load(config_path.read_text())
+    if not isinstance(config, dict):
+        raise ValueError("--api-rm-config must contain a mapping")
+
+    if prompt_path := config.pop("prompt_path", None):
+        config["prompt"] = (config_path.parent / prompt_path).read_text()
+    config = ApiRewardConfig(**config)
+    if not isinstance(config.max_concurrency, int) or config.max_concurrency <= 0:
+        raise ValueError("--api-rm-config: max_concurrency must be a positive integer")
+    return config
 
 
 def set_default_diffusion_args(args) -> None:
@@ -1820,6 +1843,12 @@ def miles_validate_args(args):
         )
     if args.custom_rm_args is not None and args.custom_rm_path is None:
         raise ValueError("--custom-rm-args requires --custom-rm-path.")
+
+    if args.api_rm_config:
+        # Resolve prompt files before args cross the Ray process or node boundary.
+        args._api_rm_config = load_api_rm_config(args.api_rm_config)
+    else:
+        args._api_rm_config = None
 
     if args.eval_function_path is None:
         args.eval_function_path = args.rollout_function_path
