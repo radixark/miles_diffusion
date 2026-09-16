@@ -341,12 +341,14 @@ def _compute_server_args(args, host, port, nccl_port):
 
     if getattr(args, "use_lora", False) and getattr(args, "lora_ipc_weight_sync", False):
         kwargs["lora_target_modules"] = args.lora_target_modules
-    # dit_precision / vae_precision are PipelineConfig fields, not ServerArgs, so forward them explicitly (only when changed from the class default, to avoid clobbering a subclass override).
+    # PipelineConfig fields are exposed as --sglang-* but are not ServerArgs, so the loop above skips them; forward them here, only when changed from the class default, to avoid clobbering a subclass override.
     from sglang.multimodal_gen.configs.pipeline_configs.base import PipelineConfig
 
-    for field_name in ("dit_precision", "vae_precision"):
-        val = getattr(args, f"sglang_{field_name}", None)
-        if val is not None and val != getattr(PipelineConfig, field_name, None):
-            kwargs[field_name] = val
+    for field in dataclasses.fields(PipelineConfig):
+        if field.name in kwargs:
+            continue
+        val = getattr(args, f"sglang_{field.name}", None)
+        if val is not None and val != getattr(PipelineConfig, field.name, None):
+            kwargs[field.name] = val
 
     return kwargs
