@@ -23,6 +23,7 @@ def load_fsdp_models(
     parallel_state,
     *,
     checkpoint_path: str,
+    lora_adapter_path: str | None = None,
     trainable: bool = False,
     cpu_offload: bool = False,
 ) -> dict[str, torch.nn.Module]:
@@ -41,7 +42,10 @@ def load_fsdp_models(
             model_backend.set_attention_backend(model, args.fsdp_attention_backend)
         if trainable and args.gradient_checkpointing:
             model_backend.enable_gradient_checkpointing(model)
-        if trainable and args.use_lora:
+        if lora_adapter_path is not None:
+            subfolder = component if len(args.update_weight_target_modules) > 1 else None
+            model = load_lora_adapter(model, lora_adapter_path, trainable=trainable, subfolder=subfolder)
+        elif trainable and args.use_lora:
             model = apply_lora(model, args, train_pipeline_config)
         model.train(trainable)
         if not trainable:
@@ -89,6 +93,18 @@ def model_init_context(*, materialize_weights: bool):
             message=r"for .*: copying from a non-meta parameter in the checkpoint to a meta parameter.*",
         )
         yield
+
+
+def load_lora_adapter(model, adapter_path: str, *, trainable: bool, subfolder: str | None = None):
+    from peft import PeftConfig, PeftModel, get_peft_model
+
+    if dist.get_rank() == 0:
+        return PeftModel.from_pretrained(
+            model, adapter_path, subfolder=subfolder, is_trainable=trainable, autocast_adapter_dtype=False
+        )
+    config = PeftConfig.from_pretrained(adapter_path, subfolder=subfolder)
+    config.inference_mode = not trainable
+    return get_peft_model(model, config, low_cpu_mem_usage=True, autocast_adapter_dtype=False)
 
 
 def apply_lora(model: torch.nn.Module, args: Namespace, train_pipeline_config) -> torch.nn.Module:

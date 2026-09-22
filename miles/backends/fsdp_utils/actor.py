@@ -108,6 +108,7 @@ class FSDPTrainRayActor(TrainRayActor):
             self.train_pipeline_config,
             self.parallel_state,
             checkpoint_path=args.hf_checkpoint,
+            lora_adapter_path=args.lora_adapter_path,
             trainable=True,
             cpu_offload=args.fsdp_cpu_offload,
         )

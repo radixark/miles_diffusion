@@ -1049,6 +1049,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--use-lora", action="store_true", default=False, help="Use LoRA adapters instead of full finetune."
             )
+            parser.add_argument(
+                "--lora-adapter-path",
+                type=str,
+                default=None,
+                help="Pretrained actor LoRA adapter to continue training.",
+            )
             parser.add_argument("--lora-rank", type=int, default=64)
             parser.add_argument("--lora-alpha", type=int, default=64)
             parser.add_argument(
@@ -1559,6 +1565,41 @@ def set_default_diffusion_args(args) -> None:
             args.ref_mode = "none"
 
 
+def validate_actor_lora_adapter(args) -> None:
+    if args.lora_adapter_path is None:
+        return
+    if not args.use_lora:
+        raise ValueError("--lora-adapter-path requires --use-lora")
+    from peft import PeftConfig
+
+    for component in args.update_weight_target_modules:
+        subfolder = component if len(args.update_weight_target_modules) > 1 else None
+        adapter_config = PeftConfig.from_pretrained(args.lora_adapter_path, subfolder=subfolder)
+        if (
+            adapter_config.use_dora
+            or adapter_config.bias != "none"
+            or adapter_config.lora_bias
+            or adapter_config.modules_to_save
+        ):
+            raise ValueError(
+                f"Actor LoRA adapter for {component} must contain only LoRA A/B matrices; "
+                "DoRA, bias training, and modules_to_save are not supported by checkpoint and weight sync"
+            )
+        if args.lora_ipc_weight_sync and (
+            adapter_config.use_rslora or adapter_config.rank_pattern or adapter_config.alpha_pattern
+        ):
+            raise ValueError(
+                f"--lora-ipc-weight-sync requires uniform standard LoRA for {component}; "
+                "disable it for rsLoRA or per-layer rank/alpha"
+            )
+        if (adapter_config.r, adapter_config.lora_alpha) != (args.lora_rank, args.lora_alpha):
+            raise ValueError(
+                f"Actor LoRA adapter for {component} has r={adapter_config.r}, lora_alpha={adapter_config.lora_alpha}; "
+                f"set --lora-rank {adapter_config.r} --lora-alpha {adapter_config.lora_alpha} "
+                f"instead of {args.lora_rank}/{args.lora_alpha}"
+            )
+
+
 def miles_validate_args(args):
     args.eval_datasets = _resolve_eval_datasets(args)
 
@@ -1596,6 +1637,7 @@ def miles_validate_args(args):
         )
     if len(set(args.update_weight_target_modules)) != len(args.update_weight_target_modules):
         raise ValueError(f"--update-weight-target-module has duplicates: {args.update_weight_target_module!r}")
+    validate_actor_lora_adapter(args)
 
     if args.wandb_log_image_interval < 1:
         raise ValueError(f"wandb_log_image_interval must be >= 1, got {args.wandb_log_image_interval}")
