@@ -1,9 +1,10 @@
-"""Pretrained actor LoRA must match checkpoint and weight-publication support.
+"""Model roles are independent of the actor's full-parameter or LoRA training mode.
 
-    --use-lora --> saved adapter config --> A/B-only checkpoint + uniform IPC scaling + CLI r/alpha match
-    unsupported config -----------------> reject before model construction
+    actor: full / LoRA ---> ref: base / base + LoRA, teacher: base / base + LoRA
+    actor: LoRA        ---> lora_base: reuse actor with its adapter disabled
+    actor LoRA enabled --> adapter config --> checkpoint A/B support + uniform IPC scaling + CLI r/alpha match
 
-Validation requires the CLI rank/alpha to match the loaded adapter and leaves args unchanged.
+Validation rejects incomplete role sources and unused options without changing args.
 """
 
 from tests.ci.ci_register import register_cpu_ci
@@ -15,7 +16,7 @@ from argparse import Namespace
 import pytest
 from peft import LoraConfig
 
-from miles.utils.arguments import validate_actor_lora_adapter
+from miles.utils.arguments import validate_actor_lora_adapter, validate_reference_model_args
 
 
 def _args(**overrides):
@@ -42,6 +43,52 @@ def _args(**overrides):
     )
     values.update(overrides)
     return Namespace(**values)
+
+
+@pytest.mark.parametrize("use_lora", [False, True])
+@pytest.mark.parametrize("role_has_adapter", [False, True])
+def test_frozen_models_do_not_inherit_actor_training_mode(use_lora, role_has_adapter):
+    args = _args(
+        use_lora=use_lora,
+        lora_adapter_path="actor-adapter" if use_lora else None,
+        ref_mode="ref",
+        ref_load="reference-base",
+        teacher_load="teacher-base",
+        ref_lora_adapter_path="reference-adapter" if role_has_adapter else None,
+        teacher_lora_adapter_path="teacher-adapter" if role_has_adapter else None,
+        ref_cpu_offload=True,
+        teacher_cpu_offload=True,
+    )
+    original = vars(args).copy()
+    validate_reference_model_args(args)
+    assert vars(args) == original
+
+
+def test_lora_base_needs_no_separate_reference_checkpoint():
+    args = _args(use_lora=True, lora_adapter_path="actor-adapter", ref_mode="lora_base")
+    validate_reference_model_args(args)
+    assert args.ref_load is None
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"ref_mode": "ref"}, "--ref-mode ref requires --ref-load"),
+        ({"ref_load": "reference"}, "--ref-load requires --ref-mode ref"),
+        ({"ref_lora_adapter_path": "adapter"}, "--ref-lora-adapter-path requires --ref-load"),
+        ({"teacher_lora_adapter_path": "adapter"}, "--teacher-lora-adapter-path requires --teacher-load"),
+        ({"ref_cpu_offload": True}, "--ref-cpu-offload requires --ref-load"),
+        ({"teacher_cpu_offload": True}, "--teacher-cpu-offload requires --teacher-load"),
+        ({"ref_mode": "lora_base"}, "--ref-mode lora_base requires --use-lora"),
+        ({"ref_mode": "ema"}, "--ref-mode ema requires --use-ema"),
+    ],
+)
+def test_incomplete_model_roles_are_rejected(overrides, message):
+    args = _args(**overrides)
+    original = vars(args).copy()
+    with pytest.raises(ValueError, match=message):
+        validate_reference_model_args(args)
+    assert vars(args) == original
 
 
 def test_loaded_adapter_matching_actor_cli_passes_without_changing_args(tmp_path):

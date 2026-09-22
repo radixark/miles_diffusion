@@ -112,6 +112,29 @@ class FSDPTrainRayActor(TrainRayActor):
             trainable=True,
             cpu_offload=args.fsdp_cpu_offload,
         )
+        self.reference_models = {}
+        if args.ref_load is not None:
+            self.reference_models = load_fsdp_models(
+                args,
+                self.model_backend,
+                self.train_pipeline_config,
+                self.parallel_state,
+                checkpoint_path=args.ref_load,
+                lora_adapter_path=args.ref_lora_adapter_path,
+                cpu_offload=args.ref_cpu_offload,
+            )
+        self.teacher_models = {}
+        if args.teacher_load is not None:
+            self.teacher_models = load_fsdp_models(
+                args,
+                self.model_backend,
+                self.train_pipeline_config,
+                self.parallel_state,
+                checkpoint_path=args.teacher_load,
+                lora_adapter_path=args.teacher_lora_adapter_path,
+                cpu_offload=args.teacher_cpu_offload,
+            )
+
         # Force a sync to ensure sharding is complete and old memory is freed.
         torch.cuda.synchronize()
         clear_memory()
@@ -196,8 +219,9 @@ class FSDPTrainRayActor(TrainRayActor):
         print_memory("before offload DiT")
         self.optimizer.zero_grad(set_to_none=True)
 
-        for model in self.models.values():
-            offload_model(model)
+        for models in (self.models, self.reference_models, self.teacher_models):
+            for model in models.values():
+                offload_model(model)
         move_optimizer(self.optimizer, "cpu")
         clear_memory()
         dist.barrier(group=get_gloo_group())
@@ -208,8 +232,13 @@ class FSDPTrainRayActor(TrainRayActor):
         if not self.args.offload_train:
             return
 
-        for model in self.models.values():
-            onload_model(model, cpu_offload=self.args.fsdp_cpu_offload)
+        for models, cpu_offload in (
+            (self.models, self.args.fsdp_cpu_offload),
+            (self.reference_models, self.args.ref_cpu_offload),
+            (self.teacher_models, self.args.teacher_cpu_offload),
+        ):
+            for model in models.values():
+                onload_model(model, cpu_offload=cpu_offload)
         if not self.args.fsdp_cpu_offload:
             move_optimizer(self.optimizer, "cuda")
         dist.barrier(group=get_gloo_group())
@@ -332,6 +361,8 @@ class FSDPTrainRayActor(TrainRayActor):
 
         loss_ctx = DiffusionLossContext(
             models=self.models,
+            reference_models=self.reference_models,
+            teacher_models=self.teacher_models,
             train_pipeline_config=self.train_pipeline_config,
             sde_backend=self.sde_backend,
             scheduler=self.scheduler,
@@ -479,7 +510,10 @@ class FSDPTrainRayActor(TrainRayActor):
                 )
 
         ref_pred = None
-        if self.args.ref_mode == "ema":
+        if self.args.ref_mode == "ref":
+            with torch.no_grad():
+                ref_pred = _compute_noise_pred(self.reference_models[prepared.component_name]).detach()
+        elif self.args.ref_mode == "ema":
             # Drop gathered copies around the swap so neither the EMA nor the actor forward sees stale weights.
             reshard_model(prepared.model)
             with torch.no_grad(), self.ema_shadow.swap_in():

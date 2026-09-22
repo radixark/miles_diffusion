@@ -1,10 +1,19 @@
-"""Loaded actor adapters preserve base-reference training and publication metadata.
+"""Independent model roles keep actor parameters and gradients isolated.
 
-    checkpoint --> component LoRA weights --> base reference --> actor gradients
-    loaded r/alpha -----------------------> IPC publication (ignores CLI defaults)
+    full / new / saved LoRA -> actor (trainable) ---> loss ---> gradients + optimizer step
+                           +-> reference (full or LoRA) --no_grad--/
+                           +-> teacher (LoRA) -----------no_grad--/
+    two components         ---> select the matching role component
+    LoRA base reference    ---> disable adapter ---> adapters and their gradients back on the actor
+    FSDP2 kept-gathered    ---> lora_base forward ---> next step still trains the adapters
+    loaded adapter r/alpha ---> IPC publication metadata (ignores CLI init defaults)
+    FSDP boundary          ---> TinyBlock containing the complete LoRA projection
+    checkpoint_path        ---> backend loads base; loader applies the role's LoRA
 
-Real PEFT loading and actor forward are exercised with FSDP collectives replaced.
-    checkpoint_path --> backend loads base; loader applies LoRA
+The CPU tests exercise real PEFT checkpoint loading and the production actor forward.
+Loader tests replace FSDP collectives; the CUDA worker uses the real sharded loader.
+The IPC test captures transport metadata without launching a rollout engine.
+Dense model copies provide an independent output and gradient oracle.
 """
 
 from tests.ci.ci_register import register_cpu_ci
@@ -22,7 +31,7 @@ import pytest
 import torch
 import torch.distributed as dist
 import torch.testing._internal.distributed.fake_pg  # noqa: F401
-from peft import LoraConfig, get_peft_model
+from peft import LoraConfig, PeftModel, get_peft_model
 from torch.distributed.device_mesh import init_device_mesh
 from torch.distributed.fsdp import fully_shard
 
@@ -168,6 +177,92 @@ def unsharded_model_loader(monkeypatch):
     monkeypatch.setattr(model_loader, "apply_fsdp2", record_fsdp)
     parallel = SimpleNamespace(get_mesh=lambda name: "shared-fsdp-mesh", get_optional_mesh=lambda name: None)
     return parallel, calls
+
+
+@pytest.mark.parametrize("actor_mode", ["full", "new_lora", "saved_lora"])
+@pytest.mark.parametrize("reference_has_adapter", [False, True])
+def test_loaded_reference_and_teacher_are_independent_and_frozen(
+    tmp_path, unsharded_model_loader, actor_mode, reference_has_adapter
+):
+    parallel, calls = unsharded_model_loader
+    save_component_lora_adapters(tmp_path)
+    args, backend, config = make_model_loader_args(), TinyBackend(), TinyPipelineConfig()
+    actor_has_adapter = actor_mode != "full"
+    args.use_lora = actor_has_adapter
+    args.lora_rank = 1
+    args.lora_alpha = 2
+    args.lora_target_modules = ["proj"]
+    args.lora_init_weights = "kaiming-uniform"
+    actor = model_loader.load_fsdp_models(
+        args,
+        backend,
+        config,
+        parallel,
+        checkpoint_path="actor",
+        lora_adapter_path=str(tmp_path) if actor_mode == "saved_lora" else None,
+        trainable=True,
+    )
+    reference = model_loader.load_fsdp_models(
+        args,
+        backend,
+        config,
+        parallel,
+        checkpoint_path="reference",
+        lora_adapter_path=str(tmp_path) if reference_has_adapter else None,
+        cpu_offload=True,
+    )
+    teacher = model_loader.load_fsdp_models(
+        args,
+        backend,
+        config,
+        parallel,
+        checkpoint_path="teacher",
+        lora_adapter_path=str(tmp_path),
+    )
+    assert args.hf_checkpoint == "actor" and args.use_lora is actor_has_adapter
+    assert calls == [("shared-fsdp-mesh", flag) for flag in (False, False, True, True, False, False)]
+    assert backend.component_load_requests == [
+        (component, checkpoint_path)
+        for checkpoint_path in ("actor", "reference", "teacher")
+        for component in args.update_weight_target_modules
+    ]
+    inputs = torch.arange(6, dtype=torch.float32).reshape(2, 3) / 10
+    for component in args.update_weight_target_modules:
+        assert isinstance(actor[component], PeftModel) is actor_has_adapter
+        if actor_has_adapter:
+            adapter_config = actor[component].peft_config["default"]
+            assert adapter_config.r == (2 if actor_mode == "saved_lora" else args.lora_rank)
+            assert adapter_config.lora_alpha == (4 if actor_mode == "saved_lora" else args.lora_alpha)
+        assert isinstance(reference[component], PeftModel) is reference_has_adapter
+        oracle = copy.deepcopy(actor[component])
+        frozen_parameters_before_update = {
+            (role, name): value.detach().clone()
+            for role, model in (("ref", reference[component]), ("teacher", teacher[component]))
+            for name, value in model.named_parameters()
+        }
+        with torch.no_grad():
+            target = reference[component](inputs)
+            teacher_output = teacher[component](inputs)
+        assert not torch.equal(target, teacher_output)
+        harness, observed = make_actor_forward_harness(actor, reference, component, inputs, "ref")
+        load_actor_forward_method()(harness, None, [], metrics=None).backward()
+        oracle_output = oracle(inputs)
+        (oracle_output - target).square().mean().backward()
+        torch.testing.assert_close(observed["new_pred"], oracle_output)
+        torch.testing.assert_close(observed["ref_pred"], target)
+        assert not observed["ref_pred"].requires_grad
+        for actual, expected in zip(actor[component].parameters(), oracle.parameters(), strict=True):
+            if actual.requires_grad:
+                torch.testing.assert_close(actual.grad, expected.grad)
+        torch.optim.AdamW(actor[component].parameters(), lr=0.01).step()
+        torch.optim.AdamW(oracle.parameters(), lr=0.01).step()
+        for actual, expected in zip(actor[component].parameters(), oracle.parameters(), strict=True):
+            torch.testing.assert_close(actual, expected)
+        for role, model in (("ref", reference[component]), ("teacher", teacher[component])):
+            assert not model.training
+            for name, parameter in model.named_parameters():
+                assert not parameter.requires_grad and parameter.grad is None
+                torch.testing.assert_close(parameter, frozen_parameters_before_update[role, name])
 
 
 def test_lora_base_forward_restores_adapters_and_actor_gradients(tmp_path, unsharded_model_loader):

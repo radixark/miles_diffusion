@@ -961,13 +961,38 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--ref-mode",
                 type=str,
-                choices=["none", "lora_base", "ema"],
+                choices=["none", "lora_base", "ema", "ref"],
                 default=None,
                 help=(
-                    "Which reference weights to use for the no-grad DiT forward. "
+                    "Which reference model to use for the no-grad DiT forward. "
                     "Auto: lora_base when --diffusion-kl-beta > 0 and ema for --loss-type nft. "
-                    "Explicit values skip auto inference."
+                    "Use ref with --ref-load for an independent frozen model."
                 ),
+            )
+            parser.add_argument(
+                "--ref-load", type=str, default=None, help="HF pipeline checkpoint for the frozen reference model."
+            )
+            parser.add_argument(
+                "--teacher-load", type=str, default=None, help="HF pipeline checkpoint for the frozen teacher model."
+            )
+            parser.add_argument(
+                "--ref-lora-adapter-path", type=str, default=None, help="Pretrained LoRA adapter for --ref-load."
+            )
+            parser.add_argument(
+                "--teacher-lora-adapter-path",
+                type=str,
+                default=None,
+                help="Pretrained LoRA adapter for --teacher-load.",
+            )
+            parser.add_argument(
+                "--ref-cpu-offload",
+                action="store_true",
+                help="Keep reference parameter shards in pinned CPU memory between FSDP forwards.",
+            )
+            parser.add_argument(
+                "--teacher-cpu-offload",
+                action="store_true",
+                help="Keep teacher parameter shards in pinned CPU memory between FSDP forwards.",
             )
             return parser
 
@@ -1565,6 +1590,25 @@ def set_default_diffusion_args(args) -> None:
             args.ref_mode = "none"
 
 
+def validate_reference_model_args(args) -> None:
+    if args.ref_mode == "ref" and args.ref_load is None:
+        raise ValueError("--ref-mode ref requires --ref-load")
+    if args.ref_load is not None and args.ref_mode != "ref":
+        raise ValueError("--ref-load requires --ref-mode ref")
+    if args.ref_lora_adapter_path is not None and args.ref_load is None:
+        raise ValueError("--ref-lora-adapter-path requires --ref-load")
+    if args.teacher_lora_adapter_path is not None and args.teacher_load is None:
+        raise ValueError("--teacher-lora-adapter-path requires --teacher-load")
+    if args.ref_cpu_offload and args.ref_load is None:
+        raise ValueError("--ref-cpu-offload requires --ref-load")
+    if args.teacher_cpu_offload and args.teacher_load is None:
+        raise ValueError("--teacher-cpu-offload requires --teacher-load")
+    if args.ref_mode == "lora_base" and not args.use_lora:
+        raise ValueError("--ref-mode lora_base requires --use-lora")
+    if args.ref_mode == "ema" and not args.use_ema:
+        raise ValueError("--ref-mode ema requires --use-ema")
+
+
 def validate_actor_lora_adapter(args) -> None:
     if args.lora_adapter_path is None:
         return
@@ -1601,6 +1645,7 @@ def validate_actor_lora_adapter(args) -> None:
 
 
 def miles_validate_args(args):
+    validate_reference_model_args(args)
     args.eval_datasets = _resolve_eval_datasets(args)
 
     if args.eval_interval is not None:
@@ -1779,13 +1824,9 @@ def miles_validate_args(args):
             )
 
     if is_nft and args.ref_mode == "none":
-        raise ValueError("--loss-type nft requires a reference model; set --ref-mode ema or lora_base")
-    if args.ref_mode == "ema" and not args.use_ema:
-        raise ValueError("--ref-mode ema requires --use-ema")
-    if args.ref_mode == "lora_base" and not args.use_lora:
-        raise ValueError("--ref-mode lora_base requires --use-lora")
+        raise ValueError("--loss-type nft requires a reference model; set --ref-mode ema, lora_base, or ref")
     if args.diffusion_kl_beta > 0 and args.ref_mode == "none":
-        raise ValueError("--diffusion-kl-beta > 0 requires a reference model; set --ref-mode lora_base or ema")
+        raise ValueError("--diffusion-kl-beta > 0 requires a reference model; set --ref-mode lora_base, ema, or ref")
 
     if args.dump_details is not None:
         args.save_debug_rollout_data = f"{args.dump_details}/rollout_data/{{rollout_id}}.pt"

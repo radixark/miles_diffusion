@@ -149,7 +149,7 @@ def flow_grpo_loss_formula(
     kl_sum = loss_sum.new_zeros(())
     if kl_beta > 0:
         if ref_pred is None:
-            raise ValueError("Flow-GRPO KL requires a reference DiT forward (actor ref_mode=lora_base)")
+            raise ValueError("Flow-GRPO KL requires a reference DiT forward; set --ref-mode lora_base, ema, or ref")
         _, _, prev_sample_mean_ref, _ = ctx.sde_backend.sde_step_logprob(
             ref_pred.float(),
             prepared.timesteps,
