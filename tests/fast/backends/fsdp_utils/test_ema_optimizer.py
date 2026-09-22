@@ -4,6 +4,7 @@
     frozen base / buffers       --------> unchanged (never averaged)
     actor --use_weights--> EMA forward --finally--> original actor weights
     component A --use_weights--> EMA A; component B stays untouched
+    actor.train --> one EMA update --> repeated publications (no further updates)
 
 Dense and adapter-only checkpoints save EMA independently of Adam and restore its
 schedule and update count. Older checkpoints seed EMA from the loaded actor weights.
@@ -13,6 +14,9 @@ from tests.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=5, suite="stage-a-cpu", labels=["fsdp"])
 
+import ast
+from contextlib import nullcontext
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -95,6 +99,63 @@ def test_use_weights_scopes_parameters_to_selected_component():
         assert first.lora_A.item() == second.lora_A.item() == 4.0
     assert first.base.item() == second.base.item() == 12.0
     assert first.lora_A.item() == second.lora_A.item() == 14.0
+
+
+def test_actor_train_updates_ema_once_and_publication_only_reads_it():
+    path = Path(__file__).resolve().parents[4] / "miles/backends/fsdp_utils/actor.py"
+    actor_class = next(
+        node
+        for node in ast.parse(path.read_text()).body
+        if isinstance(node, ast.ClassDef) and node.name == "FSDPTrainRayActor"
+    )
+    methods = [
+        node
+        for node in actor_class.body
+        if isinstance(node, ast.FunctionDef) and node.name in ("train", "update_weights")
+    ]
+    for method in methods:
+        method.decorator_list = []
+    namespace = dict(
+        ray=SimpleNamespace(get=lambda value: value),
+        dist=SimpleNamespace(get_rank=lambda: 0),
+        timer=lambda name: nullcontext(),
+        inverse_timer=lambda name: nullcontext(),
+        nullcontext=nullcontext,
+        clear_memory=lambda: None,
+        train_metric_utils=SimpleNamespace(log_perf_data_raw=lambda **kwargs: None),
+    )
+    exec(compile(ast.Module(body=methods, type_ignores=[]), str(path), "exec"), namespace)
+
+    model = Model()
+    published_weights = []
+
+    @torch.no_grad()
+    def train_core(**kwargs):
+        for parameter in model.parameters():
+            parameter.add_(2.0)
+
+    actor = SimpleNamespace(
+        args=SimpleNamespace(
+            offload_train=False, debug_rollout_only=False, train_only=False, ema_rollout_policy="ema"
+        ),
+        model=model,
+        ema_optimizer=EMAOptimizer(model, decay=0.5, flat_steps=10),
+        _train_core=train_core,
+        parallel_state=SimpleNamespace(get_mesh=lambda name: SimpleNamespace(get_local_rank=lambda: 0)),
+        rollout_manager=SimpleNamespace(get_rollout_engines_and_lock=SimpleNamespace(remote=lambda: (None, None, 0))),
+        weight_updater=SimpleNamespace(update_weights=lambda: published_weights.append(model.base.detach().clone())),
+    )
+    namespace["train"](actor, rollout_id=0, rollout_data_ref=[SimpleNamespace(inner={})])
+    assert model.base.item() == 4.0
+    assert actor.ema_optimizer.update_count == 1
+    assert actor.ema_optimizer.state[model.base]["ema"].item() == 3.0
+
+    for _ in range(2):
+        namespace["update_weights"](actor)
+        assert published_weights[-1].item() == 3.0
+        assert model.base.item() == 4.0
+        assert actor.ema_optimizer.update_count == 1
+        assert actor.ema_optimizer.state[model.base]["ema"].item() == 3.0
 
 
 @pytest.fixture

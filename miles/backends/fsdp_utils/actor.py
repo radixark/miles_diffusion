@@ -270,8 +270,6 @@ class FSDPTrainRayActor(TrainRayActor):
             if dist.get_rank() == 0:
                 ray.get(self.rollout_manager.clear_num_new_engines.remote())
 
-        if self.ema_optimizer is not None:
-            self.ema_optimizer.step()
         rollout_weight_context = (
             self.ema_optimizer.use_weights(self.model) if self.args.ema_rollout_policy == "ema" else nullcontext()
         )
@@ -307,6 +305,8 @@ class FSDPTrainRayActor(TrainRayActor):
             if self.args.debug_rollout_only:
                 return
             self._train_core(rollout_id=rollout_id, rollout_data=rollout_data)
+            if self.ema_optimizer is not None:
+                self.ema_optimizer.step()
 
         train_metric_utils.log_perf_data_raw(
             rollout_id=rollout_id,
