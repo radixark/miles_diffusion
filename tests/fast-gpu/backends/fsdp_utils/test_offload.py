@@ -5,6 +5,10 @@
                    uneven shards + tied/nonpersistent buffers
                                     |
                 offload --> pinned storage --> onload --> same outputs/updates
+
+    GPU/CPU actor + EMA on the same device --> average --> inference --> actor forward/backward
+                                     |
+                      pinned sleep / onload + DCP round trip
 """
 
 from tests.ci.ci_register import register_cuda_ci

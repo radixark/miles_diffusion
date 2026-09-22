@@ -33,7 +33,7 @@ from .diffusion_update_weight_utils import (
     DiffusionUpdateWeightFromTensorLoRA,
     DiffusionUpdateWeightFromTensorLoRAIPC,
 )
-from .ema import EmaShadow, reshard_model
+from .ema import EMAOptimizer, reshard_model
 from .input_dtype_policy import apply_input_dtype_policy
 from .loss_hub import DiffusionLossContext, flow_grpo_loss_formula, prepare_flow_grpo_batch
 from .lr_scheduler import get_lr_scheduler
@@ -182,17 +182,16 @@ class FSDPTrainRayActor(TrainRayActor):
         self.global_step = 0
         self.micro_step = 0
 
-        checkpoint_payload = checkpoint.load(self)
-
-        self.ema_shadow = None
-        if self.args.use_ema:
-            self.ema_shadow = EmaShadow(
-                (p for m in self.models.values() for p in m.parameters()),
-                decay=self.args.ema_decay_init,
-                uprate=self.args.ema_decay_ramp,
-                uphold=self.args.ema_decay_max,
-                flat_steps=self.args.ema_decay_flat_steps,
+        self.ema_optimizer = None
+        if args.use_ema:
+            self.ema_optimizer = EMAOptimizer(
+                self.model,
+                decay=args.ema_decay_init,
+                uprate=args.ema_decay_ramp,
+                uphold=args.ema_decay_max,
+                flat_steps=args.ema_decay_flat_steps,
             )
+        checkpoint_payload = checkpoint.load(self)
 
         # sglang-d now supports /update_weights_from_tensor (PR #20464).
         if self.args.train_only:
@@ -223,6 +222,8 @@ class FSDPTrainRayActor(TrainRayActor):
             for model in models.values():
                 offload_model(model)
         move_optimizer(self.optimizer, "cpu")
+        if self.ema_optimizer is not None:
+            move_optimizer(self.ema_optimizer, "cpu")
         clear_memory()
         dist.barrier(group=get_gloo_group())
         print_memory("after sleep DiT")
@@ -241,6 +242,8 @@ class FSDPTrainRayActor(TrainRayActor):
                 onload_model(model, cpu_offload=cpu_offload)
         if not self.args.fsdp_cpu_offload:
             move_optimizer(self.optimizer, "cuda")
+            if self.ema_optimizer is not None:
+                move_optimizer(self.ema_optimizer, "cuda")
         dist.barrier(group=get_gloo_group())
         print_memory("after wake_up DiT")
 
@@ -267,13 +270,10 @@ class FSDPTrainRayActor(TrainRayActor):
             if dist.get_rank() == 0:
                 ray.get(self.rollout_manager.clear_num_new_engines.remote())
 
-        ema_shadow = self.ema_shadow
-        if ema_shadow is not None:
-            delta = ema_shadow.update()
-            if dist.get_rank() == 0:
-                logger.info("EMA shadow updated (decay=%.4f step=%d)", delta, ema_shadow.step)
+        if self.ema_optimizer is not None:
+            self.ema_optimizer.step()
         rollout_weight_context = (
-            ema_shadow.swap_in() if ema_shadow is not None and self.args.ema_rollout_policy == "ema" else nullcontext()
+            self.ema_optimizer.use_weights(self.model) if self.args.ema_rollout_policy == "ema" else nullcontext()
         )
         with rollout_weight_context:
             self.weight_updater.update_weights()
@@ -514,11 +514,8 @@ class FSDPTrainRayActor(TrainRayActor):
             with torch.no_grad():
                 ref_pred = _compute_noise_pred(self.reference_models[prepared.component_name]).detach()
         elif self.args.ref_mode == "ema":
-            # Drop gathered copies around the swap so neither the EMA nor the actor forward sees stale weights.
-            reshard_model(prepared.model)
-            with torch.no_grad(), self.ema_shadow.swap_in():
+            with torch.no_grad(), self.ema_optimizer.use_weights(prepared.model):
                 ref_pred = _compute_noise_pred(prepared.model).detach()
-                reshard_model(prepared.model)
         elif self.args.ref_mode == "lora_base":
             with torch.no_grad(), prepared.model.disable_adapter():
                 ref_pred = _compute_noise_pred(prepared.model).detach()

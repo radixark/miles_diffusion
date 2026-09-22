@@ -13,6 +13,7 @@ the prefix until the CLIs merge; stripping it early leaves two names for one ide
 import argparse
 import json
 import logging
+import math
 import os
 from typing import Any
 
@@ -1751,8 +1752,8 @@ def miles_validate_args(args):
 
     if not 0.0 <= args.ema_decay_init <= 1.0:
         raise ValueError(f"--ema-decay-init must be in [0, 1], got {args.ema_decay_init}")
-    if args.ema_decay_ramp < 0.0:
-        raise ValueError(f"--ema-decay-ramp must be non-negative, got {args.ema_decay_ramp}")
+    if not math.isfinite(args.ema_decay_ramp) or args.ema_decay_ramp < 0.0:
+        raise ValueError(f"--ema-decay-ramp must be finite and non-negative, got {args.ema_decay_ramp}")
     if not 0.0 <= args.ema_decay_max <= 1.0:
         raise ValueError(f"--ema-decay-max must be in [0, 1], got {args.ema_decay_max}")
     if args.ema_decay_flat_steps < 0:
@@ -1804,7 +1805,7 @@ def miles_validate_args(args):
         if args.ref_mode != "none":
             raise ValueError("--loss-type sft_loss does not use a reference model; drop --ref-mode")
         if args.use_ema:
-            raise ValueError("--loss-type sft_loss does not support --use-ema (EMA updates run in weight sync)")
+            raise ValueError("--loss-type sft_loss does not support --use-ema")
 
     is_nft = args.loss_type == "nft"
     if is_nft:

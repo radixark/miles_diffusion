@@ -1,18 +1,14 @@
-"""EMA shadow of trainable parameters for diffusion FSDP training."""
-
 from __future__ import annotations
 
-from collections.abc import Iterable
 from contextlib import contextmanager
 
 import torch
-import torch.nn as nn
 from torch.distributed.fsdp import FSDPModule
 from torch.distributed.tensor import DTensor
 
 
-def _local(t: torch.Tensor) -> torch.Tensor:
-    return t.to_local() if isinstance(t, DTensor) else t
+def _local_tensor(tensor: torch.Tensor) -> torch.Tensor:
+    return tensor.to_local() if isinstance(tensor, DTensor) else tensor
 
 
 def reshard_model(model: torch.nn.Module) -> None:
@@ -22,61 +18,70 @@ def reshard_model(model: torch.nn.Module) -> None:
             module.reshard()
 
 
-class EmaShadow:
-    """EMA shadow of trainable parameters."""
-
+class EMAOptimizer(torch.optim.Optimizer):
     def __init__(
         self,
-        parameters: Iterable[nn.Parameter],
+        model: torch.nn.Module,
         *,
         decay: float = 0.001,
         uprate: float = 0.001,
         uphold: float = 0.5,
         flat_steps: int = 0,
     ) -> None:
-        self.decay = float(decay)
-        self.uprate = float(uprate)
-        self.uphold = float(uphold)
-        self.flat_steps = int(flat_steps)
-        self.step = 0
-        self._swapped = False
+        super().__init__(
+            (parameter for parameter in model.parameters() if parameter.requires_grad),
+            dict(decay=decay, uprate=uprate, uphold=uphold, flat_steps=flat_steps, update_count=0),
+        )
+        self.reset_from_model()
 
-        self.params = [p for p in parameters if p.requires_grad]
-        if not self.params:
-            raise ValueError("EmaShadow: model has no trainable parameters")
-        self.shadow = [_local(p.detach()).clone() for p in self.params]
-
-    def decay_at(self, t: int) -> float:
-        if t <= self.flat_steps:
-            return self.decay
-        return float(min((t - self.flat_steps) * self.uprate, self.uphold))
+    @property
+    def update_count(self) -> int:
+        return self.param_groups[0]["update_count"]
 
     @torch.no_grad()
-    def update(self) -> float:
-        """theta_old <- delta * theta_old + (1 - delta) * theta."""
-        if self._swapped:
-            raise RuntimeError("EmaShadow.update called while swapped in")
-        self.step += 1
-        delta = self.decay_at(self.step)
-        for live, sh in zip(self.params, self.shadow, strict=True):
-            sh.mul_(delta).add_(_local(live.detach()).to(sh.device), alpha=1.0 - delta)
-        return delta
+    def reset_from_model(self) -> None:
+        for group in self.param_groups:
+            group["update_count"] = 0
+            for parameter in group["params"]:
+                self.state[parameter]["ema"] = parameter.detach().clone()
+
+    @torch.no_grad()
+    def step(self, closure=None) -> float:
+        for group in self.param_groups:
+            group["update_count"] += 1
+            update_count = group["update_count"]
+            decay = (
+                group["decay"]
+                if update_count <= group["flat_steps"]
+                else min((update_count - group["flat_steps"]) * group["uprate"], group["uphold"])
+            )
+            ema_tensors = [_local_tensor(self.state[parameter]["ema"]) for parameter in group["params"]]
+            actor_tensors = [_local_tensor(parameter.detach()) for parameter in group["params"]]
+            torch._foreach_lerp_(ema_tensors, actor_tensors, 1.0 - decay)
+        return decay
 
     @contextmanager
-    def swap_in(self):
-        """Temporarily expose EMA weights as the live parameters."""
-        self._swap()
-        self._swapped = True
+    def use_weights(self, model: torch.nn.Module):
+        """Temporarily put the EMA weights into ``model``'s shards.
+
+        Gathered full parameters are dropped before swapping in and before swapping back,
+        so no forward reads stale weights.
+        """
+        reshard_model(model)
+        parameters = [parameter for parameter in model.parameters() if parameter in self.state]
+        self._swap_with_actor(parameters)
         try:
             yield
         finally:
-            self._swap()
-            self._swapped = False
+            reshard_model(model)
+            self._swap_with_actor(parameters)
 
     @torch.no_grad()
-    def _swap(self) -> None:
-        for live, sh in zip(self.params, self.shadow, strict=True):
-            live_local = _local(live.data)
-            tmp = live_local.clone()
-            live_local.copy_(sh)
-            sh.copy_(tmp)
+    def _swap_with_actor(self, parameters: list[torch.nn.Parameter]) -> None:
+        # EMA shares the actor's device, so its own storage holds the actor weights while they are swapped out.
+        for parameter in parameters:
+            actor_tensor = _local_tensor(parameter)
+            ema_tensor = _local_tensor(self.state[parameter]["ema"])
+            actor_copy = actor_tensor.clone()
+            actor_tensor.copy_(ema_tensor)
+            ema_tensor.copy_(actor_copy)

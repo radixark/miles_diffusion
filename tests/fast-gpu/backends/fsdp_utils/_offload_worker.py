@@ -7,16 +7,27 @@
 The 2 x 2 x 2 matrix covers frozen references, cached gathered parameters, and
 native CPUOffloadPolicy. Uneven local shards must remain pinned after FSDP padding;
 optimizer Parameter bindings and tied/nonpersistent buffer aliases must survive.
+
+    GPU/CPU actor x GPU/CPU EMA --> EMA inference --> actor forward/backward
+               |                                      |
+           pinned sleep <--------- EMA update --------+
+               |
+        DCP save/load --> same EMA tensors, placement, and update count
 """
 
 import copy
 import importlib.util
 import itertools
 import os
+import shutil
+import sys
+import tempfile
 from pathlib import Path
 
 import torch
 import torch.distributed as dist
+import torch.distributed.checkpoint as dcp
+from torch.distributed.checkpoint.state_dict import get_optimizer_state_dict, set_optimizer_state_dict
 from torch.distributed.device_mesh import init_device_mesh
 from torch.distributed.fsdp import CPUOffloadPolicy, OffloadPolicy, fully_shard
 from torch.distributed.tensor import DTensor
@@ -25,6 +36,10 @@ _MODULE_PATH = Path(__file__).resolve().parents[4] / "miles/backends/fsdp_utils/
 _SPEC = importlib.util.spec_from_file_location("fsdp_offload_under_test", _MODULE_PATH)
 offload = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(offload)
+sys.modules["miles.backends.fsdp_utils.offload"] = offload
+_EMA_SPEC = importlib.util.spec_from_file_location("fsdp_ema_under_test", _MODULE_PATH.with_name("ema.py"))
+ema_module = importlib.util.module_from_spec(_EMA_SPEC)
+_EMA_SPEC.loader.exec_module(ema_module)
 
 
 class Tiny(torch.nn.Module):
@@ -108,12 +123,95 @@ def check_model_offload_round_trip(mesh, frozen, reshard_after_forward, cpu_offl
         assert all(parameter is parameters[name] for name, parameter in model.named_parameters())
 
 
+def check_ema_offload_and_checkpoint(mesh, cpu_offload):
+    torch.manual_seed(31)
+    model = Tiny().cuda()
+    model.input.scale_alias = model.scale
+    model.input.requires_grad_(False)
+    control = copy.deepcopy(model)
+    policy = CPUOffloadPolicy() if cpu_offload else OffloadPolicy()
+    fully_shard(model.input, mesh=mesh, reshard_after_forward=False, offload_policy=policy)
+    fully_shard(model, mesh=mesh, reshard_after_forward=False, offload_policy=policy)
+    optimizer = torch.optim.AdamW((parameter for parameter in model.parameters() if parameter.requires_grad), lr=0.01)
+    control_optimizer = torch.optim.AdamW(
+        (parameter for parameter in control.parameters() if parameter.requires_grad), lr=0.01
+    )
+    ema = ema_module.EMAOptimizer(model, decay=0.5, flat_steps=10)
+    expected_ema = {
+        name: parameter.detach().clone() for name, parameter in control.named_parameters() if parameter.requires_grad
+    }
+    inputs = torch.arange(12, dtype=torch.float32, device="cuda").reshape(4, 3) / 12
+    for _ in range(2):
+        averaged_control = copy.deepcopy(control)
+        with torch.no_grad():
+            for name, parameter in averaged_control.named_parameters():
+                if parameter.requires_grad:
+                    parameter.copy_(expected_ema[name])
+        with torch.no_grad(), ema.use_weights(model):
+            torch.testing.assert_close(model(inputs), averaged_control(inputs), atol=2e-6, rtol=2e-6)
+
+        actor_output = model(inputs)
+        control_output = control(inputs)
+        torch.testing.assert_close(actor_output, control_output, atol=2e-6, rtol=2e-6)
+        actor_output.square().mean().backward()
+        control_output.square().mean().backward()
+        optimizer.step()
+        control_optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
+        control_optimizer.zero_grad(set_to_none=True)
+        assert ema.step() == 0.5
+        for name, parameter in control.named_parameters():
+            if parameter.requires_grad:
+                expected_ema[name].lerp_(parameter.detach(), 0.5)
+        for name, parameter in model.named_parameters():
+            if parameter.requires_grad:
+                average = ema.state[parameter]["ema"]
+                assert isinstance(average, DTensor)
+                expected_device = "cpu" if cpu_offload else "cuda"
+                assert local_tensor(average).device.type == expected_device
+                torch.testing.assert_close(average.to("cuda").full_tensor(), expected_ema[name], atol=2e-6, rtol=2e-6)
+            else:
+                assert parameter not in ema.state
+
+        offload.offload_model(model)
+        offload.move_optimizer(optimizer, "cpu")
+        offload.move_optimizer(ema, "cpu")
+        # With native CPU offload the EMA never leaves the CPU, so only GPU-resident EMA becomes pinned.
+        assert all(local_tensor(state["ema"]).is_pinned() or cpu_offload for state in ema.state.values())
+        offload.onload_model(model, cpu_offload=cpu_offload)
+        offload.move_optimizer(optimizer, "cpu" if cpu_offload else "cuda")
+        offload.move_optimizer(ema, "cpu" if cpu_offload else "cuda")
+
+    checkpoint_path = [tempfile.mkdtemp(prefix="stage1_ema_") if dist.get_rank() == 0 else None]
+    dist.broadcast_object_list(checkpoint_path, src=0)
+    try:
+        dcp.save({"ema": get_optimizer_state_dict(model, ema)}, checkpoint_id=checkpoint_path[0])
+        resumed = ema_module.EMAOptimizer(model, decay=0.1)
+        state_dict = {"ema": get_optimizer_state_dict(model, resumed)}
+        dcp.load(state_dict, checkpoint_id=checkpoint_path[0])
+        set_optimizer_state_dict(model, resumed, state_dict["ema"])
+        assert resumed.update_count == ema.update_count == 2
+        assert resumed.param_groups[0]["decay"] == 0.5
+        for parameter, state in resumed.state.items():
+            average = state["ema"]
+            expected = ema.state[parameter]["ema"]
+            assert isinstance(average, DTensor) and average.placements == expected.placements
+            assert local_tensor(average).device == local_tensor(expected).device
+            torch.testing.assert_close(local_tensor(average), local_tensor(expected))
+    finally:
+        dist.barrier()
+        if dist.get_rank() == 0:
+            shutil.rmtree(checkpoint_path[0])
+
+
 def main():
     torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
     dist.init_process_group("nccl", device_id=torch.device("cuda", torch.cuda.current_device()))
     mesh = init_device_mesh("cuda", (dist.get_world_size(),))
     for frozen, reshard_after_forward, cpu_offload in itertools.product((False, True), repeat=3):
         check_model_offload_round_trip(mesh, frozen, reshard_after_forward, cpu_offload)
+    for cpu_offload in (False, True):
+        check_ema_offload_and_checkpoint(mesh, cpu_offload)
     dist.barrier()
     if dist.get_rank() == 0:
         print("OK")
