@@ -7,11 +7,19 @@ from contextlib import contextmanager
 
 import torch
 import torch.nn as nn
+from torch.distributed.fsdp import FSDPModule
 from torch.distributed.tensor import DTensor
 
 
 def _local(t: torch.Tensor) -> torch.Tensor:
     return t.to_local() if isinstance(t, DTensor) else t
+
+
+def reshard_model(model: torch.nn.Module) -> None:
+    """Drop FSDP's gathered full parameters so the registered parameters are the local shards again."""
+    for module in model.modules():
+        if isinstance(module, FSDPModule):
+            module.reshard()
 
 
 class EmaShadow:

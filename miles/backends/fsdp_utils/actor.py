@@ -33,7 +33,7 @@ from .diffusion_update_weight_utils import (
     DiffusionUpdateWeightFromTensorLoRA,
     DiffusionUpdateWeightFromTensorLoRAIPC,
 )
-from .ema import EmaShadow
+from .ema import EmaShadow, reshard_model
 from .input_dtype_policy import apply_input_dtype_policy
 from .loss_hub import DiffusionLossContext, flow_grpo_loss_formula, prepare_flow_grpo_batch
 from .lr_scheduler import get_lr_scheduler
@@ -295,12 +295,6 @@ class FSDPTrainRayActor(TrainRayActor):
 
         num_pairs = len(train_pairs)
 
-        ref_mode = self.args.ref_mode
-        if ref_mode == "lora_base" and not all(hasattr(m, "disable_adapter") for m in self.models.values()):
-            raise RuntimeError(
-                "--ref-mode lora_base requires PEFT models exposing disable_adapter() after FSDP wrapping."
-            )
-
         # ------------- Rollout Scheduler Metadata -------------
         scheduler_timesteps, scheduler_sigmas = scheduler_meta_from_rollout(
             rollout_data,
@@ -469,10 +463,10 @@ class FSDPTrainRayActor(TrainRayActor):
             default_dtype=forward_dtype,
         )
 
-        def _compute_noise_pred() -> torch.Tensor:
+        def _compute_noise_pred(model) -> torch.Tensor:
             with torch.autocast("cuda", dtype=forward_dtype, enabled=forward_dtype != torch.float32):
                 return train_pipeline_config.compute_noise_pred(
-                    model=prepared.model,
+                    model=model,
                     latents_input=latents_in,
                     timesteps_input=timesteps_in,
                     pos_cond=pos_cond_in,
@@ -484,17 +478,20 @@ class FSDPTrainRayActor(TrainRayActor):
                     true_cfg_scale=prepared.true_cfg_scale,
                 )
 
-        new_pred = _compute_noise_pred()
-
         ref_pred = None
-        ref_mode = self.args.ref_mode
-        if ref_mode != "none":
-            if ref_mode == "ema":
-                ref_ctx = self.ema_shadow.swap_in()
-            else:
-                ref_ctx = prepared.model.disable_adapter()
-            with torch.no_grad(), ref_ctx:
-                ref_pred = _compute_noise_pred().detach()
+        if self.args.ref_mode == "ema":
+            # Drop gathered copies around the swap so neither the EMA nor the actor forward sees stale weights.
+            reshard_model(prepared.model)
+            with torch.no_grad(), self.ema_shadow.swap_in():
+                ref_pred = _compute_noise_pred(prepared.model).detach()
+                reshard_model(prepared.model)
+        elif self.args.ref_mode == "lora_base":
+            with torch.no_grad(), prepared.model.disable_adapter():
+                ref_pred = _compute_noise_pred(prepared.model).detach()
+                # PEFT re-enables adapter gradients on exit; reshard first so that lands on the shards, not gathered copies.
+                reshard_model(prepared.model)
+
+        new_pred = _compute_noise_pred(prepared.model)
 
         if self.custom_loss_formula_func is not None:
             return self.custom_loss_formula_func(
