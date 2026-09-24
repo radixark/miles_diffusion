@@ -1696,14 +1696,15 @@ def miles_validate_args(args):
                 )
         if args.prompt_data is None:
             raise ValueError("--loss-type sft_loss requires --prompt-data (jsonl with prompt + metadata.video)")
-        if args.sft_encoder_checkpoint is None:
-            raise ValueError(
-                "--loss-type sft_loss requires --sft-encoder-checkpoint "
-                "(HF name or path holding the family's tokenizer/text_encoder/vae)"
-            )
-        from miles.rollout.encoder_hub import get_encoder
+        if args.rollout_function_path == "miles.rollout.sft_rollout.generate_rollout":
+            if args.sft_encoder_checkpoint is None:
+                raise ValueError(
+                    "--loss-type sft_loss requires --sft-encoder-checkpoint "
+                    "(HF name or path holding the family's tokenizer/text_encoder/vae)"
+                )
+            from miles.rollout.encoder_hub import get_encoder
 
-        get_encoder(args.diffusion_model_family).validate_args(args)
+            get_encoder(args.diffusion_model_family).validate_args(args)
         if args.fsdp_flow_shift is None:
             raise ValueError("--loss-type sft_loss requires --fsdp-flow-shift for the training sigma grid")
         if args.n_samples_per_prompt != 1:
