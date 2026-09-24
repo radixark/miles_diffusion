@@ -1,5 +1,7 @@
 """Qwen-Image rollout patches: make the sgl-d forward bitwise-equal to the diffusers train forward."""
 
+import os
+
 import torch
 import torch.nn.functional as F
 from sglang.multimodal_gen.runtime.layers import layernorm as layernorm_mod
@@ -90,6 +92,7 @@ def _qk_norm_rope(
     k_norm,
     head_dim: int,
     cos_sin_cache=None,
+    freqs_complex=None,
     *,
     is_neox: bool = False,
     positions=None,
@@ -122,6 +125,7 @@ def _contiguous_split_seqs(joint, prefix_len, local_pad, dim=1):
 
 
 def apply() -> None:
+    os.environ["SGLANG_ENABLE_FUSED_QKNORM_ROPE"] = "0"
     RMSNorm.forward = _rmsnorm_forward
     LayerNormScaleShift.forward = _layernorm_scale_shift_forward
     ScaleResidualLayerNormScaleShift.forward = _scale_residual_layernorm_scale_shift_forward
