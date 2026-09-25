@@ -35,10 +35,10 @@ RUN mkdir -p /tmp/fa3-wheel && \
     rm -rf /tmp/fa3-wheel
 
 # sglang-diffusion is merged upstream, but the diffusion RL rollouts this repo drives land on the
-# sglang-miles-h3 integration branch before upstream main, so build the engine from there.
+# sglang-miles integration branch before upstream main, so build the engine from there.
 # SGLANG_DIFFUSION_COMMIT=<sha> pins, "none" follows the branch tip.
 ARG SGLANG_DIFFUSION_REPO=https://github.com/sgl-project/sglang.git
-ARG SGLANG_DIFFUSION_BRANCH=sglang-miles-h3
+ARG SGLANG_DIFFUSION_BRANCH=sglang-miles
 ARG SGLANG_DIFFUSION_COMMIT=none
 # SGLANG_BUILD_RUST_EXTS=none skips the gRPC Rust extension: unused here and the base image has no Rust toolchain.
 RUN cd /sgl-workspace/sglang && \
