@@ -264,8 +264,11 @@ class FSDPTrainRayActor(TrainRayActor):
 
         print_memory("before offload DiT")
 
-        self.model.cpu()
-        move_torch_optimizer(self.optimizer, "cpu")
+        move_torch_model(self.model, "cpu", pin_memory=True)
+        move_torch_optimizer(self.optimizer, "cpu", pin_memory=True)
+        if self.ema_shadow is not None:
+            self.ema_shadow.to("cpu", non_blocking=True, pin_memory=True)
+        torch.cuda.synchronize()
         clear_memory()
         dist.barrier(group=get_gloo_group())
         print_memory("after sleep DiT")
@@ -275,8 +278,12 @@ class FSDPTrainRayActor(TrainRayActor):
         if not self.args.offload_train:
             return
 
-        self.model.cuda()
-        move_torch_optimizer(self.optimizer, "cuda")
+        device = torch.device("cuda", torch.cuda.current_device())
+        move_torch_model(self.model, device)
+        move_torch_optimizer(self.optimizer, device)
+        if self.ema_shadow is not None:
+            self.ema_shadow.to(device, non_blocking=True)
+        torch.cuda.synchronize()
         dist.barrier(group=get_gloo_group())
         print_memory("after wake_up DiT")
 
@@ -584,20 +591,123 @@ class FSDPTrainRayActor(TrainRayActor):
         )
 
 
+def _to_pinned_cpu(tensor: torch.Tensor) -> torch.Tensor:
+    if isinstance(tensor, DTensor):
+        local_tensor = tensor.to_local()
+        if local_tensor.device.type == "cpu" and local_tensor.is_pinned():
+            return tensor
+        pinned = torch.empty_like(local_tensor, device="cpu", pin_memory=True)
+        pinned.copy_(local_tensor, non_blocking=local_tensor.device.type == "cuda")
+        return DTensor(pinned, tensor._spec, requires_grad=tensor.requires_grad)
+    if tensor.device.type == "cpu" and tensor.is_pinned():
+        return tensor
+    pinned = torch.empty_like(tensor, device="cpu", pin_memory=True)
+    pinned.copy_(tensor, non_blocking=tensor.device.type == "cuda")
+    return pinned
+
+
+def _to_device(tensor: torch.Tensor, device: torch.device) -> torch.Tensor:
+    if isinstance(tensor, DTensor):
+        local_tensor = tensor.to_local()
+        if local_tensor.device == device:
+            return tensor
+        moved = local_tensor.to(device, non_blocking=True)
+        return DTensor(moved, tensor._spec, requires_grad=tensor.requires_grad)
+    return tensor.to(device, non_blocking=True)
+
+
+def _fsdp_modules(model: torch.nn.Module):
+    from torch.distributed.fsdp import FSDPModule
+
+    fsdp_modules = [module for module in model.modules() if isinstance(module, FSDPModule)]
+    for module in fsdp_modules:
+        module.reshard()
+    return fsdp_modules
+
+
+def _fsdp_params(fsdp_modules):
+    fsdp_params = []
+    for module in fsdp_modules:
+        state = module._get_fsdp_state()
+        if state._fsdp_param_group is not None:
+            fsdp_params.extend(state._fsdp_param_group.fsdp_params)
+    return fsdp_params
+
+
+def _set_fsdp_param_storage(fsdp_param, storage: torch.Tensor) -> None:
+    sharded_param = fsdp_param.sharded_param
+    shard_dim = fsdp_param.fsdp_placement.dim
+    padded = storage.view(fsdp_param.padded_sharded_param_size)
+    local = padded.narrow(shard_dim, 0, fsdp_param.sharded_size[shard_dim])
+    replacement = torch.nn.Parameter(
+        fsdp_param.to_sharded_dtensor(local),
+        requires_grad=sharded_param.requires_grad,
+    )
+    torch.utils.swap_tensors(sharded_param, replacement)
+    fsdp_param._sharded_param_data = storage
+
+
+def _move_model_to_pinned_cpu(model: torch.nn.Module) -> None:
+    fsdp_modules = _fsdp_modules(model)
+    fsdp_params = _fsdp_params(fsdp_modules)
+    managed_param_ids = {id(fsdp_param.sharded_param) for fsdp_param in fsdp_params}
+    for parameter in model.parameters():
+        parameter.grad = None
+        if id(parameter) not in managed_param_ids:
+            parameter.data = _to_pinned_cpu(parameter.data)
+
+    for fsdp_param in fsdp_params:
+        _set_fsdp_param_storage(fsdp_param, _to_pinned_cpu(fsdp_param._sharded_param_data))
+
+    for module in model.modules():
+        for name, buffer in module._buffers.items():
+            if buffer is not None:
+                module._buffers[name] = _to_pinned_cpu(buffer)
+
+
+def _move_model_to_device(model: torch.nn.Module, device: torch.device) -> None:
+    fsdp_modules = _fsdp_modules(model)
+    fsdp_params = _fsdp_params(fsdp_modules)
+    managed_param_ids = {id(fsdp_param.sharded_param) for fsdp_param in fsdp_params}
+    for parameter in model.parameters():
+        if id(parameter) not in managed_param_ids:
+            parameter.data = _to_device(parameter.data, device)
+
+    for fsdp_param in fsdp_params:
+        _set_fsdp_param_storage(fsdp_param, _to_device(fsdp_param._sharded_param_data, device))
+
+    for module in model.modules():
+        for name, buffer in module._buffers.items():
+            if buffer is not None:
+                module._buffers[name] = _to_device(buffer, device)
+
+
 @torch.no_grad()
-def move_torch_optimizer(optimizer, device):
+def move_torch_model(model: torch.nn.Module, device, *, pin_memory: bool = False) -> None:
+    device = torch.device(device)
+    if pin_memory:
+        if device.type != "cpu":
+            raise ValueError("pin_memory requires a CPU destination")
+        _move_model_to_pinned_cpu(model)
+    else:
+        _move_model_to_device(model, device)
+
+
+@torch.no_grad()
+def move_torch_optimizer(optimizer, device, *, pin_memory: bool = False):
     """ref: https://github.com/volcengine/verl/blob/main/verl/utils/fsdp_utils.py"""
     if not optimizer.state:
         return
 
+    device = torch.device(device)
+    if pin_memory and device.type != "cpu":
+        raise ValueError("pin_memory requires a CPU destination")
     for param_group in optimizer.param_groups:
         for param in param_group["params"]:
             state = optimizer.state[param]
             for key, value in state.items():
                 if isinstance(value, torch.Tensor):
-                    state[key] = value.to(device, non_blocking=True)
-
-    torch.cuda.synchronize()
+                    state[key] = _to_pinned_cpu(value) if pin_memory else _to_device(value, device)
 
 
 def apply_lora(model: torch.nn.Module, args: Namespace, train_pipeline_config) -> torch.nn.Module:

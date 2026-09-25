@@ -54,6 +54,21 @@ class EmaShadow:
             sh.mul_(delta).add_(_local(live.detach()).to(sh.device), alpha=1.0 - delta)
         return delta
 
+    @torch.no_grad()
+    def to(self, device, *, non_blocking: bool = False, pin_memory: bool = False) -> None:
+        device = torch.device(device)
+        if pin_memory and device.type != "cpu":
+            raise ValueError("pin_memory requires a CPU destination")
+        for index, shadow in enumerate(self.shadow):
+            if pin_memory:
+                if shadow.device.type == "cpu" and shadow.is_pinned():
+                    continue
+                moved = torch.empty_like(shadow, device="cpu", pin_memory=True)
+                moved.copy_(shadow, non_blocking=non_blocking and shadow.device.type == "cuda")
+                self.shadow[index] = moved
+            else:
+                self.shadow[index] = shadow.to(device, non_blocking=non_blocking)
+
     @contextmanager
     def swap_in(self):
         """Temporarily expose EMA weights as the live parameters."""
