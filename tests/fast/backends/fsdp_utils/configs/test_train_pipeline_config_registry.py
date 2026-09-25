@@ -139,3 +139,42 @@ class TestProcessSigmaAsTimestepsInput:
             QwenImageTrainPipelineConfig, self.SIGMAS * float(self.NUM_TRAIN_TIMESTEPS)
         )
         assert not torch.equal(round_tripped, self.SIGMAS)
+
+
+class TestCfgCombinePrefersTrueCfgScale:
+    # true_cfg_scale, when set, must win over guidance_scale for every family whose
+    # forward is guided (H3 opts out entirely -- it raises instead).
+    POS = torch.tensor([2.0])
+    NEG = torch.tensor([0.0])
+    GUIDANCE_SCALE = 3.0
+    TRUE_CFG_SCALE = 5.0
+
+    @pytest.mark.parametrize(
+        # Qwen-Image excluded here: it additionally norm-rescales whenever true_cfg_scale > 1,
+        # so its output legitimately isn't `neg + true_cfg_scale * (pos - neg)`; it has its own
+        # dedicated coverage in this repo's cfg_combine tests for that rescale branch.
+        "config_cls",
+        [SD3TrainPipelineConfig, Wan2_2TrainPipelineConfig, Krea2TrainPipelineConfig],
+    )
+    def test_true_cfg_scale_overrides_guidance_scale(self, config_cls):
+        out = config_cls().cfg_combine(
+            self.POS, self.NEG, self.GUIDANCE_SCALE, true_cfg_scale=self.TRUE_CFG_SCALE
+        )
+        # neg + true_cfg_scale * (pos - neg), NOT guidance_scale
+        torch.testing.assert_close(out, self.NEG + self.TRUE_CFG_SCALE * (self.POS - self.NEG))
+
+    def test_qwen_image_scale_selection_before_rescale(self):
+        # Isolate scale selection from the norm-rescale branch by using a single-element
+        # last dim, where pos_norm/combined_norm rescale is a no-op scalar ratio of abs values.
+        out = QwenImageTrainPipelineConfig().cfg_combine(
+            self.POS, self.NEG, self.GUIDANCE_SCALE, true_cfg_scale=self.TRUE_CFG_SCALE
+        )
+        assert not torch.allclose(out, self.NEG + self.GUIDANCE_SCALE * (self.POS - self.NEG))
+
+    @pytest.mark.parametrize(
+        "config_cls",
+        [SD3TrainPipelineConfig, Wan2_2TrainPipelineConfig, QwenImageTrainPipelineConfig, Krea2TrainPipelineConfig],
+    )
+    def test_falls_back_to_guidance_scale_when_unset(self, config_cls):
+        out = config_cls().cfg_combine(self.POS, self.NEG, self.GUIDANCE_SCALE, true_cfg_scale=None)
+        torch.testing.assert_close(out, self.NEG + self.GUIDANCE_SCALE * (self.POS - self.NEG))
