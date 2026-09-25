@@ -219,10 +219,18 @@ class DiffusionUpdateWeightFromTensor(DiffusionUpdateWeight):
     ) -> None:
         self.rollout_engines = rollout_engines
 
+        # Match rollout.init_rollout_engines' per-engine span; a mismatch would
+        # leave orphaned ranks that fail much later in update_bucket_weights.
+        num_gpu_per_engine = min(self.args.rollout_num_gpus_per_engine, self.args.num_gpus_per_node)
+        assert dist.get_world_size() == len(rollout_engines) * num_gpu_per_engine, (
+            f"train world {dist.get_world_size()} != {len(rollout_engines)} engines x "
+            f"{num_gpu_per_engine} gpus per engine"
+        )
+
         # Here we assume the gpu id of rollout engines and train actors are the same.
         for i, engine in enumerate(self.rollout_engines):
-            start_rank = i * self.args.rollout_num_gpus_per_engine
-            end_rank = (i + 1) * self.args.rollout_num_gpus_per_engine
+            start_rank = i * num_gpu_per_engine
+            end_rank = (i + 1) * num_gpu_per_engine
             group_ranks = list(range(start_rank, end_rank))
             new_group = dist.new_group(
                 ranks=group_ranks,
