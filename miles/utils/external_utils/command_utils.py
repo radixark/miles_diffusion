@@ -56,6 +56,7 @@ def execute_train(
     train_script: str = "train_diffusion.py",
     before_ray_job_submit=None,
     extra_env_vars: dict[str, str] | None = None,
+    redact_env_vars: tuple[str, ...] = (),
 ) -> None:
     """Start a Ray cluster if we own one, then submit the trainer into it.
 
@@ -63,6 +64,7 @@ def execute_train(
     teardown and `ray start` are skipped and the job is submitted to the running one.
     Submitting rather than running `python` directly is what makes the driver live in
     the cluster, so it sees every node's GPUs and every worker gets the same runtime env.
+    Only names in ``redact_env_vars`` have their values hidden in the command log.
     """
     if config is None:
         config = ExecuteTrainConfig()
@@ -133,12 +135,15 @@ def execute_train(
     if not get_bool_env_var("MILES_SCRIPT_ENABLE_RAY_SUBMIT", "1"):
         return
 
-    exec_command(
+    cmd = (
         "export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && "
         f"""ray job submit {'' if 'RAY_ADDRESS' in os.environ else '--address="http://127.0.0.1:8265" '}"""
         f"--runtime-env-json={shlex.quote(runtime_env_json)} "
         f"-- python3 {shlex.quote(train_script)} {train_args}"
     )
+    logged_env_vars = {k: "***" if k in redact_env_vars else v for k, v in runtime_env_vars.items()}
+    logged_env_json = json.dumps({"env_vars": logged_env_vars})
+    exec_command(cmd, log_cmd=cmd.replace(shlex.quote(runtime_env_json), shlex.quote(logged_env_json), 1))
 
 
 def _pythonpath_with_sources(*additional_pythonpaths: str | None) -> str:

@@ -2,8 +2,19 @@
 
 from __future__ import annotations
 
+import base64
+import io
+
 import numpy as np
 import torch
+from PIL import Image
+
+
+def encode_image_as_png_data_url(image: Image.Image) -> str:
+    """Encode a PIL image as a PNG data URL."""
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
 
 
 def cfhw_to_fhwc(tensor: torch.Tensor) -> torch.Tensor:
