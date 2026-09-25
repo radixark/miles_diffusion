@@ -267,7 +267,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 
 | Flag | Type | Default | Notes |
 |---|---|---|---|
-| `--rm-type` | enum | – | `pickscore` / `hps` / `ocr`. Overridable per sample via `metadata.rm_type`. Ignored when `--custom-rm-path` is set. |
+| `--rm-type` | enum | – | `pickscore` / `hps` / `ocr` / `dover`. Overridable per sample via `metadata.rm_type`. Ignored when `--custom-rm-path` is set. |
 | `--reward-key` | str | – | When the reward is a dict. |
 | `--group-rm` | flag | off | Score a whole prompt group at once. |
 | `--custom-rm-path` | str | – | `async def rm(args, samples) -> list[float]`. Batched only; replaces the `--rm-type` dispatch entirely. Shipped: `miles.rollout.rm_hub.weighted_mixture_rm.weighted_mixture_rm` (weighted sum of built-in rewards). |
@@ -287,6 +287,12 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--hps-batch-size` | int | `8` | |
 | `--hps-version` | enum | `v2.1` | `v2.0` / `v2.1`. |
 | `--hps-checkpoint-path` | str | – | Local checkpoint; unset downloads from Hugging Face. |
+| `--dover-num-workers` | int | `1` | |
+| `--dover-num-gpus-per-worker` | float | `1.0` | Standalone workers only; fractional values allowed. |
+| `--dover-reward-colocate` | flag | off | One worker per rollout GPU. Requires `--colocate`. |
+| `--dover-batch-size` | int | `1` | Videos per actor call, each with three technical clips and one aesthetic clip. |
+| `--dover-checkpoint-path` | str | – | Local DOVER checkpoint; unset downloads `teowu/DOVER/DOVER.pth`. |
+| `--dover-score-type` | enum | `overall` | `overall` / `aesthetic` / `technical`, using DOVER's official [0, 1] calibration. |
 | `--ocr-num-workers` | int | `4` | |
 | `--rollout-parser-num-workers` | int | `1` | Ray actors deserializing rollout responses. Raise when trajectory tensors are large. |
 

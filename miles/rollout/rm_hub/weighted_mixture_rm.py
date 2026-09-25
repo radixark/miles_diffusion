@@ -15,11 +15,12 @@ from collections.abc import Sequence
 
 from miles.utils.types import Sample
 
+from .dover import dover_rm
 from .hps import hps_rm
 from .ocr import ocr_rm
 from .pickscore import pickscore_rm
 
-_REWARDS = {"hps": hps_rm, "pickscore": pickscore_rm, "ocr": ocr_rm}
+_REWARDS = {"hps": hps_rm, "pickscore": pickscore_rm, "ocr": ocr_rm, "dover": dover_rm}
 
 
 def parse_weights(custom_rm_args: str) -> list[tuple[str, float]]:

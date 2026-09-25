@@ -24,6 +24,10 @@ async def async_rm(args, sample: Sample, **kwargs):
         from .hps import hps_rm
 
         return (await hps_rm(args, [sample]))[0]
+    elif rm_type == "dover":
+        from .dover import dover_rm
+
+        return (await dover_rm(args, [sample]))[0]
     else:
         raise NotImplementedError(f"Rule-based RM for {rm_type!r} is not implemented.")
 
@@ -39,6 +43,10 @@ def create_colocated_reward_pools(args, placement_group, slots) -> list:
         from .hps import AsyncHPSPool
 
         pools.append(AsyncHPSPool(args, placement_group=placement_group, slots=slots))
+    if args.dover_reward_colocate:
+        from .dover import AsyncDOVERPool
+
+        pools.append(AsyncDOVERPool(args, placement_group=placement_group, slots=slots))
     return pools
 
 
@@ -61,6 +69,10 @@ async def batched_async_rm(
             from .hps import hps_rm
 
             return await hps_rm(args, samples)
+        if all(rm_type == "dover" for rm_type in rm_types):
+            from .dover import dover_rm
+
+            return await dover_rm(args, samples)
         if all(rm_type == "ocr" for rm_type in rm_types):
             from .ocr import ocr_rm
 

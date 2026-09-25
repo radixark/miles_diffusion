@@ -70,6 +70,10 @@ RUN pip install -r /tmp/requirements.txt
 RUN pip install --no-deps args==0.1.0 clint==0.5.1 "hpsv2 @ git+https://github.com/tgxs002/HPSv2@866735ecaae9" && \
     python3 -c "import hpsv2.src.open_clip"
 
+# PyPI's dover is unrelated; the official VQA package pins torch~=1.13.
+RUN pip install --no-deps "dover @ git+https://github.com/VQAssessment/DOVER@f1ddc96215bc7fbcf8f315c65d47905f339c3419" && \
+    python3 -c "import dover"
+
 # ====================================== Install main package ============================================
 
 # Install miles_diffusion from a pinned ref (like radixark/miles does for miles),

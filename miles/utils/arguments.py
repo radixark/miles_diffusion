@@ -1236,7 +1236,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--rm-type",
                 type=str,
                 default=None,
-                help="Built-in reward model (pickscore / hps / ocr). Ignored when --custom-rm-path is set.",
+                help="Built-in reward model (pickscore / hps / ocr / dover). Ignored when --custom-rm-path is set.",
             )
             parser.add_argument(
                 "--reward-key",
@@ -1370,6 +1370,42 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help="Optional local HPS checkpoint path; otherwise download it from Hugging Face.",
+            )
+            parser.add_argument(
+                "--dover-num-workers",
+                type=int,
+                default=1,
+                help="Number of Ray DOVER actors used when --rm-type dover.",
+            )
+            parser.add_argument(
+                "--dover-num-gpus-per-worker",
+                type=float,
+                default=1.0,
+                help="GPU resources per DOVER actor when reward is not colocated.",
+            )
+            parser.add_argument(
+                "--dover-reward-colocate",
+                action="store_true",
+                default=False,
+                help="Seat DOVER actors on the rollout GPUs, one per placement-group bundle. Requires --colocate.",
+            )
+            parser.add_argument(
+                "--dover-batch-size",
+                type=int,
+                default=1,
+                help="Videos per DOVER actor call; each video produces three technical clips and one aesthetic clip.",
+            )
+            parser.add_argument(
+                "--dover-checkpoint-path",
+                type=str,
+                default=None,
+                help="Optional local DOVER checkpoint path; otherwise download teowu/DOVER's DOVER.pth.",
+            )
+            parser.add_argument(
+                "--dover-score-type",
+                choices=["overall", "aesthetic", "technical"],
+                default="overall",
+                help="DOVER quality score to optimize, using the official [0, 1] calibration.",
             )
 
             parser.add_argument(
@@ -1804,12 +1840,19 @@ def miles_validate_args(args):
         raise ValueError(f"--hps-batch-size must be positive, got {args.hps_batch_size}")
     if args.hps_num_gpus_per_worker < 0:
         raise ValueError(f"--hps-num-gpus-per-worker must be non-negative, got {args.hps_num_gpus_per_worker}")
+    if args.dover_num_workers <= 0:
+        raise ValueError(f"--dover-num-workers must be positive, got {args.dover_num_workers}")
+    if args.dover_batch_size <= 0:
+        raise ValueError(f"--dover-batch-size must be positive, got {args.dover_batch_size}")
+    if args.dover_num_gpus_per_worker < 0:
+        raise ValueError(f"--dover-num-gpus-per-worker must be non-negative, got {args.dover_num_gpus_per_worker}")
 
     colocated_reward_workers = {
         name: num_workers
         for name, colocate, num_workers in (
             ("pickscore", args.pickscore_reward_colocate, args.pickscore_num_workers),
             ("hps", args.hps_reward_colocate, args.hps_num_workers),
+            ("dover", args.dover_reward_colocate, args.dover_num_workers),
         )
         if colocate
     }

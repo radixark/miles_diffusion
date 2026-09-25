@@ -1,6 +1,6 @@
 ---
 title: Rewards
-description: Built-in reward models (PickScore, HPS, OCR), rm_hub dispatch, and prompt data format.
+description: Built-in reward models (PickScore, HPS, OCR, DOVER), rm_hub dispatch, and prompt data format.
 ---
 Miles-diffusion scores generated images (or video frames) after each rollout
 microgroup. Reward computation lives in `miles/rollout/rm_hub/` and is invoked
@@ -13,7 +13,7 @@ For `--custom-rm-path`, `--custom-reward-post-process-path`, and other
 
 | Stage | Flag | Role |
 |---|---|---|
-| Reward type | `--rm-type` | Selects built-in scorer (`pickscore`, `hps`, `ocr`); ignored when `--custom-rm-path` is set |
+| Reward type | `--rm-type` | Selects built-in scorer (`pickscore`, `hps`, `ocr`, `dover`); ignored when `--custom-rm-path` is set |
 | Per-sample override | `metadata.rm_type` in JSONL | Overrides global `--rm-type` |
 | Custom reward / norm | see [Customization](customization.md) | `--custom-rm-path`, `--custom-reward-post-process-path` |
 
@@ -103,6 +103,53 @@ Example from `scripts/run_diffusion_grpo_sd3_hps_sglang.py`:
 --hps-reward-colocate
 ```
 
+### DOVER (`--rm-type dover`)
+
+Implementation: `miles/rollout/rm_hub/dover.py`.
+
+[DOVER](https://github.com/VQAssessment/DOVER) scores video quality through technical
+and aesthetic branches, independently of the generation prompt:
+
+- Model: DOVER (original checkpoint)
+- Score: `--dover-score-type` (`overall`, `aesthetic`, or `technical`)
+- Checkpoint: `--dover-checkpoint-path` (optional; defaults to `teowu/DOVER/DOVER.pth`)
+
+Scoring formula:
+
+```
+t = (technical_raw - 0.1107) / 0.07355
+a = (aesthetic_raw + 0.08285) / 0.03774
+score = sigmoid(0.6104 * t + 0.3896 * a)
+```
+
+This is the official overall calibration. The individual scores are `sigmoid(t)`
+and `sigmoid(a)`; all scores are in [0, 1], with higher values indicating better quality.
+
+DOVER runs as a **Ray actor pool** (`DOVERRewardActor`) with round-robin batching.
+Each video produces three 32-frame technical clips and one 32-frame aesthetic clip.
+Sampling restarts from `--seed` for each video, independently of batch order.
+The Docker image includes DOVER; for an existing environment, use the pinned install
+command in `docker/Dockerfile` after updating `requirements.txt`.
+
+| Flag | Default | Description |
+|---|---|---|
+| `--dover-num-workers` | 1 | Ray actor count |
+| `--dover-num-gpus-per-worker` | 1.0 | GPU per worker (non-colocate) |
+| `--dover-batch-size` | 1 | Videos per actor batch |
+| `--dover-score-type` | `overall` | `overall`, `aesthetic`, or `technical` score |
+| `--dover-checkpoint-path` | None | Local checkpoint; unset downloads `teowu/DOVER/DOVER.pth` |
+| `--dover-reward-colocate` | False | One worker per rollout GPU (requires `--colocate`) |
+
+Example:
+
+```bash
+--rm-type dover \
+--dover-num-workers 1 \
+--dover-batch-size 1 \
+--dover-score-type overall \
+--dover-reward-colocate
+```
+
 ### Reward placement
 
 Every GPU reward pool is placed one of two ways:
@@ -136,7 +183,7 @@ The example returns a dict per sample (`{"hps": ..., "pickscore": ..., "weighted
 `--reward-key` picks the entry GRPO trains on, and every entry of a dict reward gets its own
 `rollout/reward/<name>_mean` panel, so the components stay visible while the sum is optimized.
 
-Weights apply to raw scores (HPSv2.1 ≈ 0.25–0.35, PickScore/26 ≈ 0.8–0.9, OCR ∈ [0, 1]), so
+Weights apply to raw scores (HPSv2.1 ≈ 0.25–0.35, PickScore/26 ≈ 0.8–0.9, OCR and DOVER ∈ [0, 1]), so
 pick them with the scales in mind. Colocated pools share one slot ledger, so several rewards
 can colocate without overlapping. Rewards receive `generated_output` itself, and every reward actor
 quantises it to uint8 on its own terms.
@@ -180,8 +227,9 @@ generate_and_rm_microgroup()
     → custom_rm_path?  user batched function
     → all pickscore?   pickscore_rm (batched)
     → all hps?         hps_rm (batched)
+    → all dover?       dover_rm (batched video clips)
     → all ocr?         ocr_rm (batched, one image per actor call)
-    → else             per-sample async_rm → ocr / pickscore / hps / NotImplementedError
+    → else             per-sample async_rm → ocr / pickscore / hps / dover / NotImplementedError
   → sample.reward = score
   → RolloutManager._post_process_rewards()      # GRPO advantage normalization
 ```

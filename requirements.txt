@@ -2,6 +2,7 @@ accelerate==1.12.0
 addict==2.4.0
 blobfile==3.0.0
 datasets==4.4.2
+decord2==3.4.0
 # MiniMax H3 (PR #14355) is merged into diffusers main but ships in no release yet:
 # 0.39.0 predates the merge. Pinned to the merge commit on main; switch to the next
 # stable release once it is out.
@@ -31,6 +32,7 @@ ray[default]==2.53.0
 requests==2.32.5
 ring_flash_attn==0.1.8
 safetensors==0.8.0
+scikit-video==1.1.11
 sglang-router==0.3.0
 tensorboard==2.20.0
 torch==2.11.0
