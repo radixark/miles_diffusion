@@ -42,6 +42,7 @@ appear in the [Miles model list](https://miles.radixark.com/docs#supported-model
 | ------------------------------------------------------- | --------- | ----------------------------------------- |
 | [Stable Diffusion 3.5](models/sd3/sd3.md)                 | T2I       | Flow-GRPO + OCR, DiffusionNFT + PickScore |
 | [Qwen-Image](models/qwen-image/qwen-image.md)             | T2I       | Flow-GRPO + PickScore (flow_grpo-aligned) |
+| [Qwen-Image 2.1](models/qwen-image/qwen-image-21.md)      | T2I       | Flow-GRPO + PickScore                     |
 | [Wan2.2-T2V-A14B](models/wan/wan2-2.md)                   | T2V       | Flow-GRPO + PickScore, LoRA SFT           |
 | [LTX-2.3](models/ltx/ltx2.md)                             | T2V       | Flow-GRPO + PickScore                     |
 | [Cosmos3-Nano](models/cosmos/cosmos3.md)                   | T2I       | Flow-GRPO + PickScore                     |

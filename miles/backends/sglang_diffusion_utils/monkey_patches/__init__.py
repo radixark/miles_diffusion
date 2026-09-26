@@ -6,6 +6,7 @@ the sglang scheduler grandchild (spawn: fresh imports) re-reads it and applies
 those groups before model construction.
 
 - ``qwen_image``: bitwise train<->rollout parity for the Qwen-Image DiT.
+- ``qwen_image21``: drop 2.1 prefix KV cache + fused kernels; PEFT-ordered LoRA.
 - ``ltx``:  LTX rollout cond kwargs + AV cross-off (video-only train parity).
 
 Patch modules are imported inside ``apply_*`` only, so CPU-only Ray actors
@@ -39,6 +40,13 @@ def apply_qwen_image_rollout_patches() -> None:
     from miles.backends.sglang_diffusion_utils.monkey_patches import patch_qwen_image
 
     patch_qwen_image.apply()
+
+
+@register_rollout_patch_group("qwen_image21")
+def apply_qwen_image21_rollout_patches() -> None:
+    from miles.backends.sglang_diffusion_utils.monkey_patches import patch_qwen_image21
+
+    patch_qwen_image21.apply()
 
 
 @register_rollout_patch_group("wan")

@@ -44,4 +44,5 @@ class TestBackendHierarchy:
     def test_all_diffusers_model_plans_load(self):
         assert load_fsdp_parallel_plan("sd3").param_dtype_patterns == {}
         assert load_fsdp_parallel_plan("qwen_image").param_dtype_patterns == {}
+        assert load_fsdp_parallel_plan("qwen_image21").param_dtype_patterns == {}
         assert load_fsdp_parallel_plan("wan2_2").param_dtype_patterns
