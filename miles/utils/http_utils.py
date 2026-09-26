@@ -230,9 +230,10 @@ def _init_ray_distributed_post(args):
         node_id = node["NodeID"]
         scheduling = NodeAffinitySchedulingStrategy(node_id=node_id, soft=False)
         for _ in range(args.num_gpus_per_node):
+            # Owned by this process, not detached: these actors exist only to serve
+            # its rollout POSTs, and an unnamed detached actor outlives the job with
+            # no handle left to kill it, leaking one per node per GPU on every run.
             actor = _HttpPosterActor.options(
-                name=None,
-                lifetime="detached",
                 scheduling_strategy=scheduling,
                 max_concurrency=per_actor_conc,
                 # Use tiny CPU to schedule
