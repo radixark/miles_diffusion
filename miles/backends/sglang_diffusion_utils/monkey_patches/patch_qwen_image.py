@@ -1,4 +1,6 @@
-"""Qwen-Image rollout patches: make the sgl-d forward bitwise-equal to the diffusers/PEFT train forward."""
+"""Qwen-Image rollout patches: make the sgl-d forward bitwise-equal to the diffusers train forward."""
+
+import os
 
 import torch
 import torch.nn.functional as F
@@ -9,13 +11,9 @@ from sglang.multimodal_gen.runtime.layers.layernorm import (
     RMSNorm,
     ScaleResidualLayerNormScaleShift,
 )
-from sglang.multimodal_gen.runtime.layers.lora import linear as lora_linear
 from sglang.multimodal_gen.runtime.models.dits import qwen_image as qwen_image_mod
-from torch.distributed.tensor import DTensor
 
 _orig_split_seqs = qwen_image_mod.split_seqs
-_orig_column_parallel_lora_forward = lora_linear.ColumnParallelLinearWithLoRA.forward
-_orig_row_parallel_lora_forward = lora_linear.RowParallelLinearWithLoRA.forward
 
 
 def _rmsnorm_forward(self, x: torch.Tensor, residual: torch.Tensor | None = None):
@@ -94,6 +92,7 @@ def _qk_norm_rope(
     k_norm,
     head_dim: int,
     cos_sin_cache=None,
+    freqs_complex=None,
     *,
     is_neox: bool = False,
     positions=None,
@@ -125,54 +124,8 @@ def _contiguous_split_seqs(joint, prefix_len, local_pad, dim=1):
     return prefix.contiguous(), body.contiguous()
 
 
-def _lora_delta(self, x: torch.Tensor) -> torch.Tensor:
-    # PEFT-ordered LoRA path: (x @ A.T) @ B.T, then scale.
-    lora_A, lora_B = self.lora_A, self.lora_B
-    if isinstance(lora_B, DTensor):
-        lora_B = lora_B.to_local()
-        lora_A = lora_A.to_local()
-    x_lora = x.to(dtype=lora_A.dtype)
-    delta = x_lora @ self.slice_lora_a_weights(lora_A.to(device=x.device)).T
-    delta = delta @ self.slice_lora_b_weights(lora_B.to(device=x.device)).T
-    if self.lora_alpha != self.lora_rank:
-        delta = delta * (self.lora_alpha / self.lora_rank)
-    if self.strength != 1.0:
-        delta = delta * self.strength
-    return delta
-
-
-def _lora_base_forward(self, x: torch.Tensor):
-    # base(x) first (bias included, as PEFT does), then the unmerged delta; bf16 add order matters.
-    out, output_bias = self.base_layer(x)
-    if not self.merged and not self.disable_lora:
-        out = out + _lora_delta(self, x).to(dtype=out.dtype)
-    return out, output_bias
-
-
-def _lora_nn_linear_forward(self, x: torch.Tensor):
-    out = self.base_layer(x)
-    if not self.merged and not self.disable_lora:
-        out = out + _lora_delta(self, x).to(dtype=out.dtype)
-    return out
-
-
-def _lora_column_parallel_forward(self, x: torch.Tensor):
-    # The PEFT-ordered path adds the rank-local delta after base_layer() has already
-    # all-gathered (gather_output=True), so it only holds at tp_size==1; bitwise parity
-    # is unattainable under TP anyway, so fall back to the native TP-aware forward.
-    if self.base_layer.tp_size > 1:
-        return _orig_column_parallel_lora_forward(self, x)
-    return _lora_base_forward(self, x)
-
-
-def _lora_row_parallel_forward(self, x: torch.Tensor):
-    # Same constraint: base_layer() all-reduces before the rank-local delta is added.
-    if self.base_layer.tp_size > 1:
-        return _orig_row_parallel_lora_forward(self, x)
-    return _lora_base_forward(self, x)
-
-
 def apply() -> None:
+    os.environ["SGLANG_ENABLE_FUSED_QKNORM_ROPE"] = "0"
     RMSNorm.forward = _rmsnorm_forward
     LayerNormScaleShift.forward = _layernorm_scale_shift_forward
     ScaleResidualLayerNormScaleShift.forward = _scale_residual_layernorm_scale_shift_forward
@@ -180,7 +133,3 @@ def apply() -> None:
     layernorm_mod.apply_qk_norm_with_optional_rope = _qk_norm_rope
     qwen_image_mod.apply_qk_norm_with_optional_rope = _qk_norm_rope
     qwen_image_mod.split_seqs = _contiguous_split_seqs
-    lora_linear.BaseLayerWithLoRA.forward = _lora_base_forward
-    lora_linear.RowParallelLinearWithLoRA.forward = _lora_row_parallel_forward
-    lora_linear.ColumnParallelLinearWithLoRA.forward = _lora_column_parallel_forward
-    lora_linear.LinearWithLoRA.forward = _lora_nn_linear_forward
