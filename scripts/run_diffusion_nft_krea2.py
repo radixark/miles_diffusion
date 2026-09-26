@@ -1,7 +1,7 @@
 """Krea-2-Raw DiffusionNFT training (OCR by default, PickScore via --reward).
 
 Same NFT shape as run_diffusion_nft_sd3_pickscore.py: EMA reference (--ref-mode ema),
-rollout under pi_old (--ema-rollout-policy ema), deterministic ODE rollout
+rollout under pi_old (--rollout-weights ema), deterministic ODE rollout
 (noise_level=0, sde_type=ode) with no CFG. Krea-2 specifics: bf16, 1024px, and one
 sample per rollout request (the engine's krea2 pipeline has no per-request output
 expansion). Rollout debug tensors are collected (--diffusion-debug-mode).
@@ -97,7 +97,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
     ema_args = (
         "--ref-mode ema "
         "--use-ema "
-        "--ema-rollout-policy ema "
+        "--rollout-weights ema "
         "--ema-decay-init 0.001 "
         "--ema-decay-ramp 0.001 "
         "--ema-decay-max 0.5 "

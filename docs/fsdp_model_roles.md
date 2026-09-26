@@ -72,7 +72,7 @@ EMA state lives on the same device as its actor parameter. Phase sleep moves it 
 pinned CPU memory together with AdamW state, and wake moves both back.
 
 Rollout publication pushes the current actor weights unless
-`--ema-rollout-policy ema` asks for the EMA weights.
+`--rollout-weights ema` asks for the EMA weights.
 
 ```text
 iter_0000001/

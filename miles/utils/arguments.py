@@ -1120,17 +1120,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "Maintain an exponential moving average of the trainable weights as pi_old "
                     "(LoRA or full finetune). Consumed by --ref-mode ema; combine with "
-                    "--ema-rollout-policy ema to sample under pi_old."
+                    "--rollout-weights ema to sample under pi_old."
                 ),
             )
             parser.add_argument(
-                "--ema-rollout-policy",
+                "--rollout-weights",
                 type=str,
-                choices=["live", "ema"],
-                default="live",
+                choices=["actor", "ema"],
+                default="actor",
                 help=(
-                    "Which trainable weights to push to rollout after each rollout_end when "
-                    "--use-ema is set: live weights, or the EMA copy (pi_old)."
+                    "Which weights to push to the rollout engines after each rollout's training: "
+                    "the current actor weights, or the EMA copy (pi_old, requires --use-ema)."
                 ),
             )
             parser.add_argument(
@@ -1758,10 +1758,10 @@ def miles_validate_args(args):
         raise ValueError(f"--ema-decay-max must be in [0, 1], got {args.ema_decay_max}")
     if args.ema_decay_flat_steps < 0:
         raise ValueError(f"--ema-decay-flat-steps must be non-negative, got {args.ema_decay_flat_steps}")
-    if args.use_ema and args.ref_mode != "ema" and args.ema_rollout_policy != "ema":
-        raise ValueError("--use-ema has no consumer; set --ref-mode ema or --ema-rollout-policy ema")
-    if args.ema_rollout_policy == "ema" and not args.use_ema:
-        raise ValueError("--ema-rollout-policy ema requires --use-ema")
+    if args.use_ema and args.ref_mode != "ema" and args.rollout_weights != "ema":
+        raise ValueError("--use-ema has no consumer; set --ref-mode ema or --rollout-weights ema")
+    if args.rollout_weights == "ema" and not args.use_ema:
+        raise ValueError("--rollout-weights ema requires --use-ema")
 
     if args.loss_type == "sft_loss":
         if not args.train_only:
