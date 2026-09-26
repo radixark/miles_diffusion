@@ -256,6 +256,7 @@ def load(actor: Any) -> dict[str, Any] | None:
         "rng": rng_state,
         "metadata": metadata,
         "iteration": target_step,
+        "checkpoint_dir": checkpoint_dir,
     }
 
 
@@ -263,6 +264,14 @@ def finalize_load(actor: Any, checkpoint_payload: dict[str, Any] | None) -> None
     if checkpoint_payload is None:
         dist.barrier()
         return
+
+    if actor.ema_shadow is not None:
+        ema_dir = checkpoint_payload["checkpoint_dir"] / "ema"
+        if ema_dir.exists():
+            dcp.load({"ema": actor.ema_shadow}, checkpoint_id=str(ema_dir))
+        else:
+            logger.warning("Checkpoint has no EMA state; initializing EMA from the loaded model.")
+            actor.ema_shadow.step = checkpoint_payload["iteration"]
 
     if checkpoint_payload.get("rng") is not None and not actor.args.no_load_rng:
         rng_state = checkpoint_payload["rng"]
@@ -314,6 +323,9 @@ def save(actor: Any, iteration: int) -> None:
     model_state = ModelState(actor.model, lora_only=lora_only)
     state_dict = {"model_state": model_state}
     dcp.save(state_dict, checkpoint_id=str(model_dir))
+
+    if actor.ema_shadow is not None:
+        dcp.save({"ema": actor.ema_shadow}, checkpoint_id=str(checkpoint_dir / "ema"))
 
     # --no-save-optim drops both the optimizer and the LR scheduler.
     if not actor.args.no_save_optim:

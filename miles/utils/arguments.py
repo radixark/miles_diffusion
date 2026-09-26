@@ -123,6 +123,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             return parser
 
         def add_train_arguments(parser):
+            # Set by train_diffusion_async.py; not a CLI flag.
+            parser.set_defaults(train_async=False)
             parser.add_argument(
                 "--train-backend",
                 type=str,
@@ -1809,6 +1811,10 @@ def miles_validate_args(args):
         args.offload_train = False
     if args.offload_rollout is None:
         args.offload_rollout = False
+
+    if not args.colocate and not args.train_only and not args.debug_rollout_only:
+        if args.lora_ipc_weight_sync:
+            raise ValueError("--lora-ipc-weight-sync requires --colocate: CUDA IPC needs shared train/rollout GPUs")
 
     if args.hps_num_workers <= 0:
         raise ValueError(f"--hps-num-workers must be positive, got {args.hps_num_workers}")

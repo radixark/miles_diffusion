@@ -1,5 +1,3 @@
-import os
-
 import ray
 from ray.util.placement_group import PlacementGroup
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
@@ -49,9 +47,6 @@ class RayTrainGroup:
         pg, reordered_bundle_indices, _reordered_gpu_ids = pg
 
         env_vars = {
-            # because sglang will always set NCCL_CUMEM_ENABLE to 0
-            # we need also set it to 0 to prevent nccl error.
-            "NCCL_CUMEM_ENABLE": os.environ.get("NCCL_CUMEM_ENABLE", "0"),
             "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": "1",
             **self.args.train_env_vars,
         }
