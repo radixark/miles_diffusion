@@ -315,7 +315,7 @@ Observed `rollout/reward/raw_mean` from one `scripts/run_diffusion_nft_sd3_picks
 
 ![DiffusionNFT PickScore raw reward](../../assets/images/sd3/nft-pickscore-raw-reward.png)
 
-Online run: [wandb](https://wandb.ai/radixarkai/miles-diffusion-CIs/runs/7nnabqkr). That run observed held-out
+That run observed held-out
 **`eval/pickscore_test` 0.850 / 0.859 / 0.863** at rollouts 29 / 59 / 89 with `--eval-interval 30` and 50 denoise steps
 at eval time; these values are not asserted by the E2E fixture.
 
