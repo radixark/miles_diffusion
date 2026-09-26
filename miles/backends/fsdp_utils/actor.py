@@ -271,7 +271,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 ray.get(self.rollout_manager.clear_num_new_engines.remote())
 
         rollout_weight_context = (
-            self.ema_optimizer.use_weights(self.model) if self.args.ema_rollout_policy == "ema" else nullcontext()
+            self.ema_optimizer.use_weights(self.model) if self.args.rollout_weights == "ema" else nullcontext()
         )
         with rollout_weight_context:
             self.weight_updater.update_weights()

@@ -319,8 +319,8 @@ Every one takes a dotted path.
 
 | Flag | Type | Default | Notes |
 |---|---|---|---|
-| `--use-ema` | flag | off | Maintains an EMA copy as πₒₗd. Needs a consumer (`--ref-mode ema` or `--ema-rollout-policy ema`). |
-| `--ema-rollout-policy` | enum | `live` | `live` / `ema`: which weights get pushed to rollout. |
+| `--use-ema` | flag | off | Maintains an EMA copy as πₒₗd. Needs a consumer (`--ref-mode ema` or `--rollout-weights ema`). |
+| `--rollout-weights` | enum | `actor` | `actor` / `ema`: which weights get pushed to rollout. |
 | `--ema-decay-init` | float | `0.001` | Decay during the flat period. |
 | `--ema-decay-ramp` | float | `0.001` | Per-step increase after the flat period; the ramp restarts from zero. |
 | `--ema-decay-max` | float | `0.5` | Ceiling. |

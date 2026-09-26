@@ -246,7 +246,7 @@ with these settings of its own:
 | Setting | Value |
 |---|---|
 | Algorithm | `--loss-type nft` |
-| Reference | `--ref-mode ema --use-ema --ema-rollout-policy ema` |
+| Reference | `--ref-mode ema --use-ema --rollout-weights ema` |
 | Reward | `--rm-type pickscore` |
 | SDE | `--diffusion-sde-type ode --diffusion-noise-level 0.0` |
 | LoRA | rank 32, alpha 64, IPC sync |
