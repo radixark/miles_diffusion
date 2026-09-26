@@ -1,7 +1,6 @@
 import logging
-import warnings
 from argparse import Namespace
-from contextlib import contextmanager, nullcontext
+from contextlib import nullcontext
 
 import ray
 import torch
@@ -34,14 +33,15 @@ from .diffusion_update_weight_utils import (
     DiffusionUpdateWeightFromTensorLoRA,
     DiffusionUpdateWeightFromTensorLoRAIPC,
 )
-from .ema import EmaShadow
+from .ema import EMAOptimizer, reshard_model
 from .input_dtype_policy import apply_input_dtype_policy
 from .loss_hub import DiffusionLossContext, flow_grpo_loss_formula, prepare_flow_grpo_batch
 from .lr_scheduler import get_lr_scheduler
 from .metrics import new_metric_buffer
-from .mixed_precision import compile_param_dtype_maps, parse_dtype_from_str
+from .mixed_precision import parse_dtype_from_str
+from .model_loader import load_fsdp_models
+from .offload import move_optimizer, offload_model, onload_model
 from .parallel import create_fsdp_parallel_state
-from .sequence_parallel.plan import apply_sequence_parallel
 
 logger = logging.getLogger(__name__)
 
@@ -85,16 +85,12 @@ class FSDPTrainRayActor(TrainRayActor):
         if self.args.debug_rollout_only:
             return 0
 
-        if self.args.offload_train and self.args.fsdp_cpu_offload:
-            self.args.offload_train = False
-
         if dist.get_rank() == 0:
             init_tracking(args, primary=False)
 
         if self.args.start_rollout_id is None:
             self.args.start_rollout_id = 0
 
-        self._master_dtype = parse_dtype_from_str(args.fsdp_master_dtype)
         self._forward_dtype = parse_dtype_from_str(args.diffusion_forward_dtype)
 
         from miles.utils.misc import load_function
@@ -106,62 +102,38 @@ class FSDPTrainRayActor(TrainRayActor):
             # flash-attn is opaque to torch's determinism flag; backends patch their own dispatch.
             self.model_backend.enable_deterministic_attention(args.fsdp_attention_backend)
         self.scheduler = self.model_backend.load_scheduler(args)
-        rank = dist.get_rank()
-        materialize_weights = rank == 0
-
-        self.models: dict[str, torch.nn.Module] = {}
-        for component in args.update_weight_target_modules:
-            # per raw component (wan2.2 has two transformers), before LoRA/FSDP wrap
-            with self._model_init_context(materialize_weights=materialize_weights):
-                model = self.model_backend.load_component(
-                    component,
-                    args,
-                    master_dtype=self._master_dtype,
-                    materialize_weights=materialize_weights,
-                )
-            if args.fsdp_attention_backend is not None:
-                self.model_backend.set_attention_backend(model, args.fsdp_attention_backend)
-
-            # Enable checkpointing on the raw model before PEFT wraps it. The flag
-            # is consumed when transformer blocks run, so LoRA layers inserted
-            # below remain inside the checkpointed block forward.
-            if args.gradient_checkpointing:
-                self.model_backend.enable_gradient_checkpointing(model)
-
-            if args.use_lora:
-                model = apply_lora(model, args, self.train_pipeline_config)
-
-            model.train()
-
-            if rank != 0 and any(not parameter.is_meta for parameter in model.parameters()):
-                raise RuntimeError(f"{component} did not honor meta initialization")
-            checkpoint.sync_model_dtypes(model)
-            full_state = model.state_dict() if rank == 0 else {}
-            model = apply_fsdp2(
-                model,
-                self.model_backend.fsdp_parallel_plan(model),
-                mesh=self.parallel_state.get_mesh("fsdp"),
-                cpu_offload=self.args.fsdp_cpu_offload,
-                args=self.args,
+        self.models = load_fsdp_models(
+            args,
+            self.model_backend,
+            self.train_pipeline_config,
+            self.parallel_state,
+            checkpoint_path=args.hf_checkpoint,
+            lora_adapter_path=args.lora_adapter_path,
+            trainable=True,
+            cpu_offload=args.fsdp_cpu_offload,
+        )
+        self.reference_models = {}
+        if args.ref_load is not None:
+            self.reference_models = load_fsdp_models(
+                args,
+                self.model_backend,
+                self.train_pipeline_config,
+                self.parallel_state,
+                checkpoint_path=args.ref_load,
+                lora_adapter_path=args.ref_lora_adapter_path,
+                cpu_offload=args.ref_cpu_offload,
             )
-            checkpoint.broadcast_full_state_to_fsdp(
-                model,
-                full_state,
-                cpu_offload=self.args.fsdp_cpu_offload,
+        self.teacher_models = {}
+        if args.teacher_load is not None:
+            self.teacher_models = load_fsdp_models(
+                args,
+                self.model_backend,
+                self.train_pipeline_config,
+                self.parallel_state,
+                checkpoint_path=args.teacher_load,
+                lora_adapter_path=args.teacher_lora_adapter_path,
+                cpu_offload=args.teacher_cpu_offload,
             )
-            del full_state
-            self.train_pipeline_config.postprocess_model_after_materialize(model)
-            self.models[component] = model
-
-        if self.parallel_state.get_optional_mesh("sp") is not None:
-            for model in self.models.values():
-                plan = self.model_backend.sequence_parallel_plan(model)
-                apply_sequence_parallel(
-                    model,
-                    self.parallel_state,
-                    plan,
-                    self.model_backend.install_sequence_parallel_attention,
-                )
 
         # Force a sync to ensure sharding is complete and old memory is freed.
         torch.cuda.synchronize()
@@ -210,17 +182,16 @@ class FSDPTrainRayActor(TrainRayActor):
         self.global_step = 0
         self.micro_step = 0
 
-        checkpoint_payload = checkpoint.load(self)
-
-        self.ema_shadow = None
-        if self.args.use_ema:
-            self.ema_shadow = EmaShadow(
-                (p for m in self.models.values() for p in m.parameters()),
-                decay=self.args.ema_decay_init,
-                uprate=self.args.ema_decay_ramp,
-                uphold=self.args.ema_decay_max,
-                flat_steps=self.args.ema_decay_flat_steps,
+        self.ema_optimizer = None
+        if args.use_ema:
+            self.ema_optimizer = EMAOptimizer(
+                self.model,
+                decay=args.ema_decay_init,
+                uprate=args.ema_decay_ramp,
+                uphold=args.ema_decay_max,
+                flat_steps=args.ema_decay_flat_steps,
             )
+        checkpoint_payload = checkpoint.load(self)
 
         # sglang-d now supports /update_weights_from_tensor (PR #20464).
         if self.args.train_only:
@@ -239,33 +210,20 @@ class FSDPTrainRayActor(TrainRayActor):
 
         return self.args.start_rollout_id
 
-    @contextmanager
-    def _model_init_context(self, *, materialize_weights: bool):
-        """Build real CPU weights on rank 0 and meta weights elsewhere."""
-        if materialize_weights:
-            with torch.device("cpu"):
-                yield
-            return
-
-        from accelerate import init_empty_weights
-
-        # Some models compute buffer values during __init__, which cannot run on meta.
-        with init_empty_weights(include_buffers=False), warnings.catch_warnings():
-            warnings.filterwarnings(
-                "ignore",
-                message=r"for .*: copying from a non-meta parameter in the checkpoint to a meta parameter.*",
-            )
-            yield
-
     @timer
     def sleep(self) -> None:
         if not self.args.offload_train:
             return
 
         print_memory("before offload DiT")
+        self.optimizer.zero_grad(set_to_none=True)
 
-        self.model.cpu()
-        move_torch_optimizer(self.optimizer, "cpu")
+        for models in (self.models, self.reference_models, self.teacher_models):
+            for model in models.values():
+                offload_model(model)
+        move_optimizer(self.optimizer, "cpu")
+        if self.ema_optimizer is not None:
+            move_optimizer(self.ema_optimizer, "cpu")
         clear_memory()
         dist.barrier(group=get_gloo_group())
         print_memory("after sleep DiT")
@@ -275,8 +233,17 @@ class FSDPTrainRayActor(TrainRayActor):
         if not self.args.offload_train:
             return
 
-        self.model.cuda()
-        move_torch_optimizer(self.optimizer, "cuda")
+        for models, cpu_offload in (
+            (self.models, self.args.fsdp_cpu_offload),
+            (self.reference_models, self.args.ref_cpu_offload),
+            (self.teacher_models, self.args.teacher_cpu_offload),
+        ):
+            for model in models.values():
+                onload_model(model, cpu_offload=cpu_offload)
+        if not self.args.fsdp_cpu_offload:
+            move_optimizer(self.optimizer, "cuda")
+            if self.ema_optimizer is not None:
+                move_optimizer(self.ema_optimizer, "cuda")
         dist.barrier(group=get_gloo_group())
         print_memory("after wake_up DiT")
 
@@ -303,13 +270,8 @@ class FSDPTrainRayActor(TrainRayActor):
             if dist.get_rank() == 0:
                 ray.get(self.rollout_manager.clear_num_new_engines.remote())
 
-        ema_shadow = self.ema_shadow
-        if ema_shadow is not None:
-            delta = ema_shadow.update()
-            if dist.get_rank() == 0:
-                logger.info("EMA shadow updated (decay=%.4f step=%d)", delta, ema_shadow.step)
         rollout_weight_context = (
-            ema_shadow.swap_in() if ema_shadow is not None and self.args.ema_rollout_policy == "ema" else nullcontext()
+            self.ema_optimizer.use_weights(self.model) if self.args.ema_rollout_policy == "ema" else nullcontext()
         )
         with rollout_weight_context:
             self.weight_updater.update_weights()
@@ -343,6 +305,8 @@ class FSDPTrainRayActor(TrainRayActor):
             if self.args.debug_rollout_only:
                 return
             self._train_core(rollout_id=rollout_id, rollout_data=rollout_data)
+            if self.ema_optimizer is not None:
+                self.ema_optimizer.step()
 
         train_metric_utils.log_perf_data_raw(
             rollout_id=rollout_id,
@@ -359,12 +323,6 @@ class FSDPTrainRayActor(TrainRayActor):
             raise ValueError("rollout_data['train_data'] is empty")
 
         num_pairs = len(train_pairs)
-
-        ref_mode = self.args.ref_mode
-        if ref_mode == "lora_base" and not all(hasattr(m, "disable_adapter") for m in self.models.values()):
-            raise RuntimeError(
-                "--ref-mode lora_base requires PEFT models exposing disable_adapter() after FSDP wrapping."
-            )
 
         # ------------- Rollout Scheduler Metadata -------------
         scheduler_timesteps, scheduler_sigmas = scheduler_meta_from_rollout(
@@ -403,6 +361,8 @@ class FSDPTrainRayActor(TrainRayActor):
 
         loss_ctx = DiffusionLossContext(
             models=self.models,
+            reference_models=self.reference_models,
+            teacher_models=self.teacher_models,
             train_pipeline_config=self.train_pipeline_config,
             sde_backend=self.sde_backend,
             scheduler=self.scheduler,
@@ -534,10 +494,10 @@ class FSDPTrainRayActor(TrainRayActor):
             default_dtype=forward_dtype,
         )
 
-        def _compute_noise_pred() -> torch.Tensor:
+        def _compute_noise_pred(model) -> torch.Tensor:
             with torch.autocast("cuda", dtype=forward_dtype, enabled=forward_dtype != torch.float32):
                 return train_pipeline_config.compute_noise_pred(
-                    model=prepared.model,
+                    model=model,
                     latents_input=latents_in,
                     timesteps_input=timesteps_in,
                     pos_cond=pos_cond_in,
@@ -549,17 +509,20 @@ class FSDPTrainRayActor(TrainRayActor):
                     true_cfg_scale=prepared.true_cfg_scale,
                 )
 
-        new_pred = _compute_noise_pred()
-
         ref_pred = None
-        ref_mode = self.args.ref_mode
-        if ref_mode != "none":
-            if ref_mode == "ema":
-                ref_ctx = self.ema_shadow.swap_in()
-            else:
-                ref_ctx = prepared.model.disable_adapter()
-            with torch.no_grad(), ref_ctx:
-                ref_pred = _compute_noise_pred().detach()
+        if self.args.ref_mode == "ref":
+            with torch.no_grad():
+                ref_pred = _compute_noise_pred(self.reference_models[prepared.component_name]).detach()
+        elif self.args.ref_mode == "ema":
+            with torch.no_grad(), self.ema_optimizer.use_weights(prepared.model):
+                ref_pred = _compute_noise_pred(prepared.model).detach()
+        elif self.args.ref_mode == "lora_base":
+            with torch.no_grad(), prepared.model.disable_adapter():
+                ref_pred = _compute_noise_pred(prepared.model).detach()
+                # PEFT re-enables adapter gradients on exit; reshard first so that lands on the shards, not gathered copies.
+                reshard_model(prepared.model)
+
+        new_pred = _compute_noise_pred(prepared.model)
 
         if self.custom_loss_formula_func is not None:
             return self.custom_loss_formula_func(
@@ -582,127 +545,3 @@ class FSDPTrainRayActor(TrainRayActor):
             write_old_log_prob=write_old_log_prob,
             old_log_prob_from_new=old_log_prob_from_new,
         )
-
-
-@torch.no_grad()
-def move_torch_optimizer(optimizer, device):
-    """ref: https://github.com/volcengine/verl/blob/main/verl/utils/fsdp_utils.py"""
-    if not optimizer.state:
-        return
-
-    for param_group in optimizer.param_groups:
-        for param in param_group["params"]:
-            state = optimizer.state[param]
-            for key, value in state.items():
-                if isinstance(value, torch.Tensor):
-                    state[key] = value.to(device, non_blocking=True)
-
-    torch.cuda.synchronize()
-
-
-def apply_lora(model: torch.nn.Module, args: Namespace, train_pipeline_config) -> torch.nn.Module:
-    """Apply PEFT LoRA, leaving non-rank0 adapters uninitialized on meta."""
-    from peft import LoraConfig, get_peft_model
-
-    on_meta = dist.get_rank() != 0
-    # Per-model fallback when --lora-target-modules is unset (runtime inference: depends on loaded pipeline).
-    targets = args.lora_target_modules or train_pipeline_config.lora_target_modules
-    init_lora_weight = args.lora_init_weights
-    if init_lora_weight == "kaiming-uniform":
-        init_lora_weight = True  # namely kaiming-uniform
-    model = get_peft_model(
-        model,
-        LoraConfig(
-            r=args.lora_rank,
-            lora_alpha=args.lora_alpha,
-            target_modules=targets,
-            init_lora_weights=False if on_meta else init_lora_weight,
-        ),
-        low_cpu_mem_usage=on_meta,
-    )
-    if dist.get_rank() == 0:
-        model.print_trainable_parameters()
-    return model
-
-
-def apply_fsdp2(
-    model,
-    parallel_plan,
-    mesh=None,
-    cpu_offload=False,
-    args=None,
-):
-    """Apply FSDP2 per the model's FSDPParallelPlan.
-
-    ``parallel_plan.param_dtype_patterns`` is matched against FQNs from ``model``. Each child
-    ``fully_shard`` call receives exact FQNs relative to that child module, while
-    parameters managed by the root call retain their root-relative FQNs.
-    """
-    from torch.distributed.fsdp import CPUOffloadPolicy, MixedPrecisionPolicy, fully_shard
-
-    offload_policy = CPUOffloadPolicy() if cpu_offload else None
-
-    layer_cls_to_wrap = parallel_plan.no_split_modules
-    assert layer_cls_to_wrap is not None and len(layer_cls_to_wrap) > 0 and layer_cls_to_wrap[0] is not None
-
-    modules = [module for name, module in model.named_modules() if module.__class__.__name__ in layer_cls_to_wrap]
-
-    param_dtype = parse_dtype_from_str(args.diffusion_forward_dtype)
-    reduce_dtype = parse_dtype_from_str(args.fsdp_reduce_dtype)
-    # A wrap entry may also be a module LIST — fully_shard can group several modules into one wrap
-    # (one shared all-gather); today every wrap holds a single block.
-    param_dtype_maps = compile_param_dtype_maps(
-        model,
-        modules,
-        parallel_plan.param_dtype_patterns,
-        param_dtype,
-    )
-    has_param_dtype_overrides = bool(any(param_dtype_maps.wrap_maps) or param_dtype_maps.root_map)
-    param_dtype_policy_cls = None
-    if has_param_dtype_overrides:
-        from .monkey_patches.fsdp_param_dtype_patch import ParamDtypeMixedPrecisionPolicy, apply_param_dtype_map_patch
-
-        apply_param_dtype_map_patch()
-        param_dtype_policy_cls = ParamDtypeMixedPrecisionPolicy
-    logger.info(
-        f"FSDP: wrapping {len(modules)} modules of type {layer_cls_to_wrap}, "
-        f"param_dtype={param_dtype}, reduce_dtype={reduce_dtype}, "
-        f"param_dtype_overrides={param_dtype_maps.override_count} "
-        f"({param_dtype_maps.override_numel:,} parameters)"
-    )
-
-    fsdp_kwargs = {
-        "offload_policy": offload_policy,
-        "mesh": mesh,
-    }
-
-    # input_dtype_policy owns boundary casts; autocast owns compute and keeps grad-ckpt recompute consistent.
-    def make_mp_policy(param_dtype_map):
-        if param_dtype_map:
-            assert param_dtype_policy_cls is not None
-            return param_dtype_policy_cls(
-                param_dtype=param_dtype,
-                reduce_dtype=reduce_dtype,
-                cast_forward_inputs=False,
-                param_dtype_map=param_dtype_map,
-            )
-        return MixedPrecisionPolicy(
-            param_dtype=param_dtype,
-            reduce_dtype=reduce_dtype,
-            cast_forward_inputs=False,
-        )
-
-    for module, wrap_map in zip(modules, param_dtype_maps.wrap_maps, strict=True):
-        fully_shard(
-            module,
-            mp_policy=make_mp_policy(wrap_map),
-            **fsdp_kwargs,
-        )
-
-    fully_shard(
-        model,
-        mp_policy=make_mp_policy(param_dtype_maps.root_map),
-        **fsdp_kwargs,
-    )
-
-    return model
