@@ -293,12 +293,10 @@ Train/rollout dtype alignment for Flow-GRPO is covered in
 ### Flow-GRPO + OCR
 
 Observed `rollout/reward/raw_mean` from one
-`scripts/run_diffusion_grpo_sd3_ocr_sglang.py` run (default batch, 600 rollouts). The curve is an example, not a CI
-acceptance range:
+`scripts/run_diffusion_grpo_sd3_ocr_sglang.py` run (default batch, 600 rollouts): the mean of the first 50 rollouts
+is 0.462 and of the last 50 is 0.841. The curve is an example, not a CI acceptance range:
 
 ![Flow-GRPO OCR raw reward](../../assets/images/sd3/grpo-ocr-raw-reward.png)
-
-Online runs: wandb project **`miles-diffusion-grpo`**.
 
 ### Flow-GRPO + OCR & PickScore
 
