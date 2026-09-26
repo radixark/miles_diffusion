@@ -24,6 +24,8 @@ class DiffusionLossContext:
     rollout_id: int = 0
     microbatch_id: int = 0
     dp_rank: int = 0
+    reference_models: dict[str, torch.nn.Module] = field(default_factory=dict)
+    teacher_models: dict[str, torch.nn.Module] = field(default_factory=dict)
 
 
 @dataclass

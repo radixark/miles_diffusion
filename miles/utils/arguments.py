@@ -13,6 +13,7 @@ the prefix until the CLIs merge; stripping it early leaves two names for one ide
 import argparse
 import json
 import logging
+import math
 import os
 from typing import Any
 
@@ -962,13 +963,38 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--ref-mode",
                 type=str,
-                choices=["none", "lora_base", "ema"],
+                choices=["none", "lora_base", "ema", "ref"],
                 default=None,
                 help=(
-                    "Which reference weights to use for the no-grad DiT forward. "
+                    "Which reference model to use for the no-grad DiT forward. "
                     "Auto: lora_base when --diffusion-kl-beta > 0 and ema for --loss-type nft. "
-                    "Explicit values skip auto inference."
+                    "Use ref with --ref-load for an independent frozen model."
                 ),
+            )
+            parser.add_argument(
+                "--ref-load", type=str, default=None, help="HF pipeline checkpoint for the frozen reference model."
+            )
+            parser.add_argument(
+                "--teacher-load", type=str, default=None, help="HF pipeline checkpoint for the frozen teacher model."
+            )
+            parser.add_argument(
+                "--ref-lora-adapter-path", type=str, default=None, help="Pretrained LoRA adapter for --ref-load."
+            )
+            parser.add_argument(
+                "--teacher-lora-adapter-path",
+                type=str,
+                default=None,
+                help="Pretrained LoRA adapter for --teacher-load.",
+            )
+            parser.add_argument(
+                "--ref-cpu-offload",
+                action="store_true",
+                help="Keep reference parameter shards in pinned CPU memory between FSDP forwards.",
+            )
+            parser.add_argument(
+                "--teacher-cpu-offload",
+                action="store_true",
+                help="Keep teacher parameter shards in pinned CPU memory between FSDP forwards.",
             )
             return parser
 
@@ -1050,6 +1076,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--use-lora", action="store_true", default=False, help="Use LoRA adapters instead of full finetune."
             )
+            parser.add_argument(
+                "--lora-adapter-path",
+                type=str,
+                default=None,
+                help="Pretrained actor LoRA adapter to continue training.",
+            )
             parser.add_argument("--lora-rank", type=int, default=64)
             parser.add_argument("--lora-alpha", type=int, default=64)
             parser.add_argument(
@@ -1089,17 +1121,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "Maintain an exponential moving average of the trainable weights as pi_old "
                     "(LoRA or full finetune). Consumed by --ref-mode ema; combine with "
-                    "--ema-rollout-policy ema to sample under pi_old."
+                    "--rollout-weights ema to sample under pi_old."
                 ),
             )
             parser.add_argument(
-                "--ema-rollout-policy",
+                "--rollout-weights",
                 type=str,
-                choices=["live", "ema"],
-                default="live",
+                choices=["actor", "ema"],
+                default="actor",
                 help=(
-                    "Which trainable weights to push to rollout after each rollout_end when "
-                    "--use-ema is set: live weights, or the EMA copy (pi_old)."
+                    "Which weights to push to the rollout engines after each rollout's training: "
+                    "the current actor weights, or the EMA copy (pi_old, requires --use-ema)."
                 ),
             )
             parser.add_argument(
@@ -1571,7 +1603,62 @@ def set_default_diffusion_args(args) -> None:
             args.ref_mode = "none"
 
 
+def validate_reference_model_args(args) -> None:
+    if args.ref_mode == "ref" and args.ref_load is None:
+        raise ValueError("--ref-mode ref requires --ref-load")
+    if args.ref_load is not None and args.ref_mode != "ref":
+        raise ValueError("--ref-load requires --ref-mode ref")
+    if args.ref_lora_adapter_path is not None and args.ref_load is None:
+        raise ValueError("--ref-lora-adapter-path requires --ref-load")
+    if args.teacher_lora_adapter_path is not None and args.teacher_load is None:
+        raise ValueError("--teacher-lora-adapter-path requires --teacher-load")
+    if args.ref_cpu_offload and args.ref_load is None:
+        raise ValueError("--ref-cpu-offload requires --ref-load")
+    if args.teacher_cpu_offload and args.teacher_load is None:
+        raise ValueError("--teacher-cpu-offload requires --teacher-load")
+    if args.ref_mode == "lora_base" and not args.use_lora:
+        raise ValueError("--ref-mode lora_base requires --use-lora")
+    if args.ref_mode == "ema" and not args.use_ema:
+        raise ValueError("--ref-mode ema requires --use-ema")
+
+
+def validate_actor_lora_adapter(args) -> None:
+    if args.lora_adapter_path is None:
+        return
+    if not args.use_lora:
+        raise ValueError("--lora-adapter-path requires --use-lora")
+    from peft import PeftConfig
+
+    for component in args.update_weight_target_modules:
+        subfolder = component if len(args.update_weight_target_modules) > 1 else None
+        adapter_config = PeftConfig.from_pretrained(args.lora_adapter_path, subfolder=subfolder)
+        if (
+            adapter_config.use_dora
+            or adapter_config.bias != "none"
+            or adapter_config.lora_bias
+            or adapter_config.modules_to_save
+        ):
+            raise ValueError(
+                f"Actor LoRA adapter for {component} must contain only LoRA A/B matrices; "
+                "DoRA, bias training, and modules_to_save are not supported by checkpoint and weight sync"
+            )
+        if args.lora_ipc_weight_sync and (
+            adapter_config.use_rslora or adapter_config.rank_pattern or adapter_config.alpha_pattern
+        ):
+            raise ValueError(
+                f"--lora-ipc-weight-sync requires uniform standard LoRA for {component}; "
+                "disable it for rsLoRA or per-layer rank/alpha"
+            )
+        if (adapter_config.r, adapter_config.lora_alpha) != (args.lora_rank, args.lora_alpha):
+            raise ValueError(
+                f"Actor LoRA adapter for {component} has r={adapter_config.r}, lora_alpha={adapter_config.lora_alpha}; "
+                f"set --lora-rank {adapter_config.r} --lora-alpha {adapter_config.lora_alpha} "
+                f"instead of {args.lora_rank}/{args.lora_alpha}"
+            )
+
+
 def miles_validate_args(args):
+    validate_reference_model_args(args)
     args.eval_datasets = _resolve_eval_datasets(args)
 
     if args.eval_interval is not None:
@@ -1608,6 +1695,7 @@ def miles_validate_args(args):
         )
     if len(set(args.update_weight_target_modules)) != len(args.update_weight_target_modules):
         raise ValueError(f"--update-weight-target-module has duplicates: {args.update_weight_target_module!r}")
+    validate_actor_lora_adapter(args)
 
     if args.wandb_log_image_interval < 1:
         raise ValueError(f"wandb_log_image_interval must be >= 1, got {args.wandb_log_image_interval}")
@@ -1676,16 +1764,16 @@ def miles_validate_args(args):
 
     if not 0.0 <= args.ema_decay_init <= 1.0:
         raise ValueError(f"--ema-decay-init must be in [0, 1], got {args.ema_decay_init}")
-    if args.ema_decay_ramp < 0.0:
-        raise ValueError(f"--ema-decay-ramp must be non-negative, got {args.ema_decay_ramp}")
+    if not math.isfinite(args.ema_decay_ramp) or args.ema_decay_ramp < 0.0:
+        raise ValueError(f"--ema-decay-ramp must be finite and non-negative, got {args.ema_decay_ramp}")
     if not 0.0 <= args.ema_decay_max <= 1.0:
         raise ValueError(f"--ema-decay-max must be in [0, 1], got {args.ema_decay_max}")
     if args.ema_decay_flat_steps < 0:
         raise ValueError(f"--ema-decay-flat-steps must be non-negative, got {args.ema_decay_flat_steps}")
-    if args.use_ema and args.ref_mode != "ema" and args.ema_rollout_policy != "ema":
-        raise ValueError("--use-ema has no consumer; set --ref-mode ema or --ema-rollout-policy ema")
-    if args.ema_rollout_policy == "ema" and not args.use_ema:
-        raise ValueError("--ema-rollout-policy ema requires --use-ema")
+    if args.use_ema and args.ref_mode != "ema" and args.rollout_weights != "ema":
+        raise ValueError("--use-ema has no consumer; set --ref-mode ema or --rollout-weights ema")
+    if args.rollout_weights == "ema" and not args.use_ema:
+        raise ValueError("--rollout-weights ema requires --use-ema")
 
     if args.loss_type == "sft_loss":
         if not args.train_only:
@@ -1730,7 +1818,7 @@ def miles_validate_args(args):
         if args.ref_mode != "none":
             raise ValueError("--loss-type sft_loss does not use a reference model; drop --ref-mode")
         if args.use_ema:
-            raise ValueError("--loss-type sft_loss does not support --use-ema (EMA updates run in weight sync)")
+            raise ValueError("--loss-type sft_loss does not support --use-ema")
 
     is_nft = args.loss_type == "nft"
     if is_nft:
@@ -1750,13 +1838,9 @@ def miles_validate_args(args):
             )
 
     if is_nft and args.ref_mode == "none":
-        raise ValueError("--loss-type nft requires a reference model; set --ref-mode ema or lora_base")
-    if args.ref_mode == "ema" and not args.use_ema:
-        raise ValueError("--ref-mode ema requires --use-ema")
-    if args.ref_mode == "lora_base" and not args.use_lora:
-        raise ValueError("--ref-mode lora_base requires --use-lora")
+        raise ValueError("--loss-type nft requires a reference model; set --ref-mode ema, lora_base, or ref")
     if args.diffusion_kl_beta > 0 and args.ref_mode == "none":
-        raise ValueError("--diffusion-kl-beta > 0 requires a reference model; set --ref-mode lora_base or ema")
+        raise ValueError("--diffusion-kl-beta > 0 requires a reference model; set --ref-mode lora_base, ema, or ref")
 
     if args.dump_details is not None:
         args.save_debug_rollout_data = f"{args.dump_details}/rollout_data/{{rollout_id}}.pt"

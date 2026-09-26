@@ -4,7 +4,7 @@ The trainer does not hard-cast its forward inputs; each family declares, per inp
 ("fp32"/"bf16"/"fp16"), "default" for the run's forward dtype, or None to pass the rollout dtype
 through. The boundary dtype is what element-wise ops see before any weight is involved, so it must
 match what the family's sglang-d pipeline feeds the DiT for log-prob alignment; compute inside the
-model is owned by the trainer's autocast (see actor.apply_fsdp2).
+model is owned by the trainer's autocast (see model_loader.apply_fsdp2).
 """
 
 from __future__ import annotations

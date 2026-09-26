@@ -295,9 +295,11 @@ class DiffusionUpdateWeightFromTensor(DiffusionUpdateWeight):
                     "weight_version": str(weight_version),
                 }
                 if weight_update_mode is not None:
+                    model = self.models[target_module]
+                    adapter_config = model.peft_config[model.active_adapter]
                     kwargs["weight_update_mode"] = weight_update_mode
-                    kwargs["lora_alpha"] = self.args.lora_alpha
-                    kwargs["lora_rank"] = self.args.lora_rank
+                    kwargs["lora_alpha"] = adapter_config.lora_alpha
+                    kwargs["lora_rank"] = adapter_config.r
                 ref = self._ipc_engine.update_weights_from_tensor.remote(**kwargs)
                 ray.get(ref)
 

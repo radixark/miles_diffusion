@@ -1,4 +1,8 @@
-"""Smoke tests for DiffusionNFT hooks (prepare + loss formula; actor owns DiT)."""
+"""DiffusionNFT sampling, timestep expansion, and batch preparation.
+
+    rollout samples --> timestep pairs --> prepared noisy latents --> NFT loss
+    seed + rollout + microbatch --> repeatable noise and per-sample timestep order
+"""
 
 from tests.ci.ci_register import register_cpu_ci
 
@@ -10,7 +14,6 @@ import torch
 
 from miles.backends.fsdp_utils.configs.qwen_image import QwenImageTrainPipelineConfig
 from miles.backends.fsdp_utils.configs.train_pipeline_config import TrainPipelineConfig
-from miles.backends.fsdp_utils.ema import EmaShadow
 from miles.backends.fsdp_utils.loss_hub.nft import corrupt, nft_r_from_advantages, prepare_nft_batch
 from miles.backends.fsdp_utils.loss_hub.types import DiffusionLossContext
 from miles.ray.data_conversion_hub.nft import expand_samples_to_train_pairs, resolve_nft_sigmas
@@ -261,28 +264,3 @@ class TestNftDeterminism:
         first = prepare_nft_batch(harness._ctx(_Sd3StyleConfig()), harness._batch())
         second = prepare_nft_batch(harness._ctx(_Sd3StyleConfig(), microbatch_id=1), harness._batch())
         assert not torch.equal(first.latents, second.latents)
-
-
-class TestEmaShadow:
-    def _model(self):
-        return torch.nn.Linear(4, 4, bias=False)
-
-    def test_snapshot_and_update(self):
-        m = self._model()
-        ema = EmaShadow(m.parameters(), decay=0.5, uprate=0.001, uphold=0.5, flat_steps=10)
-        init = m.weight.detach().clone()
-        with torch.no_grad():
-            m.weight.add_(1.0)
-        delta = ema.update()
-        assert delta == 0.5
-        assert torch.allclose(ema.shadow[0], init + 0.5)
-
-    def test_swap_in_restores_exactly(self):
-        m = self._model()
-        ema = EmaShadow(m.parameters(), decay=0.1)
-        live = m.weight.detach().clone()
-        with torch.no_grad():
-            m.weight.add_(2.0)
-        with ema.swap_in():
-            assert torch.equal(m.weight.detach(), live)
-        assert torch.equal(m.weight.detach(), live + 2.0)

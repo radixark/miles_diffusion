@@ -174,11 +174,7 @@ def _write_checkpoint_metadata(path: Path, metadata: dict[str, Any]) -> None:
 
 
 def load(actor: Any) -> dict[str, Any] | None:
-    """Load checkpoint from disk.
-
-    Loads model weights and optionally optimizer state from separate directories.
-    This allows loading weights without optimizer or deleting optimizer before loading.
-    """
+    """Load model and EMA state independently of the optional training optimizer state."""
     load_root = actor.args.load
     if load_root is None:
         return None
@@ -201,6 +197,7 @@ def load(actor: Any) -> dict[str, Any] | None:
     model_dir = checkpoint_dir / "model"
     optimizer_dir = checkpoint_dir / "optimizer"
     lr_scheduler_dir = checkpoint_dir / "lr_scheduler"
+    ema_dir = checkpoint_dir / "ema"
 
     if not model_dir.exists():
         logger.info(f"[FSDP] Model checkpoint {model_dir} not found; skipping load.")
@@ -218,9 +215,18 @@ def load(actor: Any) -> dict[str, Any] | None:
         logger.error(f"[FSDP] Failed to load model from {model_dir}: {e}")
         return None
 
+    if actor.ema_optimizer is not None:
+        if ema_dir.exists():
+            ema_state = OptimizerState(actor.model, actor.ema_optimizer)
+            dcp.load({"ema_state": ema_state}, checkpoint_id=str(ema_dir))
+            logger.info(f"[FSDP] Loaded EMA from {ema_dir}")
+        else:
+            actor.ema_optimizer.reset_from_model()
+            logger.info("[FSDP] EMA checkpoint missing; initialized EMA from the loaded model")
+
     # Load optimizer state (optional)
     load_optimizer = not actor.args.no_load_optim
-    if load_optimizer and optimizer_dir.exists():
+    if load_optimizer and (optimizer_dir / ".metadata").exists():
         allowed_missing = actor.train_pipeline_config.optimizer_state_allowed_missing
         optimizer_state = OptimizerState(actor.model, actor.optimizer, allowed_missing=allowed_missing)
         optim_state_dict = {"optim_state": optimizer_state}
@@ -233,7 +239,7 @@ def load(actor: Any) -> dict[str, Any] | None:
         logger.info(f"[FSDP] Optimizer checkpoint not found at {optimizer_dir}, skipping optimizer load.")
 
     # Load LR scheduler state (optional)
-    load_lr_scheduler = lr_scheduler_dir.exists()
+    load_lr_scheduler = (lr_scheduler_dir / ".metadata").exists()
     if load_lr_scheduler:
         lr_scheduler_state = LRSchedulerState(actor.lr_scheduler)
         lr_scheduler_state_dict = {"lr_scheduler_state": lr_scheduler_state}
@@ -288,11 +294,7 @@ def finalize_load(actor: Any, checkpoint_payload: dict[str, Any] | None) -> None
 
 
 def save(actor: Any, iteration: int) -> None:
-    """Save checkpoint to disk.
-
-    Saves model weights and optimizer state to separate directories.
-    This allows loading weights without optimizer or deleting optimizer before loading.
-    """
+    """Save model and EMA state even when training optimizer state is omitted."""
     torch.cuda.synchronize()
 
     base_dir = Path(actor.args.save).expanduser()
@@ -301,12 +303,14 @@ def save(actor: Any, iteration: int) -> None:
     model_dir = checkpoint_dir / "model"
     optimizer_dir = checkpoint_dir / "optimizer"
     lr_scheduler_dir = checkpoint_dir / "lr_scheduler"
+    ema_dir = checkpoint_dir / "ema"
 
     if dist.get_rank() == 0:
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
         model_dir.mkdir(parents=True, exist_ok=True)
-        optimizer_dir.mkdir(parents=True, exist_ok=True)
-        lr_scheduler_dir.mkdir(parents=True, exist_ok=True)
+        if not actor.args.no_save_optim:
+            optimizer_dir.mkdir(parents=True, exist_ok=True)
+            lr_scheduler_dir.mkdir(parents=True, exist_ok=True)
     dist.barrier()
 
     # Save model weights
@@ -314,6 +318,10 @@ def save(actor: Any, iteration: int) -> None:
     model_state = ModelState(actor.model, lora_only=lora_only)
     state_dict = {"model_state": model_state}
     dcp.save(state_dict, checkpoint_id=str(model_dir))
+
+    if actor.ema_optimizer is not None:
+        ema_state = OptimizerState(actor.model, actor.ema_optimizer)
+        dcp.save({"ema_state": ema_state}, checkpoint_id=str(ema_dir))
 
     # --no-save-optim drops both the optimizer and the LR scheduler.
     if not actor.args.no_save_optim:
