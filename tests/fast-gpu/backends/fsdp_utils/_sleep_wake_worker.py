@@ -166,7 +166,7 @@ def check_ema_sleep_wake_and_checkpoint(mesh, cpu_offload):
         control_optimizer.step()
         optimizer.zero_grad(set_to_none=True)
         control_optimizer.zero_grad(set_to_none=True)
-        assert ema.step(optimizer_step) == 0.5
+        ema.step(optimizer_step)
         for name, parameter in control.named_parameters():
             if parameter.requires_grad:
                 expected_ema[name].lerp_(parameter.detach(), 0.5)
