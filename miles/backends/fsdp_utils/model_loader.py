@@ -43,8 +43,9 @@ def load_fsdp_models(
         if trainable and args.gradient_checkpointing:
             model_backend.enable_gradient_checkpointing(model)
         if lora_adapter_path is not None:
-            subfolder = component if len(args.update_weight_target_modules) > 1 else None
-            model = load_lora_adapter(model, lora_adapter_path, trainable=trainable, subfolder=subfolder)
+            model = load_lora_adapter(
+                model, lora_adapter_path, trainable=trainable, subfolder=lora_adapter_subfolder(args, component)
+            )
         elif trainable and args.use_lora:
             model = apply_lora(model, args, train_pipeline_config)
         model.train(trainable)
@@ -104,6 +105,11 @@ def model_init_context(*, materialize_weights: bool):
             message=r"for .*: copying from a non-meta parameter in the checkpoint to a meta parameter.*",
         )
         yield
+
+
+def lora_adapter_subfolder(args: Namespace, component: str) -> str | None:
+    """A multi-component adapter directory keeps each component's adapter in a subfolder named after it."""
+    return component if len(args.update_weight_target_modules) > 1 else None
 
 
 def load_lora_adapter(model, adapter_path: str, *, trainable: bool, subfolder: str | None = None):

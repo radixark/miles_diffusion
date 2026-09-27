@@ -45,13 +45,13 @@ def test_update_averages_only_trainable_parameters(frozen_base):
     with torch.no_grad():
         model.base.fill_(6.0)
         model.lora_A.fill_(8.0)
-    assert ema.step(optimizer_step=1) == 0.5
+    ema.step(optimizer_step=1)  # flat: decay 0.5
     torch.testing.assert_close(ema.state[model.lora_A]["ema"], torch.tensor([6.0]))
     if frozen_base:
         assert model.base not in ema.state
     else:
         torch.testing.assert_close(ema.state[model.base]["ema"], torch.tensor([4.0]))
-    assert ema.step(optimizer_step=2) == 0.1
+    ema.step(optimizer_step=2)  # ramp: decay min((2 - 1) * 0.1, 0.9) = 0.1
     torch.testing.assert_close(ema.state[model.lora_A]["ema"], torch.tensor([7.8]))
     assert len(ema.state) == (1 if frozen_base else 2)
     assert model.counter.item() == 5
@@ -206,7 +206,8 @@ def test_checkpoint_restores_ema_without_adam_and_continues_schedule(tmp_path, c
     actual = get_optimizer_state_dict(resumed.model, resumed.ema_optimizer)
     for name, state in expected["state"].items():
         torch.testing.assert_close(actual["state"][name]["ema"], state["ema"])
-    assert actor.ema_optimizer.step(optimizer_step=3) == resumed.ema_optimizer.step(optimizer_step=3) == 0.2
+    actor.ema_optimizer.step(optimizer_step=3)
+    resumed.ema_optimizer.step(optimizer_step=3)
     actual = get_optimizer_state_dict(resumed.model, resumed.ema_optimizer)
     expected = get_optimizer_state_dict(actor.model, actor.ema_optimizer)
     for name, state in expected["state"].items():

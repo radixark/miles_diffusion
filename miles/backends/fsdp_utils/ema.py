@@ -41,7 +41,7 @@ class EMAOptimizer(torch.optim.Optimizer):
                 self.state[parameter]["ema"] = parameter.detach().clone()
 
     @torch.no_grad()
-    def step(self, optimizer_step: int) -> float:
+    def step(self, optimizer_step: int) -> None:
         """Average in the actor after its ``optimizer_step``-th optimizer update; the decay follows that count."""
         for group in self.param_groups:
             decay = (
@@ -52,7 +52,6 @@ class EMAOptimizer(torch.optim.Optimizer):
             ema_tensors = [_local_tensor(self.state[parameter]["ema"]) for parameter in group["params"]]
             actor_tensors = [_local_tensor(parameter.detach()) for parameter in group["params"]]
             torch._foreach_lerp_(ema_tensors, actor_tensors, 1.0 - decay)
-        return decay
 
     @contextmanager
     def use_weights(self, model: torch.nn.Module):

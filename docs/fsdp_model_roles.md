@@ -25,14 +25,16 @@ Use an independent reference with:
 ```bash
 --hf-checkpoint /models/student \
 --ref-mode ref --ref-load /models/reference \
---teacher-load /models/teacher
+--teacher-load /models/teacher \
+--custom-loss-function-path my_losses.distill_loss
 ```
 
 All three sources use the same family backend, component names, input preparation,
 and device mesh. This provides separate model instances, not cross-family
 distillation or a new DMD2 loss. The existing loss receives the reference prediction.
 Custom prepare/loss hooks can access `ctx.reference_models` and `ctx.teacher_models`
-by component name. Teacher inference should run inside `torch.no_grad()`.
+by component name. The teacher has no built-in consumer, so `--teacher-load` requires
+one of these hooks. Teacher inference should run inside `torch.no_grad()`.
 
 Each source may load a pretrained PEFT LoRA adapter:
 
@@ -118,14 +120,13 @@ pinning flag and is covered by the registered CUDA test on supported PyTorch.
 ## Focused validation
 
 CPU CI covers EMA averaging, DCP resume, model-source selection, loaded LoRA,
-argument validation, and sleep tensor identity. CUDA CI covers real two-rank
-FSDP sleep/wake with uneven shards, reshard settings, frozen/trainable models, native
+and argument validation. CUDA CI covers real two-rank FSDP sleep/wake with tensor
+identity, uneven shards, reshard settings, frozen/trainable models, native
 CPU offload, EMA residence, and checkpoint state.
 
 ```bash
 python -m pytest tests/fast/backends/fsdp_utils/test_ema_optimizer.py \
   tests/fast/backends/fsdp_utils/test_reference_models.py \
-  tests/fast/backends/fsdp_utils/test_sleep_wake.py \
   tests/fast/utils/test_reference_arguments.py
 python -m pytest tests/fast-gpu/backends/fsdp_utils/test_sleep_wake.py \
   tests/fast-gpu/backends/fsdp_utils/test_reference_models.py

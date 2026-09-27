@@ -1610,6 +1610,12 @@ def validate_reference_model_args(args) -> None:
         raise ValueError("--ref-cpu-offload requires --ref-load")
     if args.teacher_cpu_offload and args.teacher_load is None:
         raise ValueError("--teacher-cpu-offload requires --teacher-load")
+    if (
+        args.teacher_load is not None
+        and args.custom_prepare_train_batch_path is None
+        and args.custom_loss_function_path is None
+    ):
+        raise ValueError("--teacher-load has no consumer; only custom prepare/loss hooks read ctx.teacher_models")
     if args.ref_mode == "lora_base" and not args.use_lora:
         raise ValueError("--ref-mode lora_base requires --use-lora")
 
@@ -1621,9 +1627,12 @@ def validate_actor_lora_adapter(args) -> None:
         raise ValueError("--lora-adapter-path requires --use-lora")
     from peft import PeftConfig
 
+    from miles.backends.fsdp_utils.model_loader import lora_adapter_subfolder
+
     for component in args.update_weight_target_modules:
-        subfolder = component if len(args.update_weight_target_modules) > 1 else None
-        adapter_config = PeftConfig.from_pretrained(args.lora_adapter_path, subfolder=subfolder)
+        adapter_config = PeftConfig.from_pretrained(
+            args.lora_adapter_path, subfolder=lora_adapter_subfolder(args, component)
+        )
         if (
             adapter_config.use_dora
             or adapter_config.bias != "none"
