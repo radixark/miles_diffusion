@@ -265,9 +265,9 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--custom-prepare-train-batch-path` | str | – | Builds DiT inputs. |
 | `--custom-loss-function-path` | str | – | Loss **formula** only — the DiT forward stays in the actor. |
 | `--diffusion-nft-beta` | float | `1.0` | |
-| `--diffusion-nft-timestep-fraction` | float | `0.99` | |
+| `--diffusion-nft-timestep-fraction` | float | `0.99` | Fraction of the rollout schedule sigmas (terminal 0 excluded) each sample trains on; each sample draws its own random subset. |
 | `--no-diffusion-nft-adaptive-weight` | flag | off | |
-| `--no-diffusion-nft-shuffle-timesteps` | flag | off | |
+| `--no-diffusion-nft-shuffle-timesteps` | flag | off | Train the first sigmas in schedule order instead of a random subset per sample. |
 
 ### Reward
 
