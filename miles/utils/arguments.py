@@ -963,12 +963,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--ref-mode",
                 type=str,
-                choices=["none", "lora_base", "ema", "ref"],
+                choices=["none", "lora_base", "ref"],
                 default=None,
                 help=(
-                    "Which reference model to use for the no-grad DiT forward. "
-                    "Auto: lora_base when --diffusion-kl-beta > 0 and ema for --loss-type nft. "
-                    "Use ref with --ref-load for an independent frozen model."
+                    "Reference model of the KL term: lora_base runs the actor with its adapters disabled, "
+                    "ref runs the frozen model from --ref-load. Auto: lora_base when --diffusion-kl-beta > 0."
                 ),
             )
             parser.add_argument(
@@ -1120,7 +1119,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=False,
                 help=(
                     "Maintain an exponential moving average of the trainable weights as pi_old "
-                    "(LoRA or full finetune). Consumed by --ref-mode ema; combine with "
+                    "(LoRA or full finetune). Consumed by --loss-type nft; combine with "
                     "--rollout-weights ema to sample under pi_old."
                 ),
             )
@@ -1595,12 +1594,7 @@ def set_default_diffusion_args(args) -> None:
             args.custom_loss_function_path = "miles.backends.fsdp_utils.loss_hub.nft.nft_loss_formula"
 
     if args.ref_mode is None:
-        if is_nft:
-            args.ref_mode = "ema"
-        elif args.diffusion_kl_beta > 0:
-            args.ref_mode = "lora_base"
-        else:
-            args.ref_mode = "none"
+        args.ref_mode = "lora_base" if args.diffusion_kl_beta > 0 else "none"
 
 
 def validate_reference_model_args(args) -> None:
@@ -1618,8 +1612,6 @@ def validate_reference_model_args(args) -> None:
         raise ValueError("--teacher-cpu-offload requires --teacher-load")
     if args.ref_mode == "lora_base" and not args.use_lora:
         raise ValueError("--ref-mode lora_base requires --use-lora")
-    if args.ref_mode == "ema" and not args.use_ema:
-        raise ValueError("--ref-mode ema requires --use-ema")
 
 
 def validate_actor_lora_adapter(args) -> None:
@@ -1770,8 +1762,8 @@ def miles_validate_args(args):
         raise ValueError(f"--ema-decay-max must be in [0, 1], got {args.ema_decay_max}")
     if args.ema_decay_flat_steps < 0:
         raise ValueError(f"--ema-decay-flat-steps must be non-negative, got {args.ema_decay_flat_steps}")
-    if args.use_ema and args.ref_mode != "ema" and args.rollout_weights != "ema":
-        raise ValueError("--use-ema has no consumer; set --ref-mode ema or --rollout-weights ema")
+    if args.use_ema and args.loss_type != "nft" and args.rollout_weights != "ema":
+        raise ValueError("--use-ema has no consumer; use --loss-type nft or --rollout-weights ema")
     if args.rollout_weights == "ema" and not args.use_ema:
         raise ValueError("--rollout-weights ema requires --use-ema")
 
@@ -1837,10 +1829,10 @@ def miles_validate_args(args):
                 "--diffusion-recompute-old-log-prob is only supported for policy_loss / Flow-GRPO, not NFT"
             )
 
-    if is_nft and args.ref_mode == "none":
-        raise ValueError("--loss-type nft requires a reference model; set --ref-mode ema, lora_base, or ref")
+    if is_nft and not (args.use_ema and args.rollout_weights == "ema"):
+        raise ValueError("--loss-type nft samples and trains against pi_old; set --use-ema --rollout-weights ema")
     if args.diffusion_kl_beta > 0 and args.ref_mode == "none":
-        raise ValueError("--diffusion-kl-beta > 0 requires a reference model; set --ref-mode lora_base, ema, or ref")
+        raise ValueError("--diffusion-kl-beta > 0 requires a reference model; set --ref-mode lora_base or ref")
 
     if args.dump_details is not None:
         args.save_debug_rollout_data = f"{args.dump_details}/rollout_data/{{rollout_id}}.pt"

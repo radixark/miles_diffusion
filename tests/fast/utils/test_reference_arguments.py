@@ -80,7 +80,6 @@ def test_lora_base_needs_no_separate_reference_checkpoint():
         ({"ref_cpu_offload": True}, "--ref-cpu-offload requires --ref-load"),
         ({"teacher_cpu_offload": True}, "--teacher-cpu-offload requires --teacher-load"),
         ({"ref_mode": "lora_base"}, "--ref-mode lora_base requires --use-lora"),
-        ({"ref_mode": "ema"}, "--ref-mode ema requires --use-ema"),
     ],
 )
 def test_incomplete_model_roles_are_rejected(overrides, message):

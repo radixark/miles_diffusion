@@ -254,8 +254,8 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--diffusion-clip-range` | float | `1e-4` | |
 | `--diffusion-adv-clip-max` | float | `5.0` | Under `nft` this also sets the advantage-to-`r` slope. |
 | `--diffusion-recompute-old-log-prob` | flag | off | Recompute old log-probs with the trainer forward instead of trusting the rollout's. `policy_loss` only. |
-| `--diffusion-kl-beta` | float | `0.0` | |
-| `--ref-mode` | enum | – | `none` / `lora_base` / `ema` / `ref`. Auto: `lora_base` when KL > 0, `ema` under `nft`. `ref` uses the model from `--ref-load`. |
+| `--diffusion-kl-beta` | float | `0.0` | KL to the `--ref-mode` model; under `nft` adds `kl_beta * mean((v_θ − v_ref)²)` per pair. |
+| `--ref-mode` | enum | – | KL reference: `none` / `lora_base` (actor with adapters disabled) / `ref` (the model from `--ref-load`). Auto: `lora_base` when KL > 0. |
 | `--ref-load` | str | – | HF pipeline checkpoint of an independent frozen reference model. Requires `--ref-mode ref`. |
 | `--ref-lora-adapter-path` | str | – | PEFT adapter applied to `--ref-load`. |
 | `--ref-cpu-offload` | flag | off | Keep the reference shards in pinned CPU memory between forwards (FSDP `CPUOffloadPolicy`). |
@@ -326,7 +326,7 @@ Every one takes a dotted path.
 
 | Flag | Type | Default | Notes |
 |---|---|---|---|
-| `--use-ema` | flag | off | Maintains an EMA copy as πₒₗd. Needs a consumer (`--ref-mode ema` or `--rollout-weights ema`). |
+| `--use-ema` | flag | off | Maintains an EMA copy as πₒₗd. Needs a consumer (`--loss-type nft`, which trains against it as πₒₗd, or `--rollout-weights ema`). |
 | `--rollout-weights` | enum | `actor` | `actor` / `ema`: which weights get pushed to rollout. |
 | `--ema-decay-init` | float | `0.001` | Decay during the flat period. |
 | `--ema-decay-ramp` | float | `0.001` | Per-step increase after the flat period; the ramp restarts from zero. |

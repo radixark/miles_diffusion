@@ -62,7 +62,9 @@ the shards rather than on gathered copies.
 
 ## EMA and checkpointing
 
-`--use-ema` creates the EMA optimizer. `--ref-mode ema` evaluates its weights.
+`--use-ema` creates the EMA optimizer. Under `--loss-type nft` it is π_old: the rollout
+samples with it (`--rollout-weights ema`) and the loss trains against its prediction.
+`--ref-mode` only selects the KL reference (`lora_base` or `ref`), so NFT can use both.
 EMA updates once after a rollout's training completes, retaining the existing
 DiffusionNFT update cadence. Publishing or retrying a weight update never advances
 EMA. EMA evaluation and publication swap the EMA values into the actor's shards and

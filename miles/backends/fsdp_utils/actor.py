@@ -511,13 +511,17 @@ class FSDPTrainRayActor(TrainRayActor):
 
         new_pred = _compute_noise_pred(prepared.model)
 
+        # pi_old: the EMA weights the rollout sampled with.
+        old_pred = None
+        if self.args.loss_type == "nft":
+            with torch.no_grad(), self.ema_optimizer.use_weights(prepared.model):
+                old_pred = _compute_noise_pred(prepared.model).detach()
+
+        # KL reference.
         ref_pred = None
         if self.args.ref_mode == "ref":
             with torch.no_grad():
                 ref_pred = _compute_noise_pred(self.reference_models[prepared.component_name]).detach()
-        elif self.args.ref_mode == "ema":
-            with torch.no_grad(), self.ema_optimizer.use_weights(prepared.model):
-                ref_pred = _compute_noise_pred(prepared.model).detach()
         elif self.args.ref_mode == "lora_base":
             with torch.no_grad(), prepared.model.disable_adapter():
                 ref_pred = _compute_noise_pred(prepared.model).detach()
@@ -530,6 +534,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 batch,
                 prepared,
                 new_pred=new_pred,
+                old_pred=old_pred,
                 ref_pred=ref_pred,
                 metrics=metrics,
                 write_old_log_prob=write_old_log_prob,
@@ -540,6 +545,7 @@ class FSDPTrainRayActor(TrainRayActor):
             batch,
             prepared,
             new_pred=new_pred,
+            old_pred=old_pred,
             ref_pred=ref_pred,
             metrics=metrics,
             write_old_log_prob=write_old_log_prob,
