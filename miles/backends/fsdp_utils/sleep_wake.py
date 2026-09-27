@@ -4,7 +4,18 @@ from torch.utils._pytree import tree_map
 
 
 @torch.no_grad()
-def _move_model(model: torch.nn.Module, target_device: torch.device, *, keep_parameters_on_cpu: bool = False) -> None:
+def move_model(
+    model: torch.nn.Module,
+    device: str | torch.device,
+    *,
+    frozen_parameter_host_copies: dict[int, torch.Tensor] | None = None,
+) -> None:
+    """Move ``model``'s parameters and buffers to ``device``, keeping FSDP bindings and tied buffers.
+
+    A move to the CPU lands in pinned memory. A parameter with an entry in ``frozen_parameter_host_copies``
+    takes that host copy instead of being copied.
+    """
+    target_device = torch.device(device)
     fsdp_parameters = [
         fsdp_parameter
         for module in model.modules()
@@ -24,8 +35,8 @@ def _move_model(model: torch.nn.Module, target_device: torch.device, *, keep_par
 
     def move(tensor: torch.Tensor) -> torch.Tensor:
         if id(tensor) not in original_and_moved_by_id:
-            if keep_parameters_on_cpu and isinstance(tensor, torch.nn.Parameter):
-                moved_tensor = tensor
+            if frozen_parameter_host_copies is not None and id(tensor) in frozen_parameter_host_copies:
+                moved_tensor = frozen_parameter_host_copies[id(tensor)]
             else:
                 # A non_blocking device-to-host copy allocates its CPU output in pinned memory.
                 moved_tensor = tensor.to(target_device, non_blocking=True)
@@ -50,16 +61,6 @@ def _move_model(model: torch.nn.Module, target_device: torch.device, *, keep_par
         torch.cuda.synchronize()
 
 
-def offload_model(model: torch.nn.Module) -> None:
-    """Move parameters and buffers to pinned CPU storage after gradients are cleared."""
-    _move_model(model, torch.device("cpu"))
-
-
-def onload_model(model: torch.nn.Module, *, cpu_offload: bool = False) -> None:
-    """Restore CUDA storage; native CPU offload keeps parameter shards on CPU."""
-    _move_model(model, torch.device("cuda", torch.cuda.current_device()), keep_parameters_on_cpu=cpu_offload)
-
-
 @torch.no_grad()
 def move_optimizer(optimizer: torch.optim.Optimizer, device: str | torch.device) -> None:
     # A non_blocking device-to-host copy allocates its CPU output in pinned memory.
@@ -69,3 +70,18 @@ def move_optimizer(optimizer: torch.optim.Optimizer, device: str | torch.device)
         )
     if torch.cuda.is_available():
         torch.cuda.synchronize()
+
+
+# ------------------------------- frozen models --------------------------------
+# A frozen model's parameters never change, so waking keeps their pinned host copies and
+# sleeping points the parameters back at them instead of copying them off the GPU.
+
+
+def wake_up_frozen_model(model: torch.nn.Module, frozen_parameter_host_copies: dict[int, torch.Tensor]) -> None:
+    frozen_parameter_host_copies.update((id(parameter), parameter.data) for parameter in model.parameters())
+    move_model(model, "cuda")
+
+
+def sleep_frozen_model(model: torch.nn.Module, frozen_parameter_host_copies: dict[int, torch.Tensor]) -> None:
+    move_model(model, "cpu", frozen_parameter_host_copies=frozen_parameter_host_copies)
+    frozen_parameter_host_copies.clear()

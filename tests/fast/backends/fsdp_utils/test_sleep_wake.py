@@ -1,6 +1,6 @@
-"""Phase offload preserves training state and module tensor aliases.
+"""Sleep preserves training state and module tensor aliases.
 
-    FSDP actor + AdamW --> clear gradients --> offload --> same Parameter objects + CPU state
+    FSDP actor + AdamW --> clear gradients --> sleep --> same Parameter objects + CPU state
             |                                                          |
        control step                                               next actor step
             +-------------------------- equal -------------------------+
@@ -25,10 +25,10 @@ from torch.distributed.device_mesh import init_device_mesh
 from torch.distributed.fsdp import fully_shard
 from torch.distributed.tensor import DTensor
 
-_MODULE_PATH = Path(__file__).resolve().parents[4] / "miles/backends/fsdp_utils/offload.py"
-_SPEC = importlib.util.spec_from_file_location("fsdp_offload_under_test", _MODULE_PATH)
-offload = importlib.util.module_from_spec(_SPEC)
-_SPEC.loader.exec_module(offload)
+_MODULE_PATH = Path(__file__).resolve().parents[4] / "miles/backends/fsdp_utils/sleep_wake.py"
+_SPEC = importlib.util.spec_from_file_location("fsdp_sleep_wake_under_test", _MODULE_PATH)
+sleep_wake = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(sleep_wake)
 
 
 @pytest.fixture
@@ -40,7 +40,7 @@ def cpu_mesh():
         dist.destroy_process_group()
 
 
-def test_offload_preserves_training_bindings_and_buffer_aliases(cpu_mesh):
+def test_sleep_preserves_training_bindings_and_buffer_aliases(cpu_mesh):
     torch.manual_seed(9)
     model = torch.nn.Sequential(torch.nn.Linear(3, 5), torch.nn.Tanh(), torch.nn.Linear(5, 3)).double()
     model.register_buffer("marker", torch.tensor([7.0]))
@@ -59,8 +59,8 @@ def test_offload_preserves_training_bindings_and_buffer_aliases(cpu_mesh):
             module(inputs).square().mean().backward()
             optim.step()
             optim.zero_grad(set_to_none=True)
-        offload.offload_model(model)
-        offload.move_optimizer(optimizer, "cpu")
+        sleep_wake.move_model(model, "cpu")
+        sleep_wake.move_optimizer(optimizer, "cpu")
         assert model.marker is model[0].marker_alias
         assert "0.marker_alias" not in model.state_dict()
         for name, parameter in model.named_parameters():
@@ -78,7 +78,7 @@ def test_optimizer_move_preserves_nested_state_and_metadata():
         "momentum_buffer": parameter.detach().clone(),
         "schedule": {"step": 7, "history": [torch.tensor(3.0), "constant"]},
     }
-    offload.move_optimizer(optimizer, "cpu")
+    sleep_wake.move_optimizer(optimizer, "cpu")
     assert optimizer.param_groups[0]["params"][0] is parameter
     assert optimizer.state[parameter]["schedule"]["step"] == 7
     assert optimizer.state[parameter]["schedule"]["history"][1] == "constant"

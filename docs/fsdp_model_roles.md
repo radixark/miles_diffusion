@@ -1,4 +1,4 @@
-# FSDP model roles and phase offload
+# FSDP model roles and sleep/wake
 
 The FSDP trainer owns one trainable actor, optional independent frozen reference
 and teacher models, and an optional EMA optimizer. Each model contains the same
@@ -71,7 +71,7 @@ EMA. EMA evaluation and publication swap the EMA values into the actor's shards 
 swap them back afterward, dropping FSDP's gathered copies on both sides so no forward
 reads stale weights; the actor's backward re-gathers its restored shards.
 
-EMA state lives on the same device as its actor parameter. Phase sleep moves it to
+EMA state lives on the same device as its actor parameter. Sleep moves it to
 pinned CPU memory together with AdamW state, and wake moves both back.
 
 Rollout publication pushes the current actor weights unless
@@ -91,7 +91,7 @@ to AdamW; EMA remains independently saved and restored. Loading a legacy checkpo
 without EMA seeds EMA from the loaded actor and logs that its averaging history
 starts over. Disabling EMA simply omits this state from loading.
 
-## Two offload lifecycles
+## Sleep/wake and native CPU offload
 
 | Setting | Parameter residence during training | Transfer boundary |
 |---|---|---|
@@ -101,15 +101,16 @@ starts over. Disabling EMA simply omits this state from loading.
 | `--ref-cpu-offload` | Reference shards on CPU | FSDP unshard |
 | `--teacher-cpu-offload` | Teacher shards on CPU | FSDP unshard |
 
-Reference and teacher CPU offload are opt-in. Phase sleep covers actor, reference,
+Reference and teacher CPU offload are opt-in. Sleep covers actor, reference,
 teacher, their buffers, AdamW state, and EMA state. Sleep clears completed-step
 gradients instead of transferring them. Transfers use pinned CPU
 storage and enqueue asynchronous copies before synchronization; Parameter objects
-and optimizer bindings are preserved. Wake respects each model's native FSDP
-offload policy: native-offloaded parameter shards stay on CPU while buffers return
-to GPU.
+and optimizer bindings are preserved. A natively CPU-offloaded model never sleeps,
+as in miles: its parameter shards stay on CPU and its buffers stay on GPU.
 
-Phase offload retains the model's own CPU tensors, without a second actor backup.
+Sleep retains the model's own CPU tensors, without a second actor backup. Reference and
+teacher weights never change, so waking keeps their pinned host copies and each
+later sleep points the parameters back at them instead of copying them off the GPU.
 The helper lets FSDP rebuild its shard views and padding through `Module._apply`;
 uneven shards remain pinned. This requires a small FSDP-internal adaptation of its
 pinning flag and is covered by the registered CUDA test on supported PyTorch.
@@ -117,15 +118,15 @@ pinning flag and is covered by the registered CUDA test on supported PyTorch.
 ## Focused validation
 
 CPU CI covers EMA averaging, DCP resume, model-source selection, loaded LoRA,
-argument validation, and offload tensor identity. CUDA CI covers real two-rank
-FSDP offload with uneven shards, reshard settings, frozen/trainable models, native
+argument validation, and sleep tensor identity. CUDA CI covers real two-rank
+FSDP sleep/wake with uneven shards, reshard settings, frozen/trainable models, native
 CPU offload, EMA residence, and checkpoint state.
 
 ```bash
 python -m pytest tests/fast/backends/fsdp_utils/test_ema_optimizer.py \
   tests/fast/backends/fsdp_utils/test_reference_models.py \
-  tests/fast/backends/fsdp_utils/test_offload.py \
+  tests/fast/backends/fsdp_utils/test_sleep_wake.py \
   tests/fast/utils/test_reference_arguments.py
-python -m pytest tests/fast-gpu/backends/fsdp_utils/test_offload.py \
+python -m pytest tests/fast-gpu/backends/fsdp_utils/test_sleep_wake.py \
   tests/fast-gpu/backends/fsdp_utils/test_reference_models.py
 ```

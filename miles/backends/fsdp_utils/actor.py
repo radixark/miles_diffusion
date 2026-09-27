@@ -40,8 +40,8 @@ from .lr_scheduler import get_lr_scheduler
 from .metrics import new_metric_buffer
 from .mixed_precision import parse_dtype_from_str
 from .model_loader import load_fsdp_models
-from .offload import move_optimizer, offload_model, onload_model
 from .parallel import create_fsdp_parallel_state
+from .sleep_wake import move_model, move_optimizer, sleep_frozen_model, wake_up_frozen_model
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +134,19 @@ class FSDPTrainRayActor(TrainRayActor):
                 lora_adapter_path=args.teacher_lora_adapter_path,
                 cpu_offload=args.teacher_cpu_offload,
             )
+        # A natively CPU-offloaded model never sleeps: its parameters stay on the host and its buffers on the GPU.
+        self.actor_models_to_sleep = [] if args.fsdp_cpu_offload else list(self.models.values())
+        self.frozen_models_to_sleep = [
+            model
+            for models, cpu_offload in (
+                (self.reference_models, args.ref_cpu_offload),
+                (self.teacher_models, args.teacher_cpu_offload),
+            )
+            if not cpu_offload
+            for model in models.values()
+        ]
+        # Reference and teacher weights never change, so each sleep points them back at the host copies kept at wake.
+        self.frozen_parameter_host_copies_by_model = {model: {} for model in self.frozen_models_to_sleep}
 
         # Force a sync to ensure sharding is complete and old memory is freed.
         torch.cuda.synchronize()
@@ -215,12 +228,13 @@ class FSDPTrainRayActor(TrainRayActor):
         if not self.args.offload_train:
             return
 
-        print_memory("before offload DiT")
+        print_memory("before sleep DiT")
         self.optimizer.zero_grad(set_to_none=True)
 
-        for models in (self.models, self.reference_models, self.teacher_models):
-            for model in models.values():
-                offload_model(model)
+        for model in self.actor_models_to_sleep:
+            move_model(model, "cpu")
+        for model in self.frozen_models_to_sleep:
+            sleep_frozen_model(model, self.frozen_parameter_host_copies_by_model[model])
         move_optimizer(self.optimizer, "cpu")
         if self.ema_optimizer is not None:
             move_optimizer(self.ema_optimizer, "cpu")
@@ -233,13 +247,10 @@ class FSDPTrainRayActor(TrainRayActor):
         if not self.args.offload_train:
             return
 
-        for models, cpu_offload in (
-            (self.models, self.args.fsdp_cpu_offload),
-            (self.reference_models, self.args.ref_cpu_offload),
-            (self.teacher_models, self.args.teacher_cpu_offload),
-        ):
-            for model in models.values():
-                onload_model(model, cpu_offload=cpu_offload)
+        for model in self.actor_models_to_sleep:
+            move_model(model, "cuda")
+        for model in self.frozen_models_to_sleep:
+            wake_up_frozen_model(model, self.frozen_parameter_host_copies_by_model[model])
         if not self.args.fsdp_cpu_offload:
             move_optimizer(self.optimizer, "cuda")
             if self.ema_optimizer is not None:
