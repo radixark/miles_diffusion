@@ -1,9 +1,23 @@
+from contextlib import contextmanager
+
 import torch
 from torch.distributed.fsdp import FSDPModule
 from torch.utils._pytree import tree_map
 
 
+@contextmanager
+def _skip_uninitialized_memory_fill():
+    """Every tensor a move allocates is fully overwritten by its copy, so deterministic mode's NaN fill is wasted."""
+    fill_uninitialized_memory = torch.utils.deterministic.fill_uninitialized_memory
+    torch.utils.deterministic.fill_uninitialized_memory = False
+    try:
+        yield
+    finally:
+        torch.utils.deterministic.fill_uninitialized_memory = fill_uninitialized_memory
+
+
 @torch.no_grad()
+@_skip_uninitialized_memory_fill()
 def move_model(
     model: torch.nn.Module,
     device: str | torch.device,
@@ -61,6 +75,7 @@ def move_model(
 
 
 @torch.no_grad()
+@_skip_uninitialized_memory_fill()
 def move_optimizer(optimizer: torch.optim.Optimizer, device: str | torch.device) -> None:
     # A non_blocking device-to-host copy allocates its CPU output in pinned memory.
     for parameter, state in optimizer.state.items():
