@@ -8,6 +8,8 @@ The 2 x 2 matrix covers frozen references and cached gathered parameters. Uneven
 shards must remain pinned after FSDP padding; optimizer Parameter bindings and
 tied/nonpersistent buffer aliases must survive.
 
+    frozen: wake_up_frozen_model keeps the pinned host copies --> sleep_frozen_model points back at them (no copy)
+
     GPU/CPU actor x GPU/CPU EMA --> EMA inference --> actor forward/backward
                |                                      |
            pinned sleep <--------- EMA update --------+
@@ -47,7 +49,8 @@ class Tiny(torch.nn.Module):
     def __init__(self):
         super().__init__()
         self.input = torch.nn.Linear(3, 5)
-        self.output = torch.nn.Linear(5, 3)
+        # Two ranks shard input's rows unevenly (5) and output's rows evenly (4).
+        self.output = torch.nn.Linear(5, 4)
         self.register_buffer("scale", torch.tensor([1.25]))
         self.input.register_buffer("scale_alias", self.scale, persistent=False)
         self.register_buffer("offset", torch.tensor([0.25]), persistent=False)
@@ -76,8 +79,10 @@ def check_model_sleep_wake_round_trip(mesh, frozen, reshard_after_forward):
     optimizer = None if frozen else torch.optim.AdamW(model.parameters(), lr=0.01)
     control_optimizer = None if frozen else torch.optim.AdamW(control.parameters(), lr=0.01)
     inputs = torch.arange(12, dtype=torch.float32, device="cuda").reshape(4, 3) / 12
+    frozen_parameter_host_copies = {}
+    host_storage_by_name = {}
 
-    for _ in range(2):
+    for round_index in range(2):
         with torch.set_grad_enabled(not frozen):
             actual = model(inputs)
             expected = control(inputs)
@@ -89,7 +94,18 @@ def check_model_sleep_wake_round_trip(mesh, frozen, reshard_after_forward):
                 control_optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
                 control_optimizer.zero_grad(set_to_none=True)
-        sleep_wake.move_model(model, "cpu")
+        # Like the actor, a frozen model moves to the host once (at load) and sleeps onto its host copies after that.
+        if frozen and round_index == 1:
+            sleep_wake.sleep_frozen_model(model, frozen_parameter_host_copies)
+            assert not frozen_parameter_host_copies
+        else:
+            sleep_wake.move_model(model, "cpu")
+        # Sleeping keeps each evenly sharded parameter's host storage; FSDP only re-pads uneven shards.
+        for name, parameter in model.named_parameters():
+            host_storage = local_tensor(parameter).untyped_storage().data_ptr()
+            if frozen and round_index == 1 and name.startswith("output."):
+                assert host_storage == host_storage_by_name[name], name
+            host_storage_by_name[name] = host_storage
         assert model.scale is model.input.scale_alias
         assert "input.scale_alias" not in model.state_dict()
         assert "offset" not in model.state_dict()
@@ -111,7 +127,10 @@ def check_model_sleep_wake_round_trip(mesh, frozen, reshard_after_forward):
                     assert local_tensor(value).device.type == "cpu"
                     assert local_tensor(value).is_pinned() or not copied_from_cuda[(id(parameter), key)], key
 
-        sleep_wake.move_model(model, "cuda")
+        if frozen:
+            sleep_wake.wake_up_frozen_model(model, frozen_parameter_host_copies)
+        else:
+            sleep_wake.move_model(model, "cuda")
         assert model.scale is model.input.scale_alias
         assert all(local_tensor(parameter).device.type == "cuda" for parameter in model.parameters())
         assert all(buffer.device.type == "cuda" for buffer in model.buffers())

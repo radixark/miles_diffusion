@@ -41,7 +41,7 @@ from .metrics import new_metric_buffer
 from .mixed_precision import parse_dtype_from_str
 from .model_loader import load_fsdp_models
 from .parallel import create_fsdp_parallel_state
-from .sleep_wake import move_model, move_optimizer
+from .sleep_wake import move_model, move_optimizer, sleep_frozen_model, wake_up_frozen_model
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +145,8 @@ class FSDPTrainRayActor(TrainRayActor):
             if not cpu_offload
             for model in models.values()
         ]
+        # Reference and teacher weights never change, so each sleep points them back at the host copies kept at wake.
+        self.frozen_parameter_host_copies_by_model = {model: {} for model in self.frozen_models_to_sleep}
 
         # Force a sync to ensure sharding is complete and old memory is freed.
         torch.cuda.synchronize()
@@ -229,8 +231,10 @@ class FSDPTrainRayActor(TrainRayActor):
         print_memory("before sleep DiT")
         self.optimizer.zero_grad(set_to_none=True)
 
-        for model in (*self.actor_models_to_sleep, *self.frozen_models_to_sleep):
+        for model in self.actor_models_to_sleep:
             move_model(model, "cpu")
+        for model in self.frozen_models_to_sleep:
+            sleep_frozen_model(model, self.frozen_parameter_host_copies_by_model[model])
         move_optimizer(self.optimizer, "cpu")
         if self.ema_optimizer is not None:
             move_optimizer(self.ema_optimizer, "cpu")
@@ -243,8 +247,10 @@ class FSDPTrainRayActor(TrainRayActor):
         if not self.args.offload_train:
             return
 
-        for model in (*self.actor_models_to_sleep, *self.frozen_models_to_sleep):
+        for model in self.actor_models_to_sleep:
             move_model(model, "cuda")
+        for model in self.frozen_models_to_sleep:
+            wake_up_frozen_model(model, self.frozen_parameter_host_copies_by_model[model])
         if not self.args.fsdp_cpu_offload:
             move_optimizer(self.optimizer, "cuda")
             if self.ema_optimizer is not None:

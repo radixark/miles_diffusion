@@ -108,7 +108,9 @@ storage and enqueue asynchronous copies before synchronization; Parameter object
 and optimizer bindings are preserved. A natively CPU-offloaded model never sleeps,
 as in miles: its parameter shards stay on CPU and its buffers stay on GPU.
 
-Sleep retains the model's own CPU tensors, without a second actor backup.
+Sleep retains the model's own CPU tensors, without a second actor backup. Reference and
+teacher weights never change, so waking keeps their pinned host copies and each
+later sleep points the parameters back at them instead of copying them off the GPU.
 The helper lets FSDP rebuild its shard views and padding through `Module._apply`;
 uneven shards remain pinned. This requires a small FSDP-internal adaptation of its
 pinning flag and is covered by the registered CUDA test on supported PyTorch.
