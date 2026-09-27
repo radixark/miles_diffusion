@@ -1621,9 +1621,12 @@ def validate_actor_lora_adapter(args) -> None:
         raise ValueError("--lora-adapter-path requires --use-lora")
     from peft import PeftConfig
 
+    from miles.backends.fsdp_utils.model_loader import lora_adapter_subfolder
+
     for component in args.update_weight_target_modules:
-        subfolder = component if len(args.update_weight_target_modules) > 1 else None
-        adapter_config = PeftConfig.from_pretrained(args.lora_adapter_path, subfolder=subfolder)
+        adapter_config = PeftConfig.from_pretrained(
+            args.lora_adapter_path, subfolder=lora_adapter_subfolder(args, component)
+        )
         if (
             adapter_config.use_dora
             or adapter_config.bias != "none"
