@@ -16,7 +16,7 @@ train worker
 
 Only actor parameters belong to AdamW. EMA stores averages for trainable actor
 parameters in a separate `torch.optim.Optimizer`; frozen base parameters and all
-buffers are excluded from averaging. There is no tensor snapshot manager.
+buffers are excluded from averaging.
 
 ## Model sources
 
