@@ -4,8 +4,8 @@ description: What --deterministic-mode covers, which attention backends it accep
 ---
 
 `--deterministic-mode` configures the **training actor's** forward and backward for repeatable execution with the same
-hardware, topology, software stack, and inputs. However, some argument gates are still incomplete, so configurations
-that do not support deterministic execution may still pass validation.
+hardware, topology, software stack, and inputs. Passing argument validation does not prove that an external kernel
+honors the request; validate repeatability on the target GPU, build and input shapes.
 
 ## What it turns on
 
@@ -44,31 +44,46 @@ classified explicitly:
 
 | `--fsdp-attention-backend`             | How determinism is obtained                                                                     |
 | -------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| unset, `*native*`, `*math*` (SDPA)     | torch's global flag covers it. `math` backends are deterministic by construction.               |
-| `*flash*` (flash-attn, FA3)            | torch's flag cannot reach it — miles patches `deterministic=True` onto the kernel entry points. |
+| `*native*`, `*math*` (SDPA)           | torch's global flag covers it. `math` backends are deterministic by construction.               |
+| `flash`, `flash_varlen` (Diffusers FA2) | miles patches the selected entry point with `deterministic=True`.                            |
+| `_flash_3` (Diffusers dense FA3)      | miles registers a direct public-autograd adapter and forces its deterministic request.        |
 | `sage`, `xformers`, `flex`, `aiter`, … | No hook exists. **Rejected.**                                                                   |
 
 
-The check runs **driver-side, before any actor launches** (`validate_attention_args`), so a
-misconfiguration fails in seconds instead of after a multi-node startup.
+Explicit Diffusers backend checks run **driver-side, before any actor launches**
+(`validate_attention_args`). When the CLI backend is unset, the Diffusers actor resolves the active
+backend, including `DIFFUSERS_ATTN_BACKEND`, and applies its deterministic integration. Native model
+families use their separate package hooks, including spellings such as `flash_attention_3`.
 
-A flash backend that is installed but exposes no `deterministic` parameter is also rejected, with a message naming which kernels were found.
+The selected flash entry point must expose `deterministic`; installing an unrelated FA2 kernel
+does not satisfy FA3 validation. Backend validation does not replace a GPU repeatability test.
 
-### How the flash patch works
+### How the flash integrations work
 
-For diffusers-backed families, miles wraps the dispatch functions diffusers routes flash through:
+Diffusers FA2 `flash` and `flash_varlen` retain a
+`functools.partial(fn, deterministic=True)` on their selected entry point.
 
-```
-flash_attn_func         flash_attn_varlen_func
-flash_attn_3_func       flash_attn_3_varlen_func
-```
+For dense FA3, the pinned Diffusers dispatcher drops the deterministic argument and uses a
+forward-only custom op. Miles instead registers an adapter that calls FA3's public autograd
+function directly with `num_splits=1`. Explicit `_flash_3` selection installs it even with
+deterministic mode off, preserving backward support in both modes. The effective kernel flag is
+the OR of the actor's forced mode, the per-call request and PyTorch's global deterministic mode;
+a per-call `False` cannot override a forced request.
 
-Each entry point with a `deterministic` parameter is replaced by
-`functools.partial(fn, deterministic=True)`; the rest are skipped.
+The adapter rejects masks, nonzero dropout, split counts other than one and Diffusers context
+parallelism. Miles pure Ulysses wraps the local attention call; Ring and FA3 varlen/hub paths are
+outside this integration. The registry is process-wide, so install it before model execution
+and keep models needing different forced modes in separate processes.
+
+The measured H100 cases passed output/gradient repeatability checks for BF16 SP=1/2/4 and
+FP16 SP=1. This establishes the tested configurations, not every build or shape.
+See [FA3 validation](../developer/fa3-validation.md) for the exact environment, reproduction and
+the separate Krea2 DP=2/SP=1 short E2E result.
 
 ## What it does not cover
 
-- **Rollout determinism.** Guaranteed by sglang-d and its post-training support.
+- **Rollout determinism.** SGLang diffusion has its own attention and inference paths. This
+training flag does not configure or establish their determinism; validate the rollout stack separately.
 - **Train/rollout agreement.** Determinism removes run-to-run variance; it does not make the two
 forwards equal. That is a precision problem — see [Dtype Control](dtype-control.md).
 
@@ -95,4 +110,3 @@ Because reward metrics are compared too, the CI recipes also pin the engine side
 ## Related
 
 - [Dtype Control](dtype-control.md) — the other half of train/rollout numeric agreement.
-

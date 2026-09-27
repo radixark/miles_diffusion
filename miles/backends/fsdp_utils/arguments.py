@@ -93,7 +93,9 @@ def parse_fsdp_cli(extra_args_provider=None):
 # governs torch-native ops, so an unlisted custom kernel runs nondeterministic
 # silently under deterministic mode.
 #   native / _native_*  (SDPA)      : torch's flag (needs warn_only=False)
-#   flash* / _flash_3*  (flash-attn): patch deterministic= on (flag can't reach it)
+#   flash / flash_varlen           : patch the selected FA2 entry point
+#   _flash_3                       : autograd adapter with deterministic backward
+#   hub / FA3 varlen               : no Miles integration -> reject
 #   sage / xformers / flex / aiter  : opaque to torch, no hook -> reject (validate)
 
 # diffusers dispatches flash through these module globals (FA3 op reads them too).
@@ -103,6 +105,12 @@ _FLASH_ATTN_DISPATCH_FNS = (
     "flash_attn_3_func",
     "flash_attn_3_varlen_func",
 )
+
+_DETERMINISTIC_FLASH_BACKENDS = {
+    "flash": "flash_attn_func",
+    "flash_varlen": "flash_attn_varlen_func",
+    "_flash_3": "flash_attn_3_func",
+}
 
 
 def deterministic_capable_flash_fns():
@@ -135,12 +143,18 @@ def validate_attention_args(args):
     name = "" if backend is None else backend.lower()
     if backend is None or "native" in name or "math" in name:
         return
-    if "flash" in name:
-        if not deterministic_capable_flash_fns():
+    if name in ("flash_attention_3", "flash_attention_4"):
+        # Native model spellings (e.g. LTX), not Diffusers registry names. This
+        # runs before model-family resolution; MilesModelBackend validates the
+        # selected native kernel through its package's deterministic hook.
+        return
+    if name in _DETERMINISTIC_FLASH_BACKENDS:
+        entrypoint = _DETERMINISTIC_FLASH_BACKENDS[name]
+        if entrypoint not in deterministic_capable_flash_fns():
             raise RuntimeError(
-                "deterministic_mode with a flash attention backend, but no diffusers "
-                "flash entry point exposes a deterministic argument (is flash-attn "
-                "installed and recent enough?)."
+                f"deterministic_mode with {backend!r} requires diffusers {entrypoint} "
+                "to expose a deterministic argument. Check the selected flash-attn "
+                "installation; a different installed flash backend does not satisfy this requirement."
             )
         return
     raise ValueError(
