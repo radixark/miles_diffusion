@@ -4,7 +4,7 @@ from torch.utils._pytree import tree_map
 
 
 @torch.no_grad()
-def _move_model(model: torch.nn.Module, target_device: torch.device, *, keep_parameters_on_cpu: bool = False) -> None:
+def _move_model(model: torch.nn.Module, target_device: torch.device) -> None:
     fsdp_parameters = [
         fsdp_parameter
         for module in model.modules()
@@ -24,13 +24,10 @@ def _move_model(model: torch.nn.Module, target_device: torch.device, *, keep_par
 
     def move(tensor: torch.Tensor) -> torch.Tensor:
         if id(tensor) not in original_and_moved_by_id:
-            if keep_parameters_on_cpu and isinstance(tensor, torch.nn.Parameter):
-                moved_tensor = tensor
-            else:
-                # A non_blocking device-to-host copy allocates its CPU output in pinned memory.
-                moved_tensor = tensor.to(target_device, non_blocking=True)
-                if id(tensor) in repadded_parameter_ids and tensor.is_cuda:
-                    torch.cuda.current_stream().synchronize()
+            # A non_blocking device-to-host copy allocates its CPU output in pinned memory.
+            moved_tensor = tensor.to(target_device, non_blocking=True)
+            if id(tensor) in repadded_parameter_ids and tensor.is_cuda:
+                torch.cuda.current_stream().synchronize()
             original_and_moved_by_id[id(tensor)] = (tensor, moved_tensor)
         return original_and_moved_by_id[id(tensor)][1]
 
@@ -55,9 +52,9 @@ def offload_model(model: torch.nn.Module) -> None:
     _move_model(model, torch.device("cpu"))
 
 
-def onload_model(model: torch.nn.Module, *, cpu_offload: bool = False) -> None:
-    """Restore CUDA storage; native CPU offload keeps parameter shards on CPU."""
-    _move_model(model, torch.device("cuda", torch.cuda.current_device()), keep_parameters_on_cpu=cpu_offload)
+def onload_model(model: torch.nn.Module) -> None:
+    """Move parameters and buffers back to CUDA storage."""
+    _move_model(model, torch.device("cuda", torch.cuda.current_device()))
 
 
 @torch.no_grad()

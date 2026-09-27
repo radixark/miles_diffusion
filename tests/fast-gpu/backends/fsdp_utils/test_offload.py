@@ -1,6 +1,6 @@
 """Two-rank phase offload: FSDP shards + buffers + AdamW -> pinned CPU -> CUDA.
 
-    trainable / frozen  x  reshard / no-reshard  x  native CPU offload / GPU
+    trainable / frozen  x  reshard / no-reshard   (native CPU offload: never sleeps)
                                     |
                    uneven shards + tied/nonpersistent buffers
                                     |

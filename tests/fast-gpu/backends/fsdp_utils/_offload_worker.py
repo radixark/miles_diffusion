@@ -4,13 +4,14 @@
               |
        FSDP forward / AdamW --> pinned sleep --> wake --> equal next forward / AdamW
 
-The 2 x 2 x 2 matrix covers frozen references, cached gathered parameters, and
-native CPUOffloadPolicy. Uneven local shards must remain pinned after FSDP padding;
-optimizer Parameter bindings and tied/nonpersistent buffer aliases must survive.
+The 2 x 2 matrix covers frozen references and cached gathered parameters. Uneven local
+shards must remain pinned after FSDP padding; optimizer Parameter bindings and
+tied/nonpersistent buffer aliases must survive.
 
     GPU/CPU actor x GPU/CPU EMA --> EMA inference --> actor forward/backward
                |                                      |
            pinned sleep <--------- EMA update --------+
+    (a natively CPU-offloaded model never sleeps; only its optimizer and EMA move)
                |
         DCP save/load --> same EMA tensors, placement and decay
 """
@@ -59,7 +60,7 @@ def local_tensor(tensor):
     return tensor.to_local() if isinstance(tensor, DTensor) else tensor
 
 
-def check_model_offload_round_trip(mesh, frozen, reshard_after_forward, cpu_offload):
+def check_model_offload_round_trip(mesh, frozen, reshard_after_forward):
     torch.manual_seed(19)
     model = Tiny().cuda()
     # Build aliases after cuda(), whose default _apply does not preserve buffer aliases.
@@ -69,9 +70,8 @@ def check_model_offload_round_trip(mesh, frozen, reshard_after_forward, cpu_offl
     control.requires_grad_(not frozen)
     model.train(not frozen)
     control.train(not frozen)
-    policy = CPUOffloadPolicy() if cpu_offload else OffloadPolicy()
-    fully_shard(model.input, mesh=mesh, reshard_after_forward=reshard_after_forward, offload_policy=policy)
-    fully_shard(model, mesh=mesh, reshard_after_forward=reshard_after_forward, offload_policy=policy)
+    fully_shard(model.input, mesh=mesh, reshard_after_forward=reshard_after_forward)
+    fully_shard(model, mesh=mesh, reshard_after_forward=reshard_after_forward)
     parameters = dict(model.named_parameters())
     optimizer = None if frozen else torch.optim.AdamW(model.parameters(), lr=0.01)
     control_optimizer = None if frozen else torch.optim.AdamW(control.parameters(), lr=0.01)
@@ -98,7 +98,7 @@ def check_model_offload_round_trip(mesh, frozen, reshard_after_forward, cpu_offl
             assert local_tensor(parameter).device.type == "cpu" and local_tensor(parameter).is_pinned(), name
         assert all(buffer.device.type == "cpu" and buffer.is_pinned() for buffer in model.buffers())
         if optimizer is not None:
-            # Only state copied off the GPU lands in pinned memory; CPU-resident state (step, native offload) stays.
+            # Only state copied off the GPU lands in pinned memory; CPU-resident state (the step count) stays.
             copied_from_cuda = {
                 (id(parameter), key): local_tensor(value).is_cuda
                 for parameter, state in optimizer.state.items()
@@ -111,15 +111,12 @@ def check_model_offload_round_trip(mesh, frozen, reshard_after_forward, cpu_offl
                     assert local_tensor(value).device.type == "cpu"
                     assert local_tensor(value).is_pinned() or not copied_from_cuda[(id(parameter), key)], key
 
-        offload.onload_model(model, cpu_offload=cpu_offload)
+        offload.onload_model(model)
         assert model.scale is model.input.scale_alias
-        expected_parameter_device = "cpu" if cpu_offload else "cuda"
-        assert all(
-            local_tensor(parameter).device.type == expected_parameter_device for parameter in model.parameters()
-        )
+        assert all(local_tensor(parameter).device.type == "cuda" for parameter in model.parameters())
         assert all(buffer.device.type == "cuda" for buffer in model.buffers())
         if optimizer is not None:
-            offload.move_optimizer(optimizer, expected_parameter_device)
+            offload.move_optimizer(optimizer, "cuda")
         assert all(parameter is parameters[name] for name, parameter in model.named_parameters())
 
 
@@ -173,12 +170,15 @@ def check_ema_offload_and_checkpoint(mesh, cpu_offload):
             else:
                 assert parameter not in ema.state
 
-        offload.offload_model(model)
+        # Like the actor, a natively CPU-offloaded model never sleeps; its optimizer and EMA still move.
+        if not cpu_offload:
+            offload.offload_model(model)
         offload.move_optimizer(optimizer, "cpu")
         offload.move_optimizer(ema, "cpu")
         # With native CPU offload the EMA never leaves the CPU, so only GPU-resident EMA becomes pinned.
         assert all(local_tensor(state["ema"]).is_pinned() or cpu_offload for state in ema.state.values())
-        offload.onload_model(model, cpu_offload=cpu_offload)
+        if not cpu_offload:
+            offload.onload_model(model)
         offload.move_optimizer(optimizer, "cpu" if cpu_offload else "cuda")
         offload.move_optimizer(ema, "cpu" if cpu_offload else "cuda")
 
@@ -207,8 +207,8 @@ def main():
     torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
     dist.init_process_group("nccl", device_id=torch.device("cuda", torch.cuda.current_device()))
     mesh = init_device_mesh("cuda", (dist.get_world_size(),))
-    for frozen, reshard_after_forward, cpu_offload in itertools.product((False, True), repeat=3):
-        check_model_offload_round_trip(mesh, frozen, reshard_after_forward, cpu_offload)
+    for frozen, reshard_after_forward in itertools.product((False, True), repeat=2):
+        check_model_offload_round_trip(mesh, frozen, reshard_after_forward)
     for cpu_offload in (False, True):
         check_ema_offload_and_checkpoint(mesh, cpu_offload)
     dist.barrier()

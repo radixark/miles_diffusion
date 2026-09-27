@@ -73,7 +73,8 @@ def load_fsdp_models(
                 model_backend.install_sequence_parallel_attention,
             )
         finish_fsdp_lazy_init(model)
-        if args.offload_train:
+        # A natively CPU-offloaded model never sleeps, so its buffers stay on the GPU.
+        if args.offload_train and not cpu_offload:
             offload_model(model)
         models[component] = model
     return models

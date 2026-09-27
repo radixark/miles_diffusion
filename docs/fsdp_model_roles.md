@@ -105,9 +105,8 @@ Reference and teacher CPU offload are opt-in. Phase sleep covers actor, referenc
 teacher, their buffers, AdamW state, and EMA state. Sleep clears completed-step
 gradients instead of transferring them. Transfers use pinned CPU
 storage and enqueue asynchronous copies before synchronization; Parameter objects
-and optimizer bindings are preserved. Wake respects each model's native FSDP
-offload policy: native-offloaded parameter shards stay on CPU while buffers return
-to GPU.
+and optimizer bindings are preserved. A natively CPU-offloaded model never sleeps,
+as in miles: its parameter shards stay on CPU and its buffers stay on GPU.
 
 Phase offload retains the model's own CPU tensors, without a second actor backup.
 The helper lets FSDP rebuild its shard views and padding through `Module._apply`;

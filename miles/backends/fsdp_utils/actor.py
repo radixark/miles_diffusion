@@ -134,6 +134,17 @@ class FSDPTrainRayActor(TrainRayActor):
                 lora_adapter_path=args.teacher_lora_adapter_path,
                 cpu_offload=args.teacher_cpu_offload,
             )
+        # A natively CPU-offloaded model never sleeps: its parameters stay on the host and its buffers on the GPU.
+        self.actor_models_to_sleep = [] if args.fsdp_cpu_offload else list(self.models.values())
+        self.frozen_models_to_sleep = [
+            model
+            for models, cpu_offload in (
+                (self.reference_models, args.ref_cpu_offload),
+                (self.teacher_models, args.teacher_cpu_offload),
+            )
+            if not cpu_offload
+            for model in models.values()
+        ]
 
         # Force a sync to ensure sharding is complete and old memory is freed.
         torch.cuda.synchronize()
@@ -218,9 +229,8 @@ class FSDPTrainRayActor(TrainRayActor):
         print_memory("before offload DiT")
         self.optimizer.zero_grad(set_to_none=True)
 
-        for models in (self.models, self.reference_models, self.teacher_models):
-            for model in models.values():
-                offload_model(model)
+        for model in (*self.actor_models_to_sleep, *self.frozen_models_to_sleep):
+            offload_model(model)
         move_optimizer(self.optimizer, "cpu")
         if self.ema_optimizer is not None:
             move_optimizer(self.ema_optimizer, "cpu")
@@ -233,13 +243,8 @@ class FSDPTrainRayActor(TrainRayActor):
         if not self.args.offload_train:
             return
 
-        for models, cpu_offload in (
-            (self.models, self.args.fsdp_cpu_offload),
-            (self.reference_models, self.args.ref_cpu_offload),
-            (self.teacher_models, self.args.teacher_cpu_offload),
-        ):
-            for model in models.values():
-                onload_model(model, cpu_offload=cpu_offload)
+        for model in (*self.actor_models_to_sleep, *self.frozen_models_to_sleep):
+            onload_model(model)
         if not self.args.fsdp_cpu_offload:
             move_optimizer(self.optimizer, "cuda")
             if self.ema_optimizer is not None:
