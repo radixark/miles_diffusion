@@ -2,8 +2,10 @@ import abc
 import logging
 import os
 import re
+import socket
 from argparse import Namespace
 from collections.abc import Mapping, Sequence
+from datetime import timedelta
 
 import ray
 import torch
@@ -16,7 +18,8 @@ try:
 except ImportError:
     from sglang.srt.patch_torch import monkey_patch_torch_reductions  # type: ignore[import]
 
-from sglang.srt.utils import MultiprocessingSerializer
+from sglang.srt.utils import MultiprocessingSerializer, init_custom_process_group
+from sglang.srt.utils.network import NetworkAddress
 
 try:
     from sglang.srt.weight_sync.tensor_bucket import FlattenedTensorBucket  # type: ignore[import]
@@ -33,10 +36,9 @@ except ImportError as _e:
 
 from miles.ray.utils import get_physical_gpu_id
 
-
 logger = logging.getLogger(__name__)
 
-LORA_IPC_WEIGHT_UPDATE_MODE = "lora_merge"
+LORA_WEIGHT_UPDATE_MODE = "lora_merge"
 
 
 class PeftLoRAKeyMapper:
@@ -444,7 +446,7 @@ class DiffusionUpdateWeightFromTensorLoRA(DiffusionUpdateWeightFromTensor):
         logger.warning(f"[weight_sync verify v{self.weight_version} cross-engine] " f"all_equal={all_equal}  {pretty}")
 
 
-class DiffusionUpdateWeightFromTensorLoRAIPC(DiffusionUpdateWeightFromTensor):
+class DiffusionUpdateWeightLoRA(DiffusionUpdateWeight):
     """Push only lora_A/lora_B tensors; rollout merges locally via weight_update_mode=lora_merge."""
 
     def _prepare_lora_param(self, param: torch.Tensor) -> torch.Tensor:
@@ -459,7 +461,7 @@ class DiffusionUpdateWeightFromTensorLoRAIPC(DiffusionUpdateWeightFromTensor):
     def _collect_layer_groups(
         self, model: torch.nn.Module
     ) -> tuple[list[list[tuple[str, torch.Tensor]]], list[str], int]:
-        """Group PEFT LoRA tensors so each layer's A/B pair stays in one IPC bucket.
+        """Group PEFT LoRA tensors so each layer's A/B pair stays in one transfer bucket.
 
         Names stay PEFT/diffusers-shaped (``transformer_blocks.0.attn.to_q.lora_A``).
         sglang-d's ``lora_merge`` path applies ``param_names_mapping`` and the
@@ -483,7 +485,7 @@ class DiffusionUpdateWeightFromTensorLoRAIPC(DiffusionUpdateWeightFromTensor):
                     self.wait_and_update_bucket_weights(
                         bucket,
                         target_module,
-                        weight_update_mode=LORA_IPC_WEIGHT_UPDATE_MODE,
+                        weight_update_mode=LORA_WEIGHT_UPDATE_MODE,
                     )
                     num_buckets += 1
                     bucket = []
@@ -497,7 +499,7 @@ class DiffusionUpdateWeightFromTensorLoRAIPC(DiffusionUpdateWeightFromTensor):
                 self.wait_and_update_bucket_weights(
                     bucket,
                     target_module,
-                    weight_update_mode=LORA_IPC_WEIGHT_UPDATE_MODE,
+                    weight_update_mode=LORA_WEIGHT_UPDATE_MODE,
                 )
                 num_buckets += 1
 
@@ -507,7 +509,7 @@ class DiffusionUpdateWeightFromTensorLoRAIPC(DiffusionUpdateWeightFromTensor):
                 num_layers = len(layer_groups)
                 sample_layers = [PeftLoRAKeyMapper.layer_prefix(group[0][0]) for group in layer_groups[:3]]
                 logger.info(
-                    "LoRA IPC weight sync v%s [%s]: pushed %d lora tensors, "
+                    "LoRA weight sync v%s [%s]: pushed %d lora tensors, "
                     "%d layer prefixes in %d buckets (unmapped=%d)",
                     self.weight_version,
                     target_module,
@@ -518,18 +520,119 @@ class DiffusionUpdateWeightFromTensorLoRAIPC(DiffusionUpdateWeightFromTensor):
                 )
                 if sample_layers:
                     logger.info(
-                        "LoRA IPC [%s] sample layer prefixes: %s",
+                        "LoRA weight sync [%s] sample layer prefixes: %s",
                         target_module,
                         sample_layers,
                     )
                 if unmapped_keys:
                     logger.warning(
-                        "LoRA IPC unmapped PEFT keys [%s] (first 5): %s",
+                        "LoRA weight sync unmapped PEFT keys [%s] (first 5): %s",
                         target_module,
                         unmapped_keys[:5],
                     )
                 if num_lora_keys == 0:
                     logger.error(
-                        "LoRA IPC [%s]: no lora tensors found in training state_dict",
+                        "LoRA weight sync [%s]: no lora tensors found in training state_dict",
                         target_module,
                     )
+
+
+class DiffusionUpdateWeightFromTensorLoRAIPC(DiffusionUpdateWeightLoRA, DiffusionUpdateWeightFromTensor):
+    pass
+
+
+def connect_rollout_engines_from_distributed(rollout_engines, engine_gpu_counts, group_name, timeout):
+    if len(rollout_engines) != len(engine_gpu_counts) or any(count <= 0 for count in engine_gpu_counts):
+        raise ValueError("Each engine requires a positive GPU count")
+    master_address = ray._private.services.get_node_ip_address()
+    with socket.socket() as sock:
+        sock.bind(("", 0))
+        master_port = sock.getsockname()[1]
+    world_size = 1 + sum(engine_gpu_counts)
+    refs = []
+    rank_offset = 1
+    for engine, count in zip(rollout_engines, engine_gpu_counts, strict=True):
+        refs.append(
+            engine.init_weights_update_group.remote(
+                master_address=master_address,
+                master_port=master_port,
+                rank_offset=rank_offset,
+                world_size=world_size,
+                group_name=group_name,
+                backend="nccl",
+            )
+        )
+        rank_offset += count
+    options = dist.ProcessGroupNCCL.Options()
+    group = init_custom_process_group(
+        backend="nccl",
+        init_method=NetworkAddress(master_address, master_port).to_tcp(),
+        world_size=world_size,
+        rank=0,
+        group_name=group_name,
+        timeout=timeout,
+        pg_options=options,
+    )
+    # Custom groups span independent worlds and cannot split the default communicator.
+    options.split_from = None
+    ray.get(refs)
+    return group
+
+
+def broadcast_bucket(rollout_engines, group, group_name, named_tensors, target_module, **kwargs):
+    refs = [
+        engine.update_weights_from_distributed.remote(
+            names=[name for name, _ in named_tensors],
+            dtypes=[str(tensor.dtype).removeprefix("torch.") for _, tensor in named_tensors],
+            shapes=[list(tensor.shape) for _, tensor in named_tensors],
+            group_name=group_name,
+            target_modules=[target_module],
+            **kwargs,
+        )
+        for engine in rollout_engines
+    ]
+    tensors = [tensor.contiguous() for _, tensor in named_tensors]
+    handles = [dist.broadcast(tensor, src=0, group=group, async_op=True) for tensor in tensors]
+    for handle in handles:
+        handle.wait()
+    ray.get(refs)
+
+
+class DiffusionUpdateWeightFromDistributed(DiffusionUpdateWeight):
+    def __init__(self, args, models):
+        super().__init__(args, models)
+        self._model_update_group = None
+        self._group_name = "diffusion-weight-update"
+
+    def connect_rollout_engines(self, rollout_engines, rollout_engine_lock):
+        if dist.get_rank() != 0:
+            return
+        if self._model_update_group is not None:
+            refs = [engine.destroy_weights_update_group.remote(self._group_name) for engine in rollout_engines]
+            dist.destroy_process_group(self._model_update_group)
+            ray.get(refs)
+        self.rollout_engines = rollout_engines
+        self._model_update_group = connect_rollout_engines_from_distributed(
+            rollout_engines=rollout_engines,
+            engine_gpu_counts=[self.args.rollout_num_gpus_per_engine] * len(rollout_engines),
+            group_name=self._group_name,
+            timeout=timedelta(minutes=self.args.distributed_timeout_minutes),
+        )
+
+    def update_bucket_weights(self, named_tensors, target_module, weight_version=None, weight_update_mode=None):
+        if dist.get_rank() != 0:
+            return
+        broadcast_bucket(
+            rollout_engines=self.rollout_engines,
+            group=self._model_update_group,
+            group_name=self._group_name,
+            named_tensors=named_tensors,
+            target_module=target_module,
+            weight_update_mode=weight_update_mode,
+            lora_alpha=self.args.lora_alpha,
+            lora_rank=self.args.lora_rank,
+        )
+
+
+class DiffusionUpdateWeightLoRADistributed(DiffusionUpdateWeightLoRA, DiffusionUpdateWeightFromDistributed):
+    pass
