@@ -1,4 +1,4 @@
-"""Real CUDA counterpart to the CPU sleep/wake contract.
+"""Two-rank FSDP sleep/wake keeps training state, tensor identity and pinned residence.
 
     same initial model --> control CUDA forward / AdamW
               |

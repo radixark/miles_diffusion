@@ -49,7 +49,7 @@ def move_model(
         fsdp_parameter: fsdp_parameter.pin_memory for fsdp_parameter in fsdp_parameters
     }
     try:
-        if target_device.type == "cpu" and torch.cuda.is_available():
+        if target_device.type == "cpu":
             # FSDP pins the storage it allocates for re-padding only when pin_memory is set.
             for fsdp_parameter in fsdp_parameters:
                 fsdp_parameter.pin_memory = True
@@ -57,8 +57,7 @@ def move_model(
     finally:
         for fsdp_parameter, original_pin_memory in original_pin_memory_by_fsdp_parameter.items():
             fsdp_parameter.pin_memory = original_pin_memory
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
+    torch.cuda.synchronize()
 
 
 @torch.no_grad()
@@ -68,8 +67,7 @@ def move_optimizer(optimizer: torch.optim.Optimizer, device: str | torch.device)
         optimizer.state[parameter] = tree_map(
             lambda value: value.to(device, non_blocking=True) if isinstance(value, torch.Tensor) else value, state
         )
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
+    torch.cuda.synchronize()
 
 
 # ------------------------------- frozen models --------------------------------
