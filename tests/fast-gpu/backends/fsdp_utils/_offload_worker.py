@@ -12,7 +12,7 @@ optimizer Parameter bindings and tied/nonpersistent buffer aliases must survive.
                |                                      |
            pinned sleep <--------- EMA update --------+
                |
-        DCP save/load --> same EMA tensors, placement, and update count
+        DCP save/load --> same EMA tensors, placement and decay
 """
 
 import copy
@@ -141,7 +141,7 @@ def check_ema_offload_and_checkpoint(mesh, cpu_offload):
         name: parameter.detach().clone() for name, parameter in control.named_parameters() if parameter.requires_grad
     }
     inputs = torch.arange(12, dtype=torch.float32, device="cuda").reshape(4, 3) / 12
-    for _ in range(2):
+    for optimizer_step in (1, 2):
         averaged_control = copy.deepcopy(control)
         with torch.no_grad():
             for name, parameter in averaged_control.named_parameters():
@@ -159,7 +159,7 @@ def check_ema_offload_and_checkpoint(mesh, cpu_offload):
         control_optimizer.step()
         optimizer.zero_grad(set_to_none=True)
         control_optimizer.zero_grad(set_to_none=True)
-        assert ema.step() == 0.5
+        assert ema.step(optimizer_step) == 0.5
         for name, parameter in control.named_parameters():
             if parameter.requires_grad:
                 expected_ema[name].lerp_(parameter.detach(), 0.5)
@@ -190,7 +190,6 @@ def check_ema_offload_and_checkpoint(mesh, cpu_offload):
         state_dict = {"ema": get_optimizer_state_dict(model, resumed)}
         dcp.load(state_dict, checkpoint_id=checkpoint_path[0])
         set_optimizer_state_dict(model, resumed, state_dict["ema"])
-        assert resumed.update_count == ema.update_count == 2
         assert resumed.param_groups[0]["decay"] == 0.5
         for parameter, state in resumed.state.items():
             average = state["ema"]

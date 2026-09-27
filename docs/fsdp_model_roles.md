@@ -65,8 +65,8 @@ the shards rather than on gathered copies.
 `--use-ema` creates the EMA optimizer. Under `--loss-type nft` it is π_old: the rollout
 samples with it (`--rollout-weights ema`) and the loss trains against its prediction.
 `--ref-mode` only selects the KL reference (`lora_base` or `ref`), so NFT can use both.
-EMA updates once after a rollout's training completes, retaining the existing
-DiffusionNFT update cadence. Publishing or retrying a weight update never advances
+EMA updates once after a rollout's training completes, and its decay follows the actor's
+optimizer step count, as in DiffusionNFT. Publishing or retrying a weight update never advances
 EMA. EMA evaluation and publication swap the EMA values into the actor's shards and
 swap them back afterward, dropping FSDP's gathered copies on both sides so no forward
 reads stale weights; the actor's backward re-gathers its restored shards.
@@ -82,7 +82,7 @@ iter_0000001/
   model/         actor model state (adapter-only for LoRA)
   optimizer/     AdamW state
   lr_scheduler/  scheduler state
-  ema/           EMA optimizer state, decay schedule, and update count
+  ema/           EMA optimizer state and decay schedule
 ```
 
 EMA uses the existing distributed optimizer-state checkpoint wrapper, including

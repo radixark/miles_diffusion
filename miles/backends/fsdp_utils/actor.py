@@ -306,7 +306,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 return
             self._train_core(rollout_id=rollout_id, rollout_data=rollout_data)
             if self.ema_optimizer is not None:
-                self.ema_optimizer.step()
+                self.ema_optimizer.step(self.global_step)
 
         train_metric_utils.log_perf_data_raw(
             rollout_id=rollout_id,

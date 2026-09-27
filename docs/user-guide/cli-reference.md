@@ -328,8 +328,8 @@ Every one takes a dotted path.
 |---|---|---|---|
 | `--use-ema` | flag | off | Maintains an EMA copy as πₒₗd. Needs a consumer (`--loss-type nft`, which trains against it as πₒₗd, or `--rollout-weights ema`). |
 | `--rollout-weights` | enum | `actor` | `actor` / `ema`: which weights get pushed to rollout. |
-| `--ema-decay-init` | float | `0.001` | Decay during the flat period. |
-| `--ema-decay-ramp` | float | `0.001` | Per-step increase after the flat period; the ramp restarts from zero. |
+| `--ema-decay-init` | float | `0.001` | Decay during the flat period, counted in actor optimizer steps. |
+| `--ema-decay-ramp` | float | `0.001` | Increase per actor optimizer step after the flat period; the ramp restarts from zero. |
 | `--ema-decay-max` | float | `0.5` | Ceiling. |
 | `--ema-decay-flat-steps` | int | `0` | |
 
