@@ -4,7 +4,7 @@ Batch shape follows the UniRL 100-rollout override: 8 prompts x 8 samples, micro
 train GPUs plus a dedicated reward GPU.
 
 NFT needs a reference model, supplied here by the EMA copy (--ref-mode ema), and samples
-under pi_old via --ema-rollout-policy ema. noise_level=0 with sde_type=ode makes the
+under pi_old via --rollout-weights ema. noise_level=0 with sde_type=ode makes the
 rollout deterministic, which NFT requires.
 
 Smoke mode swaps in the small OCR dataset and a tiny batch, for checking the pipeline end
@@ -84,7 +84,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
     ema_args = (
         "--ref-mode ema "
         "--use-ema "
-        "--ema-rollout-policy ema "
+        "--rollout-weights ema "
         "--ema-decay-init 0.001 "
         "--ema-decay-ramp 0.001 "
         "--ema-decay-max 0.5 "

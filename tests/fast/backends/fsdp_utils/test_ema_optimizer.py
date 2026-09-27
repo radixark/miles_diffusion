@@ -135,9 +135,7 @@ def test_actor_train_updates_ema_once_and_publication_only_reads_it():
             parameter.add_(2.0)
 
     actor = SimpleNamespace(
-        args=SimpleNamespace(
-            offload_train=False, debug_rollout_only=False, train_only=False, ema_rollout_policy="ema"
-        ),
+        args=SimpleNamespace(offload_train=False, debug_rollout_only=False, train_only=False, rollout_weights="ema"),
         model=model,
         ema_optimizer=EMAOptimizer(model, decay=0.5, flat_steps=10),
         _train_core=train_core,

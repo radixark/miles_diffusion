@@ -255,7 +255,13 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--diffusion-adv-clip-max` | float | `5.0` | Under `nft` this also sets the advantage-to-`r` slope. |
 | `--diffusion-recompute-old-log-prob` | flag | off | Recompute old log-probs with the trainer forward instead of trusting the rollout's. `policy_loss` only. |
 | `--diffusion-kl-beta` | float | `0.0` | |
-| `--ref-mode` | enum | – | `none` / `lora_base` / `ema`. Auto: `lora_base` when KL > 0, `ema` under `nft`. |
+| `--ref-mode` | enum | – | `none` / `lora_base` / `ema` / `ref`. Auto: `lora_base` when KL > 0, `ema` under `nft`. `ref` uses the model from `--ref-load`. |
+| `--ref-load` | str | – | HF pipeline checkpoint of an independent frozen reference model. Requires `--ref-mode ref`. |
+| `--ref-lora-adapter-path` | str | – | PEFT adapter applied to `--ref-load`. |
+| `--ref-cpu-offload` | flag | off | Keep the reference shards in pinned CPU memory between forwards (FSDP `CPUOffloadPolicy`). |
+| `--teacher-load` | str | – | HF pipeline checkpoint of a frozen teacher model, exposed to custom losses as `ctx.teacher_models`. |
+| `--teacher-lora-adapter-path` | str | – | PEFT adapter applied to `--teacher-load`. |
+| `--teacher-cpu-offload` | flag | off | Keep the teacher shards in pinned CPU memory between forwards. |
 | `--custom-prepare-train-batch-path` | str | – | Builds DiT inputs. |
 | `--custom-loss-function-path` | str | – | Loss **formula** only — the DiT forward stays in the actor. |
 | `--diffusion-nft-beta` | float | `1.0` | |
@@ -311,6 +317,7 @@ Every one takes a dotted path.
 |---|---|---|---|
 | `--use-lora` | flag | off | |
 | `--lora-rank` / `--lora-alpha` | int | `64` / `64` | |
+| `--lora-adapter-path` | str | – | Resume the actor from a saved PEFT adapter; `--lora-rank` / `--lora-alpha` must match its config. |
 | `--lora-target-modules` | str+ | – | Defaults per model family. |
 | `--lora-init-weights` | str | `gaussian` | `kaiming-uniform` maps to PEFT's default; other PEFT schemes pass through. |
 | `--lora-ipc-weight-sync` | flag | off | Push only `lora_A`/`lora_B`; the engine merges locally. Requires `--use-lora`. |
@@ -319,8 +326,8 @@ Every one takes a dotted path.
 
 | Flag | Type | Default | Notes |
 |---|---|---|---|
-| `--use-ema` | flag | off | Maintains an EMA copy as πₒₗd. Needs a consumer (`--ref-mode ema` or `--ema-rollout-policy ema`). |
-| `--ema-rollout-policy` | enum | `live` | `live` / `ema`: which weights get pushed to rollout. |
+| `--use-ema` | flag | off | Maintains an EMA copy as πₒₗd. Needs a consumer (`--ref-mode ema` or `--rollout-weights ema`). |
+| `--rollout-weights` | enum | `actor` | `actor` / `ema`: which weights get pushed to rollout. |
 | `--ema-decay-init` | float | `0.001` | Decay during the flat period. |
 | `--ema-decay-ramp` | float | `0.001` | Per-step increase after the flat period; the ramp restarts from zero. |
 | `--ema-decay-max` | float | `0.5` | Ceiling. |
