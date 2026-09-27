@@ -1,14 +1,14 @@
-"""Two-rank phase offload: FSDP shards + buffers + AdamW -> pinned CPU -> CUDA.
+"""Two-rank sleep/wake: FSDP shards + buffers + AdamW -> pinned CPU -> CUDA.
 
     trainable / frozen  x  reshard / no-reshard   (native CPU offload: never sleeps)
                                     |
                    uneven shards + tied/nonpersistent buffers
                                     |
-                offload --> pinned storage --> onload --> same outputs/updates
+                sleep --> pinned storage --> wake --> same outputs/updates
 
     GPU/CPU actor + EMA on the same device --> average --> inference --> actor forward/backward
                                      |
-                      pinned sleep / onload + DCP round trip
+                      pinned sleep / wake + DCP round trip
 """
 
 from tests.ci.ci_register import register_cuda_ci
@@ -25,7 +25,7 @@ import torch
 
 
 @pytest.mark.skipif(torch.cuda.device_count() < 2, reason="Requires two CUDA devices")
-def test_fsdp_phase_offload():
+def test_fsdp_sleep_wake():
     result = subprocess.run(
         [
             sys.executable,
@@ -34,7 +34,7 @@ def test_fsdp_phase_offload():
             "--standalone",
             "--nnodes=1",
             "--nproc_per_node=2",
-            str(Path(__file__).with_name("_offload_worker.py")),
+            str(Path(__file__).with_name("_sleep_wake_worker.py")),
         ],
         env={**os.environ, "PYTHONUNBUFFERED": "1"},
         capture_output=True,

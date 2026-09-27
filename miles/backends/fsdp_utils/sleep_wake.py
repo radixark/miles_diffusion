@@ -4,7 +4,12 @@ from torch.utils._pytree import tree_map
 
 
 @torch.no_grad()
-def _move_model(model: torch.nn.Module, target_device: torch.device) -> None:
+def move_model(model: torch.nn.Module, device: str | torch.device) -> None:
+    """Move ``model``'s parameters and buffers to ``device``, keeping FSDP bindings and tied buffers.
+
+    A move to the CPU lands in pinned memory.
+    """
+    target_device = torch.device(device)
     fsdp_parameters = [
         fsdp_parameter
         for module in model.modules()
@@ -45,16 +50,6 @@ def _move_model(model: torch.nn.Module, target_device: torch.device) -> None:
             fsdp_parameter.pin_memory = original_pin_memory
     if torch.cuda.is_available():
         torch.cuda.synchronize()
-
-
-def offload_model(model: torch.nn.Module) -> None:
-    """Move parameters and buffers to pinned CPU storage after gradients are cleared."""
-    _move_model(model, torch.device("cpu"))
-
-
-def onload_model(model: torch.nn.Module) -> None:
-    """Move parameters and buffers back to CUDA storage."""
-    _move_model(model, torch.device("cuda", torch.cuda.current_device()))
 
 
 @torch.no_grad()

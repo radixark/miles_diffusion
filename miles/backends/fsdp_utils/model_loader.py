@@ -10,8 +10,8 @@ import torch.distributed as dist
 
 from . import checkpoint
 from .mixed_precision import compile_param_dtype_maps, parse_dtype_from_str
-from .offload import offload_model
 from .sequence_parallel.plan import apply_sequence_parallel
+from .sleep_wake import move_model
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +75,7 @@ def load_fsdp_models(
         finish_fsdp_lazy_init(model)
         # A natively CPU-offloaded model never sleeps, so its buffers stay on the GPU.
         if args.offload_train and not cpu_offload:
-            offload_model(model)
+            move_model(model, "cpu")
         models[component] = model
     return models
 

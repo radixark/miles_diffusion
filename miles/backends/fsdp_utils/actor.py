@@ -40,8 +40,8 @@ from .lr_scheduler import get_lr_scheduler
 from .metrics import new_metric_buffer
 from .mixed_precision import parse_dtype_from_str
 from .model_loader import load_fsdp_models
-from .offload import move_optimizer, offload_model, onload_model
 from .parallel import create_fsdp_parallel_state
+from .sleep_wake import move_model, move_optimizer
 
 logger = logging.getLogger(__name__)
 
@@ -226,11 +226,11 @@ class FSDPTrainRayActor(TrainRayActor):
         if not self.args.offload_train:
             return
 
-        print_memory("before offload DiT")
+        print_memory("before sleep DiT")
         self.optimizer.zero_grad(set_to_none=True)
 
         for model in (*self.actor_models_to_sleep, *self.frozen_models_to_sleep):
-            offload_model(model)
+            move_model(model, "cpu")
         move_optimizer(self.optimizer, "cpu")
         if self.ema_optimizer is not None:
             move_optimizer(self.ema_optimizer, "cpu")
@@ -244,7 +244,7 @@ class FSDPTrainRayActor(TrainRayActor):
             return
 
         for model in (*self.actor_models_to_sleep, *self.frozen_models_to_sleep):
-            onload_model(model)
+            move_model(model, "cuda")
         if not self.args.fsdp_cpu_offload:
             move_optimizer(self.optimizer, "cuda")
             if self.ema_optimizer is not None:
