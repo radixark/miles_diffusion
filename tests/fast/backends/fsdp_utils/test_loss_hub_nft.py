@@ -1,7 +1,10 @@
 """DiffusionNFT sampling, timestep expansion, and batch preparation.
 
     rollout samples --> timestep pairs --> prepared noisy latents --> NFT loss
+    NFT loss + kl_beta * mean((new_pred - ref_pred)^2) per pair when a KL reference is set
     seed + rollout + microbatch --> repeatable noise and per-sample timestep order
+    schedule sigmas (terminal 0 dropped) --shuffle per sample--> first fraction trained
+        --> every sample misses a random sigma, and across samples every sigma is trained
 """
 
 from tests.ci.ci_register import register_cpu_ci
@@ -9,12 +12,13 @@ from tests.ci.ci_register import register_cpu_ci
 register_cpu_ci(est_time=30, suite="stage-a-cpu", labels=[])
 
 from argparse import Namespace
+from types import SimpleNamespace
 
 import torch
 
 from miles.backends.fsdp_utils.configs.qwen_image import QwenImageTrainPipelineConfig
 from miles.backends.fsdp_utils.configs.train_pipeline_config import TrainPipelineConfig
-from miles.backends.fsdp_utils.loss_hub.nft import corrupt, nft_r_from_advantages, prepare_nft_batch
+from miles.backends.fsdp_utils.loss_hub.nft import corrupt, nft_loss_formula, nft_r_from_advantages, prepare_nft_batch
 from miles.backends.fsdp_utils.loss_hub.types import DiffusionLossContext
 from miles.ray.data_conversion_hub.nft import expand_samples_to_train_pairs, resolve_nft_sigmas
 from miles.utils.types import Sample
@@ -50,10 +54,36 @@ class TestNftMath:
         assert torch.allclose(xt[0], torch.full((4,), 0.75))
         assert torch.allclose(xt[1], torch.full((4,), 0.25))
 
-    def test_resolve_sigmas_drops_zero_and_fraction(self):
+    def test_kl_to_the_reference_adds_to_each_pair(self):
+        # 2 pairs, new - ref = 1 everywhere --> kl = 1 per pair --> loss grows by kl_beta * 2
+        torch.manual_seed(0)
+        new_pred, old_pred = torch.randn(2, 4), torch.randn(2, 4)
+        prepared = SimpleNamespace(
+            extras={"x0": torch.randn(2, 4)},
+            latents=torch.randn(2, 4),
+            timesteps=torch.tensor([0.3, 0.7]),
+            advantage=torch.tensor([1.0, -1.0]),
+        )
+        batch = [{"nft_num_timesteps": 1}, {"nft_num_timesteps": 1}]
+        metrics = SimpleNamespace(emit_mean=lambda *args, **kwargs: None)
+
+        def loss(kl_beta):
+            args = Namespace(
+                diffusion_nft_beta=1.0,
+                diffusion_adv_clip_max=5.0,
+                diffusion_nft_adaptive_weight=True,
+                diffusion_kl_beta=kl_beta,
+            )
+            ctx = SimpleNamespace(args=args, device=torch.device("cpu"))
+            return nft_loss_formula(
+                ctx, batch, prepared, new_pred=new_pred, old_pred=old_pred, ref_pred=new_pred - 1.0, metrics=metrics
+            )
+
+        torch.testing.assert_close(loss(0.5) - loss(0.0), torch.tensor(0.5 * 2))
+
+    def test_resolve_sigmas_drops_only_the_terminal_zero(self):
         sigmas = torch.tensor([1.0, 0.8, 0.6, 0.4, 0.2, 0.0])
-        ts = resolve_nft_sigmas(sigmas, training_timestep_fraction=0.99)
-        assert torch.allclose(ts, torch.tensor([1.0, 0.8, 0.6, 0.4]))
+        assert torch.allclose(resolve_nft_sigmas(sigmas), torch.tensor([1.0, 0.8, 0.6, 0.4, 0.2]))
 
 
 class TestNftHooks:
@@ -242,6 +272,19 @@ class TestNftDeterminism:
         assert got == [p["timestep"] for p in second["train_data"]]
         # Shuffled, not just handed back in scheduler order.
         assert got[: len(got) // 2] != sorted(got[: len(got) // 2], reverse=True)
+
+    def test_timestep_fraction_drops_a_random_sigma_per_sample(self):
+        # schedule [1.0, 0.75, 0.5, 0.25], fraction 0.99 --> 3 sigmas per sample, each missing a random one
+        args = _args(diffusion_nft_shuffle_timesteps=True, diffusion_nft_timestep_fraction=0.99)
+        samples = [sample for _ in range(4) for sample in self._samples()]
+        for index, sample in enumerate(samples):
+            sample.index = index
+        out = expand_samples_to_train_pairs(args, samples, [0.0] * len(samples), [0.0] * len(samples))
+        per_sample = {}
+        for pair in out["train_data"]:
+            per_sample.setdefault(pair["sample_index"], []).append(pair["timestep"])
+        assert all(len(set(sigmas)) == 3 for sigmas in per_sample.values())
+        assert set().union(*per_sample.values()) == {1.0, 0.75, 0.5, 0.25}
 
     def test_each_sample_draws_its_own_permutation(self):
         args = _args(diffusion_nft_shuffle_timesteps=True)

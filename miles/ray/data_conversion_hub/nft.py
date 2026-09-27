@@ -29,22 +29,13 @@ def _clean_x0_from_sample(sample: Sample) -> torch.Tensor:
     return traj.latents[-1].detach().cpu().float()
 
 
-def resolve_nft_sigmas(
-    sigmas: torch.Tensor,
-    *,
-    training_timestep_fraction: float = 0.99,
-) -> torch.Tensor:
+def resolve_nft_sigmas(sigmas: torch.Tensor) -> torch.Tensor:
+    """The rollout schedule's sigmas without its terminal 0, which has no noise to train on."""
     ts = sigmas.detach().float().flatten()
     if ts.numel() == 0:
         raise ValueError("scheduler.sigmas is empty")
     if ts.numel() > 1 and torch.isclose(ts[-1], torch.zeros((), dtype=ts.dtype), atol=1e-8):
         ts = ts[:-1]
-    frac = float(training_timestep_fraction)
-    if frac < 1.0 and ts.numel() > 1:
-        keep = max(1, int(ts.numel() * frac))
-        ts = ts[:keep]
-    if ts.numel() == 0:
-        raise ValueError("No training timesteps left after NFT sigma filtering")
     return ts
 
 
@@ -63,11 +54,8 @@ def expand_samples_to_train_pairs(
             f"rewards={len(rewards)} raw_rewards={len(raw_rewards)}"
         )
     scheduler_meta = scheduler_meta_from_samples(samples)
-    sigmas = resolve_nft_sigmas(
-        scheduler_meta["scheduler_sigmas"],
-        training_timestep_fraction=args.diffusion_nft_timestep_fraction,
-    )
-    num_timesteps = int(sigmas.numel())
+    sigmas = resolve_nft_sigmas(scheduler_meta["scheduler_sigmas"])
+    num_timesteps = max(1, int(sigmas.numel() * args.diffusion_nft_timestep_fraction))
 
     train_data: list[dict[str, Any]] = []
     for position, (sample, adv, raw) in enumerate(zip(samples, rewards, raw_rewards, strict=True)):
@@ -80,11 +68,13 @@ def expand_samples_to_train_pairs(
         shuffle_generator = torch.Generator().manual_seed(
             stable_hash("nft_sigma_shuffle", int(args.seed), int(stream))
         )
-        sample_sigmas = (
-            sigmas[torch.randperm(num_timesteps, generator=shuffle_generator)]
+        # Each sample trains its own random subset of the schedule, so every sigma is covered across samples.
+        sigma_order = (
+            torch.randperm(sigmas.numel(), generator=shuffle_generator)
             if args.diffusion_nft_shuffle_timesteps
-            else sigmas
+            else torch.arange(sigmas.numel())
         )
+        sample_sigmas = sigmas[sigma_order[:num_timesteps]]
         for t in sample_sigmas.tolist():
             train_data.append(
                 {

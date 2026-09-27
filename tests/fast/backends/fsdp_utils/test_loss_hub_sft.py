@@ -184,7 +184,7 @@ class TestSftLossFormula:
         prepared = prepare_sft_batch(ctx, batch)
         metrics = _Metrics()
         loss = sft_loss_formula(
-            ctx, batch, prepared, new_pred=prepared.extras["target"], ref_pred=None, metrics=metrics
+            ctx, batch, prepared, new_pred=prepared.extras["target"], old_pred=None, ref_pred=None, metrics=metrics
         )
         assert torch.allclose(loss, torch.zeros(()))
 
@@ -199,6 +199,7 @@ class TestSftLossFormula:
             batch,
             prepared,
             new_pred=prepared.extras["target"] + 1.0,
+            old_pred=None,
             ref_pred=None,
             metrics=metrics,
         )
@@ -216,6 +217,7 @@ class TestSftLossFormula:
             batch,
             prepared,
             new_pred=prepared.extras["target"] + 1.0,
+            old_pred=None,
             ref_pred=None,
             metrics=metrics,
         )

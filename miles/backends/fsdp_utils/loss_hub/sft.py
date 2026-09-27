@@ -110,6 +110,7 @@ def sft_loss_formula(
     prepared: PreparedBatch,
     *,
     new_pred: torch.Tensor,
+    old_pred: torch.Tensor | None,
     ref_pred: torch.Tensor | None,
     metrics: MetricBuffer,
     write_old_log_prob: bool = False,

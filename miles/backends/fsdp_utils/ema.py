@@ -30,30 +30,24 @@ class EMAOptimizer(torch.optim.Optimizer):
     ) -> None:
         super().__init__(
             (parameter for parameter in model.parameters() if parameter.requires_grad),
-            dict(decay=decay, uprate=uprate, uphold=uphold, flat_steps=flat_steps, update_count=0),
+            dict(decay=decay, uprate=uprate, uphold=uphold, flat_steps=flat_steps),
         )
         self.reset_from_model()
-
-    @property
-    def update_count(self) -> int:
-        return self.param_groups[0]["update_count"]
 
     @torch.no_grad()
     def reset_from_model(self) -> None:
         for group in self.param_groups:
-            group["update_count"] = 0
             for parameter in group["params"]:
                 self.state[parameter]["ema"] = parameter.detach().clone()
 
     @torch.no_grad()
-    def step(self, closure=None) -> float:
+    def step(self, optimizer_step: int) -> float:
+        """Average in the actor after its ``optimizer_step``-th optimizer update; the decay follows that count."""
         for group in self.param_groups:
-            group["update_count"] += 1
-            update_count = group["update_count"]
             decay = (
                 group["decay"]
-                if update_count <= group["flat_steps"]
-                else min((update_count - group["flat_steps"]) * group["uprate"], group["uphold"])
+                if optimizer_step <= group["flat_steps"]
+                else min((optimizer_step - group["flat_steps"]) * group["uprate"], group["uphold"])
             )
             ema_tensors = [_local_tensor(self.state[parameter]["ema"]) for parameter in group["params"]]
             actor_tensors = [_local_tensor(parameter.detach()) for parameter in group["params"]]

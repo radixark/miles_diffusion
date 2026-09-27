@@ -109,6 +109,7 @@ def flow_grpo_loss_formula(
     prepared: PreparedBatch,
     *,
     new_pred: torch.Tensor,
+    old_pred: torch.Tensor | None,
     ref_pred: torch.Tensor | None,
     metrics: MetricBuffer,
     write_old_log_prob: bool = False,
@@ -149,7 +150,7 @@ def flow_grpo_loss_formula(
     kl_sum = loss_sum.new_zeros(())
     if kl_beta > 0:
         if ref_pred is None:
-            raise ValueError("Flow-GRPO KL requires a reference DiT forward; set --ref-mode lora_base, ema, or ref")
+            raise ValueError("Flow-GRPO KL requires a reference DiT forward; set --ref-mode lora_base or ref")
         _, _, prev_sample_mean_ref, _ = ctx.sde_backend.sde_step_logprob(
             ref_pred.float(),
             prepared.timesteps,

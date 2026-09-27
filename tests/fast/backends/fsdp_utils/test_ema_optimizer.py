@@ -4,10 +4,11 @@
     frozen base / buffers       --------> unchanged (never averaged)
     actor --use_weights--> EMA forward --finally--> original actor weights
     component A --use_weights--> EMA A; component B stays untouched
-    actor.train --> one EMA update --> repeated publications (no further updates)
+    actor.train --> one EMA update at the actor's optimizer step --> repeated publications (no further updates)
 
-Dense and adapter-only checkpoints save EMA independently of Adam and restore its
-schedule and update count. Older checkpoints seed EMA from the loaded actor weights.
+Dense and adapter-only checkpoints save EMA independently of Adam; the decay schedule follows the
+actor's optimizer step count, which the checkpoint metadata restores. Older checkpoints seed EMA
+from the loaded actor weights.
 """
 
 from tests.ci.ci_register import register_cpu_ci
@@ -44,14 +45,13 @@ def test_update_averages_only_trainable_parameters(frozen_base):
     with torch.no_grad():
         model.base.fill_(6.0)
         model.lora_A.fill_(8.0)
-    assert ema.step() == 0.5
+    assert ema.step(optimizer_step=1) == 0.5
     torch.testing.assert_close(ema.state[model.lora_A]["ema"], torch.tensor([6.0]))
     if frozen_base:
         assert model.base not in ema.state
     else:
         torch.testing.assert_close(ema.state[model.base]["ema"], torch.tensor([4.0]))
-    assert ema.step() == 0.1
-    assert ema.update_count == 2
+    assert ema.step(optimizer_step=2) == 0.1
     torch.testing.assert_close(ema.state[model.lora_A]["ema"], torch.tensor([7.8]))
     assert len(ema.state) == (1 if frozen_base else 2)
     assert model.counter.item() == 5
@@ -133,10 +133,12 @@ def test_actor_train_updates_ema_once_and_publication_only_reads_it():
     def train_core(**kwargs):
         for parameter in model.parameters():
             parameter.add_(2.0)
+        actor.global_step += 1
 
     actor = SimpleNamespace(
         args=SimpleNamespace(offload_train=False, debug_rollout_only=False, train_only=False, rollout_weights="ema"),
         model=model,
+        global_step=0,
         ema_optimizer=EMAOptimizer(model, decay=0.5, flat_steps=10),
         _train_core=train_core,
         parallel_state=SimpleNamespace(get_mesh=lambda name: SimpleNamespace(get_local_rank=lambda: 0)),
@@ -145,14 +147,12 @@ def test_actor_train_updates_ema_once_and_publication_only_reads_it():
     )
     namespace["train"](actor, rollout_id=0, rollout_data_ref=[SimpleNamespace(inner={})])
     assert model.base.item() == 4.0
-    assert actor.ema_optimizer.update_count == 1
     assert actor.ema_optimizer.state[model.base]["ema"].item() == 3.0
 
     for _ in range(2):
         namespace["update_weights"](actor)
         assert published_weights[-1].item() == 3.0
         assert model.base.item() == 4.0
-        assert actor.ema_optimizer.update_count == 1
         assert actor.ema_optimizer.state[model.base]["ema"].item() == 3.0
 
 
@@ -188,8 +188,8 @@ def test_checkpoint_restores_ema_without_adam_and_continues_schedule(tmp_path, c
         for parameter in actor.model.parameters():
             if parameter.requires_grad:
                 parameter.add_(2.0)
-    actor.ema_optimizer.step()
-    actor.ema_optimizer.step()
+    actor.ema_optimizer.step(optimizer_step=1)
+    actor.ema_optimizer.step(optimizer_step=2)
     expected = get_optimizer_state_dict(actor.model, actor.ema_optimizer)
     expected_names = {"transformer.lora_A", "transformer_2.lora_A"}
     if not use_lora:
@@ -202,12 +202,11 @@ def test_checkpoint_restores_ema_without_adam_and_continues_schedule(tmp_path, c
     resumed = make_actor(tmp_path, use_lora=use_lora)
     resumed.ema_optimizer.param_groups[0]["uprate"] = 0.9
     checkpoint.load(resumed)
-    assert resumed.ema_optimizer.update_count == 2
     assert resumed.ema_optimizer.param_groups[0]["uprate"] == 0.2
     actual = get_optimizer_state_dict(resumed.model, resumed.ema_optimizer)
     for name, state in expected["state"].items():
         torch.testing.assert_close(actual["state"][name]["ema"], state["ema"])
-    assert actor.ema_optimizer.step() == resumed.ema_optimizer.step() == 0.2
+    assert actor.ema_optimizer.step(optimizer_step=3) == resumed.ema_optimizer.step(optimizer_step=3) == 0.2
     actual = get_optimizer_state_dict(resumed.model, resumed.ema_optimizer)
     expected = get_optimizer_state_dict(actor.model, actor.ema_optimizer)
     for name, state in expected["state"].items():
@@ -221,10 +220,9 @@ def test_legacy_checkpoint_seeds_ema_from_loaded_actor(tmp_path, cpu_checkpoint,
             parameter.add_(9.0)
     checkpoint.save(actor, iteration=0)
     resumed = make_actor(tmp_path)
-    resumed.ema_optimizer.step()
+    resumed.ema_optimizer.step(optimizer_step=1)
     with caplog.at_level("INFO"):
         checkpoint.load(resumed)
-    assert resumed.ema_optimizer.update_count == 0
     assert "initialized EMA from the loaded model" in caplog.text
     for parameter, state in resumed.ema_optimizer.state.items():
         torch.testing.assert_close(state["ema"], parameter)
