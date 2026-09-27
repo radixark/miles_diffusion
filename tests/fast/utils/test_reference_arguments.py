@@ -2,6 +2,7 @@
 
     actor: full / LoRA ---> ref: base / base + LoRA, teacher: base / base + LoRA
     actor: LoRA        ---> lora_base: reuse actor with its adapter disabled
+    teacher            ---> read only by custom prepare/loss hooks, so it needs one
     actor LoRA enabled --> adapter config --> checkpoint A/B support + uniform IPC scaling + CLI r/alpha match
 
 Validation rejects incomplete role sources and unused options without changing args.
@@ -40,6 +41,8 @@ def _args(**overrides):
         sglang_enable_cfg_parallel=False,
         loss_type="policy_loss",
         diffusion_kl_beta=0.0,
+        custom_prepare_train_batch_path=None,
+        custom_loss_function_path=None,
     )
     values.update(overrides)
     return Namespace(**values)
@@ -58,6 +61,7 @@ def test_frozen_models_do_not_inherit_actor_training_mode(use_lora, role_has_ada
         teacher_lora_adapter_path="teacher-adapter" if role_has_adapter else None,
         ref_cpu_offload=True,
         teacher_cpu_offload=True,
+        custom_loss_function_path="my_loss.teacher_loss",
     )
     original = vars(args).copy()
     validate_reference_model_args(args)
@@ -80,6 +84,7 @@ def test_lora_base_needs_no_separate_reference_checkpoint():
         ({"ref_cpu_offload": True}, "--ref-cpu-offload requires --ref-load"),
         ({"teacher_cpu_offload": True}, "--teacher-cpu-offload requires --teacher-load"),
         ({"ref_mode": "lora_base"}, "--ref-mode lora_base requires --use-lora"),
+        ({"teacher_load": "teacher"}, "--teacher-load has no consumer"),
     ],
 )
 def test_incomplete_model_roles_are_rejected(overrides, message):

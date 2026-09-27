@@ -25,14 +25,16 @@ Use an independent reference with:
 ```bash
 --hf-checkpoint /models/student \
 --ref-mode ref --ref-load /models/reference \
---teacher-load /models/teacher
+--teacher-load /models/teacher \
+--custom-loss-function-path my_losses.distill_loss
 ```
 
 All three sources use the same family backend, component names, input preparation,
 and device mesh. This provides separate model instances, not cross-family
 distillation or a new DMD2 loss. The existing loss receives the reference prediction.
 Custom prepare/loss hooks can access `ctx.reference_models` and `ctx.teacher_models`
-by component name. Teacher inference should run inside `torch.no_grad()`.
+by component name. The teacher has no built-in consumer, so `--teacher-load` requires
+one of these hooks. Teacher inference should run inside `torch.no_grad()`.
 
 Each source may load a pretrained PEFT LoRA adapter:
 
