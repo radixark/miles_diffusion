@@ -19,13 +19,10 @@ tied/nonpersistent buffer aliases must survive.
 """
 
 import copy
-import importlib.util
 import itertools
 import os
 import shutil
-import sys
 import tempfile
-from pathlib import Path
 
 import torch
 import torch.distributed as dist
@@ -35,14 +32,8 @@ from torch.distributed.device_mesh import init_device_mesh
 from torch.distributed.fsdp import CPUOffloadPolicy, OffloadPolicy, fully_shard
 from torch.distributed.tensor import DTensor
 
-_MODULE_PATH = Path(__file__).resolve().parents[4] / "miles/backends/fsdp_utils/sleep_wake.py"
-_SPEC = importlib.util.spec_from_file_location("fsdp_sleep_wake_under_test", _MODULE_PATH)
-sleep_wake = importlib.util.module_from_spec(_SPEC)
-_SPEC.loader.exec_module(sleep_wake)
-sys.modules["miles.backends.fsdp_utils.sleep_wake"] = sleep_wake
-_EMA_SPEC = importlib.util.spec_from_file_location("fsdp_ema_under_test", _MODULE_PATH.with_name("ema.py"))
-ema_module = importlib.util.module_from_spec(_EMA_SPEC)
-_EMA_SPEC.loader.exec_module(ema_module)
+from miles.backends.fsdp_utils import sleep_wake
+from miles.backends.fsdp_utils.ema import EMAOptimizer
 
 
 class Tiny(torch.nn.Module):
@@ -152,7 +143,7 @@ def check_ema_sleep_wake_and_checkpoint(mesh, cpu_offload):
     control_optimizer = torch.optim.AdamW(
         (parameter for parameter in control.parameters() if parameter.requires_grad), lr=0.01
     )
-    ema = ema_module.EMAOptimizer(model, decay=0.5, flat_steps=10)
+    ema = EMAOptimizer(model, decay=0.5, flat_steps=10)
     expected_ema = {
         name: parameter.detach().clone() for name, parameter in control.named_parameters() if parameter.requires_grad
     }
@@ -205,7 +196,7 @@ def check_ema_sleep_wake_and_checkpoint(mesh, cpu_offload):
     dist.broadcast_object_list(checkpoint_path, src=0)
     try:
         dcp.save({"ema": get_optimizer_state_dict(model, ema)}, checkpoint_id=checkpoint_path[0])
-        resumed = ema_module.EMAOptimizer(model, decay=0.1)
+        resumed = EMAOptimizer(model, decay=0.1)
         state_dict = {"ema": get_optimizer_state_dict(model, resumed)}
         dcp.load(state_dict, checkpoint_id=checkpoint_path[0])
         set_optimizer_state_dict(model, resumed, state_dict["ema"])
