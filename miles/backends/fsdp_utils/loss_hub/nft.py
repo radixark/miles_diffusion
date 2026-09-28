@@ -161,6 +161,6 @@ def nft_loss_formula(
         )
         metrics.emit_mean("adv_abs_mean", total=prepared.advantage.abs().sum(), count=bsz)
         if kl is not None:
-            metrics.emit_mean("nft_kl", total=kl.sum(), count=bsz)
+            metrics.emit_mean("kl_loss", total=kl.sum(), count=bsz)
 
     return loss_sum
