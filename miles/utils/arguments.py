@@ -883,14 +883,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--diffusion-nft-timestep-fraction",
                 type=float,
                 default=0.99,
-                help="Fraction of the rollout schedule sigmas (terminal 0 excluded) each sample trains on.",
+                help=(
+                    "Share of the rollout's denoising steps each sample trains on (int(steps * fraction), "
+                    "drawn at random per sample); it counts steps, not a sigma range."
+                ),
             )
             parser.add_argument(
                 "--no-diffusion-nft-shuffle-timesteps",
                 action="store_false",
                 dest="diffusion_nft_shuffle_timesteps",
                 default=True,
-                help="Train the first sigmas in schedule order instead of a random subset per sample.",
+                help="Train each sample's first steps in schedule order, noisiest first, instead of a random subset.",
             )
             parser.add_argument(
                 "--advantage-estimator",
