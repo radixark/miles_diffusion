@@ -177,18 +177,23 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--rollout-microgroup-size` | int | `1` | |
 | `--diffusion-fps` | float | – | Video only. |
 | `--diffusion-output-num-frames` | int | `1` | |
+| `--rollout-video-dtype` | enum | `keep` | `keep` / `uint8`: dtype of the decoded video in rollout responses. `uint8` quantizes engine-side with the reward path's formula, cutting the response ~4x; keep `keep` for consumers that need the float tensor. |
 | `--diffusion-guidance-scale` | float | `4.0` | |
 | `--diffusion-guidance-scale-2` | float | – | Wan2.2 low-noise expert; **required** when training it. |
 | `--diffusion-true-cfg-scale` | float | – | |
 | `--diffusion-negative-prompt` | str | – | Defaults to `" "` on the engine when CFG is on. |
 | `--diffusion-noise-level` | float | `0.7` | |
 | `--diffusion-height` / `--diffusion-width` | int | `512` | Rollout output size; SFT center-crop size. |
+| `--diffusion-h3-aspect-ratio` | str | `16:9` | MiniMax H3 only: `21:9` / `16:9` / `4:3` / `1:1` / `3:4` / `9:16`. |
+| `--diffusion-h3-duration-seconds` | float | `5.0` | MiniMax H3 only: rollout duration, 4.0–15.0 s. |
+| `--diffusion-audio-flow-shift` | float | `3.0` | MiniMax H3 only: audio flow shift for rollout. |
 | `--diffusion-sde-type` | enum | `sde` | `sde` / `cps` / `ode`. Selects the train-side SDE backend too. |
 | `--sde-step-backend-path` | str | – | Custom dynamics. See [SDE backends](#sde-step-backends). |
 | `--diffusion-num-sde-steps` | int | `0` | |
 | `--diffusion-sde-window-range` | `"lo,hi"` | – | For `sde_window`. Defaults to `[0, num_inference_steps)`. |
 | `--diffusion-sde-candidate-steps` | `"1,2,3"` | – | Required by `epoch_global_random_choice`. |
 | `--diffusion-step-strategy-path` | str | – | Overrides the bare `--diffusion-num-sde-steps` selection. |
+| `--rollout-return-full-trajectory` | flag | off | Ask the engine for the whole denoising trajectory instead of only the steps the step strategy requests. The train tensors are identical; kept for debugging and A/B runs. |
 | `--diffusion-log-prob-no-const` | flag | off | Drop log-prob constants on the engine (pairs with the CPS backend). |
 | `--diffusion-generator-device` | str | `cuda` | |
 | `--rollout-patch-group` | str | – | Comma-separated numeric-parity patch groups, e.g. `sgld`, `ltx`. |
@@ -227,6 +232,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--start-rollout-id` | int | – | Resumed from `--load` when unset. |
 | `--sft-encoder-checkpoint` | str | – | SFT only: tokenizer/text_encoder/vae source. |
 | `--sft-frame-stride` | int | `1` | SFT encode temporal stride. |
+| `--sft-offload-encoder` | flag | off | SFT only: keep the frozen encoder in host RAM, on the GPU only during encode bursts. |
 
 ### Evaluation
 
@@ -278,6 +284,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--group-rm` | flag | off | Score a whole prompt group at once. |
 | `--custom-rm-path` | str | – | `async def rm(args, samples) -> list[float]`. Batched only; replaces the `--rm-type` dispatch entirely. Shipped: `miles.rollout.rm_hub.weighted_mixture_rm.weighted_mixture_rm` (weighted sum of built-in rewards). |
 | `--custom-rm-args` | str | – | Opaque config string for the custom RM, read as `args.custom_rm_args`; e.g. `"hps=0.7,pickscore=0.3"` for `rm_hub.weighted_mixture_rm`. |
+| `--rm-url` | str | – | URL of a remote reward service, e.g. `http://localhost:8000`; mirrors miles core. No built-in `--rm-type` reads it yet, so read it from a `--custom-rm-path` function. |
 | `--reward-key` | str | – | For dict-valued rewards: the entry GRPO trains on. Every entry is also logged as `rollout/reward/<key>_mean` and `eval/<dataset>/<key>`. |
 | `--custom-reward-post-process-path` | str | – | Replace advantage normalisation. |
 | `--pickscore-model-path` | str | – | Required for `--rm-type pickscore`. |
@@ -295,6 +302,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--hps-checkpoint-path` | str | – | Local checkpoint; unset downloads from Hugging Face. |
 | `--ocr-num-workers` | int | `4` | |
 | `--rollout-parser-num-workers` | int | `1` | Ray actors deserializing rollout responses. Raise when trajectory tensors are large. |
+| `--rollout-fetch-in-parser` | flag | off | Parser actors pick the least-loaded engine through the miles router, then fetch and parse its response in place, skipping the router's data plane and the manager's event loop. Requires `--use-miles-router` and at least as many parser workers as concurrency slots. |
 
 ### Rollout customization hooks
 
@@ -356,6 +364,7 @@ Every one takes a dotted path.
 | `--disable-wandb-random-suffix` | flag | off | Run names include a random suffix by default; pass this flag to disable it. |
 | `--wandb-log-num-images` | int | `0` | Images/videos per rollout; `0` disables. |
 | `--wandb-log-image-interval` | int | `1` | Send media every N rollouts. |
+| `--log-loss-sigma-bucket` | int | `10` | Sigma buckets for the per-bucket loss curves (emitted by the SFT loss); `0` disables. |
 | `--use-miles-dashboard` | flag | off | Async phase/trajectory telemetry. |
 | `--miles-dashboard-workspace` | str | `./miles_dashboard` | |
 
