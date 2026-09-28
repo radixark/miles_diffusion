@@ -9,9 +9,9 @@ import torch
 import torch.distributed as dist
 
 from . import checkpoint
+from .device_move import move_model
 from .mixed_precision import compile_param_dtype_maps, parse_dtype_from_str
 from .sequence_parallel.plan import apply_sequence_parallel
-from .sleep_wake import move_model
 
 logger = logging.getLogger(__name__)
 

@@ -28,6 +28,7 @@ from miles.utils.train_data_utils import (
 )
 
 from . import checkpoint
+from .device_move import move_model, move_optimizer, sleep_frozen_model, wake_up_frozen_model
 from .diffusion_update_weight_utils import (
     DiffusionUpdateWeightFromTensor,
     DiffusionUpdateWeightFromTensorLoRA,
@@ -41,7 +42,6 @@ from .metrics import new_metric_buffer
 from .mixed_precision import parse_dtype_from_str
 from .model_loader import load_fsdp_models
 from .parallel import create_fsdp_parallel_state
-from .sleep_wake import move_model, move_optimizer, sleep_frozen_model, wake_up_frozen_model
 
 logger = logging.getLogger(__name__)
 

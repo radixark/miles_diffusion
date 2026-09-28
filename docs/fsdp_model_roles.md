@@ -128,6 +128,6 @@ CPU offload, EMA residence, and checkpoint state.
 python -m pytest tests/fast/backends/fsdp_utils/test_ema_optimizer.py \
   tests/fast/backends/fsdp_utils/test_reference_models.py \
   tests/fast/utils/test_reference_arguments.py
-python -m pytest tests/fast-gpu/backends/fsdp_utils/test_sleep_wake.py \
+python -m pytest tests/fast-gpu/backends/fsdp_utils/test_device_move.py \
   tests/fast-gpu/backends/fsdp_utils/test_reference_models.py
 ```
