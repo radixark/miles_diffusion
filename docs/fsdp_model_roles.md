@@ -36,7 +36,8 @@ Custom prepare/loss hooks can access `ctx.reference_models` and `ctx.teacher_mod
 by component name. The teacher has no built-in consumer, so `--teacher-load` requires
 one of these hooks. Teacher inference should run inside `torch.no_grad()`.
 
-Each source may load a pretrained PEFT LoRA adapter:
+Each source may load pretrained PEFT LoRA adapters, one plain PEFT directory (what
+`save_pretrained` writes) per `--update-weight-target-module` entry, in the same order:
 
 ```bash
 --use-lora --lora-adapter-path /adapters/student --lora-rank 64 --lora-alpha 128 \
@@ -46,11 +47,16 @@ Each source may load a pretrained PEFT LoRA adapter:
 --teacher-lora-adapter-path /adapters/teacher
 ```
 
+Wan2.2, for example, takes two directories, one per expert; any other number is rejected:
+
+```bash
+--update-weight-target-module transformer,transformer_2 \
+--use-lora --lora-adapter-path /adapters/high_noise /adapters/low_noise
+```
+
 Without a role's adapter path, that frozen role loads ordinary full weights, even
 when the actor uses LoRA. Full weights and base-only weights use the same loader.
-An adapter source is a PEFT checkpoint; for multiple components it contains a PEFT
-checkpoint under each component subdirectory. `--lora-rank` and `--lora-alpha` must
-match the actor adapter's `r` and `lora_alpha`. Actor adapter weights are loaded
+`--lora-rank` and `--lora-alpha` must match the actor adapter's `r` and `lora_alpha`. Actor adapter weights are loaded
 before a training checkpoint is restored. Independent reference/teacher weights
 are always reconstructed from their configured sources, so retain those sources
 and their adapter checkpoints when resuming training.

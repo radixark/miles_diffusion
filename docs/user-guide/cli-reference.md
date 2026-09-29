@@ -263,10 +263,10 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--diffusion-kl-beta` | float | `0.0` | KL to the `--ref-mode` model; under `nft` adds `kl_beta * mean((v_θ − v_ref)²)` per pair. |
 | `--ref-mode` | enum | – | KL reference: `none` / `lora_base` (actor with adapters disabled) / `ref` (the model from `--ref-load`). Auto: `lora_base` when KL > 0. |
 | `--ref-load` | str | – | HF pipeline checkpoint of an independent frozen reference model. Requires `--ref-mode ref`. |
-| `--ref-lora-adapter-path` | str | – | PEFT adapter applied to `--ref-load`. |
+| `--ref-lora-adapter-path` | str+ | – | PEFT adapter directories applied to `--ref-load`, one per `--update-weight-target-module` entry, in order. |
 | `--ref-cpu-offload` | flag | off | Keep the reference shards in pinned CPU memory between forwards (FSDP `CPUOffloadPolicy`). |
 | `--teacher-load` | str | – | HF pipeline checkpoint of a frozen teacher model, read only by custom prepare/loss hooks as `ctx.teacher_models`, so it requires `--custom-prepare-train-batch-path` or `--custom-loss-function-path`. |
-| `--teacher-lora-adapter-path` | str | – | PEFT adapter applied to `--teacher-load`. |
+| `--teacher-lora-adapter-path` | str+ | – | PEFT adapter directories applied to `--teacher-load`, one per `--update-weight-target-module` entry, in order. |
 | `--teacher-cpu-offload` | flag | off | Keep the teacher shards in pinned CPU memory between forwards. |
 | `--custom-prepare-train-batch-path` | str | – | Builds DiT inputs. |
 | `--custom-loss-function-path` | str | – | Loss **formula** only — the DiT forward stays in the actor. |
@@ -325,7 +325,7 @@ Every one takes a dotted path.
 |---|---|---|---|
 | `--use-lora` | flag | off | |
 | `--lora-rank` / `--lora-alpha` | int | `64` / `64` | |
-| `--lora-adapter-path` | str | – | Resume the actor from a saved PEFT adapter; `--lora-rank` / `--lora-alpha` must match its config. |
+| `--lora-adapter-path` | str+ | – | PEFT adapter directories the actor continues from, one per `--update-weight-target-module` entry, in order; `--lora-rank` / `--lora-alpha` must match their configs. |
 | `--lora-target-modules` | str+ | – | Defaults per model family. |
 | `--lora-init-weights` | str | `gaussian` | `kaiming-uniform` maps to PEFT's default; other PEFT schemes pass through. |
 | `--lora-ipc-weight-sync` | flag | off | Push only `lora_A`/`lora_B`; the engine merges locally. Requires `--use-lora`. |

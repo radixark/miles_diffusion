@@ -980,13 +980,21 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--teacher-load", type=str, default=None, help="HF pipeline checkpoint for the frozen teacher model."
             )
             parser.add_argument(
-                "--ref-lora-adapter-path", type=str, default=None, help="Pretrained LoRA adapter for --ref-load."
+                "--ref-lora-adapter-path",
+                dest="ref_lora_adapter_paths",
+                nargs="+",
+                default=None,
+                help="PEFT adapter directories for --ref-load, one per --update-weight-target-module entry, in order.",
             )
             parser.add_argument(
                 "--teacher-lora-adapter-path",
-                type=str,
+                dest="teacher_lora_adapter_paths",
+                nargs="+",
                 default=None,
-                help="Pretrained LoRA adapter for --teacher-load.",
+                help=(
+                    "PEFT adapter directories for --teacher-load, "
+                    "one per --update-weight-target-module entry, in order."
+                ),
             )
             parser.add_argument(
                 "--ref-cpu-offload",
@@ -1080,9 +1088,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument(
                 "--lora-adapter-path",
-                type=str,
+                dest="lora_adapter_paths",
+                nargs="+",
                 default=None,
-                help="Pretrained actor LoRA adapter to continue training.",
+                help=(
+                    "PEFT adapter directories the actor continues training from, "
+                    "one per --update-weight-target-module entry, in order."
+                ),
             )
             parser.add_argument("--lora-rank", type=int, default=64)
             parser.add_argument("--lora-alpha", type=int, default=64)
@@ -1605,10 +1617,19 @@ def validate_reference_model_args(args) -> None:
         raise ValueError("--ref-mode ref requires --ref-load")
     if args.ref_load is not None and args.ref_mode != "ref":
         raise ValueError("--ref-load requires --ref-mode ref")
-    if args.ref_lora_adapter_path is not None and args.ref_load is None:
+    if args.ref_lora_adapter_paths is not None and args.ref_load is None:
         raise ValueError("--ref-lora-adapter-path requires --ref-load")
-    if args.teacher_lora_adapter_path is not None and args.teacher_load is None:
+    if args.teacher_lora_adapter_paths is not None and args.teacher_load is None:
         raise ValueError("--teacher-lora-adapter-path requires --teacher-load")
+    for flag, adapter_paths in (
+        ("--ref-lora-adapter-path", args.ref_lora_adapter_paths),
+        ("--teacher-lora-adapter-path", args.teacher_lora_adapter_paths),
+    ):
+        if adapter_paths is not None and len(adapter_paths) != len(args.update_weight_target_modules):
+            raise ValueError(
+                f"{flag} needs one adapter per --update-weight-target-module entry "
+                f"{args.update_weight_target_modules}, got {len(adapter_paths)}"
+            )
     if args.ref_cpu_offload and args.ref_load is None:
         raise ValueError("--ref-cpu-offload requires --ref-load")
     if args.teacher_cpu_offload and args.teacher_load is None:
@@ -1624,18 +1645,19 @@ def validate_reference_model_args(args) -> None:
 
 
 def validate_actor_lora_adapter(args) -> None:
-    if args.lora_adapter_path is None:
+    if args.lora_adapter_paths is None:
         return
     if not args.use_lora:
         raise ValueError("--lora-adapter-path requires --use-lora")
+    if len(args.lora_adapter_paths) != len(args.update_weight_target_modules):
+        raise ValueError(
+            "--lora-adapter-path needs one adapter per --update-weight-target-module entry "
+            f"{args.update_weight_target_modules}, got {len(args.lora_adapter_paths)}"
+        )
     from peft import PeftConfig
 
-    from miles.backends.fsdp_utils.model_loader import lora_adapter_subfolder
-
-    for component in args.update_weight_target_modules:
-        adapter_config = PeftConfig.from_pretrained(
-            args.lora_adapter_path, subfolder=lora_adapter_subfolder(args, component)
-        )
+    for component, adapter_path in zip(args.update_weight_target_modules, args.lora_adapter_paths, strict=True):
+        adapter_config = PeftConfig.from_pretrained(adapter_path)
         if (
             adapter_config.use_dora
             or adapter_config.bias != "none"
@@ -1662,7 +1684,6 @@ def validate_actor_lora_adapter(args) -> None:
 
 
 def miles_validate_args(args):
-    validate_reference_model_args(args)
     args.eval_datasets = _resolve_eval_datasets(args)
 
     if args.eval_interval is not None:
@@ -1699,6 +1720,7 @@ def miles_validate_args(args):
         )
     if len(set(args.update_weight_target_modules)) != len(args.update_weight_target_modules):
         raise ValueError(f"--update-weight-target-module has duplicates: {args.update_weight_target_module!r}")
+    validate_reference_model_args(args)
     validate_actor_lora_adapter(args)
 
     if args.wandb_log_image_interval < 1:

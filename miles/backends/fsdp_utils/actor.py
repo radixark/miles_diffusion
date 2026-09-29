@@ -108,7 +108,7 @@ class FSDPTrainRayActor(TrainRayActor):
             self.train_pipeline_config,
             self.parallel_state,
             checkpoint_path=args.hf_checkpoint,
-            lora_adapter_path=args.lora_adapter_path,
+            lora_adapter_paths=args.lora_adapter_paths,
             trainable=True,
             cpu_offload=args.fsdp_cpu_offload,
         )
@@ -120,7 +120,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 self.train_pipeline_config,
                 self.parallel_state,
                 checkpoint_path=args.ref_load,
-                lora_adapter_path=args.ref_lora_adapter_path,
+                lora_adapter_paths=args.ref_lora_adapter_paths,
                 cpu_offload=args.ref_cpu_offload,
             )
         self.teacher_models = {}
@@ -131,7 +131,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 self.train_pipeline_config,
                 self.parallel_state,
                 checkpoint_path=args.teacher_load,
-                lora_adapter_path=args.teacher_lora_adapter_path,
+                lora_adapter_paths=args.teacher_lora_adapter_paths,
                 cpu_offload=args.teacher_cpu_offload,
             )
         # A natively CPU-offloaded model never sleeps: its parameters stay on the host and its buffers on the GPU.
