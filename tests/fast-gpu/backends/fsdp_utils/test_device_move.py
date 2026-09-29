@@ -34,7 +34,7 @@ def test_fsdp_sleep_wake():
             "--standalone",
             "--nnodes=1",
             "--nproc_per_node=2",
-            str(Path(__file__).with_name("_sleep_wake_worker.py")),
+            str(Path(__file__).with_name("_device_move_worker.py")),
         ],
         env={**os.environ, "PYTHONUNBUFFERED": "1"},
         capture_output=True,

@@ -32,7 +32,7 @@ from torch.distributed.device_mesh import init_device_mesh
 from torch.distributed.fsdp import CPUOffloadPolicy, OffloadPolicy, fully_shard
 from torch.distributed.tensor import DTensor
 
-from miles.backends.fsdp_utils import sleep_wake
+from miles.backends.fsdp_utils import device_move
 from miles.backends.fsdp_utils.ema import EMAOptimizer
 
 
@@ -87,10 +87,10 @@ def check_model_sleep_wake_round_trip(mesh, frozen, reshard_after_forward):
                 control_optimizer.zero_grad(set_to_none=True)
         # Like the actor, a frozen model moves to the host once (at load) and sleeps onto its host copies after that.
         if frozen and round_index == 1:
-            sleep_wake.sleep_frozen_model(model, frozen_parameter_host_copies)
+            device_move.sleep_frozen_model(model, frozen_parameter_host_copies)
             assert not frozen_parameter_host_copies
         else:
-            sleep_wake.move_model(model, "cpu")
+            device_move.move_model(model, "cpu")
         # Sleeping keeps each evenly sharded parameter's host storage; FSDP only re-pads uneven shards.
         for name, parameter in model.named_parameters():
             host_storage = local_tensor(parameter).untyped_storage().data_ptr()
@@ -111,7 +111,7 @@ def check_model_sleep_wake_round_trip(mesh, frozen, reshard_after_forward):
                 for parameter, state in optimizer.state.items()
                 for key, value in state.items()
             }
-            sleep_wake.move_optimizer(optimizer, "cpu")
+            device_move.move_optimizer(optimizer, "cpu")
             for parameter, state in optimizer.state.items():
                 assert any(parameter is original for original in parameters.values())
                 for key, value in state.items():
@@ -119,14 +119,14 @@ def check_model_sleep_wake_round_trip(mesh, frozen, reshard_after_forward):
                     assert local_tensor(value).is_pinned() or not copied_from_cuda[(id(parameter), key)], key
 
         if frozen:
-            sleep_wake.wake_up_frozen_model(model, frozen_parameter_host_copies)
+            device_move.wake_up_frozen_model(model, frozen_parameter_host_copies)
         else:
-            sleep_wake.move_model(model, "cuda")
+            device_move.move_model(model, "cuda")
         assert model.scale is model.input.scale_alias
         assert all(local_tensor(parameter).device.type == "cuda" for parameter in model.parameters())
         assert all(buffer.device.type == "cuda" for buffer in model.buffers())
         if optimizer is not None:
-            sleep_wake.move_optimizer(optimizer, "cuda")
+            device_move.move_optimizer(optimizer, "cuda")
         assert all(parameter is parameters[name] for name, parameter in model.named_parameters())
 
 
@@ -182,15 +182,15 @@ def check_ema_sleep_wake_and_checkpoint(mesh, cpu_offload):
 
         # Like the actor, a natively CPU-offloaded model never sleeps; its optimizer and EMA still move.
         if not cpu_offload:
-            sleep_wake.move_model(model, "cpu")
-        sleep_wake.move_optimizer(optimizer, "cpu")
-        sleep_wake.move_optimizer(ema, "cpu")
+            device_move.move_model(model, "cpu")
+        device_move.move_optimizer(optimizer, "cpu")
+        device_move.move_optimizer(ema, "cpu")
         # With native CPU offload the EMA never leaves the CPU, so only GPU-resident EMA becomes pinned.
         assert all(local_tensor(state["ema"]).is_pinned() or cpu_offload for state in ema.state.values())
         if not cpu_offload:
-            sleep_wake.move_model(model, "cuda")
-        sleep_wake.move_optimizer(optimizer, "cpu" if cpu_offload else "cuda")
-        sleep_wake.move_optimizer(ema, "cpu" if cpu_offload else "cuda")
+            device_move.move_model(model, "cuda")
+        device_move.move_optimizer(optimizer, "cpu" if cpu_offload else "cuda")
+        device_move.move_optimizer(ema, "cpu" if cpu_offload else "cuda")
 
     checkpoint_path = [tempfile.mkdtemp(prefix="stage1_ema_") if dist.get_rank() == 0 else None]
     dist.broadcast_object_list(checkpoint_path, src=0)
