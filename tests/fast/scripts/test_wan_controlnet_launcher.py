@@ -5,8 +5,8 @@ from tests.ci.ci_register import register_cpu_ci
 register_cpu_ci(est_time=5, suite="stage-a-cpu", labels=[])
 
 import json
-from pathlib import Path
 import runpy
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest

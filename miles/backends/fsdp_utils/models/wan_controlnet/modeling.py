@@ -10,11 +10,11 @@ algebra instead of installing hooks that can leak across calls or recomputations
 from __future__ import annotations
 
 import copy
-from contextlib import contextmanager
 import json
 import warnings
-from pathlib import Path
 from collections.abc import Mapping, Sequence
+from contextlib import contextmanager
+from pathlib import Path
 
 import torch
 from torch import nn

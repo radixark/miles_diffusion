@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 
 
 def main():
@@ -39,12 +39,13 @@ def main():
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     import cv2
+    import diffusers
     import numpy as np
     import torch
-    import diffusers
     import transformers
     from diffusers import AutoencoderKLWan, UniPCMultistepScheduler, WanPipeline
     from transformers import UMT5EncoderModel
+
     from miles.backends.fsdp_utils.models.wan_controlnet import WanPoseControlTransformer
 
     cap = cv2.VideoCapture(str(args.pose_video))
