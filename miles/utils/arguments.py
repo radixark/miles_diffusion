@@ -241,6 +241,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Model loading function path; default from the family config.",
             )
             parser.add_argument(
+                "--wan-controlnet-num-blocks",
+                type=int,
+                default=4,
+                help="Number of newly trainable Wan pose-control blocks.",
+            )
+            parser.add_argument(
+                "--wan-controlnet-checkpoint",
+                type=str,
+                default=None,
+                help="Optional exported control branch used to initialize Wan pose SFT.",
+            )
+            parser.add_argument(
                 "--diffusion-num-steps",
                 type=int,
                 default=10,

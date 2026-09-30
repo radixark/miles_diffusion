@@ -71,3 +71,13 @@ def test_key_changes_with_model_family(tmp_path):
     name_wan, _ = sft_sample_key(_args(), item)
     name_other, _ = sft_sample_key(_args(diffusion_model_family="other"), item)
     assert name_wan != name_other
+
+
+def test_control_video_changes_cache_key(tmp_path):
+    video, control = tmp_path / "rgb.mp4", tmp_path / "pose.mp4"
+    video.write_bytes(b"rgb")
+    control.write_bytes(b"pose")
+    item = {"media": str(video), "control_media": str(control), "prompt": "p"}
+    before = sft_sample_key(_args(diffusion_model_family="wan_controlnet"), item)[0]
+    control.write_bytes(b"different pose")
+    assert sft_sample_key(_args(diffusion_model_family="wan_controlnet"), item)[0] != before

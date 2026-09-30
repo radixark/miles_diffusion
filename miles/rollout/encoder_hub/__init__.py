@@ -11,6 +11,10 @@ Each family module provides:
 
 
 def get_encoder(family: str | None):
+    if family == "wan_controlnet":
+        from miles.rollout.encoder_hub import wan_controlnet
+
+        return wan_controlnet
     if family == "wan2_2":
         from miles.rollout.encoder_hub import wan2_2
 

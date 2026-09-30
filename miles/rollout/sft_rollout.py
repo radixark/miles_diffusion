@@ -40,11 +40,15 @@ def resolve_media_path(media: str, prompt_data: str) -> str:
 def sft_sample_key(args, item: dict) -> tuple[str, int]:
     """Content-addressed cache filename and latent-sampling seed for one (media, prompt) item."""
     stat = Path(item["media"]).stat()
+    control_signature = ""
+    if item.get("control_media"):
+        control_stat = Path(item["control_media"]).stat()
+        control_signature = f"|control-v1:{item['control_media']}|{control_stat.st_size}|{control_stat.st_mtime_ns}"
     digest = hashlib.sha256(
         f"{args.diffusion_model_family}|{args.sft_encoder_checkpoint}"
         f"|{args.diffusion_height}x{args.diffusion_width}"
         f"|{args.diffusion_output_num_frames}s{args.sft_frame_stride}"
-        f"|{item['media']}|{stat.st_size}|{stat.st_mtime_ns}|{item['prompt']}".encode()
+        f"|{item['media']}|{stat.st_size}|{stat.st_mtime_ns}|{item['prompt']}{control_signature}".encode()
     ).digest()
     return digest.hex()[:16] + ".pt", int.from_bytes(digest[8:16], "big") % 2**63
 
@@ -106,7 +110,12 @@ def _decode_video(path: str) -> tuple[torch.Tensor, float]:
     return torch.from_numpy(frames.copy()).permute(0, 3, 1, 2), fps
 
 
-def read_media_clip(path: str, *, height: int, width: int, num_frames: int, frame_stride: int) -> dict:
+def read_media_clip(
+    path: str, *, height: int, width: int, num_frames: int, frame_stride: int, control_path: str | None = None
+) -> dict:
+    control_frames = None
+    if control_path is not None and Path(path).suffix.lower() in IMAGE_EXTENSIONS:
+        raise ValueError("Paired control_media currently requires videos")
     if Path(path).suffix.lower() in IMAGE_EXTENSIONS:
         if num_frames != 1:
             raise ValueError(f"{path} is an image, which requires --diffusion-output-num-frames 1")
@@ -117,11 +126,19 @@ def read_media_clip(path: str, *, height: int, width: int, num_frames: int, fram
         fps = None
     else:
         video, fps = _decode_video(path)
+        if control_path is not None:
+            control, control_fps = _decode_video(control_path)
+            if control.shape != video.shape or abs(control_fps - fps) > 1e-3:
+                raise ValueError("RGB and control videos must have identical frame count, dimensions, and FPS")
         span = (num_frames - 1) * frame_stride + 1
         if video.shape[0] < span:
             raise ValueError(f"{path} has {video.shape[0]} frames, need {span}")
         start = (video.shape[0] - span) // 2
         frames = video[start : start + span : frame_stride]
+        if control_path is not None:
+            control_frames = control[start : start + span : frame_stride]
+            # One transform for the pair, preserving exact spatial/temporal alignment.
+            frames = torch.cat([frames, control_frames], dim=0)
 
     # Always emit uint8; each family owns its preprocessing.
     if frames.shape[2:] != (height, width):
@@ -132,6 +149,9 @@ def read_media_clip(path: str, *, height: int, width: int, num_frames: int, fram
         top = (new_h - height) // 2
         left = (new_w - width) // 2
         frames = resized[:, :, top : top + height, left : left + width].round().clamp(0, 255).to(torch.uint8)
+    if control_frames is not None:
+        frames, control_frames = frames.chunk(2, dim=0)
+        return {"video": frames.permute(1, 0, 2, 3), "control_video": control_frames.permute(1, 0, 2, 3), "fps": fps}
     return {"video": frames.permute(1, 0, 2, 3), "fps": fps}
 
 
@@ -173,6 +193,7 @@ class SftEncodeActor:
                 width=args.diffusion_width,
                 num_frames=args.diffusion_output_num_frames,
                 frame_stride=args.sft_frame_stride,
+                control_path=item.get("control_media"),
             )
             generator = torch.Generator().manual_seed(item["latent_seed"])
             pair = self.encoder_module.encode_sample(encoder, media_clip, item["prompt"], generator)
@@ -251,6 +272,21 @@ def _get_scheduler_grid(args) -> tuple[torch.Tensor, torch.Tensor]:
     return _scheduler_grid
 
 
+def build_sft_encode_item(args, sample: Sample) -> dict:
+    """Keep RGB-only families' cache and metadata semantics unchanged."""
+    media = sample.metadata.get("video") or sample.metadata.get("image")
+    if media is None:
+        raise ValueError(f"sample {sample.index} metadata has neither 'video' nor 'image': {sample.metadata}")
+    item = {"media": resolve_media_path(media, args.prompt_data), "prompt": sample.prompt}
+    if args.diffusion_model_family == "wan_controlnet":
+        control_media = sample.metadata.get("control_video")
+        if control_media is None:
+            raise ValueError(f"sample {sample.index} requires metadata.control_video for wan_controlnet")
+        item["control_media"] = resolve_media_path(control_media, args.prompt_data)
+    item["cache_name"], item["latent_seed"] = sft_sample_key(args, item)
+    return item
+
+
 def generate_rollout(args, rollout_id, data_source, evaluation: bool = False) -> RolloutFnTrainOutput:
     assert not evaluation, "sft_loss does not support eval rollouts"
     # Deterministic per epoch and idempotent; non-divisible datasets may repeat a few
@@ -260,14 +296,7 @@ def generate_rollout(args, rollout_id, data_source, evaluation: bool = False) ->
     samples = [sample for group in groups for sample in group]
 
     cache_dir = Path(args.prompt_data).parent / ".sft_cache"
-    items = []
-    for sample in samples:
-        media = sample.metadata.get("video") or sample.metadata.get("image")
-        if media is None:
-            raise ValueError(f"sample {sample.index} metadata has neither 'video' nor 'image': {sample.metadata}")
-        item = {"media": resolve_media_path(media, args.prompt_data), "prompt": sample.prompt}
-        item["cache_name"], item["latent_seed"] = sft_sample_key(args, item)
-        items.append(item)
+    items = [build_sft_encode_item(args, sample) for sample in samples]
 
     missing = {item["cache_name"]: item for item in items if not (cache_dir / item["cache_name"]).exists()}
     encode_seconds = 0.0

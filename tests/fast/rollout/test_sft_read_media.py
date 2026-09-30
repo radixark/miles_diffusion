@@ -178,3 +178,29 @@ def test_ffmpeg_failure_is_reported(tmp_path):
     broken.write_bytes(b"not a video")
     with pytest.raises(ValueError, match="ffprobe could not read"):
         read_media_clip(str(broken), height=32, width=32, num_frames=1, frame_stride=1)
+
+
+def test_control_pair_uses_same_window_and_crop(monkeypatch):
+    import miles.rollout.sft_rollout as sft
+
+    video = torch.arange(15, dtype=torch.uint8)[:, None, None, None].expand(15, 3, 8, 16).clone()
+    monkeypatch.setattr(sft, "_decode_video", lambda path: (video if path == "rgb.mp4" else video + 20, 24.0))
+    clip = read_media_clip("rgb.mp4", control_path="pose.mp4", height=4, width=4, num_frames=5, frame_stride=2)
+    assert torch.equal(clip["control_video"], clip["video"] + 20)
+    assert clip["video"][0, :, 0, 0].tolist() == [3, 5, 7, 9, 11]
+
+
+@pytest.mark.parametrize("mismatch", ["frames", "size", "fps"])
+def test_control_pair_rejects_misalignment(monkeypatch, mismatch):
+    import miles.rollout.sft_rollout as sft
+
+    video = torch.zeros(9, 3, 8, 8, dtype=torch.uint8)
+    control = video[:-1] if mismatch == "frames" else video
+    control = control[:, :, :, :-1] if mismatch == "size" else control
+    monkeypatch.setattr(
+        sft,
+        "_decode_video",
+        lambda path: (video, 24.0) if path == "rgb.mp4" else (control, 30.0 if mismatch == "fps" else 24.0),
+    )
+    with pytest.raises(ValueError, match="identical frame count"):
+        read_media_clip("rgb.mp4", control_path="pose.mp4", height=8, width=8, num_frames=5, frame_stride=1)
