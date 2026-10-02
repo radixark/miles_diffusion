@@ -83,4 +83,5 @@ class Krea2TrainPipelineConfig(TrainPipelineConfig):
         guidance_scale: float,
         true_cfg_scale: float | None = None,
     ) -> torch.Tensor:
-        return noise_pred_neg + guidance_scale * (noise_pred_pos - noise_pred_neg)
+        scale = true_cfg_scale if true_cfg_scale is not None else guidance_scale
+        return noise_pred_neg + scale * (noise_pred_pos - noise_pred_neg)
