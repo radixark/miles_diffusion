@@ -15,7 +15,8 @@ the same order** as the legacy grid-based path.
 Layers:
   L1  DP split            — stride == legacy range(rank, N, dp), and only
                             contiguous keeps a rollout microgroup whole on one rank
-  L2  Converter           — flat train-pairs == direct sde-indexed trajectory data
+  L2  Converter           — flat train-pairs == direct sde-indexed trajectory data,
+                            sigmas included
   L3  Cond window padding — per-microbatch collate(pad_to_len=window_max)
                             == legacy window-collate-then-tile-slice
 
@@ -150,6 +151,7 @@ def test_l2_converter_pairs_match_direct_indexing():
         all_lat = s.dit_trajectory.latents.float()
         lat, nxt = all_lat[:-1], all_lat[1:]
         ts = s.dit_trajectory.timesteps.float()
+        trajectory_sigmas = s.dit_trajectory.sigmas
         rlp = s.rollout_log_probs.float()
         for _t_pos, idx in enumerate(sde):
             p = pairs[k]
@@ -164,6 +166,9 @@ def test_l2_converter_pairs_match_direct_indexing():
             assert torch.equal(p["latent"], lat[idx])
             assert torch.equal(p["next_latent"], nxt[idx])
             assert torch.equal(p["timestep"], ts[idx])
+            assert torch.equal(p["sigma"], trajectory_sigmas[idx])
+            assert torch.equal(p["next_sigma"], trajectory_sigmas[idx + 1])
+            assert torch.equal(p["sigma_max"], trajectory_sigmas[1])
             assert torch.equal(p["log_prob_old"], rlp[idx])
             # debug tensors sliced to the same sde index
             d = p["rollout_debug_tensors"]

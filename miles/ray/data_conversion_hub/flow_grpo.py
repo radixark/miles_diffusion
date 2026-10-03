@@ -69,8 +69,14 @@ def _sample_required_inputs(sample: Sample):
     traj = sample.dit_trajectory
     denoising_env = sample.denoising_env
     rollout_log_probs = sample.rollout_log_probs
-    if traj is None or traj.timesteps is None or denoising_env is None or rollout_log_probs is None:
-        raise ValueError("Sample missing dit_trajectory, denoising_env, or rollout_log_probs")
+    if (
+        traj is None
+        or traj.timesteps is None
+        or traj.sigmas is None
+        or denoising_env is None
+        or rollout_log_probs is None
+    ):
+        raise ValueError("Sample missing dit_trajectory timesteps/sigmas, denoising_env, or rollout_log_probs")
     return traj, denoising_env, rollout_log_probs
 
 
@@ -102,14 +108,15 @@ def _build_per_timestep_features(
     ``traj.latents`` is either the full 0..T trajectory or the filtered window
     the rollout requested; ``latent_step_indices`` maps original step numbers
     to array positions, so pairing never assumes the array is contiguous.
-    Timesteps are the full [T+1] schedule (terminal included) and log_probs
-    the full [T]; both are indexed by original step number.
+    Timesteps and sigmas are the full [T+1] schedule (terminal included) and
+    log_probs the full [T]; all are indexed by original step number.
     """
     sde_idx = (sample.train_metadata or {}).get("sde_step_indices")
     assert sde_idx is not None, "SDE step indices are required for training"
     # Keep producer dtype: the train actor casts on consumption (loss_hub _stack_pair_field).
     all_latents = traj.latents
     timesteps = traj.timesteps
+    sigmas = traj.sigmas
 
     if traj.latent_step_indices is None:
         position = {step: step for step in range(int(all_latents.shape[0]))}
@@ -131,7 +138,10 @@ def _build_per_timestep_features(
         "latent": all_latents[latent_pos],
         "next_latent": all_latents[next_pos],
         "timestep": timesteps[idx],
-        "next_timestep": timesteps[idx + 1],
+        "sigma": sigmas[idx],
+        "next_sigma": sigmas[idx + 1],
+        # The first sigma below 1 on this sample's grid; the SDE kernel substitutes it at sigma == 1.
+        "sigma_max": sigmas[1].expand(len(idx)),
         "log_prob_old": rollout_log_probs[idx],
     }, idx
 

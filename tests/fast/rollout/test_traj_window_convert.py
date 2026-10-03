@@ -4,15 +4,16 @@ Mental model (10-step rollout, SDE window S=[2,3]):
 
     engine ships latents for L = S U (S+1) = [2,3,4]     (was: all 11)
            echoes latent_step_indices=[2,3,4]
-           timesteps / log_probs stay full-length
+           timesteps / sigmas / log_probs stay full-length
     converter pairs latent[s] with latent[s+1] BY PROVENANCE, never by
            array adjacency
 
 Covered: the windowed trajectory yields bitwise the same train-pair tensors as
 the full trajectory (1), full trajectories without provenance keep the legacy
 behaviour (2), a missing window latent raises instead of mispairing (3), a
-non-contiguous kept set still pairs correctly (4), and NFT reads x0 off a
-final-step-only trajectory but rejects one ending anywhere else (5).
+non-contiguous kept set still pairs correctly (4), NFT reads x0 off a
+final-step-only trajectory but rejects one ending anywhere else (5), and the
+final SDE step pairs with next_sigma == 0 (6).
 """
 
 from tests.ci.ci_register import register_cpu_ci
@@ -75,9 +76,9 @@ def test_full_trajectory_without_provenance_is_legacy():
     assert torch.equal(feats["log_prob_old"], torch.linspace(-1.0, -2.0, T)[SDE])
 
 
-def test_terminal_step_next_timestep_is_zero():
+def test_terminal_step_next_sigma_is_zero():
     feats, _ = _build(_full_traj(), sde=[T - 1])
-    assert feats["next_timestep"].item() == 0.0
+    assert feats["next_sigma"].item() == 0.0
 
 
 def test_missing_window_latent_raises():

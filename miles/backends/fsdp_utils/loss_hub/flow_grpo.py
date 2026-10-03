@@ -29,7 +29,9 @@ def prepare_flow_grpo_batch(
     latents = _stack_pair_field(batch, "latent", device)
     next_latents = _stack_pair_field(batch, "next_latent", device)
     timesteps = _stack_pair_field(batch, "timestep", device)
-    next_timesteps = _stack_pair_field(batch, "next_timestep", device)
+    sigmas = _stack_pair_field(batch, "sigma", device)
+    next_sigmas = _stack_pair_field(batch, "next_sigma", device)
+    sigma_max = _stack_pair_field(batch, "sigma_max", device)
     log_prob_old = _stack_pair_field(batch, "log_prob_old", device)
     advantage = torch.tensor(
         [float(pair["advantage"]) for pair in batch],
@@ -94,7 +96,9 @@ def prepare_flow_grpo_batch(
         advantage=advantage,
         extras={
             "next_latents": next_latents,
-            "next_timesteps": next_timesteps,
+            "sigmas": sigmas,
+            "next_sigmas": next_sigmas,
+            "sigma_max": sigma_max,
             "log_prob_old": log_prob_old,
         },
     )
@@ -119,16 +123,19 @@ def flow_grpo_loss_formula(
     kl_beta = float(args.diffusion_kl_beta)
 
     next_latents = prepared.extras["next_latents"]
-    next_timesteps = prepared.extras["next_timesteps"]
     log_prob_old_rollout = prepared.extras["log_prob_old"]
+    sde_step_sigmas = {
+        "sigmas": prepared.extras["sigmas"],
+        "next_sigmas": prepared.extras["next_sigmas"],
+        "sigma_max": prepared.extras["sigma_max"],
+    }
 
     _, log_prob_new, prev_sample_mean_new, std_dev_t_new = ctx.sde_backend.sde_step_logprob(
         new_pred.float(),
-        prepared.timesteps,
-        next_timesteps,
         prepared.latents.float(),
         prev_sample=next_latents.float(),
         noise_level=noise_level,
+        **sde_step_sigmas,
     )
 
     if write_old_log_prob:
@@ -150,11 +157,10 @@ def flow_grpo_loss_formula(
             raise ValueError("Flow-GRPO KL requires a reference DiT forward; set --ref-mode lora_base or ref")
         _, _, prev_sample_mean_ref, _ = ctx.sde_backend.sde_step_logprob(
             ref_pred.float(),
-            prepared.timesteps,
-            next_timesteps,
             prepared.latents.float(),
             prev_sample=next_latents.float(),
             noise_level=noise_level,
+            **sde_step_sigmas,
         )
         kl_per_pair = ((prev_sample_mean_new - prev_sample_mean_ref) ** 2).mean(
             dim=tuple(range(1, prev_sample_mean_new.ndim)),
