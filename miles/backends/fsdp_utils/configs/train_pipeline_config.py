@@ -134,8 +134,8 @@ class TrainPipelineConfig(abc.ABC):
         self,
         *,
         model: torch.nn.Module,
-        latents_input: torch.Tensor,
-        timesteps_input: torch.Tensor,
+        latents_input: dict[str, torch.Tensor],
+        timesteps_input: dict[str, torch.Tensor],
         pos_cond: dict | None,
         neg_cond: dict | None,
         joint_cond: dict | None,
@@ -143,24 +143,26 @@ class TrainPipelineConfig(abc.ABC):
         cfg_batching: bool,
         guidance_scale: float,
         true_cfg_scale: float | None,
-    ) -> torch.Tensor:
-        """Default diffusers forward with CFG; families with a different forward override."""
+    ) -> dict[str, torch.Tensor]:
+        """Default diffusers forward with CFG over the visual stream; families with a different forward override."""
+        latents = latents_input["visual"]
+        timesteps = timesteps_input["visual"]
 
         def _forward(cond: dict) -> torch.Tensor:
             return model(
-                hidden_states=latents_input,
-                timestep=timesteps_input,
+                hidden_states=latents,
+                timestep=timesteps,
                 return_dict=False,
                 **cond,
             )[0]
 
         if not use_cfg:
-            return _forward(pos_cond)
+            return {"visual": _forward(pos_cond)}
         if cfg_batching:
             # forward pos+neg as one joint batch to align with sglang-d
             joint_out = model(
-                hidden_states=torch.cat([latents_input, latents_input], dim=0),
-                timestep=torch.cat([timesteps_input, timesteps_input], dim=0),
+                hidden_states=torch.cat([latents, latents], dim=0),
+                timestep=torch.cat([timesteps, timesteps], dim=0),
                 return_dict=False,
                 **joint_cond,
             )[0]
@@ -168,12 +170,14 @@ class TrainPipelineConfig(abc.ABC):
         else:
             noise_pred_pos = _forward(pos_cond)
             noise_pred_neg = _forward(neg_cond)
-        return self.cfg_combine(
-            noise_pred_pos,
-            noise_pred_neg,
-            guidance_scale,
-            true_cfg_scale=true_cfg_scale,
-        )
+        return {
+            "visual": self.cfg_combine(
+                noise_pred_pos,
+                noise_pred_neg,
+                guidance_scale,
+                true_cfg_scale=true_cfg_scale,
+            )
+        }
 
     @abc.abstractmethod
     def prepare_cond_kwargs(

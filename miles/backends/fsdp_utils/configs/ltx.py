@@ -89,8 +89,8 @@ class LTXTrainPipelineConfig(TrainPipelineConfig):
         self,
         *,
         model: torch.nn.Module,
-        latents_input: torch.Tensor,
-        timesteps_input: torch.Tensor,
+        latents_input: dict[str, torch.Tensor],
+        timesteps_input: dict[str, torch.Tensor],
         pos_cond: dict | None,
         neg_cond: dict | None,
         joint_cond: dict | None,
@@ -98,15 +98,16 @@ class LTXTrainPipelineConfig(TrainPipelineConfig):
         cfg_batching: bool,
         guidance_scale: float,
         true_cfg_scale: float | None,
-    ) -> torch.Tensor:
-        # LTX trains unguided (supports_cfg_training=False): single velocity pass.
+    ) -> dict[str, torch.Tensor]:
+        # LTX trains unguided (supports_cfg_training=False): single velocity pass over the video modality.
+        latents = latents_input["visual"]
         cond = dict(pos_cond or {})
         if "context" not in cond:
             raise ValueError("LTX train requires denoising_env.pos_cond_kwargs.encoder_hidden_states")
         if "positions" not in cond:
             from miles.backends.fsdp_utils.models.ltx.positions import prepare_video_positions
 
-            batch_size, num_tokens, _ = latents_input.shape
+            batch_size, num_tokens, _ = latents.shape
             cond["positions"] = prepare_video_positions(
                 batch_size=batch_size,
                 num_tokens=num_tokens,
@@ -114,10 +115,10 @@ class LTXTrainPipelineConfig(TrainPipelineConfig):
                 width=self._width,
                 num_frames=self._num_frames,
                 fps=self._fps,
-                device=latents_input.device,
-                dtype=latents_input.dtype,
+                device=latents.device,
+                dtype=latents.dtype,
             )
-        return self.forward_velocity(model, latents_input, timesteps_input, cond)
+        return {"visual": self.forward_velocity(model, latents, timesteps_input["visual"], cond)}
 
     def forward_velocity(
         self,

@@ -71,8 +71,8 @@ class Cosmos3TrainPipelineConfig(TrainPipelineConfig):
         self,
         *,
         model: torch.nn.Module,
-        latents_input: torch.Tensor,
-        timesteps_input: torch.Tensor,
+        latents_input: dict[str, torch.Tensor],
+        timesteps_input: dict[str, torch.Tensor],
         pos_cond: dict | None,
         neg_cond: dict | None,
         joint_cond: dict | None,
@@ -80,19 +80,19 @@ class Cosmos3TrainPipelineConfig(TrainPipelineConfig):
         cfg_batching: bool,
         guidance_scale: float,
         true_cfg_scale: float | None,
-    ) -> torch.Tensor:
+    ) -> dict[str, torch.Tensor]:
         assert not cfg_batching, "Cosmos3 packed forward is single-sample; cfg_batching unsupported"
         config = model.config
         preds = []
         for i, pos in enumerate(pos_cond["per_sample"]):
-            latent = latents_input[i : i + 1]
-            timestep = float(timesteps_input[i])
+            latent = latents_input["visual"][i : i + 1]
+            timestep = float(timesteps_input["visual"][i])
             pred = self._packed_forward(model, latent, timestep, pos, config)
             if use_cfg:
                 pred_neg = self._packed_forward(model, latent, timestep, neg_cond["per_sample"][i], config)
                 pred = self.cfg_combine(pred, pred_neg, guidance_scale, true_cfg_scale=true_cfg_scale)
             preds.append(pred)
-        return torch.stack(preds, dim=0)
+        return {"visual": torch.stack(preds, dim=0)}
 
     def _packed_forward(
         self,

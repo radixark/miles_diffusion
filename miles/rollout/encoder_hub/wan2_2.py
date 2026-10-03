@@ -53,7 +53,7 @@ def encode_sample(encoder: dict, media_clip: dict, prompt: str, generator: torch
     embeds[:, int(inputs.attention_mask[0].sum()) :] = 0
 
     return {
-        "latent": latent[0].to(torch.bfloat16).cpu(),
+        "latent": {"visual": latent[0].to(torch.bfloat16).cpu()},
         "cond_kwargs": {"encoder_hidden_states": embeds.to(torch.bfloat16).cpu()},
         "prompt": prompt,
     }

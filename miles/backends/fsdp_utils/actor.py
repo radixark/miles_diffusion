@@ -489,7 +489,7 @@ class FSDPTrainRayActor(TrainRayActor):
             default_dtype=forward_dtype,
         )
 
-        def _compute_noise_pred(model) -> torch.Tensor:
+        def _compute_noise_pred(model) -> dict[str, torch.Tensor]:
             with torch.autocast("cuda", dtype=forward_dtype, enabled=forward_dtype != torch.float32):
                 return train_pipeline_config.compute_noise_pred(
                     model=model,
@@ -510,16 +510,16 @@ class FSDPTrainRayActor(TrainRayActor):
         old_pred = None
         if self.args.loss_type == "nft":
             with torch.no_grad(), self.ema_optimizer.use_weights(prepared.model):
-                old_pred = _compute_noise_pred(prepared.model).detach()
+                old_pred = _compute_noise_pred(prepared.model)
 
         # KL reference.
         ref_pred = None
         if self.args.ref_mode == "ref":
             with torch.no_grad():
-                ref_pred = _compute_noise_pred(self.reference_models[prepared.component_name]).detach()
+                ref_pred = _compute_noise_pred(self.reference_models[prepared.component_name])
         elif self.args.ref_mode == "lora_base":
             with torch.no_grad(), prepared.model.disable_adapter():
-                ref_pred = _compute_noise_pred(prepared.model).detach()
+                ref_pred = _compute_noise_pred(prepared.model)
                 # PEFT re-enables adapter gradients on exit; reshard first so that lands on the shards, not gathered copies.
                 reshard_model(prepared.model)
 
