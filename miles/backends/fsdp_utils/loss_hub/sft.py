@@ -138,7 +138,8 @@ def sft_loss_formula(
         metrics.emit_mean("loss", total=loss_sum, count=len(batch))
         num_buckets = ctx.args.log_loss_sigma_bucket
         # Buckets follow the visual stream, whose sigma also picks the DiT component; every stream counts in loss.
-        for pair_loss, sigma in zip(per_pair_losses["visual"], prepared.extras["sigmas"]["visual"], strict=True):
-            bucket = min(int(float(sigma) * num_buckets), num_buckets - 1)
-            metrics.emit_mean(sigma_bucket_key(bucket, num_buckets), total=pair_loss, count=1)
+        if num_buckets > 0:
+            for pair_loss, sigma in zip(per_pair_losses["visual"], prepared.extras["sigmas"]["visual"], strict=True):
+                bucket = min(int(float(sigma) * num_buckets), num_buckets - 1)
+                metrics.emit_mean(sigma_bucket_key(bucket, num_buckets), total=pair_loss, count=1)
     return loss_sum
