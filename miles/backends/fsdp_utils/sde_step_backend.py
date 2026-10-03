@@ -98,7 +98,10 @@ class DiffusersSdeStepBackend(SdeStepBackend):
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         dt = sigma_prev - sigma
 
-        std_dev_t = torch.sqrt(sigma / (1 - torch.where(sigma == 1, sigma_max, sigma))) * noise_level
+        # sigma_max (the rollout grid's second sigma, sigmas[1]) stands in near sigma == 1, where
+        # sigma / (1 - sigma) diverges; isclose, not ==, is the engine's test.
+        at_one = torch.isclose(sigma, sigma.new_tensor(1.0))
+        std_dev_t = torch.sqrt(sigma / (1 - torch.where(at_one, sigma_max, sigma))) * noise_level
         prev_mean = (
             sample * (1 + std_dev_t**2 / (2 * sigma) * dt)
             + model_output * (1 + std_dev_t**2 * (1 - sigma) / (2 * sigma)) * dt
