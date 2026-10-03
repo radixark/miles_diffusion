@@ -365,7 +365,6 @@ class FSDPTrainRayActor(TrainRayActor):
             teacher_models=self.teacher_models,
             train_pipeline_config=self.train_pipeline_config,
             sde_backend=self.sde_backend,
-            scheduler=self.scheduler,
             args=self.args,
             forward_dtype=self._forward_dtype,
             device=device,
