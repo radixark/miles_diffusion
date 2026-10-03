@@ -1,14 +1,14 @@
 """Diffusion SFT hooks: prepare + loss formula (the actor owns the DiT).
 
     prepare_sft_batch: a seeded generator draws
-      grid       ──► ctx.scheduler, timesteps on the family's num_train_timesteps scale
+      grid       ──► FlowNoiseSchedule.shifted(--fsdp-flow-shift, family num_train_timesteps)
       grid index ──► timesteps, sigmas   via sample_grid_indices (picks the DiT)
       noise      ──► latents = (1 - sigma) x0 + sigma noise,  extras["target"] = noise - x0
                 │
     sft_loss_formula: per pair, mean((pred - target)^2) + sigma-bucket metrics
 
 What each test pins:
-  TestPrepareSftBatch   corruption identity, grid/expert routing, determinism
+  TestPrepareSftBatch   corruption identity, grid/expert routing, determinism, known flow-shift grid values
   TestSftLossFormula    exact-velocity zero loss, unit offset, sigma buckets partition the loss
 """
 
@@ -22,7 +22,7 @@ import torch
 import torch.nn as nn
 
 from miles.backends.fsdp_utils.loss_hub.sft import prepare_sft_batch, sample_grid_indices, sft_loss_formula
-from miles.backends.fsdp_utils.loss_hub.types import DiffusionLossContext
+from miles.backends.fsdp_utils.loss_hub.types import DiffusionLossContext, FlowNoiseSchedule
 
 NUM_TRAIN_TIMESTEPS = 1000
 NUM_GRID = 8
@@ -45,13 +45,12 @@ class _SingleConfig(_Config):
         return "transformer"
 
 
-def _scheduler():
+FLOW_SHIFT = 3.0
+
+
+def _noise_schedule():
     sigmas = torch.linspace(1.0, 1.0 / NUM_GRID, NUM_GRID)
-    return Namespace(
-        timesteps=sigmas * NUM_TRAIN_TIMESTEPS,
-        sigmas=torch.cat([sigmas, torch.zeros(1)]),
-        config=Namespace(num_train_timesteps=NUM_TRAIN_TIMESTEPS),
-    )
+    return FlowNoiseSchedule(sigmas * NUM_TRAIN_TIMESTEPS, torch.cat([sigmas, torch.zeros(1)]))
 
 
 def _ctx(models, rollout_id=3, microbatch_id=0, dp_rank=0, config=None):
@@ -59,8 +58,7 @@ def _ctx(models, rollout_id=3, microbatch_id=0, dp_rank=0, config=None):
         models=models,
         train_pipeline_config=config if config is not None else _Config(),
         sde_backend=None,
-        scheduler=_scheduler(),
-        args=Namespace(seed=42, log_loss_sigma_bucket=5),
+        args=Namespace(seed=42, log_loss_sigma_bucket=5, fsdp_flow_shift=FLOW_SHIFT),
         forward_dtype=torch.float32,
         device=torch.device("cpu"),
         rollout_id=rollout_id,
@@ -102,24 +100,18 @@ class TestPrepareSftBatch:
 
     def test_single_model_indices_cover_grid_uniformly(self):
         ctx = _ctx({"transformer": nn.Identity()}, config=_SingleConfig())
-        _, _, idx = sample_grid_indices(
-            ctx,
-            bsz=20000,
-            generator=torch.Generator().manual_seed(1),
-        )
+        _, _, idx = sample_grid_indices(ctx, _noise_schedule(), 20000, generator=torch.Generator().manual_seed(1))
         counts = torch.bincount(idx, minlength=NUM_GRID).float()
         assert counts.min() > 0
         assert ((counts / 20000) - 1 / NUM_GRID).abs().max() < 0.02
 
     def test_single_wan_expert_only_samples_its_timesteps(self):
         config = _Config()
-        timesteps = _scheduler().timesteps
+        timesteps = _noise_schedule().timesteps
         for component_name in ("transformer", "transformer_2"):
             ctx = _ctx({component_name: nn.Identity()}, config=config)
             name, _, idx = sample_grid_indices(
-                ctx,
-                bsz=1000,
-                generator=torch.Generator().manual_seed(1),
+                ctx, _noise_schedule(), 1000, generator=torch.Generator().manual_seed(1)
             )
             expected = {
                 i
@@ -133,18 +125,17 @@ class TestPrepareSftBatch:
         models = {"transformer": nn.Identity(), "transformer_2": nn.Identity()}
         ctx = _ctx(models)
         config = ctx.train_pipeline_config
+        noise_schedule = _noise_schedule()
         picked = set()
         for call in range(20):
             ctx.microbatch_id = call
             name, model, idx = sample_grid_indices(
-                ctx,
-                bsz=4,
-                generator=torch.Generator().manual_seed(call + 100),
+                ctx, noise_schedule, 4, generator=torch.Generator().manual_seed(call + 100)
             )
             picked.add(name)
             assert model is models[name]
             for i in idx.tolist():
-                t = float(ctx.scheduler.timesteps[i])
+                t = float(noise_schedule.timesteps[i])
                 assert config.component_for_timestep(t) == name
         assert picked == {"transformer", "transformer_2"}
 
@@ -187,6 +178,15 @@ class TestPrepareSftBatch:
             b = prepare_sft_batch(_ctx(models, microbatch_id=slot, dp_rank=1), _batch())
             assert a.component_name == b.component_name
             assert not torch.equal(a.extras["target"], b.extras["target"])
+
+    def test_prepare_draws_from_the_flow_shift_grid(self):
+        # shift 3 over 4 points: s = 1, .75, .5, .25 -> 3s / (1 + 2s) = 1, .9, .75, .5, then the terminal 0
+        noise_schedule = FlowNoiseSchedule.shifted(3.0, 4)
+        torch.testing.assert_close(noise_schedule.sigmas, torch.tensor([1.0, 0.9, 0.75, 0.5, 0.0]))
+        torch.testing.assert_close(noise_schedule.timesteps, torch.tensor([4.0, 3.6, 3.0, 2.0]))
+        prepared = prepare_sft_batch(_ctx({"transformer": nn.Identity()}), _batch(bsz=16))
+        grid = FlowNoiseSchedule.shifted(FLOW_SHIFT, NUM_TRAIN_TIMESTEPS)
+        assert set(prepared.timesteps.tolist()) <= set(grid.timesteps.tolist())
 
 
 class TestSftLossFormula:

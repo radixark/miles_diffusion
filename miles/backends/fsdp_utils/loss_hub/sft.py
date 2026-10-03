@@ -5,7 +5,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from miles.backends.fsdp_utils.loss_hub.types import DiffusionLossContext, PreparedBatch
+from miles.backends.fsdp_utils.loss_hub.types import DiffusionLossContext, FlowNoiseSchedule, PreparedBatch
 from miles.backends.fsdp_utils.metrics import sigma_bucket_key
 from miles.utils.hash_utils import stable_hash
 from miles.utils.metric_buffer import MetricBuffer
@@ -13,12 +13,13 @@ from miles.utils.metric_buffer import MetricBuffer
 
 def sample_grid_indices(
     ctx: DiffusionLossContext,
+    noise_schedule: FlowNoiseSchedule,
     bsz: int,
     *,
     generator: torch.Generator,
 ) -> tuple[str, nn.Module, torch.Tensor]:
     """Pick one rank-aligned DiT component, then per-sample grid indices."""
-    num_grid = len(ctx.scheduler.timesteps)
+    num_grid = len(noise_schedule.timesteps)
     config = ctx.train_pipeline_config
     if len(ctx.models) == 1:
         component_name, model = next(iter(ctx.models.items()))
@@ -29,13 +30,13 @@ def sample_grid_indices(
             pool = torch.tensor(
                 [
                     i
-                    for i, timestep in enumerate(ctx.scheduler.timesteps)
+                    for i, timestep in enumerate(noise_schedule.timesteps)
                     if component_for_timestep(float(timestep)) == component_name
                 ],
                 device=generator.device,
             )
     else:
-        components = [config.component_for_timestep(float(t)) for t in ctx.scheduler.timesteps]
+        components = [config.component_for_timestep(float(t)) for t in noise_schedule.timesteps]
         expert_generator = torch.Generator().manual_seed(
             stable_hash("expert", int(ctx.args.seed), ctx.rollout_id, ctx.microbatch_id)
         )
@@ -65,9 +66,10 @@ def prepare_sft_batch(
     sample_generator = torch.Generator(device=device).manual_seed(
         stable_hash("sample", int(ctx.args.seed), ctx.rollout_id, ctx.microbatch_id, ctx.dp_rank)
     )
-    component_name, model, idx = sample_grid_indices(ctx, bsz, generator=sample_generator)
-    timesteps = ctx.scheduler.timesteps[idx].to(dtype=torch.float32)
-    sigmas = ctx.scheduler.sigmas[idx].to(dtype=torch.float32)
+    noise_schedule = FlowNoiseSchedule.shifted(ctx.args.fsdp_flow_shift, config.num_train_timesteps)
+    component_name, model, idx = sample_grid_indices(ctx, noise_schedule, bsz, generator=sample_generator)
+    timesteps = noise_schedule.timesteps.to(device=device, dtype=torch.float32)[idx]
+    sigmas = noise_schedule.sigmas.to(device=device, dtype=torch.float32)[idx]
 
     noise = torch.randn(x0.shape, device=device, dtype=torch.float32, generator=sample_generator)
     sigma_exp = sigmas.view(bsz, *([1] * (x0.ndim - 1)))

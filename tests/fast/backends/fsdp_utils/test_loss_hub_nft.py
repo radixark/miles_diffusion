@@ -186,7 +186,6 @@ class _QwenStyleConfig(_StubConfig):
 
 
 class TestPrepareNftBatch:
-    NUM_TRAIN_TIMESTEPS = 1000
     # 0.8474... does not survive a multiply then divide by 1000 in fp32.
     SIGMAS = [0.8474337458610535, 0.5]
 
@@ -199,7 +198,6 @@ class TestPrepareNftBatch:
             models={"transformer": torch.nn.Identity()},
             train_pipeline_config=config,
             sde_backend=None,
-            scheduler=Namespace(config=Namespace(num_train_timesteps=self.NUM_TRAIN_TIMESTEPS)),
             args=Namespace(seed=42),
             forward_dtype=torch.float32,
             device=torch.device("cpu"),
