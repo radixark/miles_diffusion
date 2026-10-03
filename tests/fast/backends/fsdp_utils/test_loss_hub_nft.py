@@ -1,6 +1,7 @@
 """DiffusionNFT sampling, timestep expansion, and batch preparation.
 
     rollout samples --> timestep pairs --> prepared noisy latents --> NFT loss
+    pair sigma --family process_sigma_as_timesteps_input--> DiT timestep (sd3-style: x the config's num_train_timesteps)
     seed + rollout + microbatch --> repeatable noise and per-sample timestep order
 """
 
@@ -134,6 +135,7 @@ class _StubConfig:
     """Cond plumbing stubbed out. Binds both hooks so a prepare wired to the wrong one fails on
     the numbers, not on a missing attribute."""
 
+    num_train_timesteps = 1000
     process_timestep_as_input = TrainPipelineConfig.process_timestep_as_input
     process_sigma_as_timesteps_input = TrainPipelineConfig.process_sigma_as_timesteps_input
 
@@ -190,19 +192,19 @@ class TestPrepareNftBatch:
         seen = {}
 
         class _Recording(_StubConfig):
-            def process_sigma_as_timesteps_input(self, sigmas, *, num_train_timesteps):
+            def process_sigma_as_timesteps_input(self, sigmas):
                 seen["sigmas"] = sigmas.clone()
-                seen["num_train_timesteps"] = num_train_timesteps
                 return sigmas
 
         prepare_nft_batch(self._ctx(_Recording()), self._batch())
         assert torch.equal(seen["sigmas"], torch.tensor(self.SIGMAS))
-        assert seen["num_train_timesteps"] == self.NUM_TRAIN_TIMESTEPS
 
-    def test_sd3_style_family_gets_the_scheduler_range(self):
+    def test_sd3_style_family_gets_sigma_times_num_train_timesteps(self):
         prepared = prepare_nft_batch(self._ctx(_Sd3StyleConfig()), self._batch())
         assert torch.equal(prepared.timesteps, torch.tensor(self.SIGMAS))
-        assert torch.equal(prepared.timesteps_for_model, torch.tensor(self.SIGMAS) * float(self.NUM_TRAIN_TIMESTEPS))
+        assert torch.equal(
+            prepared.timesteps_for_model, torch.tensor(self.SIGMAS) * float(_StubConfig.num_train_timesteps)
+        )
 
     def test_qwen_style_family_gets_the_sigma_bit_exactly(self):
         prepared = prepare_nft_batch(self._ctx(_QwenStyleConfig()), self._batch())
