@@ -7,8 +7,8 @@ Flow-matching RL algorithms fall into two paradigms:
 - **Coupled (Flow-GRPO)** — training re-scores the same `(x_t → x_{t+1})`
   transitions that rollout produced, so it needs tractable log-probs via
   `SdeStepBackend`.
-- **Decoupled (DiffusionNFT, …)** — training samples its own timesteps from the
-  final image; rollout dynamics are irrelevant, so this backend is unused.
+- **Decoupled (DiffusionNFT, …)** — training re-noises the final image at the
+  rollout's sampling sigmas; rollout dynamics are irrelevant, so this backend is unused.
 
 ## 1. When it applies
 

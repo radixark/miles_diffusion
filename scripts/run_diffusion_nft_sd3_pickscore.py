@@ -76,7 +76,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
     grpo_args = (
         "--loss-type nft "
         "--diffusion-nft-beta 1.0 "
-        "--diffusion-nft-timestep-fraction 0.99 "
+        "--diffusion-nft-num-dropped-timesteps 1 "
         "--advantage-estimator grpo "
         "--globalize-reward-std "
     )
