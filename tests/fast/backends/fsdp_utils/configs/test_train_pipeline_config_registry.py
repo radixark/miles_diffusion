@@ -3,7 +3,7 @@
     checkpoint ref --resolve_diffusion_model_family----> family config
     trajectory t   --process_timestep_as_input---------> DiT timestep
     sigma          --process_sigma_as_timesteps_input--> DiT timestep (scaled by the family's num_train_timesteps)
-    latents, cond  --compute_noise_pred----------------> noise pred: no CFG | two-pass CFG | joint-batch CFG
+    {stream: latents}, cond --compute_noise_pred-------> {stream: noise pred}: no CFG | two-pass | joint-batch CFG
 
 What each test pins:
   family resolution   HF ids and local paths match case-insensitively; unknown refs fail; the env var wins
@@ -81,8 +81,8 @@ class TestComputeNoisePred:
     def _call(self, **overrides):
         kwargs = dict(
             model=_CondBiasDiT(),
-            latents_input=self.h,
-            timesteps_input=torch.tensor([3.0, 5.0]),
+            latents_input={"visual": self.h},
+            timesteps_input={"visual": torch.tensor([3.0, 5.0])},
             pos_cond=self.pos,
             neg_cond=self.neg,
             joint_cond=None,
@@ -92,7 +92,7 @@ class TestComputeNoisePred:
             true_cfg_scale=None,
         )
         kwargs.update(overrides)
-        return self.cfg.compute_noise_pred(**kwargs)
+        return self.cfg.compute_noise_pred(**kwargs)["visual"]
 
     def test_no_cfg_is_single_pos_pass(self):
         torch.testing.assert_close(self._call(use_cfg=False), self.h * 2.0 + 1.0)

@@ -18,7 +18,7 @@ def _inputs():
         "context": torch.zeros(1, 3, 8, dtype=torch.float32),
         "context_mask": torch.ones(1, 3, dtype=torch.int64),
     }
-    return latents, timesteps, pos_cond
+    return {"visual": latents}, {"visual": timesteps}, pos_cond
 
 
 def test_default_policy_is_passthrough():
@@ -30,8 +30,8 @@ def test_default_policy_is_passthrough():
         conds=(pos_cond, None, None),
         default_dtype=torch.bfloat16,
     )
-    assert out_latents.dtype == torch.float32
-    assert out_timesteps.dtype == torch.float32
+    assert out_latents["visual"].dtype == torch.float32
+    assert out_timesteps["visual"].dtype == torch.float32
     assert out_pos["context"].dtype == torch.float32
     assert out_pos["context_mask"].dtype == torch.int64
     assert out_neg is None and out_joint is None
@@ -47,7 +47,7 @@ def test_family_override_timestep_default():
         conds=(pos_cond, None, None),
         default_dtype=torch.bfloat16,
     )
-    assert out_timesteps.dtype == torch.bfloat16
+    assert out_timesteps["visual"].dtype == torch.bfloat16
 
 
 def test_cast_policy_casts_floats_only():
@@ -59,7 +59,7 @@ def test_cast_policy_casts_floats_only():
         conds=(pos_cond, None, None),
         default_dtype=torch.bfloat16,
     )
-    assert out_latents.dtype == torch.bfloat16
+    assert out_latents["visual"].dtype == torch.bfloat16
     assert out_pos["context"].dtype == torch.bfloat16
     assert out_pos["context_mask"].dtype == torch.int64
 

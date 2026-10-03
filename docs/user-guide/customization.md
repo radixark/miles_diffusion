@@ -266,7 +266,9 @@ def prepare(ctx, batch, *, pad_to_len=None) -> PreparedBatch:
 
 Builds DiT inputs from train pairs. Defaults:
 `miles.backends.fsdp_utils.loss_hub.flow_grpo.prepare_flow_grpo_batch` or the NFT
-equivalent under `loss_hub.nft`.
+equivalent under `loss_hub.nft`. `PreparedBatch.latents`, `timesteps` and
+`timesteps_for_model` are keyed by latent stream name: `"visual"`, plus e.g.
+`"audio"` for joint audio-video models.
 
 ### `--custom-loss-function-path`
 
@@ -274,6 +276,8 @@ equivalent under `loss_hub.nft`.
 def loss_formula(ctx, batch, prepared, *, new_pred, ref_pred, metrics, **kwargs):
     ...
 ```
+
+`new_pred`, `old_pred` and `ref_pred` are keyed by the same stream names as `prepared.latents`.
 
 ### `--sde-step-backend-path`
 

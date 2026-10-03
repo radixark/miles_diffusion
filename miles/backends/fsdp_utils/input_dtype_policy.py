@@ -19,11 +19,11 @@ INPUT_DTYPE_POLICY_KEYS = ("latents", "cond", "timestep")
 def apply_input_dtype_policy(
     policy: dict,
     *,
-    latents: torch.Tensor,
-    timesteps: torch.Tensor,
+    latents: dict[str, torch.Tensor],
+    timesteps: dict[str, torch.Tensor],
     conds: tuple,
     default_dtype: torch.dtype,
-) -> tuple[torch.Tensor, torch.Tensor, tuple]:
+) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor], tuple]:
     """Cast float boundary inputs per family policy ("default"/dtype name/None=passthrough);
     autocast alone would leave element-wise ops running at the raw input dtype."""
     # A typo'd key would silently mean passthrough.
@@ -48,7 +48,7 @@ def apply_input_dtype_policy(
 
     cond_dtype = _dtype("cond")
     return (
-        _cast(latents, _dtype("latents")),
-        _cast(timesteps, _dtype("timestep")),
+        {name: _cast(latent, _dtype("latents")) for name, latent in latents.items()},
+        {name: _cast(timestep, _dtype("timestep")) for name, timestep in timesteps.items()},
         tuple(cond and {key: _cast(value, cond_dtype) for key, value in cond.items()} for cond in conds),
     )

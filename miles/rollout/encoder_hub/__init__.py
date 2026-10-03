@@ -5,7 +5,7 @@ Each family module provides:
   encoder/VAE) from the ``--sft-encoder-checkpoint`` HF name or path;
 - ``encode_sample(encoder, media_clip, prompt, generator)``: encode one decoded media dict
   ``{"video": [C, T, H, W] uint8, "fps": float | None}`` into a cached train
-  sample (clean latent + cond kwargs);
+  sample (clean latents keyed by stream name, e.g. ``{"visual": ...}``, + cond kwargs);
 - ``validate_args(args)``: family-specific encode constraints.
 """
 

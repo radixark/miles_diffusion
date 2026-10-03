@@ -138,7 +138,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--sequence-parallel-size` | int | `1` | USP = Ulysses × Ring. |
 | `--ulysses-degree` | int | `0` | `0` = auto (Ulysses fills SP). Ring degree > 1 needs torch ≥ 2.11 and a ring-capable attention backend. |
 | `--fsdp-attention-backend` | str | – | diffusers `set_attention_backend` value. |
-| `--fsdp-flow-shift` | float | – | SFT training sigma grid shift; RL pairs carry their rollout sigmas instead. Distinct from `--diffusion-flow-shift`. |
+| `--fsdp-flow-shift` | str | – | SFT training sigma grid shift per latent stream, e.g. `visual=12,audio=3`; a bare number is the visual shift. RL pairs carry their rollout sigmas instead. Distinct from `--diffusion-flow-shift`. |
 | `--gradient-checkpointing` | flag | off | |
 | `--deterministic-mode` | flag | off | See [Deterministic Training](../advanced/deterministic.md). |
 | `--train-env-vars` | JSON | `{}` | Extra env for the training processes. |

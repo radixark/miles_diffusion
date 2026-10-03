@@ -182,7 +182,7 @@ def encode_sample(encoder: dict, media_clip: dict, prompt: str, generator: torch
     return {
         # fp16, not bf16: the recipe's use_fp16_latent already quantized these
         # values to fp16, so this cast is lossless and keeps engine bit-compat.
-        "latent": rows.to(torch.float16).cpu(),
+        "latent": {"visual": rows.to(torch.float16).cpu()},
         "cond_kwargs": {
             "encoder_hidden_states": hidden.cpu(),
             "h3_packed_layout": packed,

@@ -1,6 +1,6 @@
 """DiffusionNFT sampling, timestep expansion, and batch preparation.
 
-    rollout samples --> timestep pairs --> prepared noisy latents --> NFT loss
+    rollout samples --> timestep pairs --> prepared {"visual": noisy latents} --> NFT loss
     NFT loss + kl_beta * mean((new_pred - ref_pred)^2) per pair when a KL reference is set
     pair sigma --family process_sigma_as_timesteps_input--> DiT timestep (sd3-style: x the config's num_train_timesteps)
     each sample's own trajectory sigmas --> that sample's training sigmas
@@ -65,11 +65,11 @@ class TestNftMath:
     def test_kl_to_the_reference_adds_to_each_pair(self):
         # 2 pairs, new - ref = 1 everywhere --> kl = 1 per pair --> loss grows by kl_beta * 2
         torch.manual_seed(0)
-        new_pred, old_pred = torch.randn(2, 4), torch.randn(2, 4)
+        new_pred, old_pred = {"visual": torch.randn(2, 4)}, {"visual": torch.randn(2, 4)}
         prepared = SimpleNamespace(
             extras={"x0": torch.randn(2, 4)},
-            latents=torch.randn(2, 4),
-            timesteps=torch.tensor([0.3, 0.7]),
+            latents={"visual": torch.randn(2, 4)},
+            timesteps={"visual": torch.tensor([0.3, 0.7])},
             advantage=torch.tensor([1.0, -1.0]),
         )
         batch = [{"nft_num_timesteps": 1}, {"nft_num_timesteps": 1}]
@@ -84,7 +84,13 @@ class TestNftMath:
             )
             ctx = SimpleNamespace(args=args, device=torch.device("cpu"))
             return nft_loss_formula(
-                ctx, batch, prepared, new_pred=new_pred, old_pred=old_pred, ref_pred=new_pred - 1.0, metrics=metrics
+                ctx,
+                batch,
+                prepared,
+                new_pred=new_pred,
+                old_pred=old_pred,
+                ref_pred={"visual": new_pred["visual"] - 1.0},
+                metrics=metrics,
             )
 
         torch.testing.assert_close(loss(0.5) - loss(0.0), torch.tensor(0.5 * 2))
@@ -272,15 +278,15 @@ class TestPrepareNftBatch:
 
     def test_sd3_style_family_gets_sigma_times_num_train_timesteps(self):
         prepared = prepare_nft_batch(self._ctx(_Sd3StyleConfig()), self._batch())
-        assert torch.equal(prepared.timesteps, torch.tensor(self.SIGMAS))
+        assert torch.equal(prepared.timesteps["visual"], torch.tensor(self.SIGMAS))
         assert torch.equal(
-            prepared.timesteps_for_model, torch.tensor(self.SIGMAS) * float(_StubConfig.num_train_timesteps)
+            prepared.timesteps_for_model["visual"], torch.tensor(self.SIGMAS) * float(_StubConfig.num_train_timesteps)
         )
 
     def test_qwen_style_family_gets_the_sigma_bit_exactly(self):
         prepared = prepare_nft_batch(self._ctx(_QwenStyleConfig()), self._batch())
         # equal, not allclose: the wrong hook would still pass allclose.
-        assert torch.equal(prepared.timesteps_for_model, torch.tensor(self.SIGMAS))
+        assert torch.equal(prepared.timesteps_for_model["visual"], torch.tensor(self.SIGMAS))
 
 
 class TestNftDeterminism:
@@ -352,10 +358,10 @@ class TestNftDeterminism:
         batch = TestPrepareNftBatch()._batch()
         first = prepare_nft_batch(ctx, batch)
         second = prepare_nft_batch(ctx, batch)
-        assert torch.equal(first.latents, second.latents)
+        assert torch.equal(first.latents["visual"], second.latents["visual"])
 
     def test_a_different_microbatch_draws_different_noise(self):
         harness = TestPrepareNftBatch()
         first = prepare_nft_batch(harness._ctx(_Sd3StyleConfig()), harness._batch())
         second = prepare_nft_batch(harness._ctx(_Sd3StyleConfig(), microbatch_id=1), harness._batch())
-        assert not torch.equal(first.latents, second.latents)
+        assert not torch.equal(first.latents["visual"], second.latents["visual"])

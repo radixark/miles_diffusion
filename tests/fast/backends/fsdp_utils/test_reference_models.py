@@ -12,7 +12,8 @@
     FSDP boundary          ---> TinyBlock containing the complete LoRA projection
     checkpoint_path        ---> backend loads base; loader applies the role's LoRA
 
-The CPU tests exercise real PEFT checkpoint loading and the production actor forward.
+The CPU tests exercise real PEFT checkpoint loading and the production actor forward,
+whose inputs and predictions are {"visual": tensor} stream dicts.
 Loader tests replace FSDP collectives; the CUDA worker uses the real sharded loader.
 The IPC test captures transport metadata without launching a rollout engine.
 Dense model copies provide an independent output and gradient oracle.
@@ -88,7 +89,7 @@ class TinyPipelineConfig:
         pass
 
     def compute_noise_pred(self, *, model, latents_input, **kwargs):
-        return model(latents_input)
+        return {"visual": model(latents_input["visual"])}
 
 
 def make_model_loader_args():
@@ -146,8 +147,8 @@ def make_actor_forward_harness(
     prepared = SimpleNamespace(
         model=models[component],
         component_name=component,
-        latents=inputs,
-        timesteps_for_model=torch.ones(inputs.shape[0], device=inputs.device),
+        latents={"visual": inputs},
+        timesteps_for_model={"visual": torch.ones(inputs.shape[0], device=inputs.device)},
         pos_cond=None,
         neg_cond=None,
         joint_cond=None,
@@ -158,8 +159,9 @@ def make_actor_forward_harness(
     )
 
     def loss_formula(ctx, batch, prepared, *, new_pred, old_pred, ref_pred, **kwargs):
-        observed.update(new_pred=new_pred, old_pred=old_pred, ref_pred=ref_pred)
-        return (new_pred - ref_pred).square().mean()
+        predictions = {"new_pred": new_pred, "old_pred": old_pred, "ref_pred": ref_pred}
+        observed.update({name: pred["visual"] for name, pred in predictions.items() if pred is not None})
+        return (new_pred["visual"] - ref_pred["visual"]).square().mean()
 
     harness = SimpleNamespace(
         args=Namespace(ref_mode=ref_mode, loss_type=loss_type),
