@@ -259,7 +259,8 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--custom-prepare-train-batch-path` | str | – | Builds DiT inputs. |
 | `--custom-loss-function-path` | str | – | Loss **formula** only — the DiT forward stays in the actor. |
 | `--diffusion-nft-beta` | float | `1.0` | |
-| `--diffusion-nft-timestep-fraction` | float | `0.99` | |
+| `--diffusion-nft-timestep-strategy-path` | str | `…nft.drop_final_steps` | `(args, num_steps, generator) -> list[int]` picking the sampling steps each sample trains on; `generator` is seeded per sample. Built in: `drop_final_steps`, `drop_random_steps`. |
+| `--diffusion-nft-num-dropped-timesteps` | int | `0` | Steps the built-in strategies drop: the final (lowest-noise) ones for `drop_final_steps`, random ones per sample for `drop_random_steps` (the DiffusionNFT reference trainer drops one); `0` trains on every step. |
 | `--no-diffusion-nft-adaptive-weight` | flag | off | |
 | `--no-diffusion-nft-shuffle-timesteps` | flag | off | |
 

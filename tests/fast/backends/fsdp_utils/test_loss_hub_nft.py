@@ -2,7 +2,11 @@
 
     rollout samples --> timestep pairs --> prepared noisy latents --> NFT loss
     pair sigma --family process_sigma_as_timesteps_input--> DiT timestep (sd3-style: x the config's num_train_timesteps)
-    seed + rollout + microbatch --> repeatable noise and per-sample timestep order
+    sampling sigmas (terminal 0 excluded) --timestep strategy--> kept sigmas --optional shuffle--> pairs
+        drop_final_steps (default)  1.0 0.8 0.6 0.4 0.2 -> 1.0 0.8 0.6        the final k, every sample alike
+        drop_random_steps           1.0 0.8 0.6 0.4 0.2 -> e.g. 1.0 0.6 0.4   k drawn per sample
+    seed + sample index --> repeatable per-sample train steps and order
+    seed + rollout + microbatch --> repeatable noise
 """
 
 from tests.ci.ci_register import register_cpu_ci
@@ -11,13 +15,15 @@ register_cpu_ci(est_time=30, suite="stage-a-cpu", labels=[])
 
 from argparse import Namespace
 
+import pytest
 import torch
 
 from miles.backends.fsdp_utils.configs.qwen_image import QwenImageTrainPipelineConfig
 from miles.backends.fsdp_utils.configs.train_pipeline_config import TrainPipelineConfig
 from miles.backends.fsdp_utils.loss_hub.nft import corrupt, nft_r_from_advantages, prepare_nft_batch
 from miles.backends.fsdp_utils.loss_hub.types import DiffusionLossContext
-from miles.ray.data_conversion_hub.nft import expand_samples_to_train_pairs, resolve_nft_sigmas
+from miles.ray.data_conversion_hub.nft import expand_samples_to_train_pairs
+from miles.utils.misc import function_registry
 from miles.utils.types import Sample
 
 
@@ -28,7 +34,8 @@ def _args(**overrides):
         globalize_reward_std=False,
         grpo_std_normalization=True,
         reward_key=None,
-        diffusion_nft_timestep_fraction=1.0,
+        diffusion_nft_timestep_strategy_path="miles.ray.data_conversion_hub.nft.drop_final_steps",
+        diffusion_nft_num_dropped_timesteps=0,
         diffusion_nft_shuffle_timesteps=False,
         seed=42,
         custom_prepare_train_batch_path=None,
@@ -51,13 +58,86 @@ class TestNftMath:
         assert torch.allclose(xt[0], torch.full((4,), 0.75))
         assert torch.allclose(xt[1], torch.full((4,), 0.25))
 
-    def test_resolve_sigmas_drops_zero_and_fraction(self):
-        sigmas = torch.tensor([1.0, 0.8, 0.6, 0.4, 0.2, 0.0])
-        ts = resolve_nft_sigmas(sigmas, training_timestep_fraction=0.99)
-        assert torch.allclose(ts, torch.tensor([1.0, 0.8, 0.6, 0.4]))
-
 
 class TestNftHooks:
+    def test_default_strategy_drops_the_final_lowest_noise_steps(self):
+        # grid [1.0, 0.8, 0.6, 0.4, 0.2, 0.0], drop 2:
+        #   sampling steps 1.0 0.8 0.6 0.4 0.2   (terminal 0 is never a train step)
+        #   trained        1.0 0.8 0.6           (the final two, 0.4 and 0.2, are dropped)
+        class _Traj:
+            def __init__(self):
+                self.sigmas = torch.tensor([1.0, 0.8, 0.6, 0.4, 0.2, 0.0])
+                self.timesteps = self.sigmas * 1000
+                self.latents = torch.zeros(6, 2, 2)
+                self.latent_step_indices = None
+
+        class _Env:
+            pos_cond_kwargs = {}
+            neg_cond_kwargs = None
+
+        samples = [Sample(index=0, prompt="a", dit_trajectory=_Traj(), denoising_env=_Env())]
+        out = expand_samples_to_train_pairs(_args(diffusion_nft_num_dropped_timesteps=2), samples, [0.0], [0.0])
+        assert [pair["timestep"] for pair in out["train_data"]] == pytest.approx([1.0, 0.8, 0.6])
+
+    def test_custom_timestep_strategy_picks_the_train_steps(self):
+        # grid [1.0, 0.75, 0.5, 0.25, 0.0], strategy keeps steps {0, 3} -> trains at {1.0, 0.25}
+        class _Traj:
+            def __init__(self):
+                self.sigmas = torch.tensor([1.0, 0.75, 0.5, 0.25, 0.0])
+                self.timesteps = self.sigmas * 1000
+                self.latents = torch.zeros(5, 2, 2)
+                self.latent_step_indices = None
+
+        class _Env:
+            pos_cond_kwargs = {}
+            neg_cond_kwargs = None
+
+        def keep_first_and_last(args, num_steps, generator):
+            return [0, num_steps - 1]
+
+        samples = [Sample(index=0, prompt="a", dit_trajectory=_Traj(), denoising_env=_Env())]
+        args = _args(diffusion_nft_timestep_strategy_path="test:keep_first_and_last")
+        with function_registry.temporary("test:keep_first_and_last", keep_first_and_last):
+            out = expand_samples_to_train_pairs(args, samples, [0.0], [0.0])
+        assert [pair["timestep"] for pair in out["train_data"]] == [1.0, 0.25]
+
+    def test_random_drop_strategy_draws_the_dropped_steps_per_sample(self):
+        # grid [1.0, 0.8, 0.6, 0.4, 0.2, 0.0], drop 1 at random, 8 samples:
+        #   sampling steps  1.0 0.8 0.6 0.4 0.2   (terminal 0 is never a train step)
+        #   each sample     four of the five; the dropped one comes from the sample's seeded generator
+        #   -> a rerun drops the same steps, and the samples do not all drop the same one
+        class _Traj:
+            def __init__(self):
+                self.sigmas = torch.tensor([1.0, 0.8, 0.6, 0.4, 0.2, 0.0])
+                self.timesteps = self.sigmas * 1000
+                self.latents = torch.zeros(6, 2, 2)
+                self.latent_step_indices = None
+
+        class _Env:
+            pos_cond_kwargs = {}
+            neg_cond_kwargs = None
+
+        args = _args(
+            diffusion_nft_timestep_strategy_path="miles.ray.data_conversion_hub.nft.drop_random_steps",
+            diffusion_nft_num_dropped_timesteps=1,
+        )
+
+        def kept_sigmas_per_sample():
+            samples = [Sample(index=i, prompt="a", dit_trajectory=_Traj(), denoising_env=_Env()) for i in range(8)]
+            out = expand_samples_to_train_pairs(args, samples, [0.0] * 8, [0.0] * 8)
+            per_sample = {}
+            for pair in out["train_data"]:
+                per_sample.setdefault(pair["sample_index"], []).append(pair["timestep"])
+            return list(per_sample.values())
+
+        sampling_sigmas = set(_Traj().sigmas[:-1].tolist())
+        kept = kept_sigmas_per_sample()
+        assert kept == kept_sigmas_per_sample()
+        for sigmas in kept:
+            assert len(set(sigmas)) == 4 and set(sigmas) < sampling_sigmas
+        dropped_sigmas = {(sampling_sigmas - set(sigmas)).pop() for sigmas in kept}
+        assert len(dropped_sigmas) > 1
+
     def test_convert_expands_k_timestep_pairs(self):
         class _Traj:
             def __init__(self):
