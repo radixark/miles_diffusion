@@ -19,7 +19,7 @@ class Krea2TrainPipelineConfig(TrainPipelineConfig):
         if args.rollout_microgroup_size != 1:
             raise ValueError("krea2 rollout serves one sample per request; use --rollout-microgroup-size 1")
 
-    def process_sigma_as_timesteps_input(self, sigmas: torch.Tensor, *, num_train_timesteps: int) -> torch.Tensor:
+    def process_sigma_as_timesteps_input(self, sigmas: torch.Tensor) -> torch.Tensor:
         # The DiT takes flow time in [0, 1]; its sinusoidal embed applies the x1000 itself.
         return sigmas
 
