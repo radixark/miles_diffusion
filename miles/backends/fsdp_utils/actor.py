@@ -144,10 +144,7 @@ class FSDPTrainRayActor(TrainRayActor):
         else:
             self.model = torch.nn.ModuleDict(self.models)
 
-        self.sde_backend = load_function(args.sde_step_backend_path)(
-            self.scheduler,
-            sde_timestep_divisor=self.train_pipeline_config.sde_timestep_divisor,
-        )
+        self.sde_backend = load_function(args.sde_step_backend_path)()
 
         self.custom_prepare_train_batch_func = (
             load_function(args.custom_prepare_train_batch_path)

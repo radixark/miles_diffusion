@@ -363,7 +363,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--sde-step-backend-path",
                 type=str,
                 default=None,
-                help="SdeStepBackend class path; default = flow-matching SDE over scheduler sigmas.",
+                help="SdeStepBackend class path; default = flow-matching SDE over the rollout's recorded sigmas.",
             )
             parser.add_argument(
                 "--diffusion-num-sde-steps",
