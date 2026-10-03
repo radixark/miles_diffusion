@@ -309,7 +309,7 @@ to a `TrainPipelineConfig` subclass instead.
 
 ### `--model-backend-path`
 
-**Class** for loading components / FSDP / scheduler. Default comes from the
+**Class** for loading components / FSDP. Default comes from the
 family config (usually a `DiffusersModelBackend`).
 
 ***

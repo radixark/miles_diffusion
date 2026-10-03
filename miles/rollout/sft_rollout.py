@@ -21,7 +21,7 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 from miles.rollout.base_types import RolloutFnTrainOutput
 from miles.utils import tracking_utils
 from miles.utils.metric_utils import compute_rollout_step
-from miles.utils.misc import SingletonMeta, load_function
+from miles.utils.misc import SingletonMeta
 from miles.utils.timer import timer
 from miles.utils.types import Sample
 
@@ -187,9 +187,6 @@ class SftEncodeActor:
         return len(items)
 
 
-_scheduler_grid: tuple[torch.Tensor, torch.Tensor] | None = None
-
-
 class SftEncodePool(metaclass=SingletonMeta):
     """One encode actor per rollout placement-group bundle: encode is SFT's rollout, seated by RolloutManager."""
 
@@ -228,27 +225,6 @@ class SftEncodePool(metaclass=SingletonMeta):
             return
         with timer("sft_encode_wait"):
             ray.get(self.train_in_flight)
-
-
-def _get_scheduler_grid(args) -> tuple[torch.Tensor, torch.Tensor]:
-    global _scheduler_grid
-    if _scheduler_grid is None:
-        config = load_function(args.train_pipeline_config_path)()
-        scheduler = load_function(args.model_backend_path)(config).load_scheduler(args)
-        # Shift-only flow schedulers (H3) carry no num_train_timesteps; use the
-        # conventional 1000-point grid for them.
-        if hasattr(scheduler.config, "num_train_timesteps"):
-            num_train_timesteps = int(scheduler.config.num_train_timesteps)
-        else:
-            num_train_timesteps = 1000
-        shift = args.fsdp_flow_shift
-        sigmas = torch.linspace(1.0, 1.0 / num_train_timesteps, num_train_timesteps, dtype=torch.float64)
-        sigmas = shift * sigmas / (1.0 + (shift - 1.0) * sigmas)
-        _scheduler_grid = (
-            (sigmas * num_train_timesteps).to(torch.float32),
-            torch.cat([sigmas, torch.zeros(1, dtype=torch.float64)]).to(torch.float32),
-        )
-    return _scheduler_grid
 
 
 def generate_rollout(args, rollout_id, data_source, evaluation: bool = False) -> RolloutFnTrainOutput:
@@ -297,12 +273,7 @@ def generate_rollout(args, rollout_id, data_source, evaluation: bool = False) ->
 
 
 def convert_samples_to_train_data(args, samples: list[Sample]) -> dict:
-    scheduler_timesteps, scheduler_sigmas = _get_scheduler_grid(args)
-    return {
-        "train_data": [sample.train_metadata["sft_pair"] for sample in samples],
-        "scheduler_timesteps": scheduler_timesteps,
-        "scheduler_sigmas": scheduler_sigmas,
-    }
+    return {"train_data": [sample.train_metadata["sft_pair"] for sample in samples]}
 
 
 def log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_time) -> bool:

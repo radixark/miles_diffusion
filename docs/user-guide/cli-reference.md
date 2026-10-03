@@ -20,7 +20,7 @@ Reading the prefixes:
 | Prefix | Marks |
 |---|---|
 | `diffusion-` | The modality — denoising, SDE, CFG, latents, frames. Generic ML/RL concepts (clipping, KL, EMA, LoRA, batching) do not take it |
-| `fsdp-` | The training side — compare `--fsdp-flow-shift` (training-side sigma grid) with `--diffusion-flow-shift` (the engine's generation schedule) |
+| `fsdp-` | The training side — compare `--fsdp-flow-shift` (SFT training sigma grid) with `--diffusion-flow-shift` (the engine's generation schedule) |
 | `rollout-` / `sglang-` | The engine side |
 
 The prefix does not tell you which argument group a flag lives in — groups follow concern, not
@@ -36,7 +36,7 @@ name. `python3 train_diffusion.py --help` is always the ground truth.
 |---|---|
 | `--hf-checkpoint` | The diffusers pipeline to train, as an HF repo id or a local directory. |
 
-One value serves three readers: training loads components and scheduler from it, the sglang-d
+One value serves three readers: training loads components from it, the sglang-d
 engine serves it, and the **model family** is matched from its name. Add
 `--diffusion-model-family` when the name carries no family hint — which local weights usually
 do not.
@@ -138,7 +138,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--sequence-parallel-size` | int | `1` | USP = Ulysses × Ring. |
 | `--ulysses-degree` | int | `0` | `0` = auto (Ulysses fills SP). Ring degree > 1 needs torch ≥ 2.11 and a ring-capable attention backend. |
 | `--fsdp-attention-backend` | str | – | diffusers `set_attention_backend` value. |
-| `--fsdp-flow-shift` | float | – | Training-side sigma grid shift, regenerated when no engine supplies scheduler meta (SFT). Distinct from `--diffusion-flow-shift`. |
+| `--fsdp-flow-shift` | float | – | SFT training sigma grid shift; RL pairs carry their rollout sigmas instead. Distinct from `--diffusion-flow-shift`. |
 | `--gradient-checkpointing` | flag | off | |
 | `--deterministic-mode` | flag | off | See [Deterministic Training](../advanced/deterministic.md). |
 | `--train-env-vars` | JSON | `{}` | Extra env for the training processes. |

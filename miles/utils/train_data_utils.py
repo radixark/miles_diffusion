@@ -22,53 +22,6 @@ def stack_train_pair_rollout_debug(
     return torch.stack([item["rollout_debug_tensors"][key] for item in batch], dim=0)
 
 
-def scheduler_meta_from_samples(samples: list) -> dict[str, torch.Tensor]:
-    """Build the batch scheduler meta from sample 0's trajectory, enforcing one shared schedule."""
-    first = samples[0].dit_trajectory
-    if first is None:
-        raise ValueError("sample 0 missing dit_trajectory")
-    if first.timesteps is None:
-        raise ValueError("sample 0 missing dit_trajectory.timesteps")
-    if first.sigmas is None:
-        raise ValueError("sample 0 missing dit_trajectory.sigmas; rollout engine must return the sigmas snapshot")
-    meta = {
-        "scheduler_timesteps": first.timesteps.detach().cpu().float(),
-        "scheduler_sigmas": first.sigmas.detach().cpu().float(),
-    }
-    for sample in samples[1:]:
-        traj = sample.dit_trajectory
-        if (
-            traj is None
-            or traj.timesteps is None
-            or not torch.equal(traj.timesteps.detach().cpu().float(), meta["scheduler_timesteps"])
-        ):
-            raise ValueError(
-                f"sample {sample.index} has different scheduler_timesteps than sample 0; "
-                "the converter assumes one shared schedule across the batch"
-            )
-        if traj.sigmas is None or not torch.equal(traj.sigmas.detach().cpu().float(), meta["scheduler_sigmas"]):
-            raise ValueError(
-                f"sample {sample.index} has different scheduler_sigmas than sample 0; "
-                "the converter assumes one shared schedule across the batch"
-            )
-    return meta
-
-
-def scheduler_meta_from_rollout(
-    rollout_data: dict,
-    *,
-    device: torch.device,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Use rollout-side scheduler metadata for train/rollout alignment."""
-    if "scheduler_timesteps" not in rollout_data:
-        raise ValueError("rollout_data missing scheduler_timesteps")
-    if "scheduler_sigmas" not in rollout_data:
-        raise ValueError("rollout_data missing scheduler_sigmas; rollout engine must return the sigmas snapshot")
-    timesteps = rollout_data["scheduler_timesteps"].to(device=device, dtype=torch.float32)
-    sigmas = rollout_data["scheduler_sigmas"].to(device=device, dtype=torch.float32)
-    return timesteps, sigmas
-
-
 class TrainDataDPSplitter:
     """Split flat train-pair payloads across DP ranks.
 
@@ -97,8 +50,6 @@ class TrainDataDPSplitter:
         if mode not in ("contiguous", "stride"):
             raise ValueError(f"unknown dp split mode {mode!r}")
         train_data = data["train_data"]
-        scheduler_timesteps = data.get("scheduler_timesteps")
-        scheduler_sigmas = data.get("scheduler_sigmas")
         num_pairs = len(train_data)
         if num_pairs < dp_size:
             raise ValueError(
@@ -121,15 +72,7 @@ class TrainDataDPSplitter:
             pairs_per_rank = num_pairs // dp_size
             rank_pairs = [train_data[rank * pairs_per_rank : (rank + 1) * pairs_per_rank] for rank in range(dp_size)]
 
-        shards: list[dict[str, list[dict[str, Any]]]] = []
-        for shard_pairs in rank_pairs:
-            shard: dict[str, Any] = {"train_data": shard_pairs}
-            if scheduler_timesteps is not None:
-                shard["scheduler_timesteps"] = scheduler_timesteps
-            if scheduler_sigmas is not None:
-                shard["scheduler_sigmas"] = scheduler_sigmas
-            shards.append(shard)
-        return shards
+        return [{"train_data": shard_pairs} for shard_pairs in rank_pairs]
 
     @staticmethod
     def _stride_partition_by_sample(

@@ -1,48 +1,10 @@
-"""LTX-2 model-side training behavior and temporary scheduler integration."""
+"""LTX-2 model-side training behavior."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Any
 
 import torch
-
-
-@dataclass
-class _SchedulerConfig:
-    num_train_timesteps: int = 1000
-
-
-@dataclass
-class _LTXSchedulerHolder:
-    sigmas: torch.Tensor = field(default_factory=lambda: torch.tensor([]))
-    timesteps: torch.Tensor = field(default_factory=lambda: torch.tensor([]))
-    num_inference_steps: int = 0
-    _step_index: int | None = None
-    _begin_index: int | None = None
-    config: _SchedulerConfig = field(default_factory=_SchedulerConfig)
-
-    def to(self, device):
-        self.sigmas = self.sigmas.to(device)
-        self.timesteps = self.timesteps.to(device)
-        return self
-
-
-def build_train_scheduler(args):
-    """Sigma/timestep holder mirroring the diffusers scheduler surface the trainer touches."""
-    from ltx_core.components.schedulers import LTX2Scheduler
-
-    num_steps = int(getattr(args, "diffusion_num_steps", 24))
-    sigmas = LTX2Scheduler().execute(steps=num_steps).float()
-    return _LTXSchedulerHolder(
-        sigmas=sigmas,
-        timesteps=sigmas[:num_steps],
-        num_inference_steps=num_steps,
-    )
-
-
-def load_scheduler(args):
-    return build_train_scheduler(args)
 
 
 def enable_gradient_checkpointing(model: torch.nn.Module) -> None:

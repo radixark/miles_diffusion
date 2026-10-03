@@ -4,7 +4,7 @@ Selected via ``--model-backend-path`` (miles custom-function style); the
 family config declares the default. Four concerns, all properties of the
 concrete modeling rather than of the training loop:
 
-  - ``load_component`` / ``load_scheduler``: checkpoint -> model components and scheduler
+  - ``load_component``: checkpoint -> model components
   - ``enable_gradient_checkpointing``: how this model turns on grad ckpt
   - ``fsdp_parallel_plan``: FSDP wrapping and parameter precision policy
   - ``sequence_parallel_plan`` / ``install_sequence_parallel_attention``:
@@ -22,7 +22,6 @@ import functools
 import importlib
 import logging
 from dataclasses import replace
-from typing import Any
 
 import torch
 from diffusers import DiffusionPipeline
@@ -53,10 +52,6 @@ class BaseModelBackend(abc.ABC):
         master_dtype: torch.dtype,
         materialize_weights: bool,
     ) -> torch.nn.Module:
-        raise NotImplementedError
-
-    @abc.abstractmethod
-    def load_scheduler(self, args) -> Any:
         raise NotImplementedError
 
     @abc.abstractmethod
@@ -118,9 +113,6 @@ class MilesModelBackend(BaseModelBackend):
             master_dtype=master_dtype,
             materialize_weights=materialize_weights,
         )
-
-    def load_scheduler(self, args) -> Any:
-        return self._pkg.modeling.load_scheduler(args)
 
     def enable_gradient_checkpointing(self, model: torch.nn.Module) -> None:
         self._pkg.modeling.enable_gradient_checkpointing(model)
@@ -216,10 +208,6 @@ class DiffusersModelBackend(BaseModelBackend):
         finally:
             if not materialize_weights and keep_in_fp32 is not None:
                 model_cls._keep_in_fp32_modules = keep_in_fp32
-
-    def load_scheduler(self, args) -> Any:
-        scheduler_cls = self._resolve_component_class(args.hf_checkpoint, "scheduler")
-        return scheduler_cls.from_pretrained(args.hf_checkpoint, subfolder="scheduler")
 
     @classmethod
     def _resolve_component_class(cls, checkpoint_path: str, component: str):
