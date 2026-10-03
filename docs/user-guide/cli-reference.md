@@ -407,8 +407,8 @@ not meant for manual runs.
 
 | `--diffusion-sde-type` | Backend | Dynamics |
 |---|---|---|
-| `sde` | `DiffusersSdeStepBackend` | Flow-matching SDE over diffusers scheduler sigmas. |
+| `sde` | `DiffusersSdeStepBackend` | Flow-matching SDE over the rollout's recorded sigmas. |
 | `ode` | `DiffusersSdeStepBackend` | Same class; deterministic rollout (used by NFT). |
-| `cps` | `CpsSdeStepBackend` | CPS kernel, σ = timestep ÷ divisor, log-prob without constants. |
+| `cps` | `CpsSdeStepBackend` | CPS kernel over the rollout's recorded sigmas, log-prob without constants. |
 
 `--sde-step-backend-path` overrides the mapping with your own `SdeStepBackend` subclass.
