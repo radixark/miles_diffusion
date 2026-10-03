@@ -880,20 +880,19 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Disable DiffusionNFT adaptive MSE weight.",
             )
             parser.add_argument(
-                "--diffusion-nft-timestep-fraction",
-                type=float,
-                default=0.99,
-                help=(
-                    "Share of the rollout's denoising steps each sample trains on (int(steps * fraction), "
-                    "drawn at random per sample); it counts steps, not a sigma range."
-                ),
+                "--diffusion-nft-timestep-strategy-path",
+                type=str,
+                default="miles.ray.data_conversion_hub.nft.drop_random_steps",
+                help="Dotted path to a (args, num_steps, generator) -> list[int] function returning the rollout "
+                "sampling steps each NFT sample trains on, in training order; generator is seeded per sample. "
+                "Built in: drop_random_steps, drop_final_steps.",
             )
             parser.add_argument(
-                "--no-diffusion-nft-shuffle-timesteps",
-                action="store_false",
-                dest="diffusion_nft_shuffle_timesteps",
-                default=True,
-                help="Train each sample's first steps in schedule order, noisiest first, instead of a random subset.",
+                "--diffusion-nft-num-dropped-timesteps",
+                type=int,
+                default=0,
+                help="Sampling steps the built-in NFT timestep strategies drop: random ones per sample for "
+                "drop_random_steps, the final (lowest-noise) ones for drop_final_steps.",
             )
             parser.add_argument(
                 "--advantage-estimator",
@@ -1854,9 +1853,10 @@ def miles_validate_args(args):
             raise ValueError(f"--diffusion-nft-beta must be > 0, got {args.diffusion_nft_beta}")
         if args.diffusion_adv_clip_max <= 0:
             raise ValueError(f"--diffusion-adv-clip-max must be > 0, got {args.diffusion_adv_clip_max}")
-        if not 0.0 < args.diffusion_nft_timestep_fraction <= 1.0:
+        if not 0 <= args.diffusion_nft_num_dropped_timesteps < args.diffusion_num_steps:
             raise ValueError(
-                f"--diffusion-nft-timestep-fraction must be in (0, 1], got {args.diffusion_nft_timestep_fraction}"
+                f"--diffusion-nft-num-dropped-timesteps must be in [0, --diffusion-num-steps="
+                f"{args.diffusion_num_steps}), got {args.diffusion_nft_num_dropped_timesteps}"
             )
         if args.diffusion_recompute_old_log_prob:
             raise ValueError(
