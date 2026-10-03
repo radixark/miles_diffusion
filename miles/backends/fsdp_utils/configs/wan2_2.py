@@ -25,19 +25,18 @@ class Wan2_2TrainPipelineConfig(TrainPipelineConfig):
             if name.endswith("patch_embedding") and isinstance(module, torch.nn.Conv3d):
                 module.forward = types.MethodType(_gemm_patchify_forward, module)
 
-    def component_for_timestep(self, timestep: float, num_train_timesteps: int) -> str:
-        if timestep >= self.boundary_ratio * num_train_timesteps:
+    def component_for_timestep(self, timestep: float) -> str:
+        if timestep >= self.boundary_ratio * self.num_train_timesteps:
             return "transformer"
         return "transformer_2"
 
     def select_guidance_scale(
         self,
         timestep: float,
-        num_train_timesteps: int,
         guidance_scale: float,
         guidance_scale_2: float | None,
     ) -> float:
-        if timestep >= self.boundary_ratio * num_train_timesteps:
+        if timestep >= self.boundary_ratio * self.num_train_timesteps:
             return guidance_scale
         # Rollout backend (sglang-diffusion) uses batch.guidance_scale_2 for low-noise steps with NO fallback;
         # While high-noise and low-noise can be different;

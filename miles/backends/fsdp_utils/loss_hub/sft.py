@@ -26,18 +26,16 @@ def sample_grid_indices(
         if component_for_timestep is None:
             pool = torch.arange(num_grid, device=generator.device)
         else:
-            num_train_timesteps = int(ctx.scheduler.config.num_train_timesteps)
             pool = torch.tensor(
                 [
                     i
                     for i, timestep in enumerate(ctx.scheduler.timesteps)
-                    if component_for_timestep(float(timestep), num_train_timesteps) == component_name
+                    if component_for_timestep(float(timestep)) == component_name
                 ],
                 device=generator.device,
             )
     else:
-        num_train_timesteps = int(ctx.scheduler.config.num_train_timesteps)
-        components = [config.component_for_timestep(float(t), num_train_timesteps) for t in ctx.scheduler.timesteps]
+        components = [config.component_for_timestep(float(t)) for t in ctx.scheduler.timesteps]
         expert_generator = torch.Generator().manual_seed(
             stable_hash("expert", int(ctx.args.seed), ctx.rollout_id, ctx.microbatch_id)
         )

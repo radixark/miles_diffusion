@@ -40,8 +40,6 @@ def prepare_nft_batch(
     pos_list = [config.prepare_cond_kwargs(batch[i]["denoising_env"].pos_cond_kwargs, device) for i in range(bsz)]
     pos_cond = config.collate_cond_for_sample_batch(pos_list, device, pad_to_len=pad_to_len)
 
-    num_train_timesteps = ctx.scheduler.config.num_train_timesteps
-
     noise_generator = torch.Generator(device=device).manual_seed(
         stable_hash("nft_corrupt", int(ctx.args.seed), ctx.rollout_id, ctx.microbatch_id, ctx.dp_rank)
     )
@@ -49,7 +47,7 @@ def prepare_nft_batch(
     return PreparedBatch(
         latents=xt,
         timesteps=t,
-        timesteps_for_model=config.process_sigma_as_timesteps_input(t, num_train_timesteps=num_train_timesteps),
+        timesteps_for_model=config.process_sigma_as_timesteps_input(t),
         model=model,
         component_name=component_name,
         guidance_scale=0.0,

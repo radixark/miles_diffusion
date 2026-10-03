@@ -1,4 +1,16 @@
-"""Smoke tests for diffusion SFT hooks (prepare + loss formula; actor owns DiT)."""
+"""Diffusion SFT hooks: prepare + loss formula (the actor owns the DiT).
+
+    prepare_sft_batch: a seeded generator draws
+      grid       ──► ctx.scheduler, timesteps on the family's num_train_timesteps scale
+      grid index ──► timesteps, sigmas   via sample_grid_indices (picks the DiT)
+      noise      ──► latents = (1 - sigma) x0 + sigma noise,  extras["target"] = noise - x0
+                │
+    sft_loss_formula: per pair, mean((pred - target)^2) + sigma-bucket metrics
+
+What each test pins:
+  TestPrepareSftBatch   corruption identity, grid/expert routing, determinism
+  TestSftLossFormula    exact-velocity zero loss, unit offset, sigma buckets partition the loss
+"""
 
 from tests.ci.ci_register import register_cpu_ci
 
@@ -19,16 +31,17 @@ NUM_GRID = 8
 class _Config:
     # The SD3 default: the DiT takes the trajectory timestep unchanged.
     process_timestep_as_input = staticmethod(lambda timesteps: timesteps)
+    num_train_timesteps = NUM_TRAIN_TIMESTEPS
 
     def collate_cond_for_sample_batch(self, per_sample_cond_kwargs, device, pad_to_len=None):
         return {"encoder_hidden_states": torch.cat([kw["encoder_hidden_states"] for kw in per_sample_cond_kwargs])}
 
-    def component_for_timestep(self, timestep, num_train_timesteps):
-        return "transformer" if timestep >= 0.875 * num_train_timesteps else "transformer_2"
+    def component_for_timestep(self, timestep):
+        return "transformer" if timestep >= 0.875 * self.num_train_timesteps else "transformer_2"
 
 
 class _SingleConfig(_Config):
-    def component_for_timestep(self, timestep, num_train_timesteps):
+    def component_for_timestep(self, timestep):
         return "transformer"
 
 
@@ -111,7 +124,7 @@ class TestPrepareSftBatch:
             expected = {
                 i
                 for i, timestep in enumerate(timesteps)
-                if config.component_for_timestep(float(timestep), NUM_TRAIN_TIMESTEPS) == component_name
+                if config.component_for_timestep(float(timestep)) == component_name
             }
             assert name == component_name
             assert set(idx.tolist()) == expected
@@ -132,7 +145,7 @@ class TestPrepareSftBatch:
             assert model is models[name]
             for i in idx.tolist():
                 t = float(ctx.scheduler.timesteps[i])
-                assert config.component_for_timestep(t, NUM_TRAIN_TIMESTEPS) == name
+                assert config.component_for_timestep(t) == name
         assert picked == {"transformer", "transformer_2"}
 
     def test_prepare_is_independent_of_global_rng_state(self):

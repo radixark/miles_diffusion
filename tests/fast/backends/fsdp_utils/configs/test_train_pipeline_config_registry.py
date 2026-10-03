@@ -1,3 +1,17 @@
+"""Train pipeline config registry: checkpoint -> family config -> what the DiT receives.
+
+    checkpoint ref --resolve_diffusion_model_family----> family config
+    trajectory t   --process_timestep_as_input---------> DiT timestep
+    sigma          --process_sigma_as_timesteps_input--> DiT timestep (scaled by the family's num_train_timesteps)
+    latents, cond  --compute_noise_pred----------------> noise pred: no CFG | two-pass CFG | joint-batch CFG
+
+What each test pins:
+  family resolution   HF ids and local paths match case-insensitively; unknown refs fail; the env var wins
+  compute_noise_pred  no CFG is one pos pass; joint-batch CFG equals two-pass CFG
+  timestep input      each family reproduces the arithmetic its sglang-d DiT runs
+  sigma input         sd3 / wan2_2 scale by num_train_timesteps = 1000; qwen_image / krea2 pass sigma through
+"""
+
 from tests.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=30, suite="stage-a-cpu", labels=[])
@@ -94,7 +108,7 @@ class TestComputeNoisePred:
 
 class TestProcessTimestepAsInput:
     # What a family hands its DiT as the timestep, given the trajectory's t and the
-    # scheduler range N. Each family must reproduce the arithmetic its sglang-d DiT runs.
+    # family's num_train_timesteps N. Each family must reproduce the arithmetic its sglang-d DiT runs.
     #
     #   sd3, wan2_2, krea2   t         the DiT takes the trajectory timestep unchanged
     #   qwen_image           t / 1000  the model's own normalizer, which Timesteps(scale=1000) undoes
@@ -120,17 +134,14 @@ class TestProcessSigmaAsTimestepsInput:
     SIGMAS = torch.tensor([0.8474337458610535, 0.5])
 
     @pytest.mark.parametrize("config_cls", [SD3TrainPipelineConfig, Wan2_2TrainPipelineConfig])
-    def test_scales_up_to_the_scheduler_range(self, config_cls):
-        out = config_cls.process_sigma_as_timesteps_input(
-            config_cls, self.SIGMAS, num_train_timesteps=self.NUM_TRAIN_TIMESTEPS
-        )
+    def test_scales_up_to_num_train_timesteps(self, config_cls):
+        assert config_cls.num_train_timesteps == self.NUM_TRAIN_TIMESTEPS
+        out = config_cls.process_sigma_as_timesteps_input(config_cls, self.SIGMAS)
         assert torch.equal(out, self.SIGMAS * float(self.NUM_TRAIN_TIMESTEPS))
 
     @pytest.mark.parametrize("config_cls", [QwenImageTrainPipelineConfig, Krea2TrainPipelineConfig])
     def test_passes_the_sigma_through(self, config_cls):
-        out = config_cls.process_sigma_as_timesteps_input(
-            config_cls, self.SIGMAS, num_train_timesteps=self.NUM_TRAIN_TIMESTEPS
-        )
+        out = config_cls.process_sigma_as_timesteps_input(config_cls, self.SIGMAS)
         assert torch.equal(out, self.SIGMAS)
 
     def test_qwen_image_round_trip_is_not_identity(self):
