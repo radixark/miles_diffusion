@@ -35,14 +35,17 @@ def _to_local_gpu_id(physical_gpu_id: int) -> int:
     )
 
 
-def _scheduler_process_with_rollout_patches(*args, **kwargs):
+def _bootstrap_scheduler_process_with_rollout_patches(spec):
     # Re-apply patches here: the spawned scheduler grandchild re-imports modules fresh, losing the parent's patches.
+    # Patch after platform init, as bootstrap orders it; its own init call is then a no-op.
+    from sglang.multimodal_gen.runtime.managers.worker_bootstrap import bootstrap_scheduler_process
+    from sglang.multimodal_gen.runtime.platforms import initialize_current_platform
+
     from miles.backends.sglang_diffusion_utils.monkey_patches import apply_env_selected_rollout_patches
 
+    initialize_current_platform()
     apply_env_selected_rollout_patches()
-    from sglang.multimodal_gen.runtime.managers.gpu_worker import run_scheduler_process
-
-    return run_scheduler_process(*args, **kwargs)
+    bootstrap_scheduler_process(spec)
 
 
 def _launch_server_target(server_args, apply_rollout_patches: bool = False):
@@ -56,7 +59,7 @@ def _launch_server_target(server_args, apply_rollout_patches: bool = False):
         # Rebind the scheduler entrypoint in launch_server's module so spawn pickles our patched wrapper by qualname.
         import sglang.multimodal_gen.runtime.launch_server as _ls_mod
 
-        _ls_mod.run_scheduler_process = _scheduler_process_with_rollout_patches
+        _ls_mod.bootstrap_scheduler_process = _bootstrap_scheduler_process_with_rollout_patches
 
     from sglang.multimodal_gen.runtime.launch_server import launch_server
 
