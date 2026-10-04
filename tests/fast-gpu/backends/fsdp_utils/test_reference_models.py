@@ -34,7 +34,14 @@ def test_independent_fsdp_references(tmp_path):
             str(Path(__file__).with_name("_reference_models_worker.py")),
             str(tmp_path),
         ],
-        env={**os.environ, "PYTHONUNBUFFERED": "1"},
+        # The worker imports the CPU test's harness from the `tests` package at the repository root.
+        env={
+            **os.environ,
+            "PYTHONPATH": os.pathsep.join(
+                filter(None, (str(Path(__file__).resolve().parents[4]), os.environ.get("PYTHONPATH")))
+            ),
+            "PYTHONUNBUFFERED": "1",
+        },
         capture_output=True,
         text=True,
         timeout=300,

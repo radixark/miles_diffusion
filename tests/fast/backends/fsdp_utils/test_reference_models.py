@@ -7,6 +7,7 @@
     LoRA base reference    ---> disable adapter ---> adapters and their gradients back on the actor
     FSDP2 kept-gathered    ---> lora_base forward ---> next step still trains the adapters
     FSDP2 mixed precision  ---> lazy init at load ---> fp32 adapter gradients whatever runs first
+    NFT                    ---> old_pred = actor with EMA weights (pi_old), ref_pred = --ref-mode (KL)
     loaded adapter r/alpha ---> IPC publication metadata (ignores CLI init defaults)
     FSDP boundary          ---> TinyBlock containing the complete LoRA projection
     checkpoint_path        ---> backend loads base; loader applies the role's LoRA
@@ -37,7 +38,7 @@ from torch.distributed.device_mesh import init_device_mesh
 from torch.distributed.fsdp import MixedPrecisionPolicy, fully_shard
 
 from miles.backends.fsdp_utils import model_loader
-from miles.backends.fsdp_utils.ema import reshard_model
+from miles.backends.fsdp_utils.ema import EMAOptimizer, reshard_model
 from miles.backends.fsdp_utils.input_dtype_policy import apply_input_dtype_policy
 from miles.backends.fsdp_utils.models.parallel_plan import FSDPParallelPlan
 
@@ -104,13 +105,20 @@ def make_model_loader_args():
     )
 
 
+def component_adapter_paths(path):
+    """One plain PEFT adapter directory per component, in --update-weight-target-module order."""
+    return [str(path / component) for component in make_model_loader_args().update_weight_target_modules]
+
+
 def save_component_lora_adapters(path):
-    for index, component in enumerate(make_model_loader_args().update_weight_target_modules):
+    adapter_paths = component_adapter_paths(path)
+    for index, adapter_path in enumerate(adapter_paths):
         model = get_peft_model(TinyComponent(), LoraConfig(r=2, lora_alpha=4, target_modules=["proj"]))
         with torch.no_grad():
             model.base_model.model.block.proj.lora_A.default.weight.fill_(0.15 + 0.1 * index)
             model.base_model.model.block.proj.lora_B.default.weight.fill_(0.25 + 0.1 * index)
-        model.save_pretrained(path / component)
+        model.save_pretrained(adapter_path)
+    return adapter_paths
 
 
 def load_actor_forward_method():
@@ -131,7 +139,9 @@ def load_actor_forward_method():
     return namespace[method.name]
 
 
-def make_actor_forward_harness(models, reference_models, component, inputs, ref_mode):
+def make_actor_forward_harness(
+    models, reference_models, component, inputs, ref_mode, *, loss_type="policy_loss", ema_optimizer=None
+):
     observed = {}
     prepared = SimpleNamespace(
         model=models[component],
@@ -147,13 +157,14 @@ def make_actor_forward_harness(models, reference_models, component, inputs, ref_
         true_cfg_scale=None,
     )
 
-    def loss_formula(ctx, batch, prepared, *, new_pred, ref_pred, **kwargs):
-        observed.update(new_pred=new_pred, ref_pred=ref_pred)
+    def loss_formula(ctx, batch, prepared, *, new_pred, old_pred, ref_pred, **kwargs):
+        observed.update(new_pred=new_pred, old_pred=old_pred, ref_pred=ref_pred)
         return (new_pred - ref_pred).square().mean()
 
     harness = SimpleNamespace(
-        args=Namespace(ref_mode=ref_mode),
+        args=Namespace(ref_mode=ref_mode, loss_type=loss_type),
         models=models,
+        ema_optimizer=ema_optimizer,
         model=torch.nn.ModuleDict(models),
         reference_models=reference_models,
         train_pipeline_config=TinyPipelineConfig(),
@@ -187,7 +198,7 @@ def test_loaded_reference_and_teacher_are_independent_and_frozen(
     tmp_path, unsharded_model_loader, actor_mode, reference_has_adapter
 ):
     parallel, calls = unsharded_model_loader
-    save_component_lora_adapters(tmp_path)
+    adapter_paths = save_component_lora_adapters(tmp_path)
     args, backend, config = make_model_loader_args(), TinyBackend(), TinyPipelineConfig()
     actor_has_adapter = actor_mode != "full"
     args.use_lora = actor_has_adapter
@@ -201,7 +212,7 @@ def test_loaded_reference_and_teacher_are_independent_and_frozen(
         config,
         parallel,
         checkpoint_path="actor",
-        lora_adapter_path=str(tmp_path) if actor_mode == "saved_lora" else None,
+        lora_adapter_paths=adapter_paths if actor_mode == "saved_lora" else None,
         trainable=True,
     )
     reference = model_loader.load_fsdp_models(
@@ -210,7 +221,7 @@ def test_loaded_reference_and_teacher_are_independent_and_frozen(
         config,
         parallel,
         checkpoint_path="reference",
-        lora_adapter_path=str(tmp_path) if reference_has_adapter else None,
+        lora_adapter_paths=adapter_paths if reference_has_adapter else None,
         cpu_offload=True,
     )
     teacher = model_loader.load_fsdp_models(
@@ -219,7 +230,7 @@ def test_loaded_reference_and_teacher_are_independent_and_frozen(
         config,
         parallel,
         checkpoint_path="teacher",
-        lora_adapter_path=str(tmp_path),
+        lora_adapter_paths=adapter_paths,
     )
     assert args.hf_checkpoint == "actor" and args.use_lora is actor_has_adapter
     assert calls == [("shared-fsdp-mesh", flag) for flag in (False, False, True, True, False, False)]
@@ -269,14 +280,14 @@ def test_loaded_reference_and_teacher_are_independent_and_frozen(
 
 def test_lora_base_forward_restores_adapters_and_actor_gradients(tmp_path, unsharded_model_loader):
     parallel, _ = unsharded_model_loader
-    save_component_lora_adapters(tmp_path)
+    adapter_paths = save_component_lora_adapters(tmp_path)
     actor = model_loader.load_fsdp_models(
         make_model_loader_args(),
         TinyBackend(),
         TinyPipelineConfig(),
         parallel,
         checkpoint_path="actor",
-        lora_adapter_path=str(tmp_path),
+        lora_adapter_paths=adapter_paths,
         trainable=True,
     )
     component = "transformer_2"
@@ -349,16 +360,52 @@ def test_lora_base_reference_keeps_adapter_gradients_on_fsdp_shards():
         dist.destroy_process_group()
 
 
+def test_nft_gets_ema_as_old_and_lora_base_as_kl_reference(tmp_path, unsharded_model_loader):
+    # actor adapters moved away from their EMA copy:
+    #   old_pred = actor with EMA weights (pi_old), ref_pred = actor with adapters disabled, all three differ
+    parallel, _ = unsharded_model_loader
+    adapter_paths = save_component_lora_adapters(tmp_path)
+    actor = model_loader.load_fsdp_models(
+        make_model_loader_args(),
+        TinyBackend(),
+        TinyPipelineConfig(),
+        parallel,
+        checkpoint_path="actor",
+        lora_adapter_paths=adapter_paths,
+        trainable=True,
+    )
+    component = "transformer"
+    model, inputs = actor[component], torch.ones(2, 3)
+    ema_optimizer = EMAOptimizer(model)
+    with torch.no_grad():
+        for parameter in model.parameters():
+            if parameter.requires_grad:
+                parameter.add_(0.5)
+        expected_new = model(inputs)
+        with ema_optimizer.use_weights(model):
+            expected_old = model(inputs)
+        with model.disable_adapter():
+            expected_ref = model(inputs)
+    harness, observed = make_actor_forward_harness(
+        actor, {}, component, inputs, "lora_base", loss_type="nft", ema_optimizer=ema_optimizer
+    )
+    load_actor_forward_method()(harness, None, [], metrics=None)
+    torch.testing.assert_close(observed["new_pred"], expected_new)
+    torch.testing.assert_close(observed["old_pred"], expected_old)
+    torch.testing.assert_close(observed["ref_pred"], expected_ref)
+    assert not torch.equal(expected_old, expected_ref) and not torch.equal(expected_old, expected_new)
+
+
 def test_ipc_publication_uses_loaded_adapter_config(tmp_path, unsharded_model_loader):
     parallel, _ = unsharded_model_loader
-    save_component_lora_adapters(tmp_path)
+    adapter_paths = save_component_lora_adapters(tmp_path)
     models = model_loader.load_fsdp_models(
         make_model_loader_args(),
         TinyBackend(),
         TinyPipelineConfig(),
         parallel,
         checkpoint_path="actor",
-        lora_adapter_path=str(tmp_path),
+        lora_adapter_paths=adapter_paths,
         trainable=True,
     )
     path = Path(__file__).resolve().parents[4] / "miles/backends/fsdp_utils/diffusion_update_weight_utils.py"

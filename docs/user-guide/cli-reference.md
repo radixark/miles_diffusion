@@ -177,18 +177,23 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--rollout-microgroup-size` | int | `1` | |
 | `--diffusion-fps` | float | – | Video only. |
 | `--diffusion-output-num-frames` | int | `1` | |
+| `--rollout-video-dtype` | enum | `keep` | `keep` / `uint8`: dtype of the decoded video in rollout responses. `uint8` quantizes engine-side with the reward path's formula, cutting the response ~4x; keep `keep` for consumers that need the float tensor. |
 | `--diffusion-guidance-scale` | float | `4.0` | |
 | `--diffusion-guidance-scale-2` | float | – | Wan2.2 low-noise expert; **required** when training it. |
 | `--diffusion-true-cfg-scale` | float | – | |
 | `--diffusion-negative-prompt` | str | – | Defaults to `" "` on the engine when CFG is on. |
 | `--diffusion-noise-level` | float | `0.7` | |
 | `--diffusion-height` / `--diffusion-width` | int | `512` | Rollout output size; SFT center-crop size. |
+| `--diffusion-h3-aspect-ratio` | str | `16:9` | MiniMax H3 only: `21:9` / `16:9` / `4:3` / `1:1` / `3:4` / `9:16`. |
+| `--diffusion-h3-duration-seconds` | float | `5.0` | MiniMax H3 only: rollout duration, 4.0–15.0 s. |
+| `--diffusion-audio-flow-shift` | float | `3.0` | MiniMax H3 only: audio flow shift for rollout. |
 | `--diffusion-sde-type` | enum | `sde` | `sde` / `cps` / `ode`. Selects the train-side SDE backend too. |
 | `--sde-step-backend-path` | str | – | Custom dynamics. See [SDE backends](#sde-step-backends). |
 | `--diffusion-num-sde-steps` | int | `0` | |
 | `--diffusion-sde-window-range` | `"lo,hi"` | – | For `sde_window`. Defaults to `[0, num_inference_steps)`. |
 | `--diffusion-sde-candidate-steps` | `"1,2,3"` | – | Required by `epoch_global_random_choice`. |
 | `--diffusion-step-strategy-path` | str | – | Overrides the bare `--diffusion-num-sde-steps` selection. |
+| `--rollout-return-full-trajectory` | flag | off | Ask the engine for the whole denoising trajectory instead of only the steps the step strategy requests. The train tensors are identical; kept for debugging and A/B runs. |
 | `--diffusion-log-prob-no-const` | flag | off | Drop log-prob constants on the engine (pairs with the CPS backend). |
 | `--diffusion-generator-device` | str | `cuda` | |
 | `--rollout-patch-group` | str | – | Comma-separated numeric-parity patch groups, e.g. `sgld`, `ltx`. |
@@ -227,6 +232,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--start-rollout-id` | int | – | Resumed from `--load` when unset. |
 | `--sft-encoder-checkpoint` | str | – | SFT only: tokenizer/text_encoder/vae source. |
 | `--sft-frame-stride` | int | `1` | SFT encode temporal stride. |
+| `--sft-offload-encoder` | flag | off | SFT only: keep the frozen encoder in host RAM, on the GPU only during encode bursts. |
 
 ### Evaluation
 
@@ -254,14 +260,20 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--diffusion-clip-range` | float | `1e-4` | |
 | `--diffusion-adv-clip-max` | float | `5.0` | Under `nft` this also sets the advantage-to-`r` slope. |
 | `--diffusion-recompute-old-log-prob` | flag | off | Recompute old log-probs with the trainer forward instead of trusting the rollout's. `policy_loss` only. |
-| `--diffusion-kl-beta` | float | `0.0` | |
-| `--ref-mode` | enum | – | `none` / `lora_base` / `ema`. Auto: `lora_base` when KL > 0, `ema` under `nft`. |
+| `--diffusion-kl-beta` | float | `0.0` | KL to the `--ref-mode` model; under `nft` adds `kl_beta * mean((v_θ − v_ref)²)` per pair. |
+| `--ref-mode` | enum | – | KL reference: `none` / `lora_base` (actor with adapters disabled) / `ref` (the model from `--ref-load`). Auto: `lora_base` when KL > 0. |
+| `--ref-load` | str | – | HF pipeline checkpoint of an independent frozen reference model. Requires `--ref-mode ref`. |
+| `--ref-lora-adapter-path` | str+ | – | PEFT adapter directories applied to `--ref-load`, one per `--update-weight-target-module` entry, in order. |
+| `--ref-cpu-offload` | flag | off | Keep the reference shards in pinned CPU memory between forwards (FSDP `CPUOffloadPolicy`). |
+| `--teacher-load` | str | – | HF pipeline checkpoint of a frozen teacher model, read only by custom prepare/loss hooks as `ctx.teacher_models`, so it requires `--custom-prepare-train-batch-path` or `--custom-loss-function-path`. |
+| `--teacher-lora-adapter-path` | str+ | – | PEFT adapter directories applied to `--teacher-load`, one per `--update-weight-target-module` entry, in order. |
+| `--teacher-cpu-offload` | flag | off | Keep the teacher shards in pinned CPU memory between forwards. |
 | `--custom-prepare-train-batch-path` | str | – | Builds DiT inputs. |
 | `--custom-loss-function-path` | str | – | Loss **formula** only — the DiT forward stays in the actor. |
 | `--diffusion-nft-beta` | float | `1.0` | |
-| `--diffusion-nft-timestep-fraction` | float | `0.99` | |
+| `--diffusion-nft-timestep-fraction` | float | `0.99` | Share of the rollout's denoising steps each sample trains on: `int(steps × fraction)` of its steps, drawn at random per sample. It counts steps, not a range of σ or timestep values; the final clean output (σ = 0) is never a training step. |
 | `--no-diffusion-nft-adaptive-weight` | flag | off | |
-| `--no-diffusion-nft-shuffle-timesteps` | flag | off | |
+| `--no-diffusion-nft-shuffle-timesteps` | flag | off | Train each sample's first steps in schedule order, noisiest first, instead of a random subset. |
 
 ### Reward
 
@@ -272,6 +284,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--group-rm` | flag | off | Score a whole prompt group at once. |
 | `--custom-rm-path` | str | – | `async def rm(args, samples) -> list[float]`. Batched only; replaces the `--rm-type` dispatch entirely. Shipped: `miles.rollout.rm_hub.weighted_mixture_rm.weighted_mixture_rm` (weighted sum of built-in rewards). |
 | `--custom-rm-args` | str | – | Opaque config string for the custom RM, read as `args.custom_rm_args`; e.g. `"hps=0.7,pickscore=0.3"` for `rm_hub.weighted_mixture_rm`. |
+| `--rm-url` | str | – | URL of a remote reward service, e.g. `http://localhost:8000`; mirrors miles core. No built-in `--rm-type` reads it yet, so read it from a `--custom-rm-path` function. |
 | `--reward-key` | str | – | For dict-valued rewards: the entry GRPO trains on. Every entry is also logged as `rollout/reward/<key>_mean` and `eval/<dataset>/<key>`. |
 | `--custom-reward-post-process-path` | str | – | Replace advantage normalisation. |
 | `--pickscore-model-path` | str | – | Required for `--rm-type pickscore`. |
@@ -289,6 +302,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--hps-checkpoint-path` | str | – | Local checkpoint; unset downloads from Hugging Face. |
 | `--ocr-num-workers` | int | `4` | |
 | `--rollout-parser-num-workers` | int | `1` | Ray actors deserializing rollout responses. Raise when trajectory tensors are large. |
+| `--rollout-fetch-in-parser` | flag | off | Parser actors pick the least-loaded engine through the miles router, then fetch and parse its response in place, skipping the router's data plane and the manager's event loop. Requires `--use-miles-router` and at least as many parser workers as concurrency slots. |
 
 ### Rollout customization hooks
 
@@ -311,6 +325,7 @@ Every one takes a dotted path.
 |---|---|---|---|
 | `--use-lora` | flag | off | |
 | `--lora-rank` / `--lora-alpha` | int | `64` / `64` | |
+| `--lora-adapter-path` | str+ | – | PEFT adapter directories the actor continues from, one per `--update-weight-target-module` entry, in order; `--lora-rank` / `--lora-alpha` must match their configs. |
 | `--lora-target-modules` | str+ | – | Defaults per model family. |
 | `--lora-init-weights` | str | `gaussian` | `kaiming-uniform` maps to PEFT's default; other PEFT schemes pass through. |
 | `--lora-ipc-weight-sync` | flag | off | Push only `lora_A`/`lora_B`; the engine merges locally. Requires `--use-lora`. |
@@ -319,10 +334,10 @@ Every one takes a dotted path.
 
 | Flag | Type | Default | Notes |
 |---|---|---|---|
-| `--use-ema` | flag | off | Maintains an EMA copy as πₒₗd. Needs a consumer (`--ref-mode ema` or `--ema-rollout-policy ema`). |
-| `--ema-rollout-policy` | enum | `live` | `live` / `ema`: which weights get pushed to rollout. |
-| `--ema-decay-init` | float | `0.001` | Decay during the flat period. |
-| `--ema-decay-ramp` | float | `0.001` | Per-step increase after the flat period; the ramp restarts from zero. |
+| `--use-ema` | flag | off | Maintains an EMA copy as `π_old`. Needs a consumer (`--loss-type nft`, which trains against it as `π_old`, or `--rollout-weights ema`). |
+| `--rollout-weights` | enum | `actor` | `actor` / `ema`: which weights get pushed to rollout. |
+| `--ema-decay-init` | float | `0.001` | Decay during the flat period, counted in actor optimizer steps. |
+| `--ema-decay-ramp` | float | `0.001` | Increase per actor optimizer step after the flat period; the ramp restarts from zero. |
 | `--ema-decay-max` | float | `0.5` | Ceiling. |
 | `--ema-decay-flat-steps` | int | `0` | |
 
@@ -349,6 +364,7 @@ Every one takes a dotted path.
 | `--disable-wandb-random-suffix` | flag | off | Run names include a random suffix by default; pass this flag to disable it. |
 | `--wandb-log-num-images` | int | `0` | Images/videos per rollout; `0` disables. |
 | `--wandb-log-image-interval` | int | `1` | Send media every N rollouts. |
+| `--log-loss-sigma-bucket` | int | `10` | Sigma buckets for the per-bucket loss curves (emitted by the SFT loss); `0` disables. |
 | `--use-miles-dashboard` | flag | off | Async phase/trajectory telemetry. |
 | `--miles-dashboard-workspace` | str | `./miles_dashboard` | |
 

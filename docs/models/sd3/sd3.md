@@ -190,7 +190,7 @@ MILES_SCRIPT_SMOKE=1 python3 scripts/run_diffusion_nft_sd3_pickscore.py
 | Script | `run_diffusion_grpo_sd3_ocr_sglang.py` | `run_diffusion_grpo_sd3_hps_sglang.py` | `run_diffusion_grpo_sd3_ocr_pickscore_sglang.py` | `run_diffusion_nft_sd3_pickscore.py` |
 | `--loss-type` | `policy_loss` (default) | `policy_loss` (default) | `policy_loss` (default) | `nft` |
 | SDE | Full window, noise=0.7, CFG=4.5 | Full window, noise=0.7, CFG=4.5 | Full window, noise=0.7, CFG=4.5 | ODE, noise=0 |
-| Reference | LoRA base KL (β 0.04) | LoRA base KL (β 0.01) | LoRA base KL (β 0.04) | EMA (`--use-ema`) |
+| Reference | LoRA base KL (β 0.04) | LoRA base KL (β 0.01) | LoRA base KL (β 0.04) | None; `π_old` is the EMA (`--use-ema`) |
 | Reward placement | CPU OCR | Colocated HPS actor | CPU OCR + colocated PickScore actor | Dedicated PickScore GPU |
 | Verification | FG | V | V | FG |
 
@@ -246,7 +246,7 @@ with these settings of its own:
 | Setting | Value |
 |---|---|
 | Algorithm | `--loss-type nft` |
-| Reference | `--ref-mode ema --use-ema --ema-rollout-policy ema` |
+| π_old | `--use-ema --rollout-weights ema` |
 | Reward | `--rm-type pickscore` |
 | SDE | `--diffusion-sde-type ode --diffusion-noise-level 0.0` |
 | LoRA | rank 32, alpha 64, IPC sync |

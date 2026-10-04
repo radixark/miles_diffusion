@@ -28,6 +28,7 @@ from miles.utils.train_data_utils import (
 )
 
 from . import checkpoint
+from .device_move import move_model, move_optimizer, sleep_frozen_model, wake_up_frozen_model
 from .diffusion_update_weight_utils import (
     DiffusionUpdateWeightFromTensor,
     DiffusionUpdateWeightFromTensorLoRA,
@@ -40,7 +41,6 @@ from .lr_scheduler import get_lr_scheduler
 from .metrics import new_metric_buffer
 from .mixed_precision import parse_dtype_from_str
 from .model_loader import load_fsdp_models
-from .offload import move_optimizer, offload_model, onload_model
 from .parallel import create_fsdp_parallel_state
 
 logger = logging.getLogger(__name__)
@@ -108,7 +108,7 @@ class FSDPTrainRayActor(TrainRayActor):
             self.train_pipeline_config,
             self.parallel_state,
             checkpoint_path=args.hf_checkpoint,
-            lora_adapter_path=args.lora_adapter_path,
+            lora_adapter_paths=args.lora_adapter_paths,
             trainable=True,
             cpu_offload=args.fsdp_cpu_offload,
         )
@@ -120,7 +120,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 self.train_pipeline_config,
                 self.parallel_state,
                 checkpoint_path=args.ref_load,
-                lora_adapter_path=args.ref_lora_adapter_path,
+                lora_adapter_paths=args.ref_lora_adapter_paths,
                 cpu_offload=args.ref_cpu_offload,
             )
         self.teacher_models = {}
@@ -131,9 +131,22 @@ class FSDPTrainRayActor(TrainRayActor):
                 self.train_pipeline_config,
                 self.parallel_state,
                 checkpoint_path=args.teacher_load,
-                lora_adapter_path=args.teacher_lora_adapter_path,
+                lora_adapter_paths=args.teacher_lora_adapter_paths,
                 cpu_offload=args.teacher_cpu_offload,
             )
+        # A natively CPU-offloaded model never sleeps: its parameters stay on the host and its buffers on the GPU.
+        self.actor_models_to_sleep = [] if args.fsdp_cpu_offload else list(self.models.values())
+        self.frozen_models_to_sleep = [
+            model
+            for models, cpu_offload in (
+                (self.reference_models, args.ref_cpu_offload),
+                (self.teacher_models, args.teacher_cpu_offload),
+            )
+            if not cpu_offload
+            for model in models.values()
+        ]
+        # Reference and teacher weights never change, so each sleep points them back at the host copies kept at wake.
+        self.frozen_parameter_host_copies_by_model = {model: {} for model in self.frozen_models_to_sleep}
 
         # Force a sync to ensure sharding is complete and old memory is freed.
         torch.cuda.synchronize()
@@ -215,12 +228,13 @@ class FSDPTrainRayActor(TrainRayActor):
         if not self.args.offload_train:
             return
 
-        print_memory("before offload DiT")
+        print_memory("before sleep DiT")
         self.optimizer.zero_grad(set_to_none=True)
 
-        for models in (self.models, self.reference_models, self.teacher_models):
-            for model in models.values():
-                offload_model(model)
+        for model in self.actor_models_to_sleep:
+            move_model(model, "cpu")
+        for model in self.frozen_models_to_sleep:
+            sleep_frozen_model(model, self.frozen_parameter_host_copies_by_model[model])
         move_optimizer(self.optimizer, "cpu")
         if self.ema_optimizer is not None:
             move_optimizer(self.ema_optimizer, "cpu")
@@ -233,13 +247,10 @@ class FSDPTrainRayActor(TrainRayActor):
         if not self.args.offload_train:
             return
 
-        for models, cpu_offload in (
-            (self.models, self.args.fsdp_cpu_offload),
-            (self.reference_models, self.args.ref_cpu_offload),
-            (self.teacher_models, self.args.teacher_cpu_offload),
-        ):
-            for model in models.values():
-                onload_model(model, cpu_offload=cpu_offload)
+        for model in self.actor_models_to_sleep:
+            move_model(model, "cuda")
+        for model in self.frozen_models_to_sleep:
+            wake_up_frozen_model(model, self.frozen_parameter_host_copies_by_model[model])
         if not self.args.fsdp_cpu_offload:
             move_optimizer(self.optimizer, "cuda")
             if self.ema_optimizer is not None:
@@ -271,7 +282,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 ray.get(self.rollout_manager.clear_num_new_engines.remote())
 
         rollout_weight_context = (
-            self.ema_optimizer.use_weights(self.model) if self.args.ema_rollout_policy == "ema" else nullcontext()
+            self.ema_optimizer.use_weights(self.model) if self.args.rollout_weights == "ema" else nullcontext()
         )
         with rollout_weight_context:
             self.weight_updater.update_weights()
@@ -306,7 +317,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 return
             self._train_core(rollout_id=rollout_id, rollout_data=rollout_data)
             if self.ema_optimizer is not None:
-                self.ema_optimizer.step()
+                self.ema_optimizer.step(self.global_step)
 
         train_metric_utils.log_perf_data_raw(
             rollout_id=rollout_id,
@@ -511,13 +522,17 @@ class FSDPTrainRayActor(TrainRayActor):
 
         new_pred = _compute_noise_pred(prepared.model)
 
+        # pi_old: the EMA weights the rollout sampled with.
+        old_pred = None
+        if self.args.loss_type == "nft":
+            with torch.no_grad(), self.ema_optimizer.use_weights(prepared.model):
+                old_pred = _compute_noise_pred(prepared.model).detach()
+
+        # KL reference.
         ref_pred = None
         if self.args.ref_mode == "ref":
             with torch.no_grad():
                 ref_pred = _compute_noise_pred(self.reference_models[prepared.component_name]).detach()
-        elif self.args.ref_mode == "ema":
-            with torch.no_grad(), self.ema_optimizer.use_weights(prepared.model):
-                ref_pred = _compute_noise_pred(prepared.model).detach()
         elif self.args.ref_mode == "lora_base":
             with torch.no_grad(), prepared.model.disable_adapter():
                 ref_pred = _compute_noise_pred(prepared.model).detach()
@@ -530,6 +545,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 batch,
                 prepared,
                 new_pred=new_pred,
+                old_pred=old_pred,
                 ref_pred=ref_pred,
                 metrics=metrics,
                 write_old_log_prob=write_old_log_prob,
@@ -540,6 +556,7 @@ class FSDPTrainRayActor(TrainRayActor):
             batch,
             prepared,
             new_pred=new_pred,
+            old_pred=old_pred,
             ref_pred=ref_pred,
             metrics=metrics,
             write_old_log_prob=write_old_log_prob,

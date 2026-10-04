@@ -9,8 +9,8 @@ import torch
 import torch.distributed as dist
 
 from . import checkpoint
+from .device_move import move_model
 from .mixed_precision import compile_param_dtype_maps, parse_dtype_from_str
-from .offload import offload_model
 from .sequence_parallel.plan import apply_sequence_parallel
 
 logger = logging.getLogger(__name__)
@@ -23,14 +23,14 @@ def load_fsdp_models(
     parallel_state,
     *,
     checkpoint_path: str,
-    lora_adapter_path: str | None = None,
+    lora_adapter_paths: list[str] | None = None,
     trainable: bool = False,
     cpu_offload: bool = False,
 ) -> dict[str, torch.nn.Module]:
     materialize_weights = dist.get_rank() == 0
     master_dtype = parse_dtype_from_str(args.fsdp_master_dtype)
     models = {}
-    for component in args.update_weight_target_modules:
+    for component_index, component in enumerate(args.update_weight_target_modules):
         with model_init_context(materialize_weights=materialize_weights):
             model = model_backend.load_component(
                 component,
@@ -42,9 +42,8 @@ def load_fsdp_models(
             model_backend.set_attention_backend(model, args.fsdp_attention_backend)
         if trainable and args.gradient_checkpointing:
             model_backend.enable_gradient_checkpointing(model)
-        if lora_adapter_path is not None:
-            subfolder = component if len(args.update_weight_target_modules) > 1 else None
-            model = load_lora_adapter(model, lora_adapter_path, trainable=trainable, subfolder=subfolder)
+        if lora_adapter_paths is not None:
+            model = load_lora_adapter(model, lora_adapter_paths[component_index], trainable=trainable)
         elif trainable and args.use_lora:
             model = apply_lora(model, args, train_pipeline_config)
         model.train(trainable)
@@ -73,8 +72,9 @@ def load_fsdp_models(
                 model_backend.install_sequence_parallel_attention,
             )
         finish_fsdp_lazy_init(model)
-        if args.offload_train:
-            offload_model(model)
+        # A natively CPU-offloaded model never sleeps, so its buffers stay on the GPU.
+        if args.offload_train and not cpu_offload:
+            move_model(model, "cpu")
         models[component] = model
     return models
 
@@ -105,14 +105,12 @@ def model_init_context(*, materialize_weights: bool):
         yield
 
 
-def load_lora_adapter(model, adapter_path: str, *, trainable: bool, subfolder: str | None = None):
+def load_lora_adapter(model, adapter_path: str, *, trainable: bool):
     from peft import PeftConfig, PeftModel, get_peft_model
 
     if dist.get_rank() == 0:
-        return PeftModel.from_pretrained(
-            model, adapter_path, subfolder=subfolder, is_trainable=trainable, autocast_adapter_dtype=False
-        )
-    config = PeftConfig.from_pretrained(adapter_path, subfolder=subfolder)
+        return PeftModel.from_pretrained(model, adapter_path, is_trainable=trainable, autocast_adapter_dtype=False)
+    config = PeftConfig.from_pretrained(adapter_path)
     config.inference_mode = not trainable
     return get_peft_model(model, config, low_cpu_mem_usage=True, autocast_adapter_dtype=False)
 

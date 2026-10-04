@@ -4,7 +4,7 @@
        |                         |                          |
        +--> dense oracle         +--> full / LoRA ref       +--> LoRA actor
                                         frozen                  gradients + AdamW
-    role checkpoint_path --> base component --> optional pretrained adapter
+    role checkpoint_path --> base component --> optional pretrained adapter (one PEFT directory per component)
 
 Native CPU offload and GPU-resident references must produce the same outputs.
 LoRA-base evaluation must leave adapter execution and adapter gradients intact.
@@ -22,6 +22,7 @@ from peft import PeftModel
 from tests.fast.backends.fsdp_utils.test_reference_models import (
     TinyBackend,
     TinyPipelineConfig,
+    component_adapter_paths,
     load_actor_forward_method,
     make_actor_forward_harness,
     make_model_loader_args,
@@ -38,7 +39,7 @@ def load_dense_model(checkpoint_path, component, adapter_path, *, trainable=Fals
         component, checkpoint_path=checkpoint_path, master_dtype=torch.float32, materialize_weights=True
     )
     if adapter_path is not None:
-        model = PeftModel.from_pretrained(model, adapter_path, subfolder=component, is_trainable=trainable)
+        model = PeftModel.from_pretrained(model, adapter_path, is_trainable=trainable)
     model.train(trainable)
     return model.cuda()
 
@@ -47,11 +48,11 @@ def local_tensor(tensor):
     return tensor.to_local() if isinstance(tensor, DTensor) else tensor
 
 
-def check_roles(mesh, adapter_path, reference_has_adapter, cpu_offload):
+def check_roles(mesh, adapter_paths, reference_has_adapter, cpu_offload):
     args, backend, config = make_model_loader_args(), TinyBackend(), TinyPipelineConfig()
     parallel = SimpleNamespace(get_mesh=lambda name: mesh, get_optional_mesh=lambda name: None)
     actor = load_fsdp_models(
-        args, backend, config, parallel, checkpoint_path="actor", lora_adapter_path=adapter_path, trainable=True
+        args, backend, config, parallel, checkpoint_path="actor", lora_adapter_paths=adapter_paths, trainable=True
     )
     reference = load_fsdp_models(
         args,
@@ -59,7 +60,7 @@ def check_roles(mesh, adapter_path, reference_has_adapter, cpu_offload):
         config,
         parallel,
         checkpoint_path="reference",
-        lora_adapter_path=adapter_path if reference_has_adapter else None,
+        lora_adapter_paths=adapter_paths if reference_has_adapter else None,
         cpu_offload=cpu_offload,
     )
     teacher = load_fsdp_models(
@@ -68,11 +69,11 @@ def check_roles(mesh, adapter_path, reference_has_adapter, cpu_offload):
         config,
         parallel,
         checkpoint_path="teacher",
-        lora_adapter_path=adapter_path,
+        lora_adapter_paths=adapter_paths,
         cpu_offload=cpu_offload,
     )
     inputs = torch.arange(6, dtype=torch.float32, device="cuda").reshape(2, 3) / 10
-    for component in args.update_weight_target_modules:
+    for component, adapter_path in zip(args.update_weight_target_modules, adapter_paths, strict=True):
         oracle = load_dense_model("actor", component, adapter_path, trainable=True)
         reference_oracle = load_dense_model("reference", component, adapter_path if reference_has_adapter else None)
         teacher_oracle = load_dense_model("teacher", component, adapter_path)
@@ -135,12 +136,12 @@ def main():
     torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
     dist.init_process_group("nccl", device_id=torch.device("cuda", torch.cuda.current_device()))
     mesh = init_device_mesh("cuda", (dist.get_world_size(),))
-    adapter_path = Path(sys.argv[1])
+    adapter_root = Path(sys.argv[1])
     if dist.get_rank() == 0:
-        save_component_lora_adapters(adapter_path)
+        save_component_lora_adapters(adapter_root)
     dist.barrier()
     for reference_has_adapter, cpu_offload in itertools.product((False, True), repeat=2):
-        check_roles(mesh, str(adapter_path), reference_has_adapter, cpu_offload)
+        check_roles(mesh, component_adapter_paths(adapter_root), reference_has_adapter, cpu_offload)
     dist.barrier()
     if dist.get_rank() == 0:
         print("OK")
