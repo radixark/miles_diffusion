@@ -116,8 +116,12 @@ class _RingAttention(torch.autograd.Function):
     @staticmethod
     def forward(ctx, query, key, value, group, scale, kernel):
         # torch's private ring templates, at their torch >= 2.11 home (2.9: experimental._attention).
-        from torch.distributed.tensor.experimental._context_parallel._attention import _templated_ring_attention
+        from torch.distributed.tensor.experimental._context_parallel._attention import (
+            _cp_options,
+            _templated_ring_attention,
+        )
 
+        _cp_options.enable_load_balance = False
         if kernel == "cudnn":
             op = torch.ops.aten._scaled_dot_product_cudnn_attention
             # cudnn computes LSE only on request; ring merging always needs it
