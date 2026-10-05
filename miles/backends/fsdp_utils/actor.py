@@ -273,7 +273,8 @@ class FSDPTrainRayActor(TrainRayActor):
         checkpoint.save(self, iteration=rollout_id)
 
     @timer
-    def update_weights(self) -> None:  # type: ignore[override]
+    def update_weights(self, previous_ema: bool = False) -> None:  # type: ignore[override]
+        """Push the rollout weights; ``previous_ema`` pushes the EMA before the latest step (async resume)."""
         if self.args.train_only or self.args.debug_rollout_only:
             return
 
@@ -291,7 +292,9 @@ class FSDPTrainRayActor(TrainRayActor):
                 ray.get(self.rollout_manager.clear_num_new_engines.remote())
 
         rollout_weight_context = (
-            self.ema_optimizer.use_weights(self.model) if self.args.rollout_weights == "ema" else nullcontext()
+            self.ema_optimizer.use_weights(self.model, previous=previous_ema)
+            if self.args.rollout_weights == "ema"
+            else nullcontext()
         )
         with rollout_weight_context:
             self.weight_updater.update_weights()

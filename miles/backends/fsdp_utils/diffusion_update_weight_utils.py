@@ -624,15 +624,22 @@ class DiffusionUpdateWeightFromDistributed(DiffusionUpdateWeight):
     def update_bucket_weights(self, named_tensors, target_module, weight_version=None, weight_update_mode=None):
         if dist.get_rank() != 0:
             return
+        lora_kwargs = {}
+        if weight_update_mode is not None:
+            model = self.models[target_module]
+            adapter_config = model.peft_config[model.active_adapter]
+            lora_kwargs = dict(
+                weight_update_mode=weight_update_mode,
+                lora_alpha=adapter_config.lora_alpha,
+                lora_rank=adapter_config.r,
+            )
         broadcast_bucket(
             rollout_engines=self.rollout_engines,
             group=self._model_update_group,
             group_name=self._group_name,
             named_tensors=named_tensors,
             target_module=target_module,
-            weight_update_mode=weight_update_mode,
-            lora_alpha=self.args.lora_alpha,
-            lora_rank=self.args.lora_rank,
+            **lora_kwargs,
         )
 
 

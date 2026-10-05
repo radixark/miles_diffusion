@@ -5,7 +5,8 @@
     actor --use_weights--> EMA forward --finally--> original actor weights
     component A --use_weights--> EMA A; component B stays untouched
     actor.train --> one EMA update at the actor's optimizer step --> repeated publications (no further updates)
-    keep_previous: EMA --step--> previous holds the pre-step EMA; DCP load --> previous restarts at the loaded EMA
+    keep_previous: EMA --step--> previous holds the pre-step EMA --DCP--> resumed previous EMA
+                   (a checkpoint without one starts it at the loaded EMA)
 
 Dense and adapter-only checkpoints save EMA independently of Adam; the decay schedule follows the
 actor's optimizer step count, which the checkpoint metadata restores. Older checkpoints seed EMA
@@ -262,15 +263,45 @@ def test_legacy_checkpoint_seeds_ema_from_loaded_actor(tmp_path, cpu_checkpoint,
         torch.testing.assert_close(state["ema"], parameter)
 
 
-def test_resume_restarts_previous_ema_at_loaded_ema(tmp_path, cpu_checkpoint):
-    # Async resume samples its first batch with the loaded EMA, so pi_old must restart there too,
-    # not at the constructor's actor weights or the pre-checkpoint previous EMA.
+def test_checkpoint_restores_previous_ema(tmp_path, cpu_checkpoint):
+    # Async resume resamples its first batch with the previous EMA, so the checkpoint keeps it exactly.
     actor = make_actor(tmp_path, keep_previous=True)
+    for optimizer_step in (1, 2):
+        with torch.no_grad():
+            for parameter in actor.model.parameters():
+                parameter.add_(2.0)
+        actor.ema_optimizer.step(optimizer_step=optimizer_step)
+    checkpoint.save(actor, iteration=2)
+    assert (tmp_path / "iter_0000003" / "previous_ema" / ".metadata").exists()
+
+    resumed = make_actor(tmp_path, keep_previous=True)
+    checkpoint.load(resumed)
+    for (name, parameter), original in zip(resumed.model.named_parameters(), actor.model.parameters(), strict=True):
+        if parameter not in resumed.ema_optimizer.state:
+            continue
+        previous = resumed.ema_optimizer.previous_ema[parameter]
+        torch.testing.assert_close(previous, actor.ema_optimizer.previous_ema[original], msg=name)
+        assert not torch.equal(previous, resumed.ema_optimizer.state[parameter]["ema"])
+    resumed.ema_optimizer.step(optimizer_step=3)
+    actor.ema_optimizer.step(optimizer_step=3)
+    pairs = zip(
+        resumed.ema_optimizer.param_groups[0]["params"], actor.ema_optimizer.param_groups[0]["params"], strict=True
+    )
+    for parameter, original in pairs:
+        torch.testing.assert_close(
+            resumed.ema_optimizer.previous_ema[parameter], actor.ema_optimizer.previous_ema[original]
+        )
+
+
+def test_checkpoint_without_previous_ema_starts_it_at_the_loaded_ema(tmp_path, cpu_checkpoint):
+    # A synchronous run's checkpoint has no previous EMA; the async resume then samples the loaded EMA.
+    actor = make_actor(tmp_path)
     with torch.no_grad():
         for parameter in actor.model.parameters():
             parameter.add_(2.0)
     actor.ema_optimizer.step(optimizer_step=1)
     checkpoint.save(actor, iteration=2)
+    assert not (tmp_path / "iter_0000003" / "previous_ema").exists()
 
     resumed = make_actor(tmp_path, keep_previous=True)
     checkpoint.load(resumed)
@@ -279,7 +310,3 @@ def test_resume_restarts_previous_ema_at_loaded_ema(tmp_path, cpu_checkpoint):
         torch.testing.assert_close(previous, state["ema"])
         assert previous.data_ptr() != state["ema"].data_ptr()
         assert not torch.equal(previous, parameter.detach())
-    assert not torch.equal(
-        resumed.ema_optimizer.previous_ema[resumed.model["transformer"].lora_A],
-        actor.ema_optimizer.previous_ema[actor.model["transformer"].lora_A],
-    )

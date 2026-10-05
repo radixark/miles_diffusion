@@ -1,7 +1,8 @@
 """One-rollout overlap.
 
-Resume discards the prefetch and regenerates its first batch from the restored EMA, one EMA step
-newer than the uninterrupted run would have sampled it with; that batch also trains against it.
+Each batch is sampled while the previous one trains, so with --rollout-weights ema it comes from the
+EMA before the latest step. Resume discards the prefetch and resamples its first batch from that
+checkpointed previous EMA, matching an uninterrupted run.
 """
 
 import sys
@@ -18,7 +19,14 @@ def train_loop(args, actor_model, rollout_manager, num_rollout_per_epoch):
     if args.start_rollout_id >= args.num_rollout:
         return
 
+    # The first batch samples the previous EMA (the current one on a fresh start), as the prefetch did
+    # before the checkpoint; the next prefetch samples the current EMA.
+    sample_previous_ema = args.rollout_weights == "ema"
+    if sample_previous_ema:
+        actor_model.update_weights(previous_ema=True)
     current_batch = ray.get(rollout_manager.generate.remote(args.start_rollout_id))
+    if sample_previous_ema:
+        actor_model.update_weights()
     for rollout_id in range(args.start_rollout_id, args.num_rollout):
         save_checkpoint = should_run_periodic_action(
             rollout_id, args.save_interval, num_rollout_per_epoch, args.num_rollout

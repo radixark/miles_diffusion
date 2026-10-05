@@ -22,8 +22,8 @@ class EMAOptimizer(torch.optim.Optimizer):
     """EMA of the trainable weights, kept as optimizer state.
 
     With ``keep_previous=True``, ``previous_ema`` also holds the EMA from before the latest ``step``:
-    async training samples each prefetched batch with it. It is not checkpointed; loading the EMA
-    resets it to the loaded EMA, which is what the resumed run publishes for its first batch.
+    async training samples each prefetched batch with it, and checkpoints save it so a resumed run
+    resamples its first batch with it.
     """
 
     def __init__(
@@ -41,7 +41,6 @@ class EMAOptimizer(torch.optim.Optimizer):
             dict(decay=decay, uprate=uprate, uphold=uphold, flat_steps=flat_steps),
         )
         self.previous_ema: dict[torch.nn.Parameter, torch.Tensor] | None = {} if keep_previous else None
-        self.register_load_state_dict_post_hook(EMAOptimizer._reset_previous)
         self.reset_from_model()
 
     @torch.no_grad()
@@ -49,10 +48,11 @@ class EMAOptimizer(torch.optim.Optimizer):
         for group in self.param_groups:
             for parameter in group["params"]:
                 self.state[parameter]["ema"] = parameter.detach().clone()
-        self._reset_previous()
+        self.reset_previous()
 
     @torch.no_grad()
-    def _reset_previous(self) -> None:
+    def reset_previous(self) -> None:
+        """Set the previous EMA to the current EMA, as before the first ``step``."""
         if self.previous_ema is not None:
             self.previous_ema = {parameter: state["ema"].clone() for parameter, state in self.state.items()}
 

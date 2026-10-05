@@ -72,6 +72,7 @@ class TrainerProbe:
                 self.param.copy_(restored["param"])
             self.global_step = restored["global_step"]
             self.ema_optimizer.load_state_dict(restored["ema"])
+            self.ema_optimizer.previous_ema[self.param].copy_(restored["previous_ema"])
         self.weight_updater = SimpleNamespace(update_weights=self._capture_weight)
         self.records = []
         self.saves = {}
@@ -80,9 +81,9 @@ class TrainerProbe:
     def _capture_weight(self):
         self.published = self.param.item()
 
-    def update_weights(self):
+    def update_weights(self, previous_ema=False):
         with patch.object(self.actor, "clear_memory"), patch.object(self.actor.dist, "get_rank", return_value=0):
-            self.actor.FSDPTrainRayActor.update_weights(self)
+            self.actor.FSDPTrainRayActor.update_weights(self, previous_ema=previous_ema)
         return self.published, self.global_step
 
     def _train_core(self, rollout_id, rollout_data):
@@ -106,7 +107,12 @@ class TrainerProbe:
         from copy import deepcopy
 
         self.saves[rollout_id] = deepcopy(
-            {"param": self.param.detach(), "global_step": self.global_step, "ema": self.ema_optimizer.state_dict()}
+            {
+                "param": self.param.detach(),
+                "global_step": self.global_step,
+                "ema": self.ema_optimizer.state_dict(),
+                "previous_ema": self.ema_optimizer.previous_ema[self.param],
+            }
         )
 
     def result(self):
@@ -122,10 +128,10 @@ class TrainGroupProbe:
     def async_train(self, rollout_id, batch):
         return [self.trainer.train.remote(rollout_id, batch)]
 
-    def update_weights(self):
+    def update_weights(self, previous_ema=False):
         requested_at = time.monotonic()
-        weight, global_step = ray.get(self.trainer.update_weights.remote())
-        self.updates.append((requested_at, global_step))
+        weight, global_step = ray.get(self.trainer.update_weights.remote(previous_ema=previous_ema))
+        self.updates.append((requested_at, global_step, previous_ema))
         ray.get(self.manager.install.remote(weight))
 
     def save_model(self, rollout_id, force_sync=False):
@@ -159,6 +165,7 @@ def run_loop(tmp_path, monkeypatch, *, train_delay, rollout_delay, start=0, coun
         load=str(tmp_path / "ckpt") if restored else None,
         buffer_filter_path=None,
         use_wandb=False,
+        rollout_weights="ema",
     )
     metrics = []
     monkeypatch.setattr("train_diffusion_async.tracking_utils.log", lambda args, data, **kw: metrics.append(data))
@@ -187,31 +194,55 @@ def test_overlap_reference_cursor_and_update_barrier(tmp_path, monkeypatch, trai
     assert [record[0]["sample_index"] for record in records] == [0, 1, 2]
     assert [record[0]["weight"] for record in records] == [0.0, 0.0, 0.5]
     assert [record[3] for record in records] == [record[0]["weight"] for record in records]
-    assert [step for _, step in updates] == [0, 1, 2, 3]
+    # Startup publishes the current EMA, then the previous EMA for batch 0, then the current EMA once it is sampled.
+    assert [(step, previous) for _, step, previous in updates] == [
+        (0, False),
+        (0, True),
+        (0, False),
+        (1, False),
+        (2, False),
+        (3, False),
+    ]
+    assert updates[2][0] >= events[0][2]
     assert saves[1]["global_step"] == 2
     for i in range(2):
         assert max(records[i][1], events[i + 1][1]) < min(records[i][2], events[i + 1][2])
-        assert updates[i + 1][0] >= events[i + 1][2]
+        assert updates[i + 3][0] >= events[i + 1][2]
     if rollout_delay > train_delay:
         # Rollout 1 saves a checkpoint; its drain wait must not disappear into save().
         assert metrics[1]["perf/drain_wait_time"] > 0.05
 
 
-def test_resume_rewarms_with_restored_ema(tmp_path, monkeypatch):
-    _, saves, _, _, _ = run_loop(tmp_path, monkeypatch, train_delay=0, rollout_delay=0)
-    records, _, _, updates, _ = run_loop(
-        tmp_path, monkeypatch, train_delay=0, rollout_delay=0, start=2, count=5, restored=saves[1]
+def test_resume_matches_uninterrupted_run(tmp_path, monkeypatch):
+    (tmp_path / "full").mkdir()
+    (tmp_path / "resumed").mkdir()
+    full_records, full_saves, _, _, _ = run_loop(
+        tmp_path / "full", monkeypatch, train_delay=0, rollout_delay=0, count=5
+    )
+    _, saves, _, _, _ = run_loop(tmp_path / "resumed", monkeypatch, train_delay=0, rollout_delay=0)
+    records, resumed_saves, _, updates, _ = run_loop(
+        tmp_path / "resumed", monkeypatch, train_delay=0, rollout_delay=0, start=2, count=5, restored=saves[1]
     )
     assert [r[0]["sample_index"] for r in records] == [2, 3, 4]
-    # The regenerated first batch samples from the restored EMA (1.25), not the EMA the uninterrupted
-    # run sampled it with (0.5); pi_old restarts from the restored EMA, so it still matches the sampler.
-    assert [r[0]["weight"] for r in records] == [1.25, 1.25, 2.125]
-    assert [r[3] for r in records] == [r[0]["weight"] for r in records]
-    assert [step for _, step in updates] == [2, 3, 4, 5]
+    # Batch 2 was prefetched with the EMA before step 2 (0.5); the resume resamples it from the checkpointed
+    # previous EMA rather than the current one (1.25), and trains every batch against the EMA that sampled it.
+    assert [(r[0]["weight"], r[3]) for r in records] == [(0.5, 0.5), (1.25, 1.25), (2.125, 2.125)]
+    assert [(r[0]["weight"], r[3]) for r in records] == [(r[0]["weight"], r[3]) for r in full_records[2:]]
+    assert [(step, previous) for _, step, previous in updates] == [
+        (2, False),
+        (2, True),
+        (2, False),
+        (3, False),
+        (4, False),
+        (5, False),
+    ]
+    for key in ("param", "global_step", "previous_ema"):
+        assert resumed_saves[4][key] == full_saves[4][key]
+    assert resumed_saves[4]["ema"]["state"][0]["ema"] == full_saves[4]["ema"]["state"][0]["ema"]
 
 
 @pytest.mark.parametrize("count", [0, 1])
 def test_empty_and_single_rollout(tmp_path, monkeypatch, count):
     records, _, events, updates, _ = run_loop(tmp_path, monkeypatch, train_delay=0, rollout_delay=0, count=count)
     assert len(records) == len(events) == count
-    assert len(updates) == count + 1
+    assert len(updates) == (1 if count == 0 else count + 3)
