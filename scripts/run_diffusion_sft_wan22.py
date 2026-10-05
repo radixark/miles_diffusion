@@ -5,6 +5,8 @@ a colocated encoder actor pool, writing one content-addressed file per sample in
 .sft_cache/ next to the jsonl. Epoch 2 onward is all cache hits.
 
 Dataset rows: {"prompt": "...", "metadata": {"video": "/abs/path.mp4"}}
+Videos must already be 832x480 with exactly 161 frames (81 frames at stride 2); the encoder
+rejects anything else rather than resizing or trimming it.
 
 Per rollout step: 64 samples, num_steps_per_rollout=4, so 16 samples per optimizer step
 over 4 dp ranks is 4 samples per rank at mbs=1.
