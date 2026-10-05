@@ -3,6 +3,7 @@ import logging
 import os
 import random
 
+from miles.utils.media import resolve_media_uri
 from miles.utils.types import Sample
 
 __all__ = ["Dataset"]
@@ -30,7 +31,7 @@ def read_file(path):
 
 
 class Dataset:
-    """Prompt-only dataset for T2I RL: one :class:`~miles.utils.types.Sample` per jsonl row."""
+    """One :class:`~miles.utils.types.Sample` per jsonl row: ``{prompt_key, "conditions", "target", metadata_key}``."""
 
     def __init__(
         self,
@@ -46,7 +47,15 @@ class Dataset:
             if not isinstance(prompt, str) or not prompt.strip():
                 continue
             metadata = data.get(metadata_key) or {}
-            origin_samples.append(Sample(prompt=prompt.strip(), metadata=metadata))
+            # Anchor relative uris here: the SFT encoder actors would resolve them against their own cwd.
+            conditions = [
+                {**condition, "uri": resolve_media_uri(condition["uri"], path)}
+                for condition in data.get("conditions", [])
+            ]
+            target = {key: resolve_media_uri(uri, path) for key, uri in data.get("target", {}).items()}
+            origin_samples.append(
+                Sample(prompt=prompt.strip(), conditions=conditions, target=target, metadata=metadata)
+            )
 
         self.origin_samples = origin_samples
         self.epoch_id = -1

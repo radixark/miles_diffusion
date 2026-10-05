@@ -1,16 +1,81 @@
-"""Media load: probe and decode local media files lazily."""
+"""Media load: locate media files, then probe and decode them lazily."""
 
+import hashlib
 import json
+import mimetypes
+import os
+import shutil
 import subprocess
+import tempfile
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from fractions import Fraction
 from functools import cached_property
 from pathlib import Path
+from urllib.parse import unquote, urlparse
+from urllib.request import Request, urlopen
 
 import torch
 
 IMAGE_EXTENSIONS = {".bmp", ".jpeg", ".jpg", ".png", ".webp"}
+
+# ---------------------------------------------------------------------------
+# Locate: dataset uri -> local file
+# ---------------------------------------------------------------------------
+
+
+def resolve_media_uri(uri: str, prompt_data: str) -> str:
+    """Anchor relative paths at the dataset jsonl's directory; URLs pass through."""
+    scheme = urlparse(uri).scheme
+    if scheme in {"http", "https"} or os.path.isabs(uri):
+        return uri
+    if scheme:
+        raise ValueError(f"Unsupported media URI scheme: {scheme!r}")
+    return str(Path(prompt_data).absolute().parent / uri)
+
+
+def maybe_download_media(uri: str, cache_dir: str | Path) -> str:
+    """Download an http(s) URL once into cache_dir and return the local copy; local paths pass through."""
+    parsed = urlparse(uri)
+    if parsed.scheme not in {"http", "https"}:
+        return uri
+    directory = Path(cache_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    key = hashlib.sha256(uri.encode()).hexdigest()
+    existing = [path for path in directory.glob(f"{key}.*") if path.suffix != ".tmp"]
+    if existing:
+        return str(existing[0])
+    # Some hosts, Wikimedia among them, reject urllib's default User-Agent.
+    request = Request(uri, headers={"User-Agent": "miles-diffusion/1.0"})
+    temporary = None
+    try:
+        with urlopen(request, timeout=60) as response:
+            # Only a media extension names the type; download.php names a script, not its PNG response.
+            url_media_type = mimetypes.guess_type(unquote(parsed.path))[0] or ""
+            if url_media_type.split("/")[0] in {"image", "video", "audio"}:
+                suffix = Path(unquote(parsed.path)).suffix.lower()
+            else:
+                suffix = mimetypes.guess_extension(response.headers.get_content_type()) or ".media"
+            destination = directory / f"{key}{suffix}"
+            with tempfile.NamedTemporaryFile(dir=directory, prefix=f"{key}.", suffix=".tmp", delete=False) as stream:
+                temporary = Path(stream.name)
+                shutil.copyfileobj(response, stream)
+            size = temporary.stat().st_size
+            declared_size = response.headers.get("Content-Length")
+            if declared_size is not None and size != int(declared_size):
+                raise ValueError(f"The media URL returned {size} of its {declared_size} declared bytes")
+            os.replace(temporary, destination)
+            return str(destination)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def media_fingerprint(path: str) -> dict:
+    """Identify a local media revision for an encoded-sample cache key."""
+    stat = Path(path).stat()
+    return {"path": path, "size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+
 
 # ---------------------------------------------------------------------------
 # Load: local file -> probed facts -> decoded window

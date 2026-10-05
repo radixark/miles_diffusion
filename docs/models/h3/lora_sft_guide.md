@@ -55,11 +55,12 @@ scale=...:flags=lanczos, crop=1344:768`, cut to 107 frames. The training manifes
 jsonl, one line per sample:
 
 ```json
-{"prompt": "...", "metadata": {"video": "clips/clip.mp4"}}
+{"prompt": "...", "target": {"visual": "clips/clip.mp4"}}
 ```
 
 Relative paths are anchored at the jsonl's own directory — the dataset works wherever it
-is downloaded.
+is downloaded. The published jsonl also repeats each path under `metadata.video`, the field
+releases before `target` read.
 
 The output of sections 2–3 is published as
 [rockdu/WISA-80K-Practical-Dynamics-254](https://huggingface.co/datasets/rockdu/WISA-80K-Practical-Dynamics-254)

@@ -132,6 +132,10 @@ def load_encoder(args: Namespace, device: torch.device) -> dict:
 def encode_sample(
     encoder: dict, sample: Sample, media_clip: dict, generator: torch.Generator, args: Namespace
 ) -> dict:
+    if sample.conditions:
+        raise ValueError("H3 t2va SFT takes no reference conditions")
+    if "audio" in sample.target:
+        raise ValueError("H3 t2va SFT takes no target audio")
     return _encode_t2va(encoder, media_clip, sample.prompt, generator)
 
 

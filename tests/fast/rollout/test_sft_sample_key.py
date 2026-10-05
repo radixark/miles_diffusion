@@ -1,10 +1,10 @@
 """Per-sample content addressing for the SFT cache.
 
-    Sample (prompt, metadata video or image) + target file size and mtime + encode args
+    Sample (prompt, conditions, target) + media file fingerprints + SFT_CACHE_KEY_ARGS
         ──sha256──► (cache file name, latent seed)
 
 What each test pins: keys are deterministic; each encode arg, the prompt and the file revision change the key;
-keys differ per sample and per model family.
+args no encoder reads leave the name and seed alone; keys differ per sample and per model family.
 """
 
 from tests.ci.ci_register import register_cpu_ci
@@ -26,14 +26,13 @@ def _args(**overrides):
         diffusion_width=832,
         diffusion_output_num_frames=81,
         sft_frame_stride=2,
-        prompt_data="/data/train.jsonl",
     )
     base.update(overrides)
     return Namespace(**base)
 
 
 def _sample(video, prompt="p"):
-    return Sample(prompt=prompt, metadata={"video": str(video)})
+    return Sample(prompt=prompt, target={"visual": str(video)})
 
 
 def test_key_is_deterministic_with_seed(tmp_path):
@@ -66,6 +65,14 @@ def test_key_invalidates_per_axis(tmp_path):
     replaced_name, replaced_seed = sft_sample_key(_args(), sample)
     assert replaced_name != base_name
     assert replaced_seed != base_seed
+
+
+def test_key_ignores_args_no_encoder_reads(tmp_path):
+    # Offloading moves the encoder between devices; the encoded latents and their seed are unchanged.
+    video = tmp_path / "a.mp4"
+    video.write_bytes(b"x" * 100)
+    sample = _sample(video)
+    assert sft_sample_key(_args(sft_offload_encoder=True), sample) == sft_sample_key(_args(), sample)
 
 
 def test_key_is_per_sample(tmp_path):
