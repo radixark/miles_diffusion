@@ -167,11 +167,14 @@ class RolloutManager:
         assert self.args.rollout_global_dataset
         return len(self.data_source.dataset) // self.args.rollout_batch_size
 
-    def generate(self, rollout_id):
+    def generate(self, rollout_id, train_in_flight=None):
+        """`train_in_flight`: refs of the train step this generate overlaps; colocated SFT encoders wait for them."""
         from miles.dashboard import hooks
 
         start_time = time.time()
         self.rollout_id = rollout_id
+        if self.encode_pool is not None:
+            self.encode_pool.train_in_flight = train_in_flight
         hooks.set_rollout_id(rollout_id)
         self.health_monitoring_resume()
         logger.info("RolloutManager generate start: rollout_id=%s", rollout_id)

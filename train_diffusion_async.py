@@ -1,7 +1,7 @@
 """One-rollout overlap.
 
-Resume discards the prefetch and regenerates its first batch from the republished EMA, so that
-one batch trains against a reference one EMA step older than its sampler.
+Resume discards the prefetch and regenerates its first batch from the restored EMA, one EMA step
+newer than the uninterrupted run would have sampled it with; that batch also trains against it.
 """
 
 import sys

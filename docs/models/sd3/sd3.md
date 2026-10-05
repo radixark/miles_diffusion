@@ -190,7 +190,7 @@ MILES_SCRIPT_SMOKE=1 python3 scripts/run_diffusion_nft_sd3_pickscore.py
 | Script | `run_diffusion_grpo_sd3_ocr_sglang.py` | `run_diffusion_grpo_sd3_hps_sglang.py` | `run_diffusion_grpo_sd3_ocr_pickscore_sglang.py` | `run_diffusion_nft_sd3_pickscore.py` |
 | `--loss-type` | `policy_loss` (default) | `policy_loss` (default) | `policy_loss` (default) | `nft` |
 | SDE | Full window, noise=0.7, CFG=4.5 | Full window, noise=0.7, CFG=4.5 | Full window, noise=0.7, CFG=4.5 | ODE, noise=0 |
-| Reference | LoRA base KL (β 0.04) | LoRA base KL (β 0.01) | LoRA base KL (β 0.04) | EMA (`--use-ema`) |
+| Reference | LoRA base KL (β 0.04) | LoRA base KL (β 0.01) | LoRA base KL (β 0.04) | None; `π_old` is the EMA (`--use-ema`) |
 | Reward placement | CPU OCR | Colocated HPS actor | CPU OCR + colocated PickScore actor | Dedicated PickScore GPU |
 | Verification | FG | V | V | FG |
 
@@ -246,7 +246,7 @@ with these settings of its own:
 | Setting | Value |
 |---|---|
 | Algorithm | `--loss-type nft` |
-| Reference | `--ref-mode ema --use-ema --ema-rollout-policy ema` |
+| π_old | `--use-ema --rollout-weights ema` |
 | Reward | `--rm-type pickscore` |
 | SDE | `--diffusion-sde-type ode --diffusion-noise-level 0.0` |
 | LoRA | rank 32, alpha 64, IPC sync |
@@ -293,12 +293,10 @@ Train/rollout dtype alignment for Flow-GRPO is covered in
 ### Flow-GRPO + OCR
 
 Observed `rollout/reward/raw_mean` from one
-`scripts/run_diffusion_grpo_sd3_ocr_sglang.py` run (default batch, 600 rollouts). The curve is an example, not a CI
-acceptance range:
+`scripts/run_diffusion_grpo_sd3_ocr_sglang.py` run (default batch, 600 rollouts): the mean of the first 50 rollouts
+is 0.462 and of the last 50 is 0.841. The curve is an example, not a CI acceptance range:
 
 ![Flow-GRPO OCR raw reward](../../assets/images/sd3/grpo-ocr-raw-reward.png)
-
-Online runs: wandb project **`miles-diffusion-grpo`**.
 
 ### Flow-GRPO + OCR & PickScore
 
@@ -317,9 +315,9 @@ Observed `rollout/reward/raw_mean` from one `scripts/run_diffusion_nft_sd3_picks
 
 ![DiffusionNFT PickScore raw reward](../../assets/images/sd3/nft-pickscore-raw-reward.png)
 
-Online runs: wandb project **`miles-diffusion-nft`**. That run observed held-out
-**`eval/pickscore_test` ≈ 0.78** with `--eval-interval 30` and 50 denoise steps at eval time; this value is not asserted
-by the E2E fixture.
+That run observed held-out
+**`eval/pickscore_test` 0.850 / 0.859 / 0.863** at rollouts 29 / 59 / 89 with `--eval-interval 30` and 50 denoise steps
+at eval time; these values are not asserted by the E2E fixture.
 
 ## 10. Pairs well with
 

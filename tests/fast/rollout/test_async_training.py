@@ -16,7 +16,7 @@ import ray
 import torch
 from train_diffusion_async import train_loop
 
-from miles.backends.fsdp_utils.ema import EmaShadow
+from miles.backends.fsdp_utils.ema import EMAOptimizer
 from miles.rollout.data_source import RolloutDataSourceWithBuffer
 from miles.utils.ray_utils import Box
 
@@ -59,16 +59,19 @@ class TrainerProbe:
         self.actor = actor
         self.delay = delay
         self.rollout_manager = manager
-        self.args = Namespace(
-            offload_train=False, debug_rollout_only=False, train_only=False, ema_rollout_policy="ema"
-        )
+        self.args = Namespace(offload_train=False, debug_rollout_only=False, train_only=False, rollout_weights="ema")
         self.parallel_state = SimpleNamespace(get_mesh=lambda name: SimpleNamespace(get_local_rank=lambda: 0))
-        self.param = torch.nn.Parameter(torch.zeros(1))
-        self.ema_shadow = EmaShadow([self.param], decay=0.5, flat_steps=100, keep_previous_ema=True)
+        self.model = torch.nn.Linear(1, 1, bias=False)
+        self.param = self.model.weight
+        with torch.no_grad():
+            self.param.zero_()
+        self.global_step = 0
+        self.ema_optimizer = EMAOptimizer(self.model, decay=0.5, flat_steps=100, keep_previous=True)
         if restored is not None:
             with torch.no_grad():
                 self.param.copy_(restored["param"])
-            self.ema_shadow.load_state_dict(restored["ema"])
+            self.global_step = restored["global_step"]
+            self.ema_optimizer.load_state_dict(restored["ema"])
         self.weight_updater = SimpleNamespace(update_weights=self._capture_weight)
         self.records = []
         self.saves = {}
@@ -80,16 +83,17 @@ class TrainerProbe:
     def update_weights(self):
         with patch.object(self.actor, "clear_memory"), patch.object(self.actor.dist, "get_rank", return_value=0):
             self.actor.FSDPTrainRayActor.update_weights(self)
-        return self.published, self.ema_shadow.step
+        return self.published, self.global_step
 
     def _train_core(self, rollout_id, rollout_data):
         start = time.monotonic()
-        with self.ema_shadow.swap_in(use_previous_ema=True):
+        with self.ema_optimizer.use_weights(self.model, previous=True):
             reference = self.param.item()
         assert rollout_data["rollout_id"] == rollout_id
         time.sleep(self.delay)
         with torch.no_grad():
             self.param.add_(1)
+        self.global_step += 1
         self.records.append((rollout_data, start, time.monotonic(), reference))
 
     def train(self, rollout_id, batch):
@@ -101,7 +105,9 @@ class TrainerProbe:
     def save_model(self, rollout_id, force_sync=False):
         from copy import deepcopy
 
-        self.saves[rollout_id] = deepcopy({"param": self.param.detach(), "ema": self.ema_shadow.state_dict()})
+        self.saves[rollout_id] = deepcopy(
+            {"param": self.param.detach(), "global_step": self.global_step, "ema": self.ema_optimizer.state_dict()}
+        )
 
     def result(self):
         return self.records, self.saves
@@ -118,8 +124,8 @@ class TrainGroupProbe:
 
     def update_weights(self):
         requested_at = time.monotonic()
-        weight, ema_step = ray.get(self.trainer.update_weights.remote())
-        self.updates.append((requested_at, ema_step))
+        weight, global_step = ray.get(self.trainer.update_weights.remote())
+        self.updates.append((requested_at, global_step))
         ray.get(self.manager.install.remote(weight))
 
     def save_model(self, rollout_id, force_sync=False):
@@ -181,8 +187,8 @@ def test_overlap_reference_cursor_and_update_barrier(tmp_path, monkeypatch, trai
     assert [record[0]["sample_index"] for record in records] == [0, 1, 2]
     assert [record[0]["weight"] for record in records] == [0.0, 0.0, 0.5]
     assert [record[3] for record in records] == [record[0]["weight"] for record in records]
-    assert [step for _, step in updates] == [1, 2, 3, 4]
-    assert saves[1]["ema"]["step"] == 2
+    assert [step for _, step in updates] == [0, 1, 2, 3]
+    assert saves[1]["global_step"] == 2
     for i in range(2):
         assert max(records[i][1], events[i + 1][1]) < min(records[i][2], events[i + 1][2])
         assert updates[i + 1][0] >= events[i + 1][2]
@@ -197,11 +203,11 @@ def test_resume_rewarms_with_restored_ema(tmp_path, monkeypatch):
         tmp_path, monkeypatch, train_delay=0, rollout_delay=0, start=2, count=5, restored=saves[1]
     )
     assert [r[0]["sample_index"] for r in records] == [2, 3, 4]
+    # The regenerated first batch samples from the restored EMA (1.25), not the EMA the uninterrupted
+    # run sampled it with (0.5); pi_old restarts from the restored EMA, so it still matches the sampler.
     assert [r[0]["weight"] for r in records] == [1.25, 1.25, 2.125]
-    # The republish replays the EMA step the checkpoint preceded; the regenerated first batch
-    # samples from that EMA while its reference is still the restored one.
-    assert [r[3] for r in records] == [0.5, 1.25, 2.125]
-    assert [step for _, step in updates] == [3, 4, 5, 6]
+    assert [r[3] for r in records] == [r[0]["weight"] for r in records]
+    assert [step for _, step in updates] == [2, 3, 4, 5]
 
 
 @pytest.mark.parametrize("count", [0, 1])

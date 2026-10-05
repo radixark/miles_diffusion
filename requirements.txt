@@ -42,3 +42,5 @@ transformers==5.12.1
 typer==0.23.2
 uvicorn==0.39.0
 wandb==0.28.1
+
+# ci: refresh build cache

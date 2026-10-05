@@ -46,7 +46,7 @@ on:
 env:
   # Unless you know the consequences, change this together with docker/Dockerfile's
   # SGLANG_DIFFUSION_BRANCH.
-  DEFAULT_SGLANG_REF: sglang-miles-h3
+  DEFAULT_SGLANG_REF: sglang-miles
   DEFAULT_SGLANG_REPO: sgl-project/sglang
 
 jobs:

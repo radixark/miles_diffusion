@@ -93,6 +93,7 @@ Performance reference (8×H200, 254 windows):
 |---|---|
 | Encoding | ~15 s/clip/GPU; the first 8 rollouts (one dataset pass) each stall ~110 s on their own misses, 230 s for rollout 0 which builds the pool; warm from rollout 8 |
 | Cache | content-addressed, ≈2× dataset size, lives in `.sft_cache/` next to the jsonl, reused across runs |
+| Rollout overlap | rollout `i+1` is produced while rollout `i` trains. A colocated encode burst still waits for the train step, so a cold epoch stalls on encoding while a warm one hides the cache load entirely; `--rollout-num-gpus` reserves encoder GPUs and overlaps the encoding too |
 | Encoder residency | `--sft-offload-encoder`: the ~70 GB encoder sleeps in host RAM and only occupies the GPU during encode bursts |
 | Training | ~31 s per optimizer step, `--num-steps-per-rollout` 4 of them per encoded batch |
 | Checkpoints | saved at every epoch boundary and on the final rollout; iter_N means N rollouts completed |

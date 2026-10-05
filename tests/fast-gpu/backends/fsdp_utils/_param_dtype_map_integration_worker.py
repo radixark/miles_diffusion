@@ -37,7 +37,7 @@ import torch
 import torch.distributed as dist
 from torch import nn
 
-from miles.backends.fsdp_utils.actor import apply_fsdp2
+from miles.backends.fsdp_utils.model_loader import apply_fsdp2
 from miles.backends.fsdp_utils.models.parallel_plan import FSDPParallelPlan
 
 

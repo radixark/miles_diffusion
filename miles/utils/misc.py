@@ -7,8 +7,8 @@ import ray
 from miles.utils.http_utils import is_port_available
 
 
-def exec_command(cmd: str, capture_output: bool = False) -> str | None:
-    print(f"EXEC: {cmd}", flush=True)
+def exec_command(cmd: str, capture_output: bool = False, *, log_cmd: str | None = None) -> str | None:
+    print(f"EXEC: {cmd if log_cmd is None else log_cmd}", flush=True)
 
     try:
         result = subprocess.run(
@@ -21,6 +21,10 @@ def exec_command(cmd: str, capture_output: bool = False) -> str | None:
     except subprocess.CalledProcessError as e:
         if capture_output:
             print(f"{e.stdout=} {e.stderr=}")
+        if log_cmd is not None:
+            raise subprocess.CalledProcessError(
+                e.returncode, ["bash", "-c", log_cmd], output=e.output, stderr=e.stderr
+            ) from None
         raise
 
     if capture_output:

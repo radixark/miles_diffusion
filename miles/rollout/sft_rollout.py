@@ -22,6 +22,7 @@ from miles.rollout.base_types import RolloutFnTrainOutput
 from miles.utils import tracking_utils
 from miles.utils.metric_utils import compute_rollout_step
 from miles.utils.misc import SingletonMeta, load_function
+from miles.utils.timer import timer
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
@@ -198,6 +199,8 @@ class SftEncodePool(metaclass=SingletonMeta):
         self._args = args
         self._placement_group = placement_group
         self._actors: list | None = None
+        # set per generate by RolloutManager; None when the encoders have their own GPUs
+        self.train_in_flight: list | None = None
 
     @property
     def actors(self) -> list:
@@ -218,6 +221,13 @@ class SftEncodePool(metaclass=SingletonMeta):
         ]
         logger.info("SFT encode pool: %d workers at %.2f GPU each", len(self._actors), ENCODE_GPU_FRACTION)
         return self._actors
+
+    def wait_for_train_step(self) -> None:
+        """A prefetched rollout's encode burst must not share a GPU with the train step it overlaps."""
+        if not self.train_in_flight:
+            return
+        with timer("sft_encode_wait"):
+            ray.get(self.train_in_flight)
 
 
 def _get_scheduler_grid(args) -> tuple[torch.Tensor, torch.Tensor]:
@@ -263,8 +273,10 @@ def generate_rollout(args, rollout_id, data_source, evaluation: bool = False) ->
     encode_seconds = 0.0
     if missing:
         cache_dir.mkdir(parents=True, exist_ok=True)
+        pool = SftEncodePool(args)
+        pool.wait_for_train_step()
         start = time.time()
-        actors = SftEncodePool(args).actors
+        actors = pool.actors
         miss_items = list(missing.values())
         shards = [miss_items[i :: len(actors)] for i in range(len(actors))]
         ray.get(

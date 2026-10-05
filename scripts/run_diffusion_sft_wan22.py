@@ -106,6 +106,7 @@ def execute(args: ScriptArgs) -> None:
         ),
         num_gpus_per_node=4,
         config=args,
+        train_script="train_sft.py",
     )
 
 

@@ -2,8 +2,9 @@
 
 Each native model family is a Python package under ``models/<family>/`` with:
 
-  - ``loading`` — checkpoint resolution and ``load_component(...,
-    materialize_weights=...)``; distributed rank selection stays outside the package
+  - ``loading`` — checkpoint resolution and ``load_component(component,
+    checkpoint_path=..., master_dtype=..., materialize_weights=...)``;
+    distributed rank selection stays outside the package
   - ``modeling`` — ``load_scheduler``, ``enable_gradient_checkpointing``,
     optional ``flash_attention_entrypoints`` / ``required_flash_kernel_label``
   - ``parallel_plan`` — ``FSDP_PARALLEL_PLAN``, ``sequence_parallel_plan``

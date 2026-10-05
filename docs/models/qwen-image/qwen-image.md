@@ -67,7 +67,14 @@ Overrides go through the dataclass CLI, e.g.
 - `--rollout-patch-group sgld` applies the diffusers-op-parity patches on the engine. It costs a
   little rollout throughput and buys a much smaller `train/log_prob_mean_abs_diff`.
 
-## 6. Pairs well with
+## 6. Reference results
+
+The 5-GPU recipe raises PickScore (`rollout/reward/raw_mean`) from ~0.84 to ~0.90 over 400 rollouts;
+held-out `eval/pickscore_test` goes from 0.859 to 0.900:
+
+![Qwen-Image PickScore reward mean](../../assets/images/qwen-image/grpo-pickscore-raw-reward.png)
+
+## 7. Pairs well with
 
 - [LoRA weight sync](../../advanced/lora.md) — `--lora-ipc-weight-sync` is on in this recipe.
 - [Dtype Control](../../advanced/dtype-control.md) — why fp32 master + bf16 forward.

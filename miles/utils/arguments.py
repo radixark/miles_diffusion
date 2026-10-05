@@ -13,6 +13,7 @@ the prefix until the CLIs merge; stripping it early leaves two names for one ide
 import argparse
 import json
 import logging
+import math
 import os
 from typing import Any
 
@@ -20,6 +21,7 @@ import yaml
 
 from miles.backends.sglang_diffusion_utils.arguments import add_sglang_diffusion_arguments
 from miles.backends.sglang_diffusion_utils.arguments import validate_args as sglang_validate_args
+from miles.utils.api_rm_config import resolve_api_rm_configs
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
 from miles.utils.logging_utils import configure_logger
 
@@ -56,8 +58,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help=(
                     "Number of GPUs for rollout-side work. For train-only SFT, leave unset to colocate encoders "
-                    "with training or set it to reserve dedicated encoder GPUs. Under --colocate this is overridden "
-                    "to actor_num_gpus_per_node * actor_num_nodes."
+                    "with training or set it to reserve dedicated encoder GPUs, which also lets encoding overlap "
+                    "training. Under --colocate this is overridden to actor_num_gpus_per_node * actor_num_nodes."
                 ),
             )
             parser.add_argument(
@@ -104,6 +106,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "Whether to offload the rollout generator to CPU during training. "
                     "This will always be true when --colocate is set."
+                ),
+            )
+            parser.add_argument(
+                "--skip-train-actor-gc-collect",
+                action="store_true",
+                help=(
+                    "Skip gc.collect() in the train actor's clear_memory after each rollout's training; "
+                    "torch.cuda.empty_cache() still runs. A full collection over a large actor process costs "
+                    "0.2-0.5 s per rollout and frees no GPU memory."
                 ),
             )
 
@@ -874,14 +885,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--diffusion-nft-timestep-fraction",
                 type=float,
                 default=0.99,
-                help="Fraction of rollout schedule sigmas kept for NFT loss (drop terminal 0 first).",
+                help=(
+                    "Share of the rollout's denoising steps each sample trains on (int(steps * fraction), "
+                    "drawn at random per sample); it counts steps, not a sigma range."
+                ),
             )
             parser.add_argument(
                 "--no-diffusion-nft-shuffle-timesteps",
                 action="store_false",
                 dest="diffusion_nft_shuffle_timesteps",
                 default=True,
-                help="Disable NFT timestep shuffle.",
+                help="Train each sample's first steps in schedule order, noisiest first, instead of a random subset.",
             )
             parser.add_argument(
                 "--advantage-estimator",
@@ -954,13 +968,45 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--ref-mode",
                 type=str,
-                choices=["none", "lora_base", "ema"],
+                choices=["none", "lora_base", "ref"],
                 default=None,
                 help=(
-                    "Which reference weights to use for the no-grad DiT forward. "
-                    "Auto: lora_base when --diffusion-kl-beta > 0 and ema for --loss-type nft. "
-                    "Explicit values skip auto inference."
+                    "Reference model of the KL term: lora_base runs the actor with its adapters disabled, "
+                    "ref runs the frozen model from --ref-load. Auto: lora_base when --diffusion-kl-beta > 0."
                 ),
+            )
+            parser.add_argument(
+                "--ref-load", type=str, default=None, help="HF pipeline checkpoint for the frozen reference model."
+            )
+            parser.add_argument(
+                "--teacher-load", type=str, default=None, help="HF pipeline checkpoint for the frozen teacher model."
+            )
+            parser.add_argument(
+                "--ref-lora-adapter-path",
+                dest="ref_lora_adapter_paths",
+                nargs="+",
+                default=None,
+                help="PEFT adapter directories for --ref-load, one per --update-weight-target-module entry, in order.",
+            )
+            parser.add_argument(
+                "--teacher-lora-adapter-path",
+                dest="teacher_lora_adapter_paths",
+                nargs="+",
+                default=None,
+                help=(
+                    "PEFT adapter directories for --teacher-load, "
+                    "one per --update-weight-target-module entry, in order."
+                ),
+            )
+            parser.add_argument(
+                "--ref-cpu-offload",
+                action="store_true",
+                help="Keep reference parameter shards in pinned CPU memory between FSDP forwards.",
+            )
+            parser.add_argument(
+                "--teacher-cpu-offload",
+                action="store_true",
+                help="Keep teacher parameter shards in pinned CPU memory between FSDP forwards.",
             )
             return parser
 
@@ -1042,6 +1088,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--use-lora", action="store_true", default=False, help="Use LoRA adapters instead of full finetune."
             )
+            parser.add_argument(
+                "--lora-adapter-path",
+                dest="lora_adapter_paths",
+                nargs="+",
+                default=None,
+                help=(
+                    "PEFT adapter directories the actor continues training from, "
+                    "one per --update-weight-target-module entry, in order."
+                ),
+            )
             parser.add_argument("--lora-rank", type=int, default=64)
             parser.add_argument("--lora-alpha", type=int, default=64)
             parser.add_argument(
@@ -1080,18 +1136,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=False,
                 help=(
                     "Maintain an exponential moving average of the trainable weights as pi_old "
-                    "(LoRA or full finetune). Consumed by --ref-mode ema; combine with "
-                    "--ema-rollout-policy ema to sample under pi_old."
+                    "(LoRA or full finetune). Consumed by --loss-type nft; combine with "
+                    "--rollout-weights ema to sample under pi_old."
                 ),
             )
             parser.add_argument(
-                "--ema-rollout-policy",
+                "--rollout-weights",
                 type=str,
-                choices=["live", "ema"],
-                default="live",
+                choices=["actor", "ema"],
+                default="actor",
                 help=(
-                    "Which trainable weights to push to rollout after each rollout_end when "
-                    "--use-ema is set: live weights, or the EMA copy (pi_old)."
+                    "Which weights to push to the rollout engines after each rollout's training: "
+                    "the current actor weights, or the EMA copy (pi_old, requires --use-ema)."
                 ),
             )
             parser.add_argument(
@@ -1229,8 +1285,19 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--rm-type",
                 type=str,
                 default=None,
-                help="Built-in reward model (pickscore / hps / ocr). Ignored when --custom-rm-path is set.",
+                help="Built-in reward (pickscore / hps / ocr / openai_api), or custom_api for a configurable actor. "
+                "Ignored when --custom-rm-path is set.",
             )
+            for rm_type in ("custom_api", "openai_api"):
+                parser.add_argument(
+                    f"--{rm_type.replace('_', '-')}-rm-config",
+                    type=str,
+                    default=None,
+                    help=f"YAML file or inline base64:<payload> configuration for {rm_type}: "
+                    "actor_class, actor_kwargs, and max_concurrency. Defaults to the OpenAI-compatible image actor; "
+                    "flat OpenAI configuration is also accepted. Inline configs must embed prompt text; "
+                    "file configs may use prompt_path relative to the config file.",
+                )
             parser.add_argument(
                 "--reward-key",
                 type=str,
@@ -1544,12 +1611,78 @@ def set_default_diffusion_args(args) -> None:
             args.custom_loss_function_path = "miles.backends.fsdp_utils.loss_hub.nft.nft_loss_formula"
 
     if args.ref_mode is None:
-        if is_nft:
-            args.ref_mode = "ema"
-        elif args.diffusion_kl_beta > 0:
-            args.ref_mode = "lora_base"
-        else:
-            args.ref_mode = "none"
+        args.ref_mode = "lora_base" if args.diffusion_kl_beta > 0 else "none"
+
+
+def validate_reference_model_args(args) -> None:
+    if args.ref_mode == "ref" and args.ref_load is None:
+        raise ValueError("--ref-mode ref requires --ref-load")
+    if args.ref_load is not None and args.ref_mode != "ref":
+        raise ValueError("--ref-load requires --ref-mode ref")
+    if args.ref_lora_adapter_paths is not None and args.ref_load is None:
+        raise ValueError("--ref-lora-adapter-path requires --ref-load")
+    if args.teacher_lora_adapter_paths is not None and args.teacher_load is None:
+        raise ValueError("--teacher-lora-adapter-path requires --teacher-load")
+    for flag, adapter_paths in (
+        ("--ref-lora-adapter-path", args.ref_lora_adapter_paths),
+        ("--teacher-lora-adapter-path", args.teacher_lora_adapter_paths),
+    ):
+        if adapter_paths is not None and len(adapter_paths) != len(args.update_weight_target_modules):
+            raise ValueError(
+                f"{flag} needs one adapter per --update-weight-target-module entry "
+                f"{args.update_weight_target_modules}, got {len(adapter_paths)}"
+            )
+    if args.ref_cpu_offload and args.ref_load is None:
+        raise ValueError("--ref-cpu-offload requires --ref-load")
+    if args.teacher_cpu_offload and args.teacher_load is None:
+        raise ValueError("--teacher-cpu-offload requires --teacher-load")
+    if (
+        args.teacher_load is not None
+        and args.custom_prepare_train_batch_path is None
+        and args.custom_loss_function_path is None
+    ):
+        raise ValueError("--teacher-load has no consumer; only custom prepare/loss hooks read ctx.teacher_models")
+    if args.ref_mode == "lora_base" and not args.use_lora:
+        raise ValueError("--ref-mode lora_base requires --use-lora")
+
+
+def validate_actor_lora_adapter(args) -> None:
+    if args.lora_adapter_paths is None:
+        return
+    if not args.use_lora:
+        raise ValueError("--lora-adapter-path requires --use-lora")
+    if len(args.lora_adapter_paths) != len(args.update_weight_target_modules):
+        raise ValueError(
+            "--lora-adapter-path needs one adapter per --update-weight-target-module entry "
+            f"{args.update_weight_target_modules}, got {len(args.lora_adapter_paths)}"
+        )
+    from peft import PeftConfig
+
+    for component, adapter_path in zip(args.update_weight_target_modules, args.lora_adapter_paths, strict=True):
+        adapter_config = PeftConfig.from_pretrained(adapter_path)
+        if (
+            adapter_config.use_dora
+            or adapter_config.bias != "none"
+            or adapter_config.lora_bias
+            or adapter_config.modules_to_save
+        ):
+            raise ValueError(
+                f"Actor LoRA adapter for {component} must contain only LoRA A/B matrices; "
+                "DoRA, bias training, and modules_to_save are not supported by checkpoint and weight sync"
+            )
+        if args.lora_ipc_weight_sync and (
+            adapter_config.use_rslora or adapter_config.rank_pattern or adapter_config.alpha_pattern
+        ):
+            raise ValueError(
+                f"--lora-ipc-weight-sync requires uniform standard LoRA for {component}; "
+                "disable it for rsLoRA or per-layer rank/alpha"
+            )
+        if (adapter_config.r, adapter_config.lora_alpha) != (args.lora_rank, args.lora_alpha):
+            raise ValueError(
+                f"Actor LoRA adapter for {component} has r={adapter_config.r}, lora_alpha={adapter_config.lora_alpha}; "
+                f"set --lora-rank {adapter_config.r} --lora-alpha {adapter_config.lora_alpha} "
+                f"instead of {args.lora_rank}/{args.lora_alpha}"
+            )
 
 
 def miles_validate_args(args):
@@ -1589,6 +1722,8 @@ def miles_validate_args(args):
         )
     if len(set(args.update_weight_target_modules)) != len(args.update_weight_target_modules):
         raise ValueError(f"--update-weight-target-module has duplicates: {args.update_weight_target_module!r}")
+    validate_reference_model_args(args)
+    validate_actor_lora_adapter(args)
 
     if args.wandb_log_image_interval < 1:
         raise ValueError(f"wandb_log_image_interval must be >= 1, got {args.wandb_log_image_interval}")
@@ -1657,16 +1792,16 @@ def miles_validate_args(args):
 
     if not 0.0 <= args.ema_decay_init <= 1.0:
         raise ValueError(f"--ema-decay-init must be in [0, 1], got {args.ema_decay_init}")
-    if args.ema_decay_ramp < 0.0:
-        raise ValueError(f"--ema-decay-ramp must be non-negative, got {args.ema_decay_ramp}")
+    if not math.isfinite(args.ema_decay_ramp) or args.ema_decay_ramp < 0.0:
+        raise ValueError(f"--ema-decay-ramp must be finite and non-negative, got {args.ema_decay_ramp}")
     if not 0.0 <= args.ema_decay_max <= 1.0:
         raise ValueError(f"--ema-decay-max must be in [0, 1], got {args.ema_decay_max}")
     if args.ema_decay_flat_steps < 0:
         raise ValueError(f"--ema-decay-flat-steps must be non-negative, got {args.ema_decay_flat_steps}")
-    if args.use_ema and args.ref_mode != "ema" and args.ema_rollout_policy != "ema":
-        raise ValueError("--use-ema has no consumer; set --ref-mode ema or --ema-rollout-policy ema")
-    if args.ema_rollout_policy == "ema" and not args.use_ema:
-        raise ValueError("--ema-rollout-policy ema requires --use-ema")
+    if args.use_ema and args.loss_type != "nft" and args.rollout_weights != "ema":
+        raise ValueError("--use-ema has no consumer; use --loss-type nft or --rollout-weights ema")
+    if args.rollout_weights == "ema" and not args.use_ema:
+        raise ValueError("--rollout-weights ema requires --use-ema")
 
     if args.loss_type == "sft_loss":
         if not args.train_only:
@@ -1689,14 +1824,15 @@ def miles_validate_args(args):
                 )
         if args.prompt_data is None:
             raise ValueError("--loss-type sft_loss requires --prompt-data (jsonl with prompt + metadata.video)")
-        if args.sft_encoder_checkpoint is None:
-            raise ValueError(
-                "--loss-type sft_loss requires --sft-encoder-checkpoint "
-                "(HF name or path holding the family's tokenizer/text_encoder/vae)"
-            )
-        from miles.rollout.encoder_hub import get_encoder
+        if args.rollout_function_path == "miles.rollout.sft_rollout.generate_rollout":
+            if args.sft_encoder_checkpoint is None:
+                raise ValueError(
+                    "--loss-type sft_loss requires --sft-encoder-checkpoint "
+                    "(HF name or path holding the family's tokenizer/text_encoder/vae)"
+                )
+            from miles.rollout.encoder_hub import get_encoder
 
-        get_encoder(args.diffusion_model_family).validate_args(args)
+            get_encoder(args.diffusion_model_family).validate_args(args)
         if args.fsdp_flow_shift is None:
             raise ValueError("--loss-type sft_loss requires --fsdp-flow-shift for the training sigma grid")
         if args.n_samples_per_prompt != 1:
@@ -1710,7 +1846,7 @@ def miles_validate_args(args):
         if args.ref_mode != "none":
             raise ValueError("--loss-type sft_loss does not use a reference model; drop --ref-mode")
         if args.use_ema:
-            raise ValueError("--loss-type sft_loss does not support --use-ema (EMA updates run in weight sync)")
+            raise ValueError("--loss-type sft_loss does not support --use-ema")
 
     is_nft = args.loss_type == "nft"
     if is_nft:
@@ -1729,14 +1865,10 @@ def miles_validate_args(args):
                 "--diffusion-recompute-old-log-prob is only supported for policy_loss / Flow-GRPO, not NFT"
             )
 
-    if is_nft and args.ref_mode == "none":
-        raise ValueError("--loss-type nft requires a reference model; set --ref-mode ema or lora_base")
-    if args.ref_mode == "ema" and not args.use_ema:
-        raise ValueError("--ref-mode ema requires --use-ema")
-    if args.ref_mode == "lora_base" and not args.use_lora:
-        raise ValueError("--ref-mode lora_base requires --use-lora")
+    if is_nft and not (args.use_ema and args.rollout_weights == "ema"):
+        raise ValueError("--loss-type nft samples and trains against pi_old; set --use-ema --rollout-weights ema")
     if args.diffusion_kl_beta > 0 and args.ref_mode == "none":
-        raise ValueError("--diffusion-kl-beta > 0 requires a reference model; set --ref-mode lora_base or ema")
+        raise ValueError("--diffusion-kl-beta > 0 requires a reference model; set --ref-mode lora_base or ref")
 
     if args.dump_details is not None:
         args.save_debug_rollout_data = f"{args.dump_details}/rollout_data/{{rollout_id}}.pt"
@@ -1826,6 +1958,8 @@ def miles_validate_args(args):
         )
     if args.custom_rm_args is not None and args.custom_rm_path is None:
         raise ValueError("--custom-rm-args requires --custom-rm-path.")
+
+    resolve_api_rm_configs(args)
 
     if args.eval_function_path is None:
         args.eval_function_path = args.rollout_function_path

@@ -7,9 +7,10 @@ import torch.distributed as dist
 logger = logging.getLogger(__name__)
 
 
-def clear_memory(clear_host_memory: bool = False):
+def clear_memory(clear_host_memory: bool = False, collect_garbage: bool = True):
     torch.cuda.synchronize()
-    gc.collect()
+    if collect_garbage:
+        gc.collect()
     torch.cuda.empty_cache()
     if clear_host_memory:
         torch._C._host_emptyCache()

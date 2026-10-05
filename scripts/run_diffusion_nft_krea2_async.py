@@ -1,7 +1,7 @@
 """Async Krea-2-Raw DiffusionNFT training (OCR by default, PickScore via --reward).
 
-Same NFT shape as run_diffusion_nft_sd3_pickscore.py: EMA reference (--ref-mode ema),
-rollout under pi_old (--ema-rollout-policy ema), deterministic ODE rollout
+Same NFT shape as run_diffusion_nft_sd3_pickscore.py: EMA pi_old (--use-ema),
+rollout under pi_old (--rollout-weights ema), deterministic ODE rollout
 (noise_level=0, sde_type=ode) with no CFG. Krea-2 specifics: bf16, 1024px, and one
 sample per rollout request (the engine's krea2 pipeline has no per-request output
 expansion). Rollout debug tensors are collected (--diffusion-debug-mode).
@@ -13,7 +13,7 @@ GPU. --reward pickscore switches to the aesthetic direction on one extra GPU.
 Smoke mode shrinks the batch for checking the pipeline end to end without a real run.
 
 Full OCR uses 6 training + 2 rollout H200 GPUs with NCCL LoRA sync; smoke uses 2+2.
-The one-step async pipeline uses the previous EMA as the reference for each
+The one-step async pipeline uses the previous EMA as pi_old for each
 prefetched batch. Smoke mode runs three rollouts to cover the first updated rollout batch.
 
 Usage:
@@ -101,9 +101,8 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
     )
 
     ema_args = (
-        "--ref-mode ema "
         "--use-ema "
-        "--ema-rollout-policy ema "
+        "--rollout-weights ema "
         "--ema-decay-init 0.001 "
         "--ema-decay-ramp 0.001 "
         "--ema-decay-max 0.5 "

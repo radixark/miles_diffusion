@@ -109,15 +109,13 @@ def nft_loss_formula(
     prepared: PreparedBatch,
     *,
     new_pred: torch.Tensor,
+    old_pred: torch.Tensor | None,
     ref_pred: torch.Tensor | None,
     metrics: MetricBuffer,
     write_old_log_prob: bool = False,
     old_log_prob_from_new: bool = False,
 ) -> torch.Tensor:
-    """Dual-policy x0-MSE. Actor must supply ``ref_pred`` (EMA / LoRA-base)."""
-    if ref_pred is None:
-        raise ValueError("NFT loss formula requires a reference prediction from the actor")
-
+    """Dual-policy x0-MSE against pi_old, plus ``kl_beta * mean((v_new - v_ref)^2)`` per pair with a KL reference."""
     args = ctx.args
     beta = args.diffusion_nft_beta
     adv_clip_max = args.diffusion_adv_clip_max
@@ -132,12 +130,16 @@ def nft_loss_formula(
         xt=prepared.latents,
         t_exp=t_exp,
         new_pred=new_pred,
-        old_pred=ref_pred,
+        old_pred=old_pred,
         beta=beta,
         use_adaptive=use_adaptive,
     )
     r_b = r.to(dtype=pos_loss.dtype)
     per_pair = (r_b * pos_loss / beta + (1.0 - r_b) * neg_loss / beta) * adv_clip_max
+    kl = None
+    if args.diffusion_kl_beta > 0:
+        kl = ((new_pred - ref_pred) ** 2).mean(dim=tuple(range(1, x0.ndim)))
+        per_pair = per_pair + args.diffusion_kl_beta * kl
     loss_sum = per_pair.sum()
 
     with torch.no_grad():
@@ -158,5 +160,7 @@ def nft_loss_formula(
             count=1,
         )
         metrics.emit_mean("adv_abs_mean", total=prepared.advantage.abs().sum(), count=bsz)
+        if kl is not None:
+            metrics.emit_mean("kl_loss", total=kl.sum(), count=bsz)
 
     return loss_sum

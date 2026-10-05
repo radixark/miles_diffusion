@@ -1,109 +1,105 @@
-"""EMA shadow of trainable parameters for diffusion FSDP training."""
-
 from __future__ import annotations
 
-from collections.abc import Iterable
 from contextlib import contextmanager
 
 import torch
-import torch.nn as nn
+from torch.distributed.fsdp import FSDPModule
 from torch.distributed.tensor import DTensor
 
 
-def _local(t: torch.Tensor) -> torch.Tensor:
-    return t.to_local() if isinstance(t, DTensor) else t
+def _local_tensor(tensor: torch.Tensor) -> torch.Tensor:
+    return tensor.to_local() if isinstance(tensor, DTensor) else tensor
 
 
-class EmaShadow:
-    """EMA shadow of trainable parameters.
+def reshard_model(model: torch.nn.Module) -> None:
+    """Drop FSDP's gathered full parameters so the registered parameters are the local shards again."""
+    for module in model.modules():
+        if isinstance(module, FSDPModule):
+            module.reshard()
 
-    ``shadow`` holds the current EMA. With ``keep_previous_ema=True``,
-    ``previous_ema`` preserves the EMA from before the most recent ``update()``
-    for the async trainer's prefetched-batch reference.
+
+class EMAOptimizer(torch.optim.Optimizer):
+    """EMA of the trainable weights, kept as optimizer state.
+
+    With ``keep_previous=True``, ``previous_ema`` also holds the EMA from before the latest ``step``:
+    async training samples each prefetched batch with it. It is not checkpointed; loading the EMA
+    resets it to the loaded EMA, which is what the resumed run publishes for its first batch.
     """
 
     def __init__(
         self,
-        parameters: Iterable[nn.Parameter],
+        model: torch.nn.Module,
         *,
         decay: float = 0.001,
         uprate: float = 0.001,
         uphold: float = 0.5,
         flat_steps: int = 0,
-        keep_previous_ema: bool = False,
+        keep_previous: bool = False,
     ) -> None:
-        self.decay = float(decay)
-        self.uprate = float(uprate)
-        self.uphold = float(uphold)
-        self.flat_steps = int(flat_steps)
-        self.step = 0
-        self._swapped = False
-
-        self.params = [p for p in parameters if p.requires_grad]
-        if not self.params:
-            raise ValueError("EmaShadow: model has no trainable parameters")
-        self.shadow = [_local(p.detach()).clone() for p in self.params]
-        self.previous_ema = [sh.clone() for sh in self.shadow] if keep_previous_ema else None
-
-    def decay_at(self, t: int) -> float:
-        if t <= self.flat_steps:
-            return self.decay
-        return float(min((t - self.flat_steps) * self.uprate, self.uphold))
+        super().__init__(
+            (parameter for parameter in model.parameters() if parameter.requires_grad),
+            dict(decay=decay, uprate=uprate, uphold=uphold, flat_steps=flat_steps),
+        )
+        self.previous_ema: dict[torch.nn.Parameter, torch.Tensor] | None = {} if keep_previous else None
+        self.register_load_state_dict_post_hook(EMAOptimizer._reset_previous)
+        self.reset_from_model()
 
     @torch.no_grad()
-    def update(self) -> float:
-        """theta_old <- delta * theta_old + (1 - delta) * theta."""
-        if self._swapped:
-            raise RuntimeError("EmaShadow.update called while swapped in")
-        self.step += 1
-        delta = self.decay_at(self.step)
+    def reset_from_model(self) -> None:
+        for group in self.param_groups:
+            for parameter in group["params"]:
+                self.state[parameter]["ema"] = parameter.detach().clone()
+        self._reset_previous()
+
+    @torch.no_grad()
+    def _reset_previous(self) -> None:
         if self.previous_ema is not None:
-            for previous_ema, current_ema in zip(self.previous_ema, self.shadow, strict=True):
-                previous_ema.copy_(current_ema)
-        for live, sh in zip(self.params, self.shadow, strict=True):
-            sh.mul_(delta).add_(_local(live.detach()).to(sh.device), alpha=1.0 - delta)
-        return delta
-
-    def state_dict(self) -> dict:
-        # Preserve FSDP shard metadata so DCP can restore on a different mesh.
-        shadow = [
-            (
-                DTensor.from_local(
-                    sh,
-                    device_mesh=param.device_mesh,
-                    placements=param.placements,
-                    shape=param.shape,
-                    stride=param.stride(),
-                )
-                if isinstance(param, DTensor)
-                else sh
-            )
-            for param, sh in zip(self.params, self.shadow, strict=True)
-        ]
-        return {"shadow": shadow, "step": self.step}
+            self.previous_ema = {parameter: state["ema"].clone() for parameter, state in self.state.items()}
 
     @torch.no_grad()
-    def load_state_dict(self, state_dict: dict) -> None:
-        for sh, restored in zip(self.shadow, state_dict["shadow"], strict=True):
-            sh.copy_(_local(restored))
-        self.step = int(state_dict["step"])
+    def step(self, optimizer_step: int) -> None:
+        """Average in the actor after its ``optimizer_step``-th optimizer update; the decay follows that count."""
+        for group in self.param_groups:
+            decay = (
+                group["decay"]
+                if optimizer_step <= group["flat_steps"]
+                else min((optimizer_step - group["flat_steps"]) * group["uprate"], group["uphold"])
+            )
+            ema_tensors = [_local_tensor(self.state[parameter]["ema"]) for parameter in group["params"]]
+            if self.previous_ema is not None:
+                previous_tensors = [_local_tensor(self.previous_ema[parameter]) for parameter in group["params"]]
+                torch._foreach_copy_(previous_tensors, ema_tensors)
+            actor_tensors = [_local_tensor(parameter.detach()) for parameter in group["params"]]
+            torch._foreach_lerp_(ema_tensors, actor_tensors, 1.0 - decay)
 
     @contextmanager
-    def swap_in(self, use_previous_ema: bool = False):
-        """Temporarily use current EMA weights, or the snapshot before the last update."""
-        buffers = self.previous_ema if use_previous_ema else self.shadow
-        self._swap(buffers)
-        self._swapped = True
+    def use_weights(self, model: torch.nn.Module, previous: bool = False):
+        """Temporarily put the EMA weights into ``model``'s shards; ``previous`` picks the EMA before the latest step.
+
+        Gathered full parameters are dropped before swapping in and before swapping back,
+        so no forward reads stale weights.
+        """
+        if previous and self.previous_ema is None:
+            raise RuntimeError("EMAOptimizer was built without keep_previous")
+        reshard_model(model)
+        weights = {
+            parameter: self.previous_ema[parameter] if previous else self.state[parameter]["ema"]
+            for parameter in model.parameters()
+            if parameter in self.state
+        }
+        self._swap_with_actor(weights)
         try:
             yield
         finally:
-            self._swap(buffers)
-            self._swapped = False
+            reshard_model(model)
+            self._swap_with_actor(weights)
 
     @torch.no_grad()
-    def _swap(self, buffers: list[torch.Tensor]) -> None:
-        for live, sh in zip(self.params, buffers, strict=True):
-            live_local = _local(live.data)
-            tmp = live_local.clone()
-            live_local.copy_(sh)
-            sh.copy_(tmp)
+    def _swap_with_actor(self, weights: dict[torch.nn.Parameter, torch.Tensor]) -> None:
+        # EMA shares the actor's device, so its own storage holds the actor weights while they are swapped out.
+        for parameter, weight in weights.items():
+            actor_tensor = _local_tensor(parameter)
+            ema_tensor = _local_tensor(weight)
+            actor_copy = actor_tensor.clone()
+            actor_tensor.copy_(ema_tensor)
+            ema_tensor.copy_(actor_copy)

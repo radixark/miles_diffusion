@@ -24,6 +24,14 @@ async def async_rm(args, sample: Sample, **kwargs):
         from .hps import hps_rm
 
         return (await hps_rm(args, [sample]))[0]
+    elif rm_type == "custom_api":
+        from .api import custom_api_rm
+
+        return (await custom_api_rm(args, [sample]))[0]
+    elif rm_type == "openai_api":
+        from .openai_api import openai_api_rm
+
+        return (await openai_api_rm(args, [sample]))[0]
     else:
         raise NotImplementedError(f"Rule-based RM for {rm_type!r} is not implemented.")
 
@@ -65,6 +73,14 @@ async def batched_async_rm(
             from .ocr import ocr_rm
 
             return await ocr_rm(args, samples)
+        if all(rm_type == "custom_api" for rm_type in rm_types):
+            from .api import custom_api_rm
+
+            return await custom_api_rm(args, samples)
+        if all(rm_type == "openai_api" for rm_type in rm_types):
+            from .openai_api import openai_api_rm
+
+            return await openai_api_rm(args, samples)
 
     tasks = [async_rm(args, sample, **kwargs) for sample in samples]
     rewards = await asyncio.gather(*tasks)
