@@ -10,7 +10,6 @@ manager placement group.
 import hashlib
 import logging
 import os
-import subprocess
 import time
 from pathlib import Path
 
@@ -20,6 +19,7 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from miles.rollout.base_types import RolloutFnTrainOutput
 from miles.utils import tracking_utils
+from miles.utils.media import ImageSource, visual_source
 from miles.utils.metric_utils import compute_rollout_step
 from miles.utils.misc import SingletonMeta
 from miles.utils.timer import timer
@@ -40,9 +40,9 @@ def resolve_media_path(media: str, prompt_data: str) -> str:
 def sft_sample_key(args, item: dict) -> tuple[str, int]:
     """Content-addressed cache filename and latent-sampling seed for one (media, prompt) item."""
     stat = Path(item["media"]).stat()
-    # Bump the version whenever the cached pair layout changes. v2: "latent" is keyed by stream name.
+    # Bump the version whenever the cached pair changes.
     digest = hashlib.sha256(
-        f"v2|{args.diffusion_model_family}|{args.sft_encoder_checkpoint}"
+        f"v3|{args.diffusion_model_family}|{args.sft_encoder_checkpoint}"
         f"|{args.diffusion_height}x{args.diffusion_width}"
         f"|{args.diffusion_output_num_frames}s{args.sft_frame_stride}"
         f"|{item['media']}|{stat.st_size}|{stat.st_mtime_ns}|{item['prompt']}".encode()
@@ -50,90 +50,38 @@ def sft_sample_key(args, item: dict) -> tuple[str, int]:
     return digest.hex()[:16] + ".pt", int.from_bytes(digest[8:16], "big") % 2**63
 
 
-IMAGE_EXTENSIONS = {".bmp", ".jpeg", ".jpg", ".png", ".webp"}
-
-
-def _probe_video(path: str) -> tuple[int, int, float]:
-    """(width, height, fps) of the first video stream."""
-    probe = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "stream=width,height,avg_frame_rate",
-            "-of",
-            "csv=p=0:s=,",
-            path,
-        ],
-        capture_output=True,
-        text=True,
-    )
-    try:
-        width, height, rate = probe.stdout.strip().split(",")[:3]
-        num, _, den = rate.partition("/")
-        return int(width), int(height), float(num) / float(den or 1)
-    except (ValueError, ZeroDivisionError):
-        raise ValueError(f"ffprobe could not read {path}: {probe.stderr.strip()[:200]}") from None
-
-
-def _decode_video(path: str) -> tuple[torch.Tensor, float]:
-    """All frames as uint8 [T, C, H, W], plus the stream fps.
-
-    sgl-diffusion reads every media file the same way (``subprocess.run`` on
-    ffmpeg into a raw rgb24 stream, see minimax_h3/reference_encoding.py), and
-    ffmpeg is the only decoder available on every platform this trains on:
-    torchvision 0.26 -- the pinned version -- ships no video API at all, and
-    torchcodec has no Linux ARM build.
-    """
-    import numpy as np
-
-    width, height, fps = _probe_video(path)
-    decoded = subprocess.run(
-        ["ffmpeg", "-v", "error", "-i", path, "-map", "0:v:0", "-an", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
-        capture_output=True,
-    )
-    if decoded.returncode != 0:
-        raise ValueError(f"ffmpeg failed on {path}: {decoded.stderr.decode()[:200]}")
-    frame_bytes = width * height * 3
-    if not decoded.stdout or len(decoded.stdout) % frame_bytes:
-        raise ValueError(
-            f"{path}: ffmpeg returned {len(decoded.stdout)} bytes, "
-            f"not a whole number of {width}x{height} rgb24 frames"
-        )
-    frames = np.frombuffer(decoded.stdout, dtype=np.uint8).reshape(-1, height, width, 3)
-    return torch.from_numpy(frames.copy()).permute(0, 3, 1, 2), fps
-
-
 def read_media_clip(path: str, *, height: int, width: int, num_frames: int, frame_stride: int) -> dict:
-    if Path(path).suffix.lower() in IMAGE_EXTENSIONS:
-        if num_frames != 1:
-            raise ValueError(f"{path} is an image, which requires --diffusion-output-num-frames 1")
-        import numpy as np
-        from PIL import Image
+    """Every ``frame_stride``-th frame of a file prepared offline as exactly ``(num_frames - 1) * frame_stride + 1``
+    frames of ``width x height`` square pixels; any other file is an error.
 
-        frames = torch.from_numpy(np.asarray(Image.open(path).convert("RGB"))).permute(2, 0, 1)[None]
-        fps = None
-    else:
-        video, fps = _decode_video(path)
-        span = (num_frames - 1) * frame_stride + 1
-        if video.shape[0] < span:
-            raise ValueError(f"{path} has {video.shape[0]} frames, need {span}")
-        start = (video.shape[0] - span) // 2
-        frames = video[start : start + span : frame_stride]
-
-    # Always emit uint8; each family owns its preprocessing.
-    if frames.shape[2:] != (height, width):
-        scale = max(height / frames.shape[2], width / frames.shape[3])
-        new_h = max(height, round(frames.shape[2] * scale))
-        new_w = max(width, round(frames.shape[3] * scale))
-        resized = torch.nn.functional.interpolate(frames.float(), size=(new_h, new_w), mode="bilinear", antialias=True)
-        top = (new_h - height) // 2
-        left = (new_w - width) // 2
-        frames = resized[:, :, top : top + height, left : left + width].round().clamp(0, 255).to(torch.uint8)
-    return {"video": frames.permute(1, 0, 2, 3), "fps": fps}
+    Returns ``{"video": uint8 [C, T, H, W], "fps", "frame_times_seconds"}``, the times on the file timeline so a
+    family can cut the target audio over the same interval.
+    """
+    source = visual_source(path)
+    num_source_frames = (num_frames - 1) * frame_stride + 1
+    if source.info.num_frames != num_source_frames:
+        raise ValueError(
+            f"{path} has {source.info.num_frames} frames; --diffusion-output-num-frames {num_frames} at "
+            f"--sft-frame-stride {frame_stride} needs exactly {num_source_frames}; cut the file to that length offline"
+        )
+    if (source.info.width, source.info.height) != (width, height):
+        raise ValueError(
+            f"{path} is {source.info.width}x{source.info.height}, not the {width}x{height} canvas; resize it offline"
+        )
+    # Scaling then cropping leaves aspect residues such as 4096:4095, which display within half a pixel.
+    if round(width * source.info.sample_aspect_ratio) != width:
+        raise ValueError(
+            f"{path} has non-square pixels (sample aspect ratio {source.info.sample_aspect_ratio}); "
+            "resample it to square pixels offline"
+        )
+    frames = source.decode(0, num_source_frames)[::frame_stride]
+    return {
+        "video": frames.permute(1, 0, 2, 3),
+        "fps": source.info.fps,
+        "frame_times_seconds": (
+            None if isinstance(source, ImageSource) else source.info.frame_times_seconds[::frame_stride]
+        ),
+    }
 
 
 def _relocate(obj, device: torch.device):

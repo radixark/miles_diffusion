@@ -183,7 +183,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--diffusion-true-cfg-scale` | float | – | |
 | `--diffusion-negative-prompt` | str | – | Defaults to `" "` on the engine when CFG is on. |
 | `--diffusion-noise-level` | float | `0.7` | |
-| `--diffusion-height` / `--diffusion-width` | int | `512` | Rollout output size; SFT center-crop size. |
+| `--diffusion-height` / `--diffusion-width` | int | `512` | Rollout output size; SFT target media must already be this size. |
 | `--diffusion-h3-aspect-ratio` | str | `16:9` | MiniMax H3 only: `21:9` / `16:9` / `4:3` / `1:1` / `3:4` / `9:16`. |
 | `--diffusion-h3-duration-seconds` | float | `5.0` | MiniMax H3 only: rollout duration, 4.0–15.0 s. |
 | `--diffusion-audio-flow-shift` | float | `3.0` | MiniMax H3 only: audio flow shift for rollout. |
@@ -231,7 +231,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--num-epoch` | int | – | |
 | `--start-rollout-id` | int | – | Resumed from `--load` when unset. |
 | `--sft-encoder-checkpoint` | str | – | SFT only: tokenizer/text_encoder/vae source. |
-| `--sft-frame-stride` | int | `1` | SFT encode temporal stride. |
+| `--sft-frame-stride` | int | `1` | SFT encode temporal stride; target videos hold exactly `(num_frames - 1) * stride + 1` frames. |
 | `--sft-offload-encoder` | flag | off | SFT only: keep the frozen encoder in host RAM, on the GPU only during encode bursts. |
 
 ### Evaluation

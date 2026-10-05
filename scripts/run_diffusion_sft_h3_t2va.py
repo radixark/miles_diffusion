@@ -8,7 +8,7 @@ share the GPU with its ~70GB of weights.
 
 Dataset rows: {"prompt": "...", "metadata": {"video": "clips/x.mp4"}}, relative to the jsonl
 Videos must already sit on H3's serving grid: short_edge=768 canvas, 24 fps, and a
-17n+5 frame count (the default spec is 1344x768 / 107 frames, ~4.46 s). See
+17n+5 frame count (the default spec is exactly 1344x768 / 107 frames, ~4.46 s). See
 docs/models/h3/lora_sft_guide.md sections 2-3 for how DATASET was built to this spec.
 
 Per rollout step: 32 samples, num_steps_per_rollout=4, so 8 samples per optimizer

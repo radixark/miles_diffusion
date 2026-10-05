@@ -321,13 +321,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--diffusion-height",
                 type=int,
                 default=512,
-                help="Height of the trained media: rollout output height, SFT encode center-crop height.",
+                help="Height of the trained media: rollout output height; SFT target media must already have it.",
             )
             parser.add_argument(
                 "--diffusion-width",
                 type=int,
                 default=512,
-                help="Width of the trained media: rollout output width, SFT encode center-crop width.",
+                help="Width of the trained media: rollout output width; SFT target media must already have it.",
             )
             parser.add_argument(
                 "--diffusion-h3-aspect-ratio",
