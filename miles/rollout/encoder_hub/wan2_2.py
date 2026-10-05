@@ -34,6 +34,8 @@ def load_encoder(args, device: torch.device) -> dict:
 
 
 def encode_sample(encoder: dict, sample: Sample, media_clip: dict, generator: torch.Generator, args) -> dict:
+    if sample.conditions or "audio" in sample.target:
+        raise ValueError("Wan2.2 SFT supports neither conditions nor target audio")
     return _encode_t2v(encoder, media_clip, sample.prompt, generator)
 
 

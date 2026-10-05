@@ -643,10 +643,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument("--input-key", type=str, default="input", help="JSON dataset key")
             parser.add_argument("--metadata-key", type=str, default="metadata", help="JSON dataset key")
             # SFT (--loss-type sft_loss) reads --prompt-data/--input-key like RL; the media path
-            # lives in each row's metadata dict under "video" or "image" (images train as single
-            # frames and require --diffusion-output-num-frames 1). Encode geometry comes from
-            # --diffusion-height/--diffusion-width/--diffusion-output-num-frames. Encoded pairs are
-            # cached next to the jsonl under .sft_cache/, one content-addressed file per sample.
+            # lives in each row's "target" dict under "visual", a video or an image (images train
+            # as single frames and require --diffusion-output-num-frames 1).
+            # Encode geometry comes from --diffusion-height/--diffusion-width/--diffusion-output-num-frames.
+            # Encoded pairs are cached next to the jsonl under .sft_cache/, one content-addressed file per sample.
             parser.add_argument("--sft-frame-stride", type=int, default=1, help="SFT encode temporal stride")
             parser.add_argument(
                 "--log-loss-sigma-bucket",
@@ -1832,7 +1832,7 @@ def miles_validate_args(args):
                     "see scripts/run_diffusion_sft_wan22.py"
                 )
         if args.prompt_data is None:
-            raise ValueError("--loss-type sft_loss requires --prompt-data (jsonl with prompt + metadata.video)")
+            raise ValueError("--loss-type sft_loss requires --prompt-data (jsonl with prompt + target.visual)")
         if args.rollout_function_path == "miles.rollout.sft_rollout.generate_rollout":
             if args.sft_encoder_checkpoint is None:
                 raise ValueError(

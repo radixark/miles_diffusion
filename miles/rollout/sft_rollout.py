@@ -8,6 +8,7 @@ manager placement group.
 """
 
 import hashlib
+import json
 import logging
 import os
 import time
@@ -19,7 +20,7 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from miles.rollout.base_types import RolloutFnTrainOutput
 from miles.utils import tracking_utils
-from miles.utils.media import ImageSource, visual_source
+from miles.utils.media import ImageSource, maybe_download_media, media_fingerprint, visual_source
 from miles.utils.metric_utils import compute_rollout_step
 from miles.utils.misc import SingletonMeta
 from miles.utils.timer import timer
@@ -29,33 +30,38 @@ logger = logging.getLogger(__name__)
 
 ENCODE_GPU_FRACTION = 0.3
 
+# Every args field an encoder reads; the cache key and latent seed depend on exactly these.
+SFT_CACHE_KEY_ARGS = (
+    "diffusion_model_family",
+    "sft_encoder_checkpoint",
+    "diffusion_height",
+    "diffusion_width",
+    "diffusion_output_num_frames",
+    "sft_frame_stride",
+)
 
-def resolve_media_path(media: str, prompt_data: str) -> str:
-    """Relative media paths are anchored at the dataset jsonl's directory (portable datasets)."""
-    if os.path.isabs(media):
-        return media
-    return str(Path(prompt_data).parent / media)
 
-
-def sft_target_path(sample: Sample, prompt_data: str) -> str:
-    media = sample.metadata.get("video") or sample.metadata.get("image")
-    if media is None:
-        raise ValueError(f"sample {sample.index} metadata has neither 'video' nor 'image': {sample.metadata}")
-    return resolve_media_path(media, prompt_data)
+def localize_sft_media(sample: Sample, media_cache_dir: Path) -> None:
+    """Point the sample's target and conditions at local files, downloading URLs once into media_cache_dir."""
+    sample.target = {kind: maybe_download_media(uri, media_cache_dir) for kind, uri in sample.target.items()}
+    sample.conditions = [
+        {**condition, "uri": maybe_download_media(condition["uri"], media_cache_dir)}
+        for condition in sample.conditions
+    ]
 
 
 def sft_sample_key(args, sample: Sample) -> tuple[str, int]:
-    """Content-addressed cache filename and latent-sampling seed for one (target media, prompt) sample."""
-    media = sft_target_path(sample, args.prompt_data)
-    stat = Path(media).stat()
-    # Bump the version whenever the cached pair changes.
-    digest = hashlib.sha256(
-        f"v3|{args.diffusion_model_family}|{args.sft_encoder_checkpoint}"
-        f"|{args.diffusion_height}x{args.diffusion_width}"
-        f"|{args.diffusion_output_num_frames}s{args.sft_frame_stride}"
-        f"|{media}|{stat.st_size}|{stat.st_mtime_ns}|{sample.prompt}".encode()
-    ).digest()
-    return digest.hex()[:16] + ".pt", int.from_bytes(digest[8:16], "big") % 2**63
+    """Cache identity includes the prompt, ordered conditions, target, all media files, and the args encoders read."""
+    paths = {*sample.target.values(), *(condition["uri"] for condition in sample.conditions)}
+    payload = {
+        # Bump the version whenever the cached pair changes.
+        "version": 3,
+        "config": {key: vars(args)[key] for key in SFT_CACHE_KEY_ARGS},
+        "sample": {"prompt": sample.prompt, "conditions": sample.conditions, "target": sample.target},
+        "files": [media_fingerprint(path) for path in sorted(paths)],
+    }
+    digest = hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).digest()
+    return digest.hex() + ".pt", int.from_bytes(digest[8:16], "big") % 2**63
 
 
 def read_media_clip(path: str, *, height: int, width: int, num_frames: int, frame_stride: int) -> dict:
@@ -125,7 +131,7 @@ class SftEncodeActor:
             encoder = _relocate(encoder, torch.device("cuda"))
         for sample in samples:
             media_clip = read_media_clip(
-                sft_target_path(sample, args.prompt_data),
+                sample.target["visual"],
                 height=args.diffusion_height,
                 width=args.diffusion_width,
                 num_frames=args.diffusion_output_num_frames,
@@ -194,6 +200,7 @@ def generate_rollout(args, rollout_id, data_source, evaluation: bool = False) ->
 
     cache_dir = Path(args.prompt_data).parent / ".sft_cache"
     for sample in samples:
+        localize_sft_media(sample, cache_dir / "media")
         sample.metadata["sft_cache_name"], sample.seed = sft_sample_key(args, sample)
 
     # Keyed by cache name so a sample repeated across an epoch wrap is encoded once.
