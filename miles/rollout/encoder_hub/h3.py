@@ -16,6 +16,8 @@ from argparse import Namespace
 
 import torch
 
+from miles.utils.types import Sample
+
 
 H3_FPS = 24.0
 H3_SHORT_EDGE = 768
@@ -127,8 +129,14 @@ def load_encoder(args: Namespace, device: torch.device) -> dict:
     }
 
 
+def encode_sample(
+    encoder: dict, sample: Sample, media_clip: dict, generator: torch.Generator, args: Namespace
+) -> dict:
+    return _encode_t2va(encoder, media_clip, sample.prompt, generator)
+
+
 @torch.no_grad()
-def encode_sample(encoder: dict, media_clip: dict, prompt: str, generator: torch.Generator) -> dict:
+def _encode_t2va(encoder: dict, media_clip: dict, prompt: str, generator: torch.Generator) -> dict:
     from sglang.multimodal_gen.runtime.pipelines_core.stages.model_specific_stages.minimax_h3.packed_sequence import (
         minimax_h3_packed_sequence,
     )
