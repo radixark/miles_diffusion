@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import torch
 
+from miles.utils.types import Sample
+
 
 def validate_args(args) -> None:
     if (args.diffusion_output_num_frames - 1) % 4 != 0:
@@ -31,8 +33,12 @@ def load_encoder(args, device: torch.device) -> dict:
     }
 
 
+def encode_sample(encoder: dict, sample: Sample, media_clip: dict, generator: torch.Generator, args) -> dict:
+    return _encode_t2v(encoder, media_clip, sample.prompt, generator)
+
+
 @torch.no_grad()
-def encode_sample(encoder: dict, media_clip: dict, prompt: str, generator: torch.Generator) -> dict:
+def _encode_t2v(encoder: dict, media_clip: dict, prompt: str, generator: torch.Generator) -> dict:
     from diffusers.pipelines.wan.pipeline_wan import prompt_clean
 
     device = encoder["device"]
