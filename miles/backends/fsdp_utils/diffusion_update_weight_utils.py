@@ -600,6 +600,7 @@ def broadcast_bucket(rollout_engines, group, group_name, named_tensors, target_m
 class DiffusionUpdateWeightFromDistributed(DiffusionUpdateWeight):
     def __init__(self, args, models):
         super().__init__(args, models)
+        self.rollout_engines = []
         self._model_update_group = None
         self._group_name = "diffusion-weight-update"
 

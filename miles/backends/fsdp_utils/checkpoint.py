@@ -163,11 +163,8 @@ class PreviousEMAState(Stateful):
 
     @torch.no_grad()
     def load_state_dict(self, state_dict):
-        # DCP loads in place into the tensors state_dict() returned; copy only tensors it replaced.
-        previous_ema = self.state_dict()["previous_ema"]
-        for name, tensor in state_dict["previous_ema"].items():
-            if tensor is not previous_ema[name]:
-                previous_ema[name].copy_(tensor)
+        for name, tensor in self.state_dict()["previous_ema"].items():
+            tensor.copy_(state_dict["previous_ema"][name])
 
 
 class LRSchedulerState(Stateful):
