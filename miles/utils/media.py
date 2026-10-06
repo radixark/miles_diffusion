@@ -84,7 +84,7 @@ def media_fingerprint(path: str) -> dict:
 
 @dataclass(frozen=True)
 class MediaInfo:
-    """Probed facts of what ``decode`` returns, display rotation applied; a fact the kind lacks stays ``None``."""
+    """Probed facts of the file, display rotation applied; a fact the kind lacks stays ``None``."""
 
     num_frames: int | None = None
     fps: float | None = None
@@ -94,6 +94,8 @@ class MediaInfo:
     height: int | None = None
     # Unknown counts as square.
     sample_aspect_ratio: Fraction = Fraction(1)
+    # Of the first audio stream, the one ffmpeg's -map 0:a:0 decodes.
+    audio_sample_rate: int | None = None
 
 
 class MediaSource(ABC):
@@ -151,7 +153,7 @@ class ImageSource(MediaSource):
 
 
 class VideoSource(MediaSource):
-    """The first video stream of a container; ``info`` probes every frame once."""
+    """The first video stream of a container; ``info`` probes every frame and the soundtrack once."""
 
     @cached_property
     def info(self) -> MediaInfo:
@@ -171,6 +173,7 @@ class VideoSource(MediaSource):
             width=width,
             height=height,
             sample_aspect_ratio=sample_aspect_ratio,
+            audio_sample_rate=self._soundtrack_sample_rate(probed),
         )
 
     def decode(self, start: int, length: int) -> torch.Tensor:
@@ -201,7 +204,7 @@ class VideoSource(MediaSource):
             "+genpts",
             "-show_entries",
             "format=start_time"
-            ":stream=index,codec_type,avg_frame_rate,sample_aspect_ratio"
+            ":stream=index,codec_type,avg_frame_rate,sample_aspect_ratio,sample_rate"
             ":stream_disposition=attached_pic"
             ":stream_side_data=rotation"
             ":frame=stream_index,best_effort_timestamp_time,width,height",
@@ -213,6 +216,12 @@ class VideoSource(MediaSource):
             if stream["codec_type"] == "video" and not stream["disposition"]["attached_pic"]:
                 return stream
         raise ValueError(f"{self.path} has no video stream")
+
+    @staticmethod
+    def _soundtrack_sample_rate(probed: dict) -> int | None:
+        return next(
+            (int(stream["sample_rate"]) for stream in probed["streams"] if stream["codec_type"] == "audio"), None
+        )
 
     def _file_start_seconds(self, probed: dict) -> float:
         # Raw elementary streams (.h264, .m1v), whose rate ffprobe misreports, and mislabeled images have none.
