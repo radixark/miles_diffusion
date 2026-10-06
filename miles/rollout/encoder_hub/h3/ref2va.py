@@ -250,10 +250,8 @@ def validate_args(args: Namespace) -> None:
 def load_encoder(args: Namespace, device: torch.device) -> dict:
     from transformers import AutoProcessor
 
-    # Every H3 partition ships byte-identical encoders, so FL2VA's serve Ref2VA; only the DiT differs.
-    encoder = common.load_video_and_text_encoders(args, device)
-    ckpt_dir = common.checkpoint_dir(args.sft_encoder_checkpoint, ["FL2VA/audio_vae/*", "processor/*"])
-    encoder["audio_vae"], encoder["audio_vae_arch"] = common.load_audio_vae(ckpt_dir, device)
+    encoder = common.load_encoders(args, device)
+    ckpt_dir = common.checkpoint_dir(args.sft_encoder_checkpoint, ["processor/*"])
     encoder["processor"] = AutoProcessor.from_pretrained(f"{ckpt_dir}/processor")
     return encoder
 
@@ -270,13 +268,6 @@ def encode_sample(
         minimax_h3_packed_sequence_ref2va_blocks,
     )
 
-    # The target audio spans num_frames / 24 s from the first frame, so each frame must sit at its constant 24 fps
-    # time; an average of 24 fps still lets variable-rate frames drift off the audio.
-    frame_times = media_clip["frame_times_seconds"]
-    if frame_times is None or any(
-        abs(frame_time - frame_times[0] - index / H3_FPS) > 2e-3 for index, frame_time in enumerate(frame_times)
-    ):
-        raise ValueError("H3 Ref2VA target requires constant 24 fps video")
     seed = generator.initial_seed()
     target_audio_rows = common.encode_target_audio(encoder, sample, media_clip)
     target_visual_rows, latent_t, latent_h, latent_w = common.encode_target_video(encoder, media_clip)

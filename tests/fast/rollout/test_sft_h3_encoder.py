@@ -3,10 +3,13 @@
     frames 17n+5 ----.                        .-- latent_t = (f-1)/16*4+... = 32 @107f
     ref2va 4-15 s ---+                        |
     canvas %32 ------+-- validate_args        +-- video rows = t*(H/32)*(W/32) = 32256
-    stride == 1 ----'                         '-- packed seq: [text|video|pad] aligned 64
+    stride == 1 ----'                         '-- packed seq: [text|video|audio|pad] aligned 64
 
-Each test pins one side: rejection of off-grid inputs, or an engine-derived
-geometry invariant the cached latents depend on.
+    t2va pair: {"latent": {"visual", "audio" = the soundtrack, one row per packed audio slot},
+                "cond_kwargs": packed layout + text + h3_target_has_soundtrack}
+
+Each test pins one side: rejection of off-grid inputs, an engine-derived
+geometry invariant the cached latents depend on, or the t2va pair's streams.
 """
 
 from tests.ci.ci_register import register_cpu_ci
@@ -84,3 +87,39 @@ class TestGeometry:
         assert packed["seq_len"] % 64 == 0
         assert packed["seq_len"] >= 7 + video_rows + audio_t * 2
         assert packed["img_position_ids"].shape == (packed["seq_len"], 3)
+
+
+def test_t2va_pair_carries_the_soundtrack_in_every_packed_audio_slot(monkeypatch):
+    import torch
+
+    from miles.rollout.encoder_hub.h3 import common
+    from miles.utils.types import Sample
+
+    native = "sglang.multimodal_gen.runtime.pipelines_core.stages.model_specific_stages.minimax_h3"
+    # 5 frames -> 2 latent frames on a 32x32 canvas; the real packer lays out the rows around them.
+    monkeypatch.setattr(
+        f"{native}.reference_encoding.minimax_h3_encode_reference_video_rows",
+        lambda vae, frames, arch: (torch.zeros(2, 96), 2, 2, 2),
+    )
+    monkeypatch.setattr(f"{native}.presentation.minimax_h3_text_only_ids", lambda tokenizer, prompt: torch.arange(3))
+    monkeypatch.setattr(common, "encode_target_audio", lambda encoder, sample, media_clip: torch.ones(18, 32))
+
+    def text_encoder(input_ids, attention_mask, use_cache):
+        return Namespace(last_hidden_state=torch.zeros(1, 3, 5120))
+
+    pair = t2va.encode_sample(
+        {
+            "device": torch.device("cpu"),
+            "tokenizer": None,
+            "text_encoder": text_encoder,
+            "vae": None,
+            "vae_arch": None,
+        },
+        Sample(prompt="a dog barks", target={"visual": "clip.mp4"}),
+        {"video": torch.zeros(3, 5, 32, 32, dtype=torch.uint8), "audio_sample_rate": 48000},
+        None,
+        Namespace(),
+    )
+    assert pair["latent"].keys() == {"visual", "audio"}
+    assert pair["latent"]["audio"].shape[0] == pair["cond_kwargs"]["h3_packed_layout"]["audio_pos"].shape[0] == 18
+    assert pair["cond_kwargs"]["h3_target_has_soundtrack"] is True
