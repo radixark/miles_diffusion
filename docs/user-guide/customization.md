@@ -304,12 +304,13 @@ Return a truthy value to skip the default logging; falsy layers on top.
 
 ## Model family
 
-### `--hf-checkpoint` / `--diffusion-model-family` / `--train-pipeline-config-path`
+### `--hf-checkpoint` / `--diffusion-model-family` / `--diffusion-task` / `--train-pipeline-config-path`
 
 `--hf-checkpoint` names the diffusers pipeline for train + rollout. Family is
 resolved from the checkpoint name unless you pass `--diffusion-model-family`
-(e.g. `sd3`). For an unregistered family, pass `--train-pipeline-config-path`
-to a `TrainPipelineConfig` subclass instead.
+(e.g. `sd3`). `--diffusion-task` (e.g. `t2i`) then picks the family's
+`TrainPipelineConfig` registered for that task. For an unregistered family, pass
+`--train-pipeline-config-path` to a `TrainPipelineConfig` subclass instead.
 
 ### `--model-backend-path`
 

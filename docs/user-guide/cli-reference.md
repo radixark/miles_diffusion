@@ -30,11 +30,12 @@ name. `python3 train_diffusion.py --help` is always the ground truth.
 
 ## Essentials
 
-### The one required flag
+### The required flags
 
 | Flag | What |
 |---|---|
 | `--hf-checkpoint` | The diffusers pipeline to train, as an HF repo id or a local directory. |
+| `--diffusion-task` | The task to train on that family, e.g. `t2i` for SD3, `t2v` for Wan2.2. |
 
 One value serves three readers: training loads components from it, the sglang-d
 engine serves it, and the **model family** is matched from its name. Add
@@ -169,6 +170,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 |---|---|---|---|
 | `--hf-checkpoint` | str | – | **Required.** Pipeline to train and to serve; also the family source. |
 | `--diffusion-model-family` | str | – | Registered family key: `sd3`, `wan2_2`, `ltx`, `qwen_image`, `cosmos3`. Overrides name matching. |
+| `--diffusion-task` | str | – | **Required** unless `--train-pipeline-config-path` is set. The task to train, one the family's config is registered for: `t2i` (sd3, krea2, qwen_image, cosmos3), `t2v` (wan2_2, ltx), `t2va` (h3). |
 | `--rollout-function-path` | str | `miles.rollout.sglang_rollout.generate_rollout` | Generic Miles default. Diffusion recipes explicitly set `miles.rollout.sglang_diffusion_rollout.generate_rollout`. |
 | `--train-pipeline-config-path` | str | – | Your own `TrainPipelineConfig` for an unregistered family. Mutually exclusive with `--diffusion-model-family`. |
 | `--model-backend-path` | str | – | Override the family's model loader. |

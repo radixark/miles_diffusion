@@ -1,12 +1,14 @@
 """Train pipeline config registry: checkpoint -> family config -> what the DiT receives.
 
-    checkpoint ref --resolve_diffusion_model_family----> family config
+    checkpoint ref --resolve_diffusion_model_family----> family
+    (family, --diffusion-task) --get_train_pipeline_config_cls--> config
     trajectory t   --process_timestep_as_input---------> DiT timestep
     sigma          --process_sigma_as_timesteps_input--> DiT timestep (scaled by the family's num_train_timesteps)
     {stream: latents}, cond --compute_noise_pred-------> {stream: noise pred}: no CFG | two-pass | joint-batch CFG
 
 What each test pins:
   family resolution   HF ids and local paths match case-insensitively; unknown refs fail; the env var wins
+  task dispatch       each family resolves only the tasks it registers; a missing or foreign task fails
   compute_noise_pred  no CFG is one pos pass; joint-batch CFG equals two-pass CFG
   timestep input      each family reproduces the arithmetic its sglang-d DiT runs
   sigma input         sd3 / wan2_2 scale by num_train_timesteps = 1000; qwen_image / krea2 pass sigma through
@@ -19,10 +21,15 @@ register_cpu_ci(est_time=30, suite="stage-a-cpu", labels=[])
 import pytest
 import torch
 
+from miles.backends.fsdp_utils.configs.h3 import H3TrainPipelineConfig
 from miles.backends.fsdp_utils.configs.krea2 import Krea2TrainPipelineConfig
 from miles.backends.fsdp_utils.configs.qwen_image import QwenImageTrainPipelineConfig
 from miles.backends.fsdp_utils.configs.sd3 import SD3TrainPipelineConfig
-from miles.backends.fsdp_utils.configs.train_pipeline_config import TrainPipelineConfig, resolve_diffusion_model_family
+from miles.backends.fsdp_utils.configs.train_pipeline_config import (
+    TrainPipelineConfig,
+    get_train_pipeline_config_cls,
+    resolve_diffusion_model_family,
+)
 from miles.backends.fsdp_utils.configs.wan2_2 import Wan2_2TrainPipelineConfig
 
 
@@ -48,6 +55,24 @@ class TestFamilyResolution:
     def test_env_override_wins(self, monkeypatch):
         monkeypatch.setenv("MILES_DIFFUSION_MODEL_FAMILY", "SD3")
         assert resolve_diffusion_model_family("mystery-lab/unknown-model") == "sd3"
+
+
+class TestTaskDispatch:
+    @pytest.mark.parametrize(
+        "family,task,config",
+        [
+            ("sd3", "t2i", SD3TrainPipelineConfig),
+            ("wan2_2", "t2v", Wan2_2TrainPipelineConfig),
+            ("h3", "t2va", H3TrainPipelineConfig),
+        ],
+    )
+    def test_task_selects_config(self, family, task, config):
+        assert get_train_pipeline_config_cls(family, task) is config
+
+    @pytest.mark.parametrize("family,task", [("sd3", None), ("sd3", "t2v")])
+    def test_unregistered_task_raises(self, family, task):
+        with pytest.raises(ValueError, match="registers --diffusion-task"):
+            get_train_pipeline_config_cls(family, task)
 
 
 class _MinimalConfig(TrainPipelineConfig):

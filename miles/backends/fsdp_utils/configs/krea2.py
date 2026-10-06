@@ -9,7 +9,7 @@ from miles.utils.types import CondKwargs
 from .train_pipeline_config import TrainPipelineConfig, register_train_pipeline_config
 
 
-@register_train_pipeline_config("krea2")
+@register_train_pipeline_config("krea2", tasks=("t2i",))
 class Krea2TrainPipelineConfig(TrainPipelineConfig):
     hf_ckpt_name_patterns = ("krea-2",)
 

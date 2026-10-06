@@ -19,16 +19,20 @@ import torch
 from miles.utils.types import CondKwargs
 
 
-_REGISTRY: dict[str, type[TrainPipelineConfig]] = {}
+# family -> {--diffusion-task: config}
+_REGISTRY: dict[str, dict[str, type[TrainPipelineConfig]]] = {}
 
 
-def register_train_pipeline_config(family: str):
-    """Decorator: register a TrainPipelineConfig subclass under a family key (``sd3``, ``wan``, ...)."""
+def register_train_pipeline_config(family: str, tasks: tuple[str, ...]):
+    """Decorator: register a TrainPipelineConfig subclass under a family key (``sd3``, ``wan``, ...)
+    for each task it trains (``t2i``, ``t2v``, ...)."""
 
     def wrapper(cls):
         model_family = family.lower()
         cls.model_family = model_family
-        _REGISTRY[model_family] = cls
+        configs_by_task = _REGISTRY.setdefault(model_family, {})
+        for task in tasks:
+            configs_by_task[task] = cls
         return cls
 
     return wrapper
@@ -53,8 +57,8 @@ def resolve_diffusion_model_family(model_ref: str) -> str:
 
     _populate_registry()
     ref = str(model_ref).lower()
-    for family, config_cls in _REGISTRY.items():
-        if any(pattern in ref for pattern in config_cls.hf_ckpt_name_patterns):
+    for family, configs_by_task in _REGISTRY.items():
+        if any(pattern in ref for config in configs_by_task.values() for pattern in config.hf_ckpt_name_patterns):
             return family
     raise ValueError(
         f"Cannot resolve diffusion model family for '{model_ref}' "
@@ -64,15 +68,17 @@ def resolve_diffusion_model_family(model_ref: str) -> str:
     )
 
 
-def get_train_pipeline_config_cls(family: str) -> type[TrainPipelineConfig]:
-    """The TrainPipelineConfig class registered for a resolved family key."""
+def get_train_pipeline_config_cls(family: str, task: str | None) -> type[TrainPipelineConfig]:
+    """The TrainPipelineConfig class registered for a resolved family key and --diffusion-task."""
     _populate_registry()
-    cls = _REGISTRY.get(family.lower())
-    if cls is None:
+    configs_by_task = _REGISTRY.get(family.lower())
+    if configs_by_task is None:
         raise ValueError(
             f"No TrainPipelineConfig registered for family '{family}'. " f"Known families: {list(_REGISTRY.keys())}"
         )
-    return cls
+    if task not in configs_by_task:
+        raise ValueError(f"Family '{family}' registers --diffusion-task {list(configs_by_task)}, got {task!r}")
+    return configs_by_task[task]
 
 
 class TrainPipelineConfig(abc.ABC):

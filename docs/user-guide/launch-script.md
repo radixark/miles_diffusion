@@ -77,7 +77,7 @@ live in `rollout_args`, a `--micro-batch-size-*` flag in `perf_args`).
 
 | Block | What it carries |
 |---|---|
-| `ckpt_args` | `--hf-checkpoint` (required — also selects the model family), `--save` / `--load` |
+| `ckpt_args` | `--hf-checkpoint` (required — also selects the model family), `--diffusion-task` (required — selects the family's config), `--save` / `--load` |
 | `rollout_args` | Prompt data, batch shape, sampler: steps, guidance, noise level, SDE step strategy |
 | `eval_args` | Eval datasets and cadence; eval requests are pure generation, no trajectory |
 | `grpo_args` | Advantage estimator, reward normalisation, clip range |
