@@ -14,7 +14,7 @@ from unittest.mock import patch
 import pytest
 import ray
 import torch
-from train_diffusion_async import train_loop
+from train_diffusion_async import train, train_loop
 
 from miles.backends.fsdp_utils.ema import EMAOptimizer
 from miles.rollout.data_source import RolloutDataSourceWithBuffer
@@ -173,7 +173,6 @@ def run_loop(tmp_path, monkeypatch, *, train_delay, rollout_delay, start=0, coun
     trainer = TrainerProbe.remote(manager, train_delay, restored)
     group = TrainGroupProbe(trainer, manager)
     try:
-        group.update_weights()
         train_loop(args, group, manager, None)
         records, saves = ray.get(trainer.result.remote())
         events = ray.get(manager.get_events.remote())
@@ -194,20 +193,19 @@ def test_overlap_reference_cursor_and_update_barrier(tmp_path, monkeypatch, trai
     assert [record[0]["sample_index"] for record in records] == [0, 1, 2]
     assert [record[0]["weight"] for record in records] == [0.0, 0.0, 0.5]
     assert [record[3] for record in records] == [record[0]["weight"] for record in records]
-    # Startup publishes the current EMA, then the previous EMA for batch 0, then the current EMA once it is sampled.
+    # Startup publishes the previous EMA for batch 0, then the current EMA once batch 0 is sampled.
     assert [(step, previous) for _, step, previous in updates] == [
-        (0, False),
         (0, True),
         (0, False),
         (1, False),
         (2, False),
         (3, False),
     ]
-    assert updates[2][0] >= events[0][2]
+    assert updates[1][0] >= events[0][2]
     assert saves[1]["global_step"] == 2
     for i in range(2):
         assert max(records[i][1], events[i + 1][1]) < min(records[i][2], events[i + 1][2])
-        assert updates[i + 3][0] >= events[i + 1][2]
+        assert updates[i + 2][0] >= events[i + 1][2]
     if rollout_delay > train_delay:
         # Rollout 1 saves a checkpoint; its drain wait must not disappear into save().
         assert metrics[1]["perf/drain_wait_time"] > 0.05
@@ -229,7 +227,6 @@ def test_resume_matches_uninterrupted_run(tmp_path, monkeypatch):
     assert [(r[0]["weight"], r[3]) for r in records] == [(0.5, 0.5), (1.25, 1.25), (2.125, 2.125)]
     assert [(r[0]["weight"], r[3]) for r in records] == [(r[0]["weight"], r[3]) for r in full_records[2:]]
     assert [(step, previous) for _, step, previous in updates] == [
-        (2, False),
         (2, True),
         (2, False),
         (3, False),
@@ -245,4 +242,20 @@ def test_resume_matches_uninterrupted_run(tmp_path, monkeypatch):
 def test_empty_and_single_rollout(tmp_path, monkeypatch, count):
     records, _, events, updates, _ = run_loop(tmp_path, monkeypatch, train_delay=0, rollout_delay=0, count=count)
     assert len(records) == len(events) == count
-    assert len(updates) == (1 if count == 0 else count + 3)
+    assert len(updates) == (0 if count == 0 else count + 2)
+
+
+@pytest.mark.parametrize(
+    "overrides,message",
+    [
+        (dict(colocate=True), "separate resident"),
+        (dict(offload_rollout=True), "separate resident"),
+        (dict(loss_type="policy_loss"), "only --loss-type nft"),
+    ],
+)
+def test_train_rejects_unsupported_setups(overrides, message):
+    args = Namespace(colocate=False, offload_train=False, offload_rollout=False, loss_type="nft")
+    for key, value in overrides.items():
+        setattr(args, key, value)
+    with pytest.raises(ValueError, match=message):
+        train(args)

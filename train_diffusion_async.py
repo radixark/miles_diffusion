@@ -1,8 +1,8 @@
 """One-rollout overlap.
 
-Each batch is sampled while the previous one trains, so with --rollout-weights ema it comes from the
-EMA before the latest step. Resume discards the prefetch and resamples its first batch from that
-checkpointed previous EMA, matching an uninterrupted run.
+Each batch is sampled while the previous one trains, so it comes from the EMA before the latest step
+(NFT samples with --rollout-weights ema). Resume discards the prefetch and resamples its first batch
+from that checkpointed previous EMA, matching an uninterrupted run.
 """
 
 import sys
@@ -21,12 +21,9 @@ def train_loop(args, actor_model, rollout_manager, num_rollout_per_epoch):
 
     # The first batch samples the previous EMA (the current one on a fresh start), as the prefetch did
     # before the checkpoint; the next prefetch samples the current EMA.
-    sample_previous_ema = args.rollout_weights == "ema"
-    if sample_previous_ema:
-        actor_model.update_weights(previous_ema=True)
+    actor_model.update_weights(previous_ema=True)
     current_batch = ray.get(rollout_manager.generate.remote(args.start_rollout_id))
-    if sample_previous_ema:
-        actor_model.update_weights()
+    actor_model.update_weights()
     for rollout_id in range(args.start_rollout_id, args.num_rollout):
         save_checkpoint = should_run_periodic_action(
             rollout_id, args.save_interval, num_rollout_per_epoch, args.num_rollout
@@ -69,6 +66,8 @@ def train(args):
     configure_logger()
     if args.colocate or args.offload_train or args.offload_rollout:
         raise ValueError("async training requires separate resident train/rollout GPU pools")
+    if args.loss_type != "nft":
+        raise ValueError("async training supports only --loss-type nft")
     args.train_async = True
 
     pgs = create_placement_groups(args)
@@ -76,12 +75,13 @@ def train(args):
     rollout_manager, num_rollout_per_epoch = create_rollout_manager(args, pgs["rollout"])
     actor_model = create_training_models(args, pgs, rollout_manager)
 
-    actor_model.update_weights()
-    if args.eval_interval is not None:
-        if args.num_rollout == 0:
-            ray.get(rollout_manager.eval.remote(rollout_id=0))
-        elif not args.skip_eval_before_train:
-            ray.get(rollout_manager.eval.remote(args.start_rollout_id))
+    # Eval before training (only at rollout 0, as in train_diffusion.py) reads the current weights;
+    # train_loop publishes the first batch's own.
+    if args.eval_interval is not None and (
+        args.num_rollout == 0 or (args.start_rollout_id == 0 and not args.skip_eval_before_train)
+    ):
+        actor_model.update_weights()
+        ray.get(rollout_manager.eval.remote(rollout_id=0))
 
     train_loop(args, actor_model, rollout_manager, num_rollout_per_epoch)
     ray.get(rollout_manager.dispose.remote())
