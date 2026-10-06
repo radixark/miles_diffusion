@@ -1123,8 +1123,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
                 default=False,
                 help=(
-                    "Sync only lora_A/lora_B to rollout via IPC with weight_update_mode=lora_merge "
-                    "(requires matching sglang-d LoRAPipeline support)."
+                    "Sync only lora_A/lora_B; the rollout merges them with weight_update_mode=lora_merge "
+                    "(requires matching sglang-d LoRAPipeline support). Uses CUDA IPC with --colocate and NCCL "
+                    "otherwise, where LoRA requires it."
                 ),
             )
             return parser
@@ -1685,6 +1686,22 @@ def validate_actor_lora_adapter(args) -> None:
             )
 
 
+def validate_lora_weight_sync_args(args) -> None:
+    if args.lora_ipc_weight_sync:
+        if not args.use_lora:
+            raise ValueError("--lora-ipc-weight-sync requires --use-lora")
+        if not args.lora_target_modules:
+            raise ValueError(
+                "--lora-ipc-weight-sync requires LoRA target modules; "
+                "set --hf-checkpoint (for per-model defaults) or --lora-target-modules."
+            )
+    elif args.use_lora and not args.colocate and not args.train_only and not args.debug_rollout_only:
+        raise ValueError(
+            "--use-lora without --colocate requires --lora-ipc-weight-sync: trainer-merged LoRA weights "
+            "have no NCCL weight sync yet"
+        )
+
+
 def miles_validate_args(args):
     args.eval_datasets = _resolve_eval_datasets(args)
 
@@ -1781,14 +1798,7 @@ def miles_validate_args(args):
                     "drift against the trainer's unmerged forward — training still works."
                 )
 
-    if args.lora_ipc_weight_sync:
-        if not args.use_lora:
-            raise ValueError("--lora-ipc-weight-sync requires --use-lora")
-        if not args.lora_target_modules:
-            raise ValueError(
-                "--lora-ipc-weight-sync requires LoRA target modules; "
-                "set --hf-checkpoint (for per-model defaults) or --lora-target-modules."
-            )
+    validate_lora_weight_sync_args(args)
 
     if not 0.0 <= args.ema_decay_init <= 1.0:
         raise ValueError(f"--ema-decay-init must be in [0, 1], got {args.ema_decay_init}")
@@ -1921,10 +1931,6 @@ def miles_validate_args(args):
         args.offload_train = False
     if args.offload_rollout is None:
         args.offload_rollout = False
-
-    if not args.colocate and not args.train_only and not args.debug_rollout_only:
-        if args.lora_ipc_weight_sync:
-            raise ValueError("--lora-ipc-weight-sync requires --colocate: CUDA IPC needs shared train/rollout GPUs")
 
     if args.hps_num_workers <= 0:
         raise ValueError(f"--hps-num-workers must be positive, got {args.hps_num_workers}")

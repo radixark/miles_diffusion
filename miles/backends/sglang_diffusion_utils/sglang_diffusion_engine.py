@@ -385,7 +385,7 @@ def _compute_server_args(args, host, port, nccl_port):
         if hasattr(args, f"sglang_{attr.name}") and attr.name not in kwargs:
             kwargs[attr.name] = getattr(args, f"sglang_{attr.name}")
 
-    if args.use_lora and (args.lora_ipc_weight_sync or not args.colocate):
+    if getattr(args, "use_lora", False) and getattr(args, "lora_ipc_weight_sync", False):
         kwargs["lora_target_modules"] = args.lora_target_modules
     # dit_precision / vae_precision are PipelineConfig fields, not ServerArgs, so forward them explicitly (only when changed from the class default, to avoid clobbering a subclass override).
     from sglang.multimodal_gen.configs.pipeline_configs.base import PipelineConfig

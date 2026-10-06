@@ -111,7 +111,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
 
     optimizer_args = "--lr 3e-4 --adam-beta2 0.999 --weight-decay 1e-4 --clip-grad 1.0 "
 
-    lora_args = "--use-lora --lora-rank 32 --lora-alpha 64 --lora-init-weights gaussian "
+    lora_args = "--use-lora --lora-ipc-weight-sync --lora-rank 32 --lora-alpha 64 --lora-init-weights gaussian "
 
     reward_args = (
         "--rm-type ocr "

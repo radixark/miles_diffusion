@@ -5,9 +5,11 @@ register_cpu_ci(est_time=15, suite="stage-a-cpu", labels=[])
 from datetime import timedelta
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 from miles.backends.fsdp_utils import diffusion_update_weight_utils as update
+from miles.utils.arguments import validate_lora_weight_sync_args
 
 
 def test_connect_assigns_every_engine_rank_before_waiting(monkeypatch):
@@ -102,3 +104,42 @@ def test_lora_fields_follow_the_adapter_and_only_ride_lora_buckets(monkeypatch):
     updater.update_bucket_weights(tensors, "transformer")
     assert (calls[0]["weight_update_mode"], calls[0]["lora_alpha"], calls[0]["lora_rank"]) == ("lora_merge", 64, 32)
     assert not {"weight_update_mode", "lora_alpha", "lora_rank"} & calls[1].keys()
+
+
+@pytest.mark.parametrize(
+    "use_lora,lora_ipc_weight_sync,colocate,expected",
+    [
+        (False, False, True, "DiffusionUpdateWeightFromTensor"),
+        (False, False, False, "DiffusionUpdateWeightFromDistributed"),
+        (True, False, True, "DiffusionUpdateWeightFromTensorLoRA"),
+        (True, False, False, None),  # trainer-merged LoRA has no NCCL path yet
+        (True, True, True, "DiffusionUpdateWeightFromTensorLoRAIPC"),
+        (True, True, False, "DiffusionUpdateWeightLoRADistributed"),
+    ],
+)
+def test_lora_flag_picks_the_payload_and_colocate_picks_the_transport(
+    use_lora, lora_ipc_weight_sync, colocate, expected
+):
+    args = SimpleNamespace(
+        use_lora=use_lora,
+        lora_ipc_weight_sync=lora_ipc_weight_sync,
+        colocate=colocate,
+        lora_target_modules=["to_q"],
+        train_only=False,
+        debug_rollout_only=False,
+    )
+    if expected is None:
+        with pytest.raises(ValueError, match="requires --lora-ipc-weight-sync"):
+            validate_lora_weight_sync_args(args)
+        return
+    validate_lora_weight_sync_args(args)
+    assert update.weight_updater_class(args).__name__ == expected
+
+
+@pytest.mark.parametrize("mode", ["train_only", "debug_rollout_only"])
+def test_lora_runs_without_weight_sync_need_no_sync_mode(mode):
+    args = SimpleNamespace(
+        use_lora=True, lora_ipc_weight_sync=False, colocate=False, train_only=False, debug_rollout_only=False
+    )
+    setattr(args, mode, True)
+    validate_lora_weight_sync_args(args)
