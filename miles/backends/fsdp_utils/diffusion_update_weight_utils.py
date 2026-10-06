@@ -2,7 +2,6 @@ import abc
 import logging
 import os
 import re
-import socket
 from argparse import Namespace
 from collections.abc import Mapping, Sequence
 from datetime import timedelta
@@ -35,6 +34,7 @@ except ImportError as _e:
     _checksum_import_error = _e
 
 from miles.ray.utils import get_physical_gpu_id
+from miles.utils.misc import get_current_node_ip, get_free_port
 
 logger = logging.getLogger(__name__)
 
@@ -543,28 +543,22 @@ class DiffusionUpdateWeightFromTensorLoRAIPC(DiffusionUpdateWeightLoRA, Diffusio
     pass
 
 
-def connect_rollout_engines_from_distributed(rollout_engines, engine_gpu_counts, group_name, timeout):
-    if len(rollout_engines) != len(engine_gpu_counts) or any(count <= 0 for count in engine_gpu_counts):
-        raise ValueError("Each engine requires a positive GPU count")
-    master_address = ray._private.services.get_node_ip_address()
-    with socket.socket() as sock:
-        sock.bind(("", 0))
-        master_port = sock.getsockname()[1]
-    world_size = 1 + sum(engine_gpu_counts)
-    refs = []
-    rank_offset = 1
-    for engine, count in zip(rollout_engines, engine_gpu_counts, strict=True):
-        refs.append(
-            engine.init_weights_update_group.remote(
-                master_address=master_address,
-                master_port=master_port,
-                rank_offset=rank_offset,
-                world_size=world_size,
-                group_name=group_name,
-                backend="nccl",
-            )
+def connect_rollout_engines_from_distributed(rollout_engines, gpus_per_engine, group_name, timeout):
+    master_address = get_current_node_ip()
+    master_port = get_free_port()
+    # The trainer is rank 0; engine i's GPUs take the next gpus_per_engine ranks.
+    world_size = 1 + len(rollout_engines) * gpus_per_engine
+    refs = [
+        engine.init_weights_update_group.remote(
+            master_address=master_address,
+            master_port=master_port,
+            rank_offset=1 + i * gpus_per_engine,
+            world_size=world_size,
+            group_name=group_name,
+            backend="nccl",
         )
-        rank_offset += count
+        for i, engine in enumerate(rollout_engines)
+    ]
     options = dist.ProcessGroupNCCL.Options()
     group = init_custom_process_group(
         backend="nccl",
@@ -575,7 +569,10 @@ def connect_rollout_engines_from_distributed(rollout_engines, engine_gpu_counts,
         timeout=timeout,
         pg_options=options,
     )
-    # Custom groups span independent worlds and cannot split the default communicator.
+    # This group spans another world, so it must not split the default communicator. torch sets split_from
+    # on these options when the default group is device-bound, and NCCL only reads it at the first
+    # collective, so clearing it here still applies. Drop once sglang's init_custom_process_group does
+    # this itself (sgl-project/sglang#42668).
     options.split_from = None
     ray.get(refs)
     return group
@@ -616,7 +613,7 @@ class DiffusionUpdateWeightFromDistributed(DiffusionUpdateWeight):
         self.rollout_engines = rollout_engines
         self._model_update_group = connect_rollout_engines_from_distributed(
             rollout_engines=rollout_engines,
-            engine_gpu_counts=[self.args.rollout_num_gpus_per_engine] * len(rollout_engines),
+            gpus_per_engine=self.args.rollout_num_gpus_per_engine,
             group_name=self._group_name,
             timeout=timedelta(minutes=self.args.distributed_timeout_minutes),
         )

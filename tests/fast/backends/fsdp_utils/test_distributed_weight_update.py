@@ -23,19 +23,19 @@ def test_connect_assigns_every_engine_rank_before_waiting(monkeypatch):
 
         engines.append(SimpleNamespace(init_weights_update_group=SimpleNamespace(remote=init)))
 
-    monkeypatch.setattr(update.ray._private.services, "get_node_ip_address", lambda: "127.0.0.1")
+    monkeypatch.setattr(update, "get_current_node_ip", lambda: "127.0.0.1")
 
     def join(**kwargs):
         assert len(calls) == 2
         assert kwargs["rank"] == 0
-        assert kwargs["world_size"] == 7
+        assert kwargs["world_size"] == 5
         return "group"
 
     monkeypatch.setattr(update, "init_custom_process_group", join)
     monkeypatch.setattr(update.ray, "get", lambda refs: calls.append(("wait", refs)))
-    group = update.connect_rollout_engines_from_distributed(engines, [2, 4], "update", timedelta(seconds=30))
+    group = update.connect_rollout_engines_from_distributed(engines, 2, "update", timedelta(seconds=30))
     assert group == "group"
-    assert [calls[i][1]["rank_offset"] for i in range(2)] == [1, 3]
+    assert [(calls[i][1]["rank_offset"], calls[i][1]["world_size"]) for i in range(2)] == [(1, 5), (3, 5)]
     assert calls[-1] == ("wait", [0, 1])
 
 
