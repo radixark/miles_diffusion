@@ -221,7 +221,7 @@ def train_pair(
 ) -> dict:
     """The cached pair: fp32 x0 rows per stream, plus the H3 config's compute_noise_pred inputs."""
     return {
-        "latent": {stream: rows.float().cpu() for stream, rows in target_rows.items()},
+        "latent": {stream: rows.to(torch.float16).cpu() for stream, rows in target_rows.items()},
         "cond_kwargs": {
             "encoder_hidden_states": text_hidden_states.to(dtype=torch.bfloat16, device="cpu"),
             "h3_packed_layout": packed_layout,
