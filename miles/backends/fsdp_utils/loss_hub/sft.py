@@ -121,12 +121,13 @@ def sft_loss_formula(
 ) -> torch.Tensor:
     """Per pair, sum each stream's own velocity MSE, so a stream's weight does not depend on its size.
 
-    Only the streams the config predicts are supervised; one it leaves out is still noised and fed to the DiT.
+    A stream is supervised when the config predicts it and --fsdp-supervised-streams names it; any other stream is
+    still noised and fed to the DiT.
     """
     loss_sum = 0.0
     per_pair_losses = {}
     for stream_name, target in prepared.extras["target"].items():
-        if stream_name not in new_pred:
+        if stream_name not in new_pred or stream_name not in ctx.args.fsdp_supervised_streams:
             continue
         # Shapes must match exactly: broadcasting would silently average the wrong rows.
         if new_pred[stream_name].shape != target.shape:
