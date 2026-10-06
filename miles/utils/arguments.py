@@ -1123,9 +1123,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
                 default=False,
                 help=(
-                    "Sync only lora_A/lora_B; the rollout merges them with weight_update_mode=lora_merge "
-                    "(requires matching sglang-d LoRAPipeline support). Uses CUDA IPC with --colocate and NCCL "
-                    "otherwise, where LoRA requires it."
+                    "Sync only lora_A/lora_B and let the rollout merge them with weight_update_mode=lora_merge "
+                    "(requires matching sglang-d LoRAPipeline support), over CUDA IPC with --colocate and NCCL "
+                    "otherwise. Without it, the trainer merges LoRA into the base weights and pushes full weights, "
+                    "which is supported only with --colocate."
                 ),
             )
             return parser

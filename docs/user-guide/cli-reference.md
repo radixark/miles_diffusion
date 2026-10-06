@@ -328,7 +328,7 @@ Every one takes a dotted path.
 | `--lora-adapter-path` | str+ | – | PEFT adapter directories the actor continues from, one per `--update-weight-target-module` entry, in order; `--lora-rank` / `--lora-alpha` must match their configs. |
 | `--lora-target-modules` | str+ | – | Defaults per model family. |
 | `--lora-init-weights` | str | `gaussian` | `kaiming-uniform` maps to PEFT's default; other PEFT schemes pass through. |
-| `--lora-ipc-weight-sync` | flag | off | Push only `lora_A`/`lora_B`; the engine merges locally. Requires `--use-lora`. Uses CUDA IPC with `--colocate` and NCCL otherwise; LoRA without `--colocate` requires it. |
+| `--lora-ipc-weight-sync` | flag | off | Push only `lora_A`/`lora_B` and let the rollout merge them (`weight_update_mode=lora_merge`), over CUDA IPC with `--colocate` and NCCL otherwise. Requires `--use-lora`. Without it, the trainer merges LoRA into the base weights and pushes full weights, which is supported only with `--colocate`. |
 
 ### EMA
 
