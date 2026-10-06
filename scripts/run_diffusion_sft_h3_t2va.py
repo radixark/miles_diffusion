@@ -36,6 +36,7 @@ LORA_TARGET_MODULES = "attn.to_q attn.to_k attn.to_v attn.to_out.0 ff.net.0.proj
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
+    num_gpus: int = 8
     data_dir: str = "/root/datasets"
     resume_ckpt: str = ""
     start_rollout: int = -1
@@ -109,14 +110,14 @@ def execute(args: ScriptArgs) -> None:
 
     perf_args = "--micro-batch-size 1 --gradient-checkpointing "
 
-    misc_args = "--actor-num-gpus-per-node 8 --num-gpus-per-node 8 "
+    misc_args = f"--actor-num-gpus-per-node {args.num_gpus} --num-gpus-per-node {args.num_gpus} "
 
     U.execute_train(
         train_args=(
             f"{ckpt_args} {rollout_args} {sft_args} {optimizer_args} {lora_args} "
             f"{wandb_args} {train_backend_args} {perf_args} {misc_args} {args.extra_args}"
         ),
-        num_gpus_per_node=8,
+        num_gpus_per_node=args.num_gpus,
         config=args,
         train_script="train_sft.py",
     )
