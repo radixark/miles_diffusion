@@ -140,6 +140,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--ulysses-degree` | int | `0` | `0` = auto (Ulysses fills SP). Ring degree > 1 needs torch ≥ 2.11 and a ring-capable attention backend. |
 | `--fsdp-attention-backend` | str | – | diffusers `set_attention_backend` value. |
 | `--fsdp-flow-shift` | str | – | SFT training sigma grid shift per latent stream, e.g. `visual=12,audio=3`; a bare number is the visual shift. RL pairs carry their rollout sigmas instead. Distinct from `--diffusion-flow-shift`. |
+| `--fsdp-supervised-streams` | str | `visual,audio` | Comma-separated latent streams the SFT loss supervises, among those the pair carries; must include `visual`. A stream left out is still noised and fed to the DiT but adds no loss. RL trajectories carry only the visual stream. |
 | `--gradient-checkpointing` | flag | off | |
 | `--deterministic-mode` | flag | off | See [Deterministic Training](../advanced/deterministic.md). |
 | `--train-env-vars` | JSON | `{}` | Extra env for the training processes. |
@@ -366,7 +367,7 @@ Every one takes a dotted path.
 | `--disable-wandb-random-suffix` | flag | off | Run names include a random suffix by default; pass this flag to disable it. |
 | `--wandb-log-num-images` | int | `0` | Images/videos per rollout; `0` disables. |
 | `--wandb-log-image-interval` | int | `1` | Send media every N rollouts. |
-| `--log-loss-sigma-bucket` | int | `10` | Sigma buckets for the per-bucket loss curves (emitted by the SFT loss); `0` disables. |
+| `--log-loss-sigma-bucket` | int | `10` | Sigma buckets for the per-bucket loss curves (emitted by the SFT loss): `loss_<stream>_sigma_*` for each supervised stream, bucketed by its own sigma; the total `loss` is never bucketed, since streams draw independent sigmas. `0` disables. |
 | `--use-miles-dashboard` | flag | off | Async phase/trajectory telemetry. |
 | `--miles-dashboard-workspace` | str | `./miles_dashboard` | |
 

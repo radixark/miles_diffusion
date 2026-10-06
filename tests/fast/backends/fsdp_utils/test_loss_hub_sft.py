@@ -11,18 +11,22 @@
                  ──► timesteps[name], extras["sigmas"][name]
       noise      ──► latents[name] = (1 - sigma) x0 + sigma noise,  extras["target"][name] = noise - x0
                 │
-    sft_loss_formula(new_pred keyed like latents): per pair, sum_streams mean((pred - target)^2)
-                                                   + sigma-bucket metrics of the visual stream;
-                                                   a stream absent from new_pred carries no loss
+    sft_loss_formula(new_pred keyed like latents): per pair, sum_streams mean((pred - target)^2);
+                                                   a stream absent from new_pred or left out of
+                                                   --fsdp-supervised-streams carries no loss
+      metrics    ──► loss                    the total, never bucketed: streams draw independent sigmas
+                     loss_<stream>           only when >1 stream is supervised
+                     loss_<stream>_sigma_*   every supervised stream, bucketed by its own sigma
 
 What each test pins:
   TestPrepareSftBatch   corruption identity, select_component's expert routing and served grid points,
                         determinism, known flow-shift grid values,
                         the visual stream draws exactly what the single-stream seed draws
   TestSftLossFormula    exact-velocity zero loss, unit offset, sigma buckets partition the loss,
-                        --log-loss-sigma-bucket 0 emits only the loss
+                        --log-loss-sigma-bucket 0 on single-stream pairs emits only the loss
   TestJointStreams      each stream on its own --fsdp-flow-shift grid, draws independent across streams,
-                        per-stream MSE normalization, an unpredicted stream adds no loss,
+                        per-stream MSE normalization, per-stream metrics bucketed by their own sigma,
+                        an unpredicted or unsupervised stream adds no loss,
                         rank-aligned expert choice, shape/stream-set rejection
 """
 
@@ -76,7 +80,12 @@ def _ctx(models, rollout_id=3, microbatch_id=0, dp_rank=0, config=None):
         models=models,
         train_pipeline_config=config if config is not None else _Config(),
         sde_backend=None,
-        args=Namespace(seed=42, log_loss_sigma_bucket=5, fsdp_flow_shift=FLOW_SHIFTS),
+        args=Namespace(
+            seed=42,
+            log_loss_sigma_bucket=5,
+            fsdp_flow_shift=FLOW_SHIFTS,
+            fsdp_supervised_streams=["visual", "audio"],
+        ),
         forward_dtype=torch.float32,
         device=torch.device("cpu"),
         rollout_id=rollout_id,
@@ -250,11 +259,11 @@ class TestSftLossFormula:
 
         metrics = _Metrics()
         prepared, loss = self._loss(1.0, metrics)
-        bucket_keys = [key for key in metrics.seen if key.startswith("loss_sigma_")]
+        bucket_keys = [key for key in metrics.seen if key.startswith("loss_visual_sigma_")]
         declared = new_metric_buffer(None, torch.device("cpu"), ["transformer"], sigma_buckets=5)._schema
         assert set(bucket_keys) <= set(declared), "emitted buckets must be pre-declared for the DP reduce layout"
         sigmas = prepared.extras["sigmas"]["visual"]
-        assert set(bucket_keys) == {sigma_bucket_key(min(int(float(s) * 5), 4), 5) for s in sigmas}
+        assert set(bucket_keys) == {sigma_bucket_key("visual", min(int(float(s) * 5), 4), 5) for s in sigmas}
         assert torch.allclose(torch.tensor(sum(metrics.seen[key][0] for key in bucket_keys)), loss)
 
     def test_disabled_sigma_buckets(self):
@@ -266,8 +275,8 @@ class TestSftLossFormula:
 def test_sigma_bucket_key_edges_are_floats():
     from miles.backends.fsdp_utils.metrics import sigma_bucket_key
 
-    assert sigma_bucket_key(0, 10) == "loss_sigma_0.0_0.1"
-    assert sigma_bucket_key(9, 10) == "loss_sigma_0.9_1.0"
+    assert sigma_bucket_key("visual", 0, 10) == "loss_visual_sigma_0.0_0.1"
+    assert sigma_bucket_key("audio", 9, 10) == "loss_audio_sigma_0.9_1.0"
 
 
 def _joint_batch(bsz=4):
@@ -329,10 +338,39 @@ class TestJointStreams:
             ctx, batch, prepared, new_pred=predictions, old_pred=None, ref_pred=None, metrics=metrics
         )
         assert loss.item() == pytest.approx(10.0)
-        # Sigma buckets follow the visual stream only: 2 pairs, each off by 1.
-        assert sum(total for key, (total, _) in metrics.seen.items() if key.startswith("loss_sigma_")) == 2.0
         loss.backward()
         assert all(prediction.grad.abs().sum() > 0 for prediction in predictions.values())
+
+    def test_joint_metrics_split_by_stream_and_bucket_by_own_sigma(self):
+        # visual off by 1, audio off by 2, 2 pairs:
+        #   loss          = 1 + 4 per pair    no buckets
+        #   loss_visual   = 1     per pair    loss_visual_sigma_* buckets by the visual sigma
+        #   loss_audio    = 4     per pair    loss_audio_sigma_*  buckets by the audio sigma
+        from miles.backends.fsdp_utils.metrics import new_metric_buffer, sigma_bucket_key
+
+        ctx = _ctx({"transformer": nn.Identity()}, config=_SingleConfig())
+        batch = _joint_batch(2)
+        prepared = prepare_sft_batch(ctx, batch)
+        predictions = {
+            "visual": prepared.extras["target"]["visual"] + 1.0,
+            "audio": prepared.extras["target"]["audio"] + 2.0,
+        }
+        metrics = _Metrics()
+        sft_loss_formula(ctx, batch, prepared, new_pred=predictions, old_pred=None, ref_pred=None, metrics=metrics)
+        assert metrics.seen["loss"] == (10.0, 2)
+        assert metrics.seen["loss_visual"] == (2.0, 2)
+        assert metrics.seen["loss_audio"] == (8.0, 2)
+        declared = new_metric_buffer(None, torch.device("cpu"), ["transformer"], sigma_buckets=5)._schema
+        assert set(metrics.seen) <= set(declared), "emitted metrics must be pre-declared for the DP reduce layout"
+        assert not any(key.startswith("loss_sigma_") for key in metrics.seen)
+        for stream_name, per_pair_loss in (("visual", 1.0), ("audio", 4.0)):
+            expected = {}
+            for sigma in prepared.extras["sigmas"][stream_name].tolist():
+                key = sigma_bucket_key(stream_name, min(int(sigma * 5), 4), 5)
+                expected[key] = expected.get(key, 0.0) + per_pair_loss
+            prefix = f"loss_{stream_name}_sigma_"
+            emitted = {key: total for key, (total, _) in metrics.seen.items() if key.startswith(prefix)}
+            assert emitted == pytest.approx(expected)
 
     def test_a_stream_the_config_does_not_predict_adds_no_loss(self):
         # H3 Ref2VA on a silent target: the audio stream is noised and fed to the DiT, but only visual is predicted.
@@ -349,6 +387,30 @@ class TestJointStreams:
             metrics=_Metrics(),
         )
         assert loss.item() == pytest.approx(2.0)
+
+    def test_a_stream_left_out_of_supervised_streams_adds_no_loss(self):
+        # --fsdp-supervised-streams visual: audio is predicted, off by 2, yet only visual's 1^2 counts.
+        ctx = _ctx({"transformer": nn.Identity()}, config=_SingleConfig())
+        ctx.args.fsdp_supervised_streams = ["visual"]
+        batch = _joint_batch(2)
+        prepared = prepare_sft_batch(ctx, batch)
+        metrics = _Metrics()
+        loss = sft_loss_formula(
+            ctx,
+            batch,
+            prepared,
+            new_pred={
+                "visual": prepared.extras["target"]["visual"] + 1.0,
+                "audio": prepared.extras["target"]["audio"] + 2.0,
+            },
+            old_pred=None,
+            ref_pred=None,
+            metrics=metrics,
+        )
+        assert loss.item() == pytest.approx(2.0)
+        # One supervised stream: its loss is the total, and only its own buckets appear.
+        assert "loss_visual" not in metrics.seen
+        assert not any(key.startswith("loss_audio") for key in metrics.seen)
 
     def test_visual_stream_selects_a_rank_aligned_expert(self):
         models = {"transformer": nn.Identity(), "transformer_2": nn.Identity()}

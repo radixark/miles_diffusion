@@ -83,7 +83,7 @@ def _load_video_vae(ckpt_dir: str, device: torch.device):
     return vae.to(device=device, dtype=torch.float32).eval(), arch
 
 
-def load_audio_vae(ckpt_dir: str, device: torch.device):
+def _load_audio_vae(ckpt_dir: str, device: torch.device):
     from safetensors.torch import load_file
     from sglang.multimodal_gen.configs.models.vaes.minimax_h3_audio import (
         MiniMaxH3AudioVAEArchConfig,
@@ -127,12 +127,16 @@ def checkpoint_dir(checkpoint: str, allow_patterns: list[str]) -> str:
     return checkpoint if os.path.isdir(checkpoint) else snapshot_download(checkpoint, allow_patterns=allow_patterns)
 
 
-def load_video_and_text_encoders(args: Namespace, device: torch.device) -> dict:
+def load_encoders(args: Namespace, device: torch.device) -> dict:
     from transformers import AutoTokenizer
 
-    ckpt_dir = checkpoint_dir(args.sft_encoder_checkpoint, ["FL2VA/video_vae/*", "text_encoder/*", "tokenizer/*"])
+    # Every H3 partition ships byte-identical encoders, so FL2VA's serve every task; only the DiT differs.
+    ckpt_dir = checkpoint_dir(
+        args.sft_encoder_checkpoint, ["FL2VA/video_vae/*", "FL2VA/audio_vae/*", "text_encoder/*", "tokenizer/*"]
+    )
     tokenizer = AutoTokenizer.from_pretrained(f"{ckpt_dir}/tokenizer")
     vae, vae_arch = _load_video_vae(ckpt_dir, device)
+    audio_vae, audio_vae_arch = _load_audio_vae(ckpt_dir, device)
     text_encoder = _load_text_encoder(ckpt_dir, device)
     return {
         "device": device,
@@ -140,6 +144,8 @@ def load_video_and_text_encoders(args: Namespace, device: torch.device) -> dict:
         "text_encoder": text_encoder,
         "vae": vae,
         "vae_arch": vae_arch,
+        "audio_vae": audio_vae,
+        "audio_vae_arch": audio_vae_arch,
     }
 
 
@@ -173,6 +179,13 @@ def encode_target_audio(encoder: dict, sample: Sample, media_clip: dict) -> torc
 
     if "audio" in sample.target:
         raise ValueError("H3 trains the target video's own soundtrack; mux the target audio into the video")
+    # The target audio spans num_frames / 24 s from the first frame, so each frame must sit at its constant 24 fps
+    # time; an average of 24 fps still lets variable-rate frames drift off the audio.
+    frame_times = media_clip["frame_times_seconds"]
+    if frame_times is None or any(
+        abs(frame_time - frame_times[0] - index / H3_FPS) > 2e-3 for index, frame_time in enumerate(frame_times)
+    ):
+        raise ValueError("H3 target requires constant 24 fps video")
     path = sample.target["visual"]
     duration = target_duration_seconds(media_clip)
     audio_t = minimax_h3_audio_latent_t(duration)

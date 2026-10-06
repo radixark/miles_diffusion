@@ -55,6 +55,11 @@ def parse_stream_flow_shifts(value: str) -> dict[str, float]:
     return stream_flow_shifts
 
 
+def parse_stream_names(value: str) -> list[str]:
+    """``"visual,audio"`` -> ["visual", "audio"]."""
+    return [stream_name.strip() for stream_name in value.split(",")]
+
+
 def get_miles_extra_args_provider(add_custom_arguments=None):
     def add_miles_arguments(parser):
         # Ray
@@ -177,6 +182,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     '"visual=12,audio=3"; a bare number is the visual shift. RL pairs carry their '
                     "rollout sigmas instead. "
                     "Distinct from --diffusion-flow-shift, which configures the rollout engine."
+                ),
+            )
+            parser.add_argument(
+                "--fsdp-supervised-streams",
+                type=parse_stream_names,
+                default=["visual", "audio"],
+                help=(
+                    'Comma-separated latent streams the SFT loss supervises, e.g. "visual,audio", among those the '
+                    "pair carries. A stream left out is still noised and fed to the DiT, keeping its native joint "
+                    "input, but adds no loss. RL trajectories carry only the visual stream."
                 ),
             )
             parser.add_argument(
@@ -662,7 +677,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--log-loss-sigma-bucket",
                 type=int,
                 default=10,
-                help="number of sigma buckets for per-bucket loss curves (0 disables; emitted by the SFT loss today)",
+                help=(
+                    "number of sigma buckets for each supervised stream's per-bucket loss curves, bucketed by that "
+                    "stream's own sigma (0 disables; emitted by the SFT loss today)"
+                ),
             )
             parser.add_argument(
                 "--sft-offload-encoder",
@@ -1854,6 +1872,13 @@ def miles_validate_args(args):
             get_encoder(args.diffusion_model_family, args.diffusion_task).validate_args(args)
         if args.fsdp_flow_shift is None or "visual" not in args.fsdp_flow_shift:
             raise ValueError("--loss-type sft_loss requires a visual --fsdp-flow-shift for the training sigma grid")
+        if not set(args.fsdp_supervised_streams) <= {"visual", "audio"}:
+            raise ValueError(
+                f"--fsdp-supervised-streams names only visual and audio, got {args.fsdp_supervised_streams}"
+            )
+        if "visual" not in args.fsdp_supervised_streams:
+            # The visual sigma picks the DiT component and the sigma-bucket metrics.
+            raise ValueError("--fsdp-supervised-streams must include visual")
         if not all(math.isfinite(shift) and shift > 0 for shift in args.fsdp_flow_shift.values()):
             raise ValueError(f"--fsdp-flow-shift values must be finite and positive, got {args.fsdp_flow_shift}")
         if args.n_samples_per_prompt != 1:
