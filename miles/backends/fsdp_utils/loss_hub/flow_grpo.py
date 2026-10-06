@@ -125,7 +125,7 @@ def flow_grpo_loss_formula(
     next_timesteps = prepared.extras["next_timesteps"]
     log_prob_old_rollout = prepared.extras["log_prob_old"]
 
-    _, log_prob_new, prev_sample_mean_new, std_dev_t_new = ctx.sde_backend.sde_step_logprob(
+    score = ctx.sde_backend.sde_step_logprob(
         new_pred.float(),
         prepared.timesteps,
         next_timesteps,
@@ -133,6 +133,7 @@ def flow_grpo_loss_formula(
         prev_sample=next_latents.float(),
         noise_level=noise_level,
     )
+    log_prob_new = score.log_prob
 
     if write_old_log_prob:
         for pair, log_prob in zip(batch, log_prob_new, strict=True):
@@ -151,7 +152,7 @@ def flow_grpo_loss_formula(
     if kl_beta > 0:
         if ref_pred is None:
             raise ValueError("Flow-GRPO KL requires a reference DiT forward; set --ref-mode lora_base or ref")
-        _, _, prev_sample_mean_ref, _ = ctx.sde_backend.sde_step_logprob(
+        ref_score = ctx.sde_backend.sde_step_logprob(
             ref_pred.float(),
             prepared.timesteps,
             next_timesteps,
@@ -159,10 +160,10 @@ def flow_grpo_loss_formula(
             prev_sample=next_latents.float(),
             noise_level=noise_level,
         )
-        kl_per_pair = ((prev_sample_mean_new - prev_sample_mean_ref) ** 2).mean(
-            dim=tuple(range(1, prev_sample_mean_new.ndim)),
+        kl_per_pair = ((score.prev_mean - ref_score.prev_mean) ** 2).mean(
+            dim=tuple(range(1, score.prev_mean.ndim)),
             keepdim=True,
-        ) / (2 * std_dev_t_new**2)
+        ) / (2 * score.std_dev_t**2)
         loss_sum = loss_sum + kl_beta * kl_per_pair.sum()
         kl_sum = kl_per_pair.sum()
 

@@ -17,8 +17,20 @@ from __future__ import annotations
 
 import abc
 import math
+from typing import NamedTuple
 
 import torch
+
+
+class SdeStepScore(NamedTuple):
+    """One scored transition; the first four fields keep ``sde_step_with_logprob``'s order."""
+
+    prev_sample: torch.Tensor
+    log_prob: torch.Tensor
+    prev_mean: torch.Tensor
+    std_dev_t: torch.Tensor
+    # the std log_prob scored against; flow-SDE keeps it distinct from std_dev_t
+    noise_std: torch.Tensor
 
 
 class SdeStepBackend(abc.ABC):
@@ -77,7 +89,7 @@ class SdeStepBackend(abc.ABC):
         *,
         prev_sample: torch.Tensor,
         noise_level: float,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> SdeStepScore:
         model_output = model_output.float()
         sample = sample.float()
         prev_sample = prev_sample.float()
@@ -85,7 +97,13 @@ class SdeStepBackend(abc.ABC):
         prev_mean, noise_std, std_dev_t = self.prev_sample_mean_and_std(
             model_output, sample, sigma, sigma_prev, noise_level=noise_level
         )
-        return prev_sample, self.log_prob(prev_sample, prev_mean, noise_std), prev_mean, std_dev_t
+        return SdeStepScore(
+            prev_sample=prev_sample,
+            log_prob=self.log_prob(prev_sample, prev_mean, noise_std),
+            prev_mean=prev_mean,
+            std_dev_t=std_dev_t,
+            noise_std=noise_std,
+        )
 
 
 class DiffusersSdeStepBackend(SdeStepBackend):
