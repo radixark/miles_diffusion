@@ -138,6 +138,7 @@ divergence is pure forward-path difference. Watch these metrics:
 | `train/model_output_max_abs_diff`  | Worst element.                                            |
 | `train/model_output_rel_max`       | The worst element relative to the rollout output's scale. |
 | `train/log_prob_mean_abs_diff`     | The gap that actually feeds the PPO ratio.                |
+| `train/prev_mean_diff_over_noise_std` | Trainer-vs-rollout SDE transition mean, RMS in units of the step's noise std. |
 | `train/ratio_abs_minus_1`          | How far the ratio sits from 1.0 in a live run.            |
 
 

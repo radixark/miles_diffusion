@@ -80,7 +80,42 @@ Checklist:
 3. Match input dtypes between FSDP forward and the rollout engine for fp32 runs.
 4. Watch `train/log_prob_mean_abs_diff` — near zero before the first optimizer step.
 
-## 5. Pairs well with
+## 5. Score centering
+
+Even when the kernels agree, the engine and the trainer rarely compute the exact same
+transition mean. The engine samples `x' ~ N(μ_q, s²)`, while the trainer scores it under
+`N(μ_θ, s²)`. Once `μ_q ≠ μ_θ`, the expected score under the engine is no longer zero, and
+the policy gradient picks up a drift term: the expected advantage times that expected score.
+Drift distills the trainer toward the engine. The engine is then re-synced from the trainer,
+so the bias compounds over training
+([Score Centering](https://arxiv.org/abs/2609.20807)).
+
+`--diffusion-score-centering` subtracts the expected score from every pair's gradient. For a
+Gaussian step with a θ-independent std, `∇θ E_q[log p_θ(x')] = ∇θ log p_θ(μ_q)`, so the
+correction is exact and needs only the engine's mean `μ_q`, with no top-k approximation as
+in the LLM case. It is a no-op when `μ_q = μ_θ`, scales with each pair's PPO gradient weight
+(zero where the clip binds), and leaves the logged loss unchanged. Both built-in backends
+satisfy the Gaussian form. A custom backend whose `log_prob` is not quadratic in
+`prev_sample − prev_mean` must override `SdeStepBackend.expected_log_prob`.
+
+```bash
+--diffusion-score-centering --diffusion-debug-mode --diffusion-recompute-old-log-prob
+```
+
+- The engine returns `μ_q` (`rollout_prev_sample_means`) only under `--diffusion-debug-mode`,
+  so the flag requires it. Debug mode ships every per-step debug tensor, which is heavier
+  than score centering needs.
+- Pair it with `--diffusion-recompute-old-log-prob`. The PPO log-prob is a per-element mean,
+  so the rollout ratio `exp(log p_θ − log q)` is not an importance weight and does not cancel
+  drift. A train/rollout mismatch near `--diffusion-clip-range` instead makes the clip mask a
+  mismatch-correlated subset of pairs. Recomputing keeps the ratio about policy movement and
+  leaves the mismatch to score centering.
+- `train/prev_mean_diff_over_noise_std` reports `|μ_q − μ_θ|` in units of the step's noise std (RMS over
+  latent elements). Drift grows with it; a value of 0 means score centering has nothing to do.
+
+DiffusionNFT has no SDE log-prob, so score centering does not apply to it.
+
+## 6. Pairs well with
 
 - [Customization](../user-guide/customization.md) — `--diffusion-step-strategy-path` and `--sde-step-backend-path`.
 - [SD3 model guide](../models/sd3/sd3.md) — Flow-GRPO vs NFT recipe flags.

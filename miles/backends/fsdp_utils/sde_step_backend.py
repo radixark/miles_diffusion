@@ -80,6 +80,19 @@ class SdeStepBackend(abc.ABC):
         )
         return log_prob.mean(dim=tuple(range(1, log_prob.ndim)))
 
+    def expected_log_prob(
+        self,
+        rollout_prev_mean: torch.Tensor,
+        prev_mean: torch.Tensor,
+        noise_std: torch.Tensor,
+    ) -> torch.Tensor:
+        """``E_{x ~ N(rollout_prev_mean, ·)}[log_prob(x)]`` up to a θ-independent constant.
+
+        Exact for a ``log_prob`` quadratic in ``prev_sample - prev_mean`` with a θ-independent
+        ``noise_std``; a backend of any other form must override it.
+        """
+        return self.log_prob(rollout_prev_mean, prev_mean, noise_std)
+
     def sde_step_logprob(
         self,
         model_output: torch.Tensor,
