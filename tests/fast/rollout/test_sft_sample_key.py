@@ -26,6 +26,7 @@ def _args(**overrides):
         diffusion_width=832,
         diffusion_output_num_frames=81,
         sft_frame_stride=2,
+        diffusion_task="t2va",
     )
     base.update(overrides)
     return Namespace(**base)
@@ -55,6 +56,7 @@ def test_key_invalidates_per_axis(tmp_path):
     assert sft_sample_key(_args(diffusion_height=512), sample)[0] != base_name
     assert sft_sample_key(_args(sft_frame_stride=1), sample)[0] != base_name
     assert sft_sample_key(_args(sft_encoder_checkpoint="other"), sample)[0] != base_name
+    assert sft_sample_key(_args(diffusion_task="ref2va"), sample)[0] != base_name
     assert sft_sample_key(_args(), _sample(video, prompt="q"))[0] != base_name
 
     video.write_bytes(b"y" * 101)
