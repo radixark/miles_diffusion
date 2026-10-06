@@ -6,6 +6,7 @@ cached train pairs stay bit-compatible with the engine's rollout conditioning:
 - packed layout: ``minimax_h3_packed_sequence``;
 - x0 rows: ``minimax_h3_encode_reference_video_rows`` (fp32 VAE, seed-42
   posterior sample, mean/std normalization, [1,2,2] patchify -> [rows, 96]);
+- audio x0 rows: the video's own soundtrack over its frames' interval (``common.encode_target_audio``);
 - text ids: ``minimax_h3_text_only_ids`` (verbatim prompt, no special tokens).
 """
 
@@ -16,7 +17,7 @@ from argparse import Namespace
 import torch
 
 from miles.rollout.encoder_hub.h3 import common
-from miles.rollout.encoder_hub.h3.common import H3_FPS, H3_TEXT_HIDDEN_DIM
+from miles.rollout.encoder_hub.h3.common import H3_TEXT_HIDDEN_DIM
 from miles.utils.types import Sample
 
 H3_SHORT_EDGE = 768
@@ -38,7 +39,7 @@ def validate_args(args: Namespace) -> None:
 
 
 def load_encoder(args: Namespace, device: torch.device) -> dict:
-    return common.load_video_and_text_encoders(args, device)
+    return common.load_encoders(args, device)
 
 
 @torch.no_grad()
@@ -51,22 +52,14 @@ def encode_sample(
     from sglang.multimodal_gen.runtime.pipelines_core.stages.model_specific_stages.minimax_h3.presentation import (
         minimax_h3_text_only_ids,
     )
-    from sglang.multimodal_gen.runtime.pipelines_core.stages.model_specific_stages.minimax_h3.time_request import (
-        minimax_h3_audio_latent_t,
-    )
 
     if sample.conditions:
         raise ValueError("H3 t2va SFT takes no reference conditions")
-    if "audio" in sample.target:
-        raise ValueError("H3 t2va SFT takes no target audio")
 
     del generator  # the engine encode recipe pins its own VAE sample seed (42)
     device = encoder["device"]
 
-    # audio_t below is frame_count / H3_FPS: any other fps packs a wrong duration.
-    if media_clip["fps"] is not None and abs(media_clip["fps"] - H3_FPS) > 0.01:
-        raise ValueError(f'H3 encode requires {H3_FPS:g} fps clips, got {media_clip["fps"]:g}')
-
+    target_audio_rows = common.encode_target_audio(encoder, sample, media_clip)
     rows, latent_t, latent_h, latent_w = common.encode_target_video(encoder, media_clip)
 
     text_ids = minimax_h3_text_only_ids(encoder["tokenizer"], sample.prompt).to(device)
@@ -78,13 +71,19 @@ def encode_sample(
     if list(hidden.shape) != [1, int(text_ids.shape[0]), H3_TEXT_HIDDEN_DIM]:
         raise ValueError(f"unexpected text hidden shape {list(hidden.shape)}")
 
-    audio_t = minimax_h3_audio_latent_t(common.target_duration_seconds(media_clip))
     packed = minimax_h3_packed_sequence(
         text_len=int(text_ids.shape[0]),
         latent_t=latent_t,
         latent_h=latent_h,
         latent_w=latent_w,
-        audio_t=audio_t,
+        audio_t=target_audio_rows.shape[0] // 2,
         include_keyframe_cond=False,
     )
-    return common.train_pair(sample, {"visual": rows}, hidden, packed, packed["token_tags"])
+    return common.train_pair(
+        sample,
+        {"visual": rows, "audio": target_audio_rows},
+        hidden,
+        packed,
+        packed["token_tags"],
+        h3_target_has_soundtrack=media_clip["audio_sample_rate"] is not None,
+    )

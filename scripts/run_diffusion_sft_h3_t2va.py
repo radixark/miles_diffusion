@@ -2,7 +2,7 @@
 
 No sglang engines: the sft_rollout plugin lazily encodes each round's cache misses
 through a colocated encoder actor pool (Qwen3-VL-32B layer-50 text encoder + H3 video
-VAE), writing one content-addressed file per sample into .sft_cache/ next to the jsonl.
+and audio VAEs), writing one content-addressed file per sample into .sft_cache/ next to the jsonl.
 The encoder is non-resident: it is dropped after every miss burst, so train steps never
 share the GPU with its ~70GB of weights.
 
@@ -102,9 +102,10 @@ def execute(args: ScriptArgs) -> None:
         "--fsdp-master-dtype fp32 "
         "--fsdp-reduce-dtype fp32 "
         "--diffusion-forward-dtype bf16 "
-        # Match the engine's t2va serving schedule (video shift 12) so training
-        # sigmas cover the same grid inference will sample.
-        "--fsdp-flow-shift 12.0 "
+        # Each stream samples sigmas on its engine serving schedule: video shift 12, audio shift 3.
+        "--fsdp-flow-shift visual=12,audio=3 "
+        # Real-footage soundtracks are noisy: the audio is noised and fed to the DiT but adds no loss.
+        "--fsdp-supervised-streams visual "
     )
 
     perf_args = "--micro-batch-size 1 --gradient-checkpointing "

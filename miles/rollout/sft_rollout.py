@@ -56,7 +56,7 @@ def sft_sample_key(args, sample: Sample) -> tuple[str, int]:
     paths = {*sample.target.values(), *(condition["uri"] for condition in sample.conditions)}
     payload = {
         # Bump the version whenever the cached pair changes.
-        "version": 3,
+        "version": 4,
         "config": {key: vars(args)[key] for key in SFT_CACHE_KEY_ARGS},
         "sample": {"prompt": sample.prompt, "conditions": sample.conditions, "target": sample.target},
         "files": [media_fingerprint(path) for path in sorted(paths)],

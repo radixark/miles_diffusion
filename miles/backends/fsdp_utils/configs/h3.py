@@ -24,12 +24,13 @@ def _without_padding_tail(layout: dict, token_tags: torch.Tensor) -> tuple[torch
 
 @register_train_pipeline_config("h3", tasks=("t2va", "ref2va"))
 class H3TrainPipelineConfig(TrainPipelineConfig):
-    """MiniMax H3: t2va video-only GRPO, and SFT of t2va or Ref2VA through the same packed joint forward."""
+    """MiniMax H3: t2va video-only GRPO, and joint video/audio SFT of t2va or Ref2VA through one packed forward."""
 
     hf_ckpt_name_patterns = ("minimax-h3", "minimax_h3", "/h3")
     supports_cfg_training = False
     sde_timestep_divisor = 1000.0
-    # No loss reaches the audio head when audio is unsupervised (GRPO), so its LoRA may hold no optimizer state.
+    # No loss reaches the audio head when audio is unsupervised (GRPO, or SFT with --fsdp-supervised-streams visual),
+    # so its LoRA may hold no optimizer state.
     optimizer_state_allowed_missing = ["audio"]
     enable_autocast = False
 
@@ -49,14 +50,14 @@ class H3TrainPipelineConfig(TrainPipelineConfig):
             raise ValueError("H3 training requires --use-lora with --lora-ipc-weight-sync")
         if args.loss_type == "sft_loss" and args.micro_batch_size != 1:
             raise ValueError("H3 packed SFT requires --micro-batch-size 1")
+        # The visual shift would mis-set the audio's corruption sigmas and AdaLN conditioning.
+        if args.loss_type == "sft_loss" and "audio" not in (args.fsdp_flow_shift or {}):
+            raise ValueError("H3 SFT requires --fsdp-flow-shift visual=...,audio=...")
         if args.diffusion_task == "ref2va":
             if args.loss_type != "sft_loss":
                 raise ValueError("H3 rollout serves only the t2va task")
             if args.update_weight_target_modules != ["transformer_ref"]:
                 raise ValueError("H3 Ref2VA SFT requires --update-weight-target-module transformer_ref")
-            # The visual shift would mis-set the audio's corruption sigmas and AdaLN conditioning.
-            if "audio" not in (args.fsdp_flow_shift or {}):
-                raise ValueError("H3 Ref2VA SFT requires --fsdp-flow-shift visual=...,audio=...")
 
     @classmethod
     def apply_rollout_sampling_params(

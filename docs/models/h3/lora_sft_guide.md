@@ -80,8 +80,8 @@ Watch the run's log in wandb (project `miles-diffusion-sft`).
 
 The recipe defaults are exactly the validated optimum: **lr 3e-5, weight decay 0.01,
 LoRA rank 64 / alpha 128, rollout batch 32 (1 sample per GPU per optimizer step)**,
-`--fsdp-flow-shift 12.0`, `--diffusion-guidance-scale 1.0` (H3 has no CFG),
-`--sft-offload-encoder`.
+`--fsdp-flow-shift visual=12,audio=3`, `--fsdp-supervised-streams visual`,
+`--diffusion-guidance-scale 1.0` (H3 has no CFG), `--sft-offload-encoder`.
 
 miles-diffusion started with RL and later grew to cover SFT. Read a rollout here as whatever
 produces the next batch of training samples — RL generates them, SFT encodes them. Each batch is
@@ -137,8 +137,9 @@ Other tips for DiT LoRA SFT:
   (default 10 buckets) compare like with like.
 - **Quality beats quantity**: ~200 clips that survived the GSB gate converge in
   10 epochs and outperform larger, looser pools.
-- **Don't train audio**: real-footage audio tracks are noisy; the t2va recipe trains only
-  the video branch — audio is rolled out but excluded from the loss.
+- **Don't train audio on noisy soundtracks**: real-footage audio tracks are noisy, so the t2va
+  recipe passes `--fsdp-supervised-streams visual`. The soundtrack is still encoded, noised and
+  fed to the DiT as its native joint input, but excluded from the loss; drop the flag to train audio.
 
 ## 6. Results
 

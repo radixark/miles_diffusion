@@ -9,6 +9,8 @@ from miles.utils.metric_buffer import MetricBuffer, MetricReduce
 # Declaring metrics here also fixes the cross-rank layout the reduction packs into.
 SCHEMA = {
     "loss": MetricReduce.MEAN,
+    "loss_visual": MetricReduce.MEAN,
+    "loss_audio": MetricReduce.MEAN,
     "policy_loss": MetricReduce.MEAN,
     "kl_loss": MetricReduce.MEAN,
     "loss_abs_mean": MetricReduce.MEAN,
@@ -34,13 +36,13 @@ SCHEMA = {
 }
 
 
-def sigma_bucket_key(bucket: int, num_buckets: int) -> str:
+def sigma_bucket_key(stream_name: str, bucket: int, num_buckets: int) -> str:
     # Keep integer edges as floats (0.0, 1.0) so key names stay stable across bucket counts.
     def edge(value: float) -> str:
         text = f"{value:g}"
         return text if "." in text else f"{value:.1f}"
 
-    return f"loss_sigma_{edge(bucket / num_buckets)}_{edge((bucket + 1) / num_buckets)}"
+    return f"loss_{stream_name}_sigma_{edge(bucket / num_buckets)}_{edge((bucket + 1) / num_buckets)}"
 
 
 def new_metric_buffer(
@@ -50,8 +52,9 @@ def new_metric_buffer(
     schema = dict(SCHEMA)
     # SFT loss by sigma bucket: velocity-MSE magnitude varies strongly with the
     # corruption level, so only bucketed curves are comparable across steps.
-    for bucket in range(sigma_buckets):
-        schema[sigma_bucket_key(bucket, sigma_buckets)] = MetricReduce.MEAN
+    for stream_name in ("visual", "audio"):
+        for bucket in range(sigma_buckets):
+            schema[sigma_bucket_key(stream_name, bucket, sigma_buckets)] = MetricReduce.MEAN
     for component in components if len(components) > 1 else ():
         schema[f"log_prob_mean_abs_diff_{component}"] = MetricReduce.MEAN
         schema[f"model_output_mean_abs_diff_{component}"] = MetricReduce.MEAN

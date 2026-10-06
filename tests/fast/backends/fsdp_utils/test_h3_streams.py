@@ -3,16 +3,20 @@
 One H3TrainPipelineConfig trains both tasks through one compute_noise_pred; a ref2va pair adds an audio target and
 references.
 
-    cached t2va pair {"latent": {"visual": [rows, 96]}, "cond_kwargs": packed layout + text}
-         │ prepare_sft_batch
-         ▼
-    latents_input {"visual": [1, rows, 96]}, timesteps_input {"visual": [sigma * 1000]}
-         │ scatter into the packed video buffer at update_mask
+    visual-only t2va input (an RL trajectory) {"visual": [1, rows, 96]}, timesteps {"visual": [sigma * 1000]}
+         │ scatter into the packed video buffer at update_mask; audio rows stay zero at the video time
          ▼
     H3 DiT(hidden_states, audio_hidden_states, timestep = 1 - sigma, ...) over packed rows [0, cu_seqlens[1]);
          the padding tail the engine isolates as its own document never reaches it
          ▼
     {"visual": -pred[:, update_mask]}   same [1, rows, 96] as the SFT target ──► sft_loss_formula
+
+    t2va SFT pair: every row of both streams is a target row
+    latents_input {"visual": [1, rows_v, 96], "audio": [1, rows_a, 32]}, each stream at its own sigma
+         ▼
+    H3 DiT timestep = (visual t, audio t); text rows follow visual t
+         ▼
+    {"visual": -pred[:, update_mask], "audio": -audio_pred}; a silent target returns only "visual"
 
     ref2va pair: target rows of both streams; fixed reference rows fill ~update_mask
     latents_input {"visual": [1, rows_v, 96], "audio": [1, rows_a, 32]}
@@ -29,13 +33,14 @@ references.
 
 What each test pins:
   t2va prediction     keeps the batch dim, so the SFT loss accepts it; the DiT sees no padding rows
+  t2va joint pair     audio rows reach the DiT unchanged at the audio time; silence returns only "visual"
   ref2va scatter      target and reference rows land in each stream's buffer, per-row timestep routing,
                       velocity sign, padding trim; for diffusers tuple and Transformer2DModelOutput returns
   audio time          moving the audio timestep leaves every other row's time alone
   silent target       audio rows still reach the DiT at the audio time; only the visual prediction returns
   reference times     taken from conditioning, and clamped to max(target t, reference t) as native H3 does
   ref2va validation   SFT only (rollout serves t2va); transformer_ref, micro-batch-size 1 and an audio
-                      --fsdp-flow-shift are required
+                      --fsdp-flow-shift (every H3 SFT) are required
   tiny diffusers H3   real forward/backward through prepare + loss, fp32 and bf16
   mixed precision     the FSDP plan pins exactly the checkpoint's fp32 params, and H3 disables autocast
 """
@@ -89,7 +94,12 @@ def test_t2va_prediction_matches_the_sft_target_and_skips_padding_rows():
         models={"transformer": _VisualHead()},
         train_pipeline_config=config,
         sde_backend=None,
-        args=Namespace(seed=42, fsdp_flow_shift={"visual": 3.0}, log_loss_sigma_bucket=5),
+        args=Namespace(
+            seed=42,
+            fsdp_flow_shift={"visual": 3.0},
+            log_loss_sigma_bucket=5,
+            fsdp_supervised_streams=["visual", "audio"],
+        ),
         forward_dtype=torch.float32,
         device=torch.device("cpu"),
     )
@@ -188,6 +198,49 @@ class _TwoHeads(nn.Module):
         return Namespace(sample=video, audio_sample=audio)
 
 
+@pytest.mark.parametrize("has_soundtrack", [True, False])
+def test_t2va_joint_pair_feeds_audio_at_its_own_time(has_soundtrack):
+    # Packed rows: [text 0-1 | video 2-4 | audio 5-6 | pad 7]; t2va has no reference rows.
+    layout = {
+        "img_pos": torch.tensor([2, 3, 4]),
+        "audio_pos": torch.tensor([5, 6]),
+        "text_pos": torch.tensor([0, 1]),
+        "update_mask": torch.tensor([True, True, True]),
+        "img_position_ids": torch.arange(24.0).view(8, 3),
+        "cu_seqlens": torch.tensor([0, 7, 8]),
+    }
+    cond = {
+        "encoder_hidden_states": torch.ones(1, 2, 8),
+        "h3_packed_layout": layout,
+        "h3_token_tags": torch.tensor([1, 1, 0, 0, 0, 2, 2, -1]),
+        "h3_target_has_soundtrack": has_soundtrack,
+    }
+    latents = {"visual": torch.full((1, 3, 96), 2.0), "audio": torch.full((1, 2, 32), 3.0)}
+    model = _TwoHeads()
+    output = H3TrainPipelineConfig().compute_noise_pred(
+        model=model,
+        latents_input=latents,
+        timesteps_input={"visual": _timestep(0.25), "audio": _timestep(0.75)},
+        pos_cond=cond,
+        neg_cond=None,
+        joint_cond=None,
+        use_cfg=False,
+        cfg_batching=False,
+        guidance_scale=0.0,
+        true_cfg_scale=None,
+    )
+    assert torch.equal(model.inputs["audio_hidden_states"], latents["audio"])
+    row_times = _row_timesteps(model)
+    assert torch.allclose(row_times[layout["img_pos"]], torch.full((3,), 0.75))
+    assert torch.allclose(row_times[layout["audio_pos"]], torch.full((2,), 0.25))
+    assert torch.allclose(row_times[layout["text_pos"]], torch.full((2,), 0.75))
+    assert torch.equal(output["visual"], -latents["visual"] * model.visual_scale)
+    if has_soundtrack:
+        assert torch.equal(output["audio"], -latents["audio"] * model.audio_scale)
+    else:
+        assert output.keys() == {"visual"}
+
+
 @pytest.mark.parametrize("as_tuple", [False, True])
 def test_ref2va_scatter_independent_timesteps_and_velocity_direction(as_tuple):
     latents, timesteps, cond = _case()
@@ -282,6 +335,7 @@ def _sft_args(**overrides):
                 "fsdp_flow_shift": {"visual": 8.0, "audio": 3.0},
                 "seed": 42,
                 "log_loss_sigma_bucket": 5,
+                "fsdp_supervised_streams": ["visual", "audio"],
             }
             | overrides
         )

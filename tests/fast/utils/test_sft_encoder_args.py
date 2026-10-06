@@ -1,4 +1,5 @@
-"""SFT argument validation: encoder requirements apply only to the built-in producer; flow shifts are per stream."""
+"""SFT argument validation: encoder requirements apply only to the built-in producer; flow shifts and supervised
+streams are named per stream."""
 
 import shlex
 import sys
@@ -15,6 +16,7 @@ from miles.utils.arguments import (
     get_miles_extra_args_provider,
     miles_validate_args,
     parse_stream_flow_shifts,
+    parse_stream_names,
     set_default_diffusion_args,
 )
 
@@ -63,6 +65,19 @@ def test_flow_shift_is_keyed_by_stream(args: Namespace) -> None:
 )
 def test_flow_shift_rejects_missing_visual_and_bad_values(args: Namespace, flow_shift, message) -> None:
     args.fsdp_flow_shift = flow_shift
+    with pytest.raises(ValueError, match=message):
+        miles_validate_args(args)
+
+
+def test_supervised_streams_are_comma_separated(args: Namespace) -> None:
+    # Both streams by default; "visual,audio" names them like --fsdp-flow-shift's terms.
+    assert args.fsdp_supervised_streams == ["visual", "audio"]
+    assert parse_stream_names("visual,audio") == ["visual", "audio"]
+
+
+@pytest.mark.parametrize("streams,message", [(["audio"], "include visual"), (["visual", "audoi"], "visual and audio")])
+def test_supervised_streams_reject_missing_visual_and_unknown_names(args: Namespace, streams, message) -> None:
+    args.fsdp_supervised_streams = streams
     with pytest.raises(ValueError, match=message):
         miles_validate_args(args)
 
