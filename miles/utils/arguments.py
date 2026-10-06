@@ -246,8 +246,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help=(
                     "Task to train, one of the family TrainPipelineConfig's tasks: input-to-output in SGLang's "
-                    "ModelTaskType terms (t2i, t2v), or the family's own SGLang request task (H3: t2va). Required "
-                    "unless the config declares no tasks."
+                    "ModelTaskType terms (t2i, t2v), or the family's own SGLang request task (H3: t2va, ref2va). "
+                    "Required unless the config declares no tasks."
                 ),
             )
             parser.add_argument(

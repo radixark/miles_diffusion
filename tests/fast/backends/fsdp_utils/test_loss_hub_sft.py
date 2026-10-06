@@ -12,7 +12,8 @@
       noise      ──► latents[name] = (1 - sigma) x0 + sigma noise,  extras["target"][name] = noise - x0
                 │
     sft_loss_formula(new_pred keyed like latents): per pair, sum_streams mean((pred - target)^2)
-                                                   + sigma-bucket metrics of the visual stream
+                                                   + sigma-bucket metrics of the visual stream;
+                                                   a stream absent from new_pred carries no loss
 
 What each test pins:
   TestPrepareSftBatch   corruption identity, select_component's expert routing and served grid points,
@@ -21,7 +22,8 @@ What each test pins:
   TestSftLossFormula    exact-velocity zero loss, unit offset, sigma buckets partition the loss,
                         --log-loss-sigma-bucket 0 emits only the loss
   TestJointStreams      each stream on its own --fsdp-flow-shift grid, draws independent across streams,
-                        per-stream MSE normalization, rank-aligned expert choice, shape/stream-set rejection
+                        per-stream MSE normalization, an unpredicted stream adds no loss,
+                        rank-aligned expert choice, shape/stream-set rejection
 """
 
 from tests.ci.ci_register import register_cpu_ci
@@ -331,6 +333,22 @@ class TestJointStreams:
         assert sum(total for key, (total, _) in metrics.seen.items() if key.startswith("loss_sigma_")) == 2.0
         loss.backward()
         assert all(prediction.grad.abs().sum() > 0 for prediction in predictions.values())
+
+    def test_a_stream_the_config_does_not_predict_adds_no_loss(self):
+        # H3 Ref2VA on a silent target: the audio stream is noised and fed to the DiT, but only visual is predicted.
+        ctx = _ctx({"transformer": nn.Identity()}, config=_SingleConfig())
+        batch = _joint_batch(2)
+        prepared = prepare_sft_batch(ctx, batch)
+        loss = sft_loss_formula(
+            ctx,
+            batch,
+            prepared,
+            new_pred={"visual": prepared.extras["target"]["visual"] + 1.0},
+            old_pred=None,
+            ref_pred=None,
+            metrics=_Metrics(),
+        )
+        assert loss.item() == pytest.approx(2.0)
 
     def test_visual_stream_selects_a_rank_aligned_expert(self):
         models = {"transformer": nn.Identity(), "transformer_2": nn.Identity()}
