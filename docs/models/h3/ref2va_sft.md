@@ -7,8 +7,8 @@ description: Ordered multimodal conditions and joint video/audio supervision wit
 
 H3 names reference-to-audio-video generation `ref2va`. This SFT path trains both
 video and audio targets, using the official `transformer_ref` diffusers component
-and the native `Ref2VA` video/audio VAEs. The existing `t2va` SFT recipe remains
-available for video-only datasets.
+and the native `Ref2VA` video/audio VAEs. The `t2va` SFT recipe covers rows without
+references; it supervises only video (`--diffusion-supervised-streams visual`).
 
 ## Dataset
 

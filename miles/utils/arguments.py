@@ -180,6 +180,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--diffusion-supervised-streams",
+                nargs="+",
+                choices=["visual", "audio"],
+                default=["visual", "audio"],
+                help=(
+                    "Latent streams the SFT loss supervises, among those the pair carries. A stream left out is "
+                    "still noised and fed to the DiT, keeping its native joint input, but adds no loss. RL "
+                    "trajectories carry only the visual stream."
+                ),
+            )
+            parser.add_argument(
                 "--diffusion-forward-dtype",
                 type=str,
                 default="bf16",
@@ -1854,6 +1865,9 @@ def miles_validate_args(args):
             get_encoder(args.diffusion_model_family, args.diffusion_task).validate_args(args)
         if args.fsdp_flow_shift is None or "visual" not in args.fsdp_flow_shift:
             raise ValueError("--loss-type sft_loss requires a visual --fsdp-flow-shift for the training sigma grid")
+        if "visual" not in args.diffusion_supervised_streams:
+            # The visual sigma picks the DiT component and the sigma-bucket metrics.
+            raise ValueError("--diffusion-supervised-streams must include visual")
         if not all(math.isfinite(shift) and shift > 0 for shift in args.fsdp_flow_shift.values()):
             raise ValueError(f"--fsdp-flow-shift values must be finite and positive, got {args.fsdp_flow_shift}")
         if args.n_samples_per_prompt != 1:

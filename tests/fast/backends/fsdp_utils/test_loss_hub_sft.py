@@ -13,7 +13,8 @@
                 │
     sft_loss_formula(new_pred keyed like latents): per pair, sum_streams mean((pred - target)^2)
                                                    + sigma-bucket metrics of the visual stream;
-                                                   a stream absent from new_pred carries no loss
+                                                   a stream absent from new_pred or left out of
+                                                   --diffusion-supervised-streams carries no loss
 
 What each test pins:
   TestPrepareSftBatch   corruption identity, select_component's expert routing and served grid points,
@@ -22,7 +23,7 @@ What each test pins:
   TestSftLossFormula    exact-velocity zero loss, unit offset, sigma buckets partition the loss,
                         --log-loss-sigma-bucket 0 emits only the loss
   TestJointStreams      each stream on its own --fsdp-flow-shift grid, draws independent across streams,
-                        per-stream MSE normalization, an unpredicted stream adds no loss,
+                        per-stream MSE normalization, an unpredicted or unsupervised stream adds no loss,
                         rank-aligned expert choice, shape/stream-set rejection
 """
 
@@ -76,7 +77,12 @@ def _ctx(models, rollout_id=3, microbatch_id=0, dp_rank=0, config=None):
         models=models,
         train_pipeline_config=config if config is not None else _Config(),
         sde_backend=None,
-        args=Namespace(seed=42, log_loss_sigma_bucket=5, fsdp_flow_shift=FLOW_SHIFTS),
+        args=Namespace(
+            seed=42,
+            log_loss_sigma_bucket=5,
+            fsdp_flow_shift=FLOW_SHIFTS,
+            diffusion_supervised_streams=["visual", "audio"],
+        ),
         forward_dtype=torch.float32,
         device=torch.device("cpu"),
         rollout_id=rollout_id,
@@ -344,6 +350,26 @@ class TestJointStreams:
             batch,
             prepared,
             new_pred={"visual": prepared.extras["target"]["visual"] + 1.0},
+            old_pred=None,
+            ref_pred=None,
+            metrics=_Metrics(),
+        )
+        assert loss.item() == pytest.approx(2.0)
+
+    def test_a_stream_left_out_of_supervised_streams_adds_no_loss(self):
+        # --diffusion-supervised-streams visual: audio is predicted, off by 2, yet only visual's 1^2 counts.
+        ctx = _ctx({"transformer": nn.Identity()}, config=_SingleConfig())
+        ctx.args.diffusion_supervised_streams = ["visual"]
+        batch = _joint_batch(2)
+        prepared = prepare_sft_batch(ctx, batch)
+        loss = sft_loss_formula(
+            ctx,
+            batch,
+            prepared,
+            new_pred={
+                "visual": prepared.extras["target"]["visual"] + 1.0,
+                "audio": prepared.extras["target"]["audio"] + 2.0,
+            },
             old_pred=None,
             ref_pred=None,
             metrics=_Metrics(),
