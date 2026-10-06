@@ -19,7 +19,6 @@ register_e2e_ci(
         "2",
         "--extra-args",
         "--num-rollout 2 --rollout-batch-size 4 --num-steps-per-rollout 2 "
-        "--diffusion-supervised-streams visual audio "
         "--fsdp-master-dtype bf16 --fsdp-reduce-dtype bf16 "
         "--deterministic-mode",
     ],
