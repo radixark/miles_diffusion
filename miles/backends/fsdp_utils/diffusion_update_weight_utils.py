@@ -643,14 +643,3 @@ class DiffusionUpdateWeightFromDistributed(DiffusionUpdateWeight):
 
 class DiffusionUpdateWeightLoRADistributed(DiffusionUpdateWeightLoRA, DiffusionUpdateWeightFromDistributed):
     pass
-
-
-def weight_updater_class(args: Namespace) -> type[DiffusionUpdateWeight]:
-    """Pick what to push (full weights, trainer-merged LoRA, or lora_A/lora_B for the rollout to merge) and
-    how (CUDA IPC to colocated engines, NCCL otherwise)."""
-    if not args.use_lora:
-        return DiffusionUpdateWeightFromTensor if args.colocate else DiffusionUpdateWeightFromDistributed
-    if args.lora_ipc_weight_sync:
-        return DiffusionUpdateWeightFromTensorLoRAIPC if args.colocate else DiffusionUpdateWeightLoRADistributed
-    # Trainer-merged LoRA has no NCCL path yet; argument validation rejects it without --colocate.
-    return DiffusionUpdateWeightFromTensorLoRA

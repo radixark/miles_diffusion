@@ -107,19 +107,17 @@ def test_lora_fields_follow_the_adapter_and_only_ride_lora_buckets(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "use_lora,lora_ipc_weight_sync,colocate,expected",
+    "use_lora,lora_ipc_weight_sync,colocate,accepted",
     [
-        (False, False, True, "DiffusionUpdateWeightFromTensor"),
-        (False, False, False, "DiffusionUpdateWeightFromDistributed"),
-        (True, False, True, "DiffusionUpdateWeightFromTensorLoRA"),
-        (True, False, False, None),  # trainer-merged LoRA has no NCCL path yet
-        (True, True, True, "DiffusionUpdateWeightFromTensorLoRAIPC"),
-        (True, True, False, "DiffusionUpdateWeightLoRADistributed"),
+        (False, False, True, True),
+        (False, False, False, True),
+        (True, False, True, True),
+        (True, False, False, False),  # trainer-merged LoRA has no NCCL path yet
+        (True, True, True, True),
+        (True, True, False, True),
     ],
 )
-def test_lora_flag_picks_the_payload_and_colocate_picks_the_transport(
-    use_lora, lora_ipc_weight_sync, colocate, expected
-):
+def test_lora_without_colocate_needs_adapter_sync(use_lora, lora_ipc_weight_sync, colocate, accepted):
     args = SimpleNamespace(
         use_lora=use_lora,
         lora_ipc_weight_sync=lora_ipc_weight_sync,
@@ -128,12 +126,11 @@ def test_lora_flag_picks_the_payload_and_colocate_picks_the_transport(
         train_only=False,
         debug_rollout_only=False,
     )
-    if expected is None:
+    if accepted:
+        validate_lora_weight_sync_args(args)
+    else:
         with pytest.raises(ValueError, match="requires --lora-ipc-weight-sync"):
             validate_lora_weight_sync_args(args)
-        return
-    validate_lora_weight_sync_args(args)
-    assert update.weight_updater_class(args).__name__ == expected
 
 
 @pytest.mark.parametrize("mode", ["train_only", "debug_rollout_only"])

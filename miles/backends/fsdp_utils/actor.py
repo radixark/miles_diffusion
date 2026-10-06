@@ -29,7 +29,13 @@ from miles.utils.train_data_utils import (
 
 from . import checkpoint
 from .device_move import move_model, move_optimizer, sleep_frozen_model, wake_up_frozen_model
-from .diffusion_update_weight_utils import weight_updater_class
+from .diffusion_update_weight_utils import (
+    DiffusionUpdateWeightFromDistributed,
+    DiffusionUpdateWeightFromTensor,
+    DiffusionUpdateWeightFromTensorLoRA,
+    DiffusionUpdateWeightFromTensorLoRAIPC,
+    DiffusionUpdateWeightLoRADistributed,
+)
 from .ema import EMAOptimizer, reshard_model
 from .input_dtype_policy import apply_input_dtype_policy
 from .loss_hub import DiffusionLossContext, flow_grpo_loss_formula, prepare_flow_grpo_batch
@@ -205,7 +211,20 @@ class FSDPTrainRayActor(TrainRayActor):
         checkpoint_payload = checkpoint.load(self)
 
         # sglang-d now supports /update_weights_from_tensor (PR #20464).
-        self.weight_updater = None if self.args.train_only else weight_updater_class(self.args)(self.args, self.models)
+        if self.args.train_only:
+            self.weight_updater = None
+        elif self.args.use_lora and self.args.lora_ipc_weight_sync:
+            updater = (
+                DiffusionUpdateWeightFromTensorLoRAIPC if self.args.colocate else DiffusionUpdateWeightLoRADistributed
+            )
+            self.weight_updater = updater(self.args, self.models)
+        elif self.args.use_lora:
+            # Trainer-merged LoRA has no NCCL path yet; argument validation rejects it without --colocate.
+            self.weight_updater = DiffusionUpdateWeightFromTensorLoRA(self.args, self.models)
+        elif self.args.colocate:
+            self.weight_updater = DiffusionUpdateWeightFromTensor(self.args, self.models)
+        else:
+            self.weight_updater = DiffusionUpdateWeightFromDistributed(self.args, self.models)
 
         checkpoint.finalize_load(self, checkpoint_payload)
 
