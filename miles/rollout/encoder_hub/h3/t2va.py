@@ -59,7 +59,6 @@ def encode_sample(
     del generator  # the engine encode recipe pins its own VAE sample seed (42)
     device = encoder["device"]
 
-    target_audio_rows = common.encode_target_audio(encoder, sample, media_clip)
     rows, latent_t, latent_h, latent_w = common.encode_target_video(encoder, media_clip)
 
     text_ids = minimax_h3_text_only_ids(encoder["tokenizer"], sample.prompt).to(device)
@@ -81,9 +80,8 @@ def encode_sample(
     )
     return common.train_pair(
         sample,
-        {"visual": rows, "audio": target_audio_rows},
+        {"visual": rows},
         hidden,
         packed,
         packed["token_tags"],
-        h3_target_has_soundtrack=media_clip["audio_sample_rate"] is not None,
     )
