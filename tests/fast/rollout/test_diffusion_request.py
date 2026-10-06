@@ -39,6 +39,7 @@ def _args(tmp_path, **kwargs):
         diffusion_width=32,
         diffusion_output_num_frames=5,
         sft_frame_stride=1,
+        diffusion_task="t2va",
     )
     return Namespace(**(base | kwargs))
 

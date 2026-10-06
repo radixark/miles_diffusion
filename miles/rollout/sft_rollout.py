@@ -38,6 +38,7 @@ SFT_CACHE_KEY_ARGS = (
     "diffusion_width",
     "diffusion_output_num_frames",
     "sft_frame_stride",
+    "diffusion_task",
 )
 
 
@@ -119,7 +120,7 @@ class SftEncodeActor:
         from miles.rollout.encoder_hub import get_encoder
 
         self.args = args
-        self.encoder_module = get_encoder(args.diffusion_model_family)
+        self.encoder_module = get_encoder(args.diffusion_model_family, args.diffusion_task)
         self.encoder = self.encoder_module.load_encoder(args, torch.device("cuda"))
         if args.sft_offload_encoder:
             self.encoder = _relocate(self.encoder, torch.device("cpu"))
