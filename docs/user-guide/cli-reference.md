@@ -170,7 +170,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 |---|---|---|---|
 | `--hf-checkpoint` | str | – | **Required.** Pipeline to train and to serve; also the family source. |
 | `--diffusion-model-family` | str | – | Registered family key: `sd3`, `wan2_2`, `ltx`, `qwen_image`, `cosmos3`. Overrides name matching. |
-| `--diffusion-task` | str | – | **Required** unless `--train-pipeline-config-path` is set. The task to train, one the family's config is registered for: `t2i` (sd3, krea2, qwen_image, cosmos3), `t2v` (wan2_2, ltx), `t2va` (h3). |
+| `--diffusion-task` | str | – | **Required** unless `--train-pipeline-config-path` is set. The task to train, one the family's config is registered for: `t2i` (sd3, krea2, qwen_image, cosmos3), `t2v` (wan2_2, ltx), `t2va` (h3, the only H3 rollout task) or `ref2va` (h3 joint video/audio SFT with ordered references on `transformer_ref`). |
 | `--rollout-function-path` | str | `miles.rollout.sglang_rollout.generate_rollout` | Generic Miles default. Diffusion recipes explicitly set `miles.rollout.sglang_diffusion_rollout.generate_rollout`. |
 | `--train-pipeline-config-path` | str | – | Your own `TrainPipelineConfig` for an unregistered family. Mutually exclusive with `--diffusion-model-family`. |
 | `--model-backend-path` | str | – | Override the family's model loader. |
