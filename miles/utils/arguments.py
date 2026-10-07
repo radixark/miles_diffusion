@@ -1688,6 +1688,7 @@ def validate_actor_lora_adapter(args) -> None:
 
 
 def validate_lora_weight_sync_args(args) -> None:
+    syncs_weights_to_rollout = not args.train_only and not args.debug_rollout_only
     if args.lora_ipc_weight_sync:
         if not args.use_lora:
             raise ValueError("--lora-ipc-weight-sync requires --use-lora")
@@ -1696,7 +1697,7 @@ def validate_lora_weight_sync_args(args) -> None:
                 "--lora-ipc-weight-sync requires LoRA target modules; "
                 "set --hf-checkpoint (for per-model defaults) or --lora-target-modules."
             )
-    elif args.use_lora and not args.colocate and not args.train_only and not args.debug_rollout_only:
+    elif args.use_lora and not args.colocate and syncs_weights_to_rollout:
         raise ValueError(
             "--use-lora without --colocate requires --lora-ipc-weight-sync: trainer-merged LoRA weights "
             "have no NCCL weight sync yet"

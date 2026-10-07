@@ -205,8 +205,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 uprate=args.ema_decay_ramp,
                 uphold=args.ema_decay_max,
                 flat_steps=args.ema_decay_flat_steps,
-                # Async rollouts sample each prefetched batch with the EMA from before the concurrent update.
-                keep_previous=args.train_async and args.rollout_weights == "ema",
+                keep_previous=args.train_async,
             )
         checkpoint_payload = checkpoint.load(self)
 
@@ -535,11 +534,10 @@ class FSDPTrainRayActor(TrainRayActor):
 
         new_pred = _compute_noise_pred(prepared.model)
 
-        # pi_old: the EMA weights the rollout sampled with; async prefetch sampled with the EMA before the latest step.
+        # pi_old: the EMA weights the rollout sampled with.
         old_pred = None
         if self.args.loss_type == "nft":
-            previous = self.ema_optimizer.previous_ema is not None
-            with torch.no_grad(), self.ema_optimizer.use_weights(prepared.model, previous=previous):
+            with torch.no_grad(), self.ema_optimizer.use_weights(prepared.model, previous=self.args.train_async):
                 old_pred = _compute_noise_pred(prepared.model).detach()
 
         # KL reference.

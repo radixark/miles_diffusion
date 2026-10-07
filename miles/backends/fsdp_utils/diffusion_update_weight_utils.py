@@ -546,13 +546,13 @@ class DiffusionUpdateWeightFromTensorLoRAIPC(DiffusionUpdateWeightLoRA, Diffusio
 def connect_rollout_engines_from_distributed(rollout_engines, gpus_per_engine, group_name, timeout):
     master_address = get_current_node_ip()
     master_port = get_free_port()
-    # The trainer is rank 0; engine i's GPUs take the next gpus_per_engine ranks.
-    world_size = 1 + len(rollout_engines) * gpus_per_engine
-    refs = [
+    num_trainer_ranks = 1
+    world_size = num_trainer_ranks + len(rollout_engines) * gpus_per_engine
+    engine_joins = [
         engine.init_weights_update_group.remote(
             master_address=master_address,
             master_port=master_port,
-            rank_offset=1 + i * gpus_per_engine,
+            rank_offset=num_trainer_ranks + i * gpus_per_engine,
             world_size=world_size,
             group_name=group_name,
             backend="nccl",
@@ -574,12 +574,12 @@ def connect_rollout_engines_from_distributed(rollout_engines, gpus_per_engine, g
     # collective, so clearing it here still applies. Drop once sglang's init_custom_process_group does
     # this itself (sgl-project/sglang#42668).
     options.split_from = None
-    ray.get(refs)
+    ray.get(engine_joins)
     return group
 
 
 def broadcast_bucket(rollout_engines, group, group_name, named_tensors, target_module, **kwargs):
-    refs = [
+    engine_receives = [
         engine.update_weights_from_distributed.remote(
             names=[name for name, _ in named_tensors],
             dtypes=[str(tensor.dtype).removeprefix("torch.") for _, tensor in named_tensors],
@@ -591,10 +591,10 @@ def broadcast_bucket(rollout_engines, group, group_name, named_tensors, target_m
         for engine in rollout_engines
     ]
     tensors = [tensor.contiguous() for _, tensor in named_tensors]
-    handles = [dist.broadcast(tensor, src=0, group=group, async_op=True) for tensor in tensors]
-    for handle in handles:
-        handle.wait()
-    ray.get(refs)
+    broadcasts = [dist.broadcast(tensor, src=0, group=group, async_op=True) for tensor in tensors]
+    for broadcast in broadcasts:
+        broadcast.wait()
+    ray.get(engine_receives)
 
 
 class DiffusionUpdateWeightFromDistributed(DiffusionUpdateWeight):
@@ -608,9 +608,11 @@ class DiffusionUpdateWeightFromDistributed(DiffusionUpdateWeight):
         if dist.get_rank() != 0:
             return
         if self._model_update_group is not None:
-            refs = [engine.destroy_weights_update_group.remote(self._group_name) for engine in rollout_engines]
+            engine_leaves = [
+                engine.destroy_weights_update_group.remote(self._group_name) for engine in rollout_engines
+            ]
             dist.destroy_process_group(self._model_update_group)
-            ray.get(refs)
+            ray.get(engine_leaves)
         self.rollout_engines = rollout_engines
         self._model_update_group = connect_rollout_engines_from_distributed(
             rollout_engines=rollout_engines,

@@ -19,12 +19,12 @@ def train_loop(args, actor_model, rollout_manager, num_rollout_per_epoch):
     if args.start_rollout_id >= args.num_rollout:
         return
 
-    # The first batch samples the previous EMA (the current one on a fresh start), as the prefetch did
-    # before the checkpoint; the next prefetch samples the current EMA.
     actor_model.update_weights(previous_ema=True)
     current_batch = ray.get(rollout_manager.generate.remote(args.start_rollout_id))
     actor_model.update_weights()
+
     for rollout_id in range(args.start_rollout_id, args.num_rollout):
+        is_last_rollout = rollout_id == args.num_rollout - 1
         save_checkpoint = should_run_periodic_action(
             rollout_id, args.save_interval, num_rollout_per_epoch, args.num_rollout
         )
@@ -32,20 +32,20 @@ def train_loop(args, actor_model, rollout_manager, num_rollout_per_epoch):
         cursor_save = (
             rollout_manager.save.remote(rollout_id) if save_checkpoint and args.rollout_global_dataset else None
         )
-        next_future = rollout_manager.generate.remote(rollout_id + 1) if rollout_id + 1 < args.num_rollout else None
+        next_batch_future = None if is_last_rollout else rollout_manager.generate.remote(rollout_id + 1)
 
         ray.get(actor_model.async_train(rollout_id, current_batch))
 
         # Measure the exposed generation wait before checkpoint I/O can hide it.
         drain_start = time.monotonic()
-        if next_future is not None:
-            current_batch = ray.get(next_future)
+        if next_batch_future is not None:
+            current_batch = ray.get(next_batch_future)
         drain_wait = time.monotonic() - drain_start
 
         if save_checkpoint:
             if cursor_save is not None:
                 ray.get(cursor_save)
-            actor_model.save_model(rollout_id, force_sync=rollout_id == args.num_rollout - 1)
+            actor_model.save_model(rollout_id, force_sync=is_last_rollout)
 
         # No generation is in flight while the engines install the new weights.
         actor_model.update_weights()
@@ -75,11 +75,9 @@ def train(args):
     rollout_manager, num_rollout_per_epoch = create_rollout_manager(args, pgs["rollout"])
     actor_model = create_training_models(args, pgs, rollout_manager)
 
-    # Eval before training (only at rollout 0, as in train_diffusion.py) reads the current weights;
-    # train_loop publishes the first batch's own.
-    if args.eval_interval is not None and (
-        args.num_rollout == 0 or (args.start_rollout_id == 0 and not args.skip_eval_before_train)
-    ):
+    eval_only = args.num_rollout == 0
+    eval_before_training = args.start_rollout_id == 0 and not args.skip_eval_before_train
+    if args.eval_interval is not None and (eval_only or eval_before_training):
         actor_model.update_weights()
         ray.get(rollout_manager.eval.remote(rollout_id=0))
 

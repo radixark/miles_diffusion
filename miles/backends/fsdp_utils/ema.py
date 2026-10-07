@@ -40,7 +40,8 @@ class EMAOptimizer(torch.optim.Optimizer):
             (parameter for parameter in model.parameters() if parameter.requires_grad),
             dict(decay=decay, uprate=uprate, uphold=uphold, flat_steps=flat_steps),
         )
-        self.previous_ema: dict[torch.nn.Parameter, torch.Tensor] | None = {} if keep_previous else None
+        self.keep_previous = keep_previous
+        self.previous_ema: dict[torch.nn.Parameter, torch.Tensor] | None = None
         self.reset_from_model()
 
     @torch.no_grad()
@@ -53,7 +54,7 @@ class EMAOptimizer(torch.optim.Optimizer):
     @torch.no_grad()
     def reset_previous(self) -> None:
         """Set the previous EMA to the current EMA, as before the first ``step``."""
-        if self.previous_ema is not None:
+        if self.keep_previous:
             self.previous_ema = {parameter: state["ema"].clone() for parameter, state in self.state.items()}
 
     @torch.no_grad()
@@ -66,7 +67,7 @@ class EMAOptimizer(torch.optim.Optimizer):
                 else min((optimizer_step - group["flat_steps"]) * group["uprate"], group["uphold"])
             )
             ema_tensors = [_local_tensor(self.state[parameter]["ema"]) for parameter in group["params"]]
-            if self.previous_ema is not None:
+            if self.keep_previous:
                 previous_tensors = [_local_tensor(self.previous_ema[parameter]) for parameter in group["params"]]
                 torch._foreach_copy_(previous_tensors, ema_tensors)
             actor_tensors = [_local_tensor(parameter.detach()) for parameter in group["params"]]
@@ -79,27 +80,27 @@ class EMAOptimizer(torch.optim.Optimizer):
         Gathered full parameters are dropped before swapping in and before swapping back,
         so no forward reads stale weights.
         """
-        if previous and self.previous_ema is None:
+        if previous and not self.keep_previous:
             raise RuntimeError("EMAOptimizer was built without keep_previous")
         reshard_model(model)
-        weights = {
+        ema_weights = {
             parameter: self.previous_ema[parameter] if previous else self.state[parameter]["ema"]
             for parameter in model.parameters()
             if parameter in self.state
         }
-        self._swap_with_actor(weights)
+        self._swap_with_actor(ema_weights)
         try:
             yield
         finally:
             reshard_model(model)
-            self._swap_with_actor(weights)
+            self._swap_with_actor(ema_weights)
 
     @torch.no_grad()
-    def _swap_with_actor(self, weights: dict[torch.nn.Parameter, torch.Tensor]) -> None:
+    def _swap_with_actor(self, ema_weights: dict[torch.nn.Parameter, torch.Tensor]) -> None:
         # EMA shares the actor's device, so its own storage holds the actor weights while they are swapped out.
-        for parameter, weight in weights.items():
+        for parameter, ema_weight in ema_weights.items():
             actor_tensor = _local_tensor(parameter)
-            ema_tensor = _local_tensor(weight)
+            ema_tensor = _local_tensor(ema_weight)
             actor_copy = actor_tensor.clone()
             actor_tensor.copy_(ema_tensor)
             ema_tensor.copy_(actor_copy)

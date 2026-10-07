@@ -247,7 +247,7 @@ def load(actor: Any) -> dict[str, Any] | None:
         else:
             actor.ema_optimizer.reset_from_model()
             logger.info("[FSDP] EMA checkpoint missing; initialized EMA from the loaded model")
-        if actor.ema_optimizer.previous_ema is not None:
+        if actor.ema_optimizer.keep_previous:
             if previous_ema_dir.exists():
                 previous_ema_state = PreviousEMAState(actor.model, actor.ema_optimizer)
                 dcp.load({"previous_ema_state": previous_ema_state}, checkpoint_id=str(previous_ema_dir))
@@ -355,7 +355,7 @@ def save(actor: Any, iteration: int) -> None:
     if actor.ema_optimizer is not None:
         ema_state = OptimizerState(actor.model, actor.ema_optimizer)
         dcp.save({"ema_state": ema_state}, checkpoint_id=str(ema_dir))
-        if actor.ema_optimizer.previous_ema is not None:
+        if actor.ema_optimizer.keep_previous:
             previous_ema_state = PreviousEMAState(actor.model, actor.ema_optimizer)
             dcp.save({"previous_ema_state": previous_ema_state}, checkpoint_id=str(previous_ema_dir))
 
