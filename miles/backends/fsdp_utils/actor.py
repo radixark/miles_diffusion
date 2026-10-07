@@ -212,14 +212,15 @@ class FSDPTrainRayActor(TrainRayActor):
         # sglang-d now supports /update_weights_from_tensor (PR #20464).
         if self.args.train_only:
             self.weight_updater = None
-        elif self.args.use_lora and self.args.lora_ipc_weight_sync:
-            updater = (
-                DiffusionUpdateWeightFromTensorLoRAIPC if self.args.colocate else DiffusionUpdateWeightLoRADistributed
-            )
-            self.weight_updater = updater(self.args, self.models)
         elif self.args.use_lora:
-            # Trainer-merged LoRA has no NCCL path yet; argument validation rejects it without --colocate.
-            self.weight_updater = DiffusionUpdateWeightFromTensorLoRA(self.args, self.models)
+            if not self.args.lora_ipc_weight_sync:
+                # Without --colocate, argument validation requires --lora-ipc-weight-sync.
+                updater = DiffusionUpdateWeightFromTensorLoRA
+            elif self.args.colocate:
+                updater = DiffusionUpdateWeightFromTensorLoRAIPC
+            else:
+                updater = DiffusionUpdateWeightLoRADistributed
+            self.weight_updater = updater(self.args, self.models)
         elif self.args.colocate:
             self.weight_updater = DiffusionUpdateWeightFromTensor(self.args, self.models)
         else:
