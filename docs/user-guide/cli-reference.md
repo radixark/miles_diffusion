@@ -367,7 +367,7 @@ Every one takes a dotted path.
 | `--disable-wandb-random-suffix` | flag | off | Run names include a random suffix by default; pass this flag to disable it. |
 | `--wandb-log-num-images` | int | `0` | Images/videos per rollout; `0` disables. |
 | `--wandb-log-image-interval` | int | `1` | Send media every N rollouts. |
-| `--log-loss-sigma-bucket` | int | `10` | Sigma buckets for the per-bucket loss curves (emitted by the SFT loss): `loss_<stream>_sigma_*` for each supervised stream, bucketed by its own sigma; the total `loss` is never bucketed, since streams draw independent sigmas. `0` disables. |
+| `--log-loss-sigma-bucket` | int | `10` | Sigma buckets for the per-bucket loss curves (emitted by the SFT loss): `loss_<stream>_sigma_*` for each supervised stream, bucketed by its own sigma; the total `loss` is never bucketed, since each stream reads the shared grid index through its own shift. `0` disables. |
 | `--use-miles-dashboard` | flag | off | Async phase/trajectory telemetry. |
 | `--miles-dashboard-workspace` | str | `./miles_dashboard` | |
 
