@@ -31,6 +31,7 @@ class H3TrainPipelineConfig(TrainPipelineConfig):
     sde_timestep_divisor = 1000.0
     # No loss reaches the audio head when audio is unsupervised (GRPO), so its LoRA may hold no optimizer state.
     optimizer_state_allowed_missing = ["audio"]
+    enable_autocast = False
 
     lora_target_modules = [
         "attn.to_q",
