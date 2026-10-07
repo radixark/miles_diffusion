@@ -52,6 +52,9 @@ def encode_sample(
     from sglang.multimodal_gen.runtime.pipelines_core.stages.model_specific_stages.minimax_h3.presentation import (
         minimax_h3_text_only_ids,
     )
+    from sglang.multimodal_gen.runtime.pipelines_core.stages.model_specific_stages.minimax_h3.time_request import (
+        minimax_h3_audio_latent_t,
+    )
 
     if sample.conditions:
         raise ValueError("H3 t2va SFT takes no reference conditions")
@@ -75,7 +78,7 @@ def encode_sample(
         latent_t=latent_t,
         latent_h=latent_h,
         latent_w=latent_w,
-        audio_t=target_audio_rows.shape[0] // 2,
+        audio_t=minimax_h3_audio_latent_t(common.target_duration_seconds(media_clip)),
         include_keyframe_cond=False,
     )
     return common.train_pair(
