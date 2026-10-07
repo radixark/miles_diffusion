@@ -23,7 +23,7 @@ def test_connect_assigns_every_engine_rank_before_waiting(monkeypatch):
 
         engines.append(SimpleNamespace(init_weights_update_group=SimpleNamespace(remote=init)))
 
-    monkeypatch.setattr(update, "get_current_node_ip", lambda: "127.0.0.1")
+    monkeypatch.setattr(update.ray._private.services, "get_node_ip_address", lambda: "127.0.0.1")
 
     def join(**kwargs):
         assert len(calls) == 2

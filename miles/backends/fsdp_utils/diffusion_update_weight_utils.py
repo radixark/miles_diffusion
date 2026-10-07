@@ -2,6 +2,7 @@ import abc
 import logging
 import os
 import re
+import socket
 from argparse import Namespace
 from collections.abc import Mapping, Sequence
 from datetime import timedelta
@@ -34,7 +35,6 @@ except ImportError as _e:
     _checksum_import_error = _e
 
 from miles.ray.utils import get_physical_gpu_id
-from miles.utils.misc import get_current_node_ip, get_free_port
 
 logger = logging.getLogger(__name__)
 
@@ -544,8 +544,10 @@ class DiffusionUpdateWeightFromTensorLoRAIPC(DiffusionUpdateWeightLoRA, Diffusio
 
 
 def connect_rollout_engines_from_distributed(rollout_engines, gpus_per_engine, group_name, timeout):
-    master_address = get_current_node_ip()
-    master_port = get_free_port()
+    master_address = ray._private.services.get_node_ip_address()
+    with socket.socket() as sock:
+        sock.bind(("", 0))
+        master_port = sock.getsockname()[1]
     num_trainer_ranks = 1
     world_size = num_trainer_ranks + len(rollout_engines) * gpus_per_engine
     engine_joins = [
