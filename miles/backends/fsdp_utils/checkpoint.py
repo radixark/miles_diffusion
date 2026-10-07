@@ -254,7 +254,7 @@ def load(actor: Any) -> dict[str, Any] | None:
                 logger.info(f"[FSDP] Loaded previous EMA from {previous_ema_dir}")
             else:
                 actor.ema_optimizer.reset_previous()
-                logger.info("[FSDP] Previous EMA checkpoint missing; the first async batch samples the loaded EMA")
+                logger.warning("[FSDP] Previous EMA checkpoint missing; the first async batch samples the loaded EMA")
 
     # Load optimizer state (optional)
     load_optimizer = not actor.args.no_load_optim
