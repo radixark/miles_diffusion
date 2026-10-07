@@ -184,18 +184,21 @@ class H3TrainPipelineConfig(TrainPipelineConfig):
             timestep_indices[audio_positions[~audio_mask]] = len(times)
             times.append(audio_time.clamp_min(cond["h3_reference_audio_timestep"]))
 
-        out = model(
-            hidden_states=visual_hidden,
-            audio_hidden_states=audio_hidden,
-            encoder_hidden_states=cond["encoder_hidden_states"].to(device=device, dtype=dtype),
-            timestep=torch.cat(times).to(dtype),
-            timestep_indices=timestep_indices,
-            token_tags=token_tags.long(),
-            position_ids=position_ids.to(device=device, dtype=torch.float32),
-            video_indices=visual_positions,
-            audio_indices=audio_positions,
-            text_indices=layout["text_pos"].view(-1).long(),
-        )
+        # Each module computes at its own param dtype, the checkpoint's fp32/bf16 mix; the trainer's autocast would
+        # round the fp32 projections, timestep MLP and heads to bf16.
+        with torch.autocast(device.type, enabled=False):
+            out = model(
+                hidden_states=visual_hidden,
+                audio_hidden_states=audio_hidden,
+                encoder_hidden_states=cond["encoder_hidden_states"].to(device=device, dtype=dtype),
+                timestep=torch.cat(times).to(dtype),
+                timestep_indices=timestep_indices,
+                token_tags=token_tags.long(),
+                position_ids=position_ids.to(device=device, dtype=torch.float32),
+                video_indices=visual_positions,
+                audio_indices=audio_positions,
+                text_indices=layout["text_pos"].view(-1).long(),
+            )
         # H3 predicts clean - noise; the shared flow objective predicts noise - clean.
         visual_velocity = out[0] if isinstance(out, tuple) else out.sample
         predictions = {"visual": (-visual_velocity[:, visual_mask]).to(dtype)}

@@ -37,6 +37,8 @@ What each test pins:
   ref2va validation   SFT only (rollout serves t2va); transformer_ref, micro-batch-size 1 and an audio
                       --fsdp-flow-shift are required
   tiny diffusers H3   real forward/backward through prepare + loss, fp32 and bf16
+  mixed precision     the FSDP plan pins exactly the checkpoint's fp32 params, and the trainer's bf16 autocast
+                      leaves the forward bitwise unchanged
 """
 
 from tests.ci.ci_register import register_cpu_ci
@@ -53,6 +55,8 @@ from miles.backends.fsdp_utils.configs.h3 import H3TrainPipelineConfig
 from miles.backends.fsdp_utils.loss_hub.sft import prepare_sft_batch, sft_loss_formula
 from miles.backends.fsdp_utils.loss_hub.types import DiffusionLossContext
 from miles.backends.fsdp_utils.metrics import new_metric_buffer
+from miles.backends.fsdp_utils.mixed_precision import compile_param_dtype_maps
+from miles.backends.fsdp_utils.models.diffusers.h3.parallel_plan import FSDP_PARALLEL_PLAN
 
 
 class _VisualHead(nn.Module):
@@ -300,10 +304,8 @@ def test_ref2va_validation_rejects_incompatible_training_settings(overrides, mes
         H3TrainPipelineConfig.validate_args(_sft_args(**overrides))
 
 
-@pytest.mark.parametrize("forward_dtype", [torch.float32, torch.bfloat16])
-def test_real_tiny_diffusers_h3_joint_sft_forward_and_backward(forward_dtype):
-    # Exercise the real attention, timestep/modality AdaLN tables, modality
-    # projections and both heads. No pretrained weights, CUDA, or encoders.
+def _tiny_diffusers_h3(forward_dtype):
+    """A real diffusers H3 DiT at toy size; bf16 mirrors the released mixed checkpoint."""
     module = pytest.importorskip("diffusers.models.transformers.transformer_minimax_h3")
     with torch.random.fork_rng():
         torch.manual_seed(7)
@@ -330,6 +332,10 @@ def test_real_tiny_diffusers_h3_joint_sft_forward_and_backward(forward_dtype):
         for name, layer in model.named_modules():
             if any(fragment in name for fragment in model._keep_in_fp32_modules):
                 layer.float()
+    return model
+
+
+def _tiny_sft_pair(model, forward_dtype):
     config = H3TrainPipelineConfig()
     args = _sft_args()
     H3TrainPipelineConfig.validate_args(args)
@@ -343,9 +349,12 @@ def test_real_tiny_diffusers_h3_joint_sft_forward_and_backward(forward_dtype):
         forward_dtype=forward_dtype,
         device=torch.device("cpu"),
     )
-    prepared = prepare_sft_batch(context, batch)
-    with torch.autocast("cpu", dtype=forward_dtype, enabled=forward_dtype != torch.float32):
-        prediction = config.compute_noise_pred(
+    return config, context, batch, prepare_sft_batch(context, batch)
+
+
+def _predict(config, model, prepared, autocast_dtype):
+    with torch.autocast("cpu", dtype=autocast_dtype, enabled=autocast_dtype != torch.float32):
+        return config.compute_noise_pred(
             model=model,
             latents_input=prepared.latents,
             timesteps_input=prepared.timesteps_for_model,
@@ -357,6 +366,15 @@ def test_real_tiny_diffusers_h3_joint_sft_forward_and_backward(forward_dtype):
             guidance_scale=0.0,
             true_cfg_scale=None,
         )
+
+
+@pytest.mark.parametrize("forward_dtype", [torch.float32, torch.bfloat16])
+def test_real_tiny_diffusers_h3_joint_sft_forward_and_backward(forward_dtype):
+    # Exercise the real attention, timestep/modality AdaLN tables, modality
+    # projections and both heads. No pretrained weights, CUDA, or encoders.
+    model = _tiny_diffusers_h3(forward_dtype)
+    config, context, batch, prepared = _tiny_sft_pair(model, forward_dtype)
+    prediction = _predict(config, model, prepared, forward_dtype)
     assert {name: value.shape for name, value in prediction.items()} == {
         "visual": torch.Size((1, 2, 96)),
         "audio": torch.Size((1, 3, 32)),
@@ -379,3 +397,24 @@ def test_real_tiny_diffusers_h3_joint_sft_forward_and_backward(forward_dtype):
         assert layer.weight.grad is not None
         assert torch.isfinite(layer.weight.grad).all()
         assert layer.weight.grad.abs().sum() > 0
+
+
+def test_mixed_precision_checkpoint_survives_fsdp_and_the_trainer_autocast():
+    # The released checkpoint (bf16 model, fp32 keep-modules):
+    #
+    #     proj_in / audio_proj_in / time_embedder / proj_out / audio_proj_out    fp32
+    #     refiner, block stack, AdaLN projections                                bf16
+    #
+    # FSDP gathers every param at the bf16 forward dtype unless the plan pins it, and the trainer's bf16 autocast
+    # would round the pinned modules anyway; together they must reproduce the plain mixed-precision forward.
+    model = _tiny_diffusers_h3(torch.bfloat16)
+    fp32_params = {name for name, param in model.named_parameters() if param.dtype == torch.float32}
+    pinned = compile_param_dtype_maps(model, [], FSDP_PARALLEL_PLAN.param_dtype_patterns, torch.bfloat16).root_map
+    assert set(pinned) == fp32_params and set(pinned.values()) == {torch.float32}
+
+    config, _, _, prepared = _tiny_sft_pair(model, torch.bfloat16)
+    with torch.no_grad():
+        plain = _predict(config, model, prepared, torch.float32)
+        under_autocast = _predict(config, model, prepared, torch.bfloat16)
+    for stream_name in plain:
+        assert torch.equal(under_autocast[stream_name], plain[stream_name]), stream_name
