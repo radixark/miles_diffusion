@@ -37,6 +37,7 @@ What each test pins:
   ref2va validation   SFT only (rollout serves t2va); transformer_ref, micro-batch-size 1 and an audio
                       --fsdp-flow-shift are required
   tiny diffusers H3   real forward/backward through prepare + loss, fp32 and bf16
+  mixed precision     the FSDP plan pins exactly the checkpoint's fp32 params, and H3 disables autocast
 """
 
 from tests.ci.ci_register import register_cpu_ci
@@ -53,6 +54,8 @@ from miles.backends.fsdp_utils.configs.h3 import H3TrainPipelineConfig
 from miles.backends.fsdp_utils.loss_hub.sft import prepare_sft_batch, sft_loss_formula
 from miles.backends.fsdp_utils.loss_hub.types import DiffusionLossContext
 from miles.backends.fsdp_utils.metrics import new_metric_buffer
+from miles.backends.fsdp_utils.mixed_precision import compile_param_dtype_maps
+from miles.backends.fsdp_utils.models.diffusers.h3.parallel_plan import FSDP_PARALLEL_PLAN
 
 
 class _VisualHead(nn.Module):
@@ -300,10 +303,7 @@ def test_ref2va_validation_rejects_incompatible_training_settings(overrides, mes
         H3TrainPipelineConfig.validate_args(_sft_args(**overrides))
 
 
-@pytest.mark.parametrize("forward_dtype", [torch.float32, torch.bfloat16])
-def test_real_tiny_diffusers_h3_joint_sft_forward_and_backward(forward_dtype):
-    # Exercise the real attention, timestep/modality AdaLN tables, modality
-    # projections and both heads. No pretrained weights, CUDA, or encoders.
+def _tiny_diffusers_h3(forward_dtype):
     module = pytest.importorskip("diffusers.models.transformers.transformer_minimax_h3")
     with torch.random.fork_rng():
         torch.manual_seed(7)
@@ -330,6 +330,14 @@ def test_real_tiny_diffusers_h3_joint_sft_forward_and_backward(forward_dtype):
         for name, layer in model.named_modules():
             if any(fragment in name for fragment in model._keep_in_fp32_modules):
                 layer.float()
+    return model
+
+
+@pytest.mark.parametrize("forward_dtype", [torch.float32, torch.bfloat16])
+def test_real_tiny_diffusers_h3_joint_sft_forward_and_backward(forward_dtype):
+    # Exercise the real attention, timestep/modality AdaLN tables, modality
+    # projections and both heads. No pretrained weights, CUDA, or encoders.
+    model = _tiny_diffusers_h3(forward_dtype)
     config = H3TrainPipelineConfig()
     args = _sft_args()
     H3TrainPipelineConfig.validate_args(args)
@@ -344,7 +352,8 @@ def test_real_tiny_diffusers_h3_joint_sft_forward_and_backward(forward_dtype):
         device=torch.device("cpu"),
     )
     prepared = prepare_sft_batch(context, batch)
-    with torch.autocast("cpu", dtype=forward_dtype, enabled=forward_dtype != torch.float32):
+    autocast_enabled = forward_dtype != torch.float32 and config.enable_autocast
+    with torch.autocast("cpu", dtype=forward_dtype, enabled=autocast_enabled):
         prediction = config.compute_noise_pred(
             model=model,
             latents_input=prepared.latents,
@@ -379,3 +388,11 @@ def test_real_tiny_diffusers_h3_joint_sft_forward_and_backward(forward_dtype):
         assert layer.weight.grad is not None
         assert torch.isfinite(layer.weight.grad).all()
         assert layer.weight.grad.abs().sum() > 0
+
+
+def test_fsdp_plan_and_autocast_keep_the_checkpoint_mixed_precision():
+    model = _tiny_diffusers_h3(torch.bfloat16)
+    fp32_params = {name for name, param in model.named_parameters() if param.dtype == torch.float32}
+    pinned = compile_param_dtype_maps(model, [], FSDP_PARALLEL_PLAN.param_dtype_patterns, torch.bfloat16).root_map
+    assert set(pinned) == fp32_params and set(pinned.values()) == {torch.float32}
+    assert not H3TrainPipelineConfig.enable_autocast
