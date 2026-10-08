@@ -34,7 +34,10 @@ class HfWeightIteratorBase(ABC):
 
     def iter_hf_adapter_weights(self) -> Iterator[list[tuple[str, torch.Tensor]]]:
         """The LoRA adapter alone, bucketed like ``iter_hf_weights`` under bare HF names."""
-        yield from pack_units_by_size(self._iter_hf_adapter_units(), self.args.update_weight_buffer_size)
+        hf_adapter_units = assemble_atomic_update_groups(
+            self._iter_hf_adapter_units(), self._hf_atomic_update_groups()
+        )
+        yield from pack_units_by_size(hf_adapter_units, self.args.update_weight_buffer_size)
 
     @abstractmethod
     def _iter_hf_param_units(self) -> Iterator[list[tuple[str, torch.Tensor]]]:
@@ -42,7 +45,7 @@ class HfWeightIteratorBase(ABC):
         tensor it converted into. Collectives must run lockstep on every rank."""
 
     def _hf_atomic_update_groups(self) -> list[AtomicUpdateGroup]:
-        """Backend hook: HF-namespace atomic groups for this model. Default none."""
+        """Backend hook: HF-namespace atomic groups for this model, applied to both entry points. Default none."""
         return []
 
     @abstractmethod

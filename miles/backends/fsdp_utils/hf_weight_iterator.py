@@ -7,6 +7,7 @@ from torch.distributed._functional_collectives import AsyncCollectiveTensor
 
 from miles.backends.fsdp_utils.dtensor import gather_full_param
 from miles.backends.training_utils.weight_update.hf_weight_iterator import HfWeightIteratorBase
+from miles.backends.training_utils.weight_update.hf_weight_iterator.atomic_groups import get_hf_atomic_update_groups
 
 # PEFT appends the adapter name and ".weight" after lora_A / lora_B
 _PEFT_LORA_SUFFIX = re.compile(r"\.(lora_[AB])(?:\.[^.]+)?(?:\.weight)?$")
@@ -58,6 +59,9 @@ class FSDPHfWeightIterator(HfWeightIteratorBase):
             if len(halves) == 2:
                 del halves_by_module[module]
                 yield halves
+
+    def _hf_atomic_update_groups(self):
+        return get_hf_atomic_update_groups(self.diffusion_model_family)
 
     def _iter_full_params(self, named_params) -> Iterator[tuple[str, torch.Tensor]]:
         """Params as full CUDA tensors in order, with all-gathers issued up to one buffer ahead."""

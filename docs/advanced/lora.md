@@ -95,6 +95,10 @@ sglang-d expects (e.g. `transformer_blocks.0.attn.to_q.weight`).
 adding the next unit would exceed `--update-weight-buffer-size`, the current
 bucket is flushed first; the whole unit then starts the next bucket. A unit is
 never split across buckets, so a `lora_A` / `lora_B` pair always arrives together.
+For a family whose rollout fuses projections into one layer (H3 `to_q/k/v`, Qwen-Image and
+Cosmos3 `add_q/k/v_proj`), the adapters of those projections form one **atomic update group**
+and share a bucket too: sglang-d's `lora_merge` replaces a fused layer's LoRA with the sections
+one request carries.
 
 Constant: `LORA_IPC_WEIGHT_UPDATE_MODE = "lora_merge"`.
 
@@ -124,6 +128,7 @@ worker stderr under `~/.ray/session_latest/logs/`.
 | `miles/backends/fsdp_utils/diffusion_update_weight_utils.py` | Three updater classes: send buckets over CUDA IPC |
 | `miles/backends/fsdp_utils/hf_weight_iterator.py` | `FSDPHfWeightIterator`: FSDP shards -> HF-named units (full, LoRA-merged, LoRA adapters) |
 | `miles/backends/training_utils/weight_update/hf_weight_iterator/` | `HfWeightIteratorBase` and bucketing (atomic groups, size-bounded packing), as in miles |
+| `miles/backends/training_utils/weight_update/hf_weight_iterator/atomic_groups.py` | Per-family atomic groups for weights and adapters (today: LoRA adapters the rollout fuses into one layer) |
 | `miles/backends/fsdp_utils/actor.py` | Updater selection, LoRA apply via PEFT |
 | `miles/backends/sglang_diffusion_utils/sglang_diffusion_engine.py` | HTTP `update_weights_from_tensor` to rollout |
 | `miles/ray/rollout.py` | Engine env vars (`SGLANG_DIFFUSION_LORA_MERGE_FP32`) |
