@@ -1,15 +1,13 @@
 import abc
 import logging
 import os
-import re
 from argparse import Namespace
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Sequence
 
 import ray
 import torch
 import torch.distributed as dist
 from ray.actor import ActorHandle
-from torch.distributed.tensor import DTensor, Replicate
 
 try:
     from sglang.srt.utils.patch_torch import monkey_patch_torch_reductions  # type: ignore[import]
@@ -31,6 +29,7 @@ except ImportError as _e:
     compute_weights_checksum = None
     _checksum_import_error = _e
 
+from miles.backends.fsdp_utils.hf_weight_iterator import FSDPHfWeightIterator
 from miles.ray.utils import get_physical_gpu_id
 
 
@@ -39,116 +38,20 @@ logger = logging.getLogger(__name__)
 LORA_IPC_WEIGHT_UPDATE_MODE = "lora_merge"
 
 
-class PeftLoRAKeyMapper:
-    """Map PEFT LoRA state-dict keys to sglang-d tensor names for IPC sync."""
-
-    _LORA_KEY_RE = re.compile(r"\.lora_([AB])(?:\.[^.]+)?(?:\.weight)?$")
-    _PEFT_PREFIX = "base_model.model."
-
-    @classmethod
-    def is_lora_key(cls, name: str) -> bool:
-        return ".lora_A" in name or ".lora_B" in name
-
-    @classmethod
-    def to_sgld_name(cls, name: str) -> str | None:
-        """Map a PEFT state-dict key to sglang-d LoRA tensor name."""
-        if not cls.is_lora_key(name):
-            return None
-
-        stripped = name
-        if stripped.startswith(cls._PEFT_PREFIX):
-            stripped = stripped[len(cls._PEFT_PREFIX) :]
-
-        match = cls._LORA_KEY_RE.search(stripped)
-        if match is None:
-            return None
-
-        layer_prefix = stripped[: match.start()]
-        ab = match.group(1)
-        return f"{layer_prefix}.lora_{ab}"
-
-    @classmethod
-    def layer_prefix(cls, sgld_name: str) -> str:
-        return sgld_name.rsplit(".lora_", 1)[0]
-
-    @classmethod
-    def collect_sgld_names(cls, state_dict: Mapping[str, torch.Tensor]) -> set[str]:
-        names: set[str] = set()
-        for key in state_dict:
-            sgld_name = cls.to_sgld_name(key)
-            if sgld_name is not None:
-                names.add(sgld_name)
-        return names
-
-    @classmethod
-    def collect_layer_prefixes(cls, state_dict: Mapping[str, torch.Tensor]) -> set[str]:
-        return {name.rsplit(".lora_", 1)[0] for name in cls.collect_sgld_names(state_dict)}
-
-    @classmethod
-    def summarize_mapping(
-        cls,
-        state_dict: Mapping[str, torch.Tensor],
-    ) -> tuple[int, int, list[str], list[str]]:
-        """Return (num_tensors, num_layers, sample_layer_prefixes, unmapped_peft_keys)."""
-        sgld_names: list[str] = []
-        unmapped: list[str] = []
-        for key in state_dict:
-            if not cls.is_lora_key(key):
-                continue
-            sgld_name = cls.to_sgld_name(key)
-            if sgld_name is None:
-                unmapped.append(key)
-            else:
-                sgld_names.append(sgld_name)
-        layer_prefixes = {name.rsplit(".lora_", 1)[0] for name in sgld_names}
-        sample = sorted(layer_prefixes)[:5]
-        return len(sgld_names), len(layer_prefixes), sample, unmapped
-
-
-def _tensor_nbytes(tensor: torch.Tensor) -> int:
-    return tensor.numel() * tensor.element_size()
-
-
-def _assert_lora_ab_pair(layer_prefix: str, tensors: list[tuple[str, torch.Tensor]]) -> None:
-    names = [name for name, _ in tensors]
-    expected = [f"{layer_prefix}.lora_A", f"{layer_prefix}.lora_B"]
-    assert names == expected, f"LoRA layer {layer_prefix!r} expected {expected}, got {names}"
-
-
-def collect_lora_layer_groups(
-    state_dict: Mapping[str, torch.Tensor],
-) -> tuple[list[list[tuple[str, torch.Tensor]]], list[str], int]:
-    """Group LoRA state-dict entries by layer prefix so lora_A/lora_B stay together."""
-    groups_by_layer: dict[str, list[tuple[str, torch.Tensor]]] = {}
-    unmapped_keys: list[str] = []
-    num_lora_keys = 0
-
-    for name, param in state_dict.items():
-        if not PeftLoRAKeyMapper.is_lora_key(name):
-            continue
-        sgld_name = PeftLoRAKeyMapper.to_sgld_name(name)
-        if sgld_name is None:
-            unmapped_keys.append(name)
-            continue
-        layer_prefix = PeftLoRAKeyMapper.layer_prefix(sgld_name)
-        groups_by_layer.setdefault(layer_prefix, []).append((sgld_name, param))
-        num_lora_keys += 1
-
-    layer_groups: list[list[tuple[str, torch.Tensor]]] = []
-    for layer_prefix in sorted(groups_by_layer):
-        tensors = sorted(groups_by_layer[layer_prefix], key=lambda item: item[0])
-        _assert_lora_ab_pair(layer_prefix, tensors)
-        layer_groups.append(tensors)
-    return layer_groups, unmapped_keys, num_lora_keys
-
-
 class DiffusionUpdateWeight(abc.ABC):
-    """Base updater used by diffusion training actors."""
+    """Base updater used by diffusion training actors: sends each component's weight buckets to the rollout."""
+
+    # sent to sglang-d as weight_update_mode with every bucket; None replaces full weights
+    sgl_d_weight_update_mode: str | None = None
 
     def __init__(self, args: Namespace, models: dict[str, torch.nn.Module]) -> None:
         self.args = args
         self.models = models
         self.weight_version = 0
+        self.hf_weight_iterators = {
+            component: FSDPHfWeightIterator(args, model, diffusion_model_family=args.diffusion_model_family)
+            for component, model in models.items()
+        }
 
     @abc.abstractmethod
     def connect_rollout_engines(
@@ -160,52 +63,18 @@ class DiffusionUpdateWeight(abc.ABC):
 
     def update_weights(self) -> None:
         self.weight_version += 1
-        for target_module, model in self.models.items():
-            self._update_component_weights(target_module, model)
+        for target_module in self.models:
+            self._update_component_weights(target_module)
 
-    def _update_component_weights(self, target_module: str, model: torch.nn.Module) -> None:
-        state_dict = model.state_dict()
-        bucket = []
-        bucket_size = 0
-        for name, param in state_dict.items():
-            param_size = param.numel() * param.element_size()
-            if bucket and bucket_size + param_size >= self.args.update_weight_buffer_size:
-                self.wait_and_update_bucket_weights(bucket, target_module)
-                del bucket
-                bucket = []
-                bucket_size = 0
+    def _update_component_weights(self, target_module: str) -> None:
+        for bucket in self._iter_buckets(target_module):
+            self.update_bucket_weights(bucket, target_module)
 
-            param = param.cuda()
-            if isinstance(param, DTensor):
-                # async version of param.full_tensor
-                param = param.redistribute(
-                    placements=[Replicate()] * param.device_mesh.ndim,
-                    async_op=True,
-                ).to_local()
-            bucket.append((name, param))
-            bucket_size += param_size
-
-        if bucket:
-            self.wait_and_update_bucket_weights(bucket, target_module)
-            del bucket
-
-    def wait_and_update_bucket_weights(self, bucket, target_module: str, weight_update_mode=None):
-        bucket = [(name, param.wait()) if hasattr(param, "wait") else (name, param) for name, param in bucket]
-        self.update_bucket_weights(
-            bucket,
-            target_module,
-            weight_version=self.weight_version,
-            weight_update_mode=weight_update_mode,
-        )
+    def _iter_buckets(self, target_module: str) -> Iterator[list[tuple[str, torch.Tensor]]]:
+        return self.hf_weight_iterators[target_module].iter_hf_weights()
 
     @abc.abstractmethod
-    def update_bucket_weights(
-        self,
-        named_tensors,
-        target_module: str,
-        weight_version=None,
-        weight_update_mode: str | None = None,
-    ) -> None:
+    def update_bucket_weights(self, named_tensors: list[tuple[str, torch.Tensor]], target_module: str) -> None:
         pass
 
 
@@ -235,13 +104,7 @@ class DiffusionUpdateWeightFromTensor(DiffusionUpdateWeight):
                 # Calculate TP rank within this SGLang engine group.
                 self.tp_rank = dist.get_rank() - start_rank
 
-    def update_bucket_weights(
-        self,
-        named_tensors,
-        target_module: str,
-        weight_version=None,
-        weight_update_mode: str | None = None,
-    ) -> None:
+    def update_bucket_weights(self, named_tensors: list[tuple[str, torch.Tensor]], target_module: str) -> None:
         monkey_patch_torch_reductions()
         logger.info("Using flattened tensor bucket (diffusion updater, module=%s)", target_module)
         named_tensors_by_dtypes = {}
@@ -292,12 +155,12 @@ class DiffusionUpdateWeightFromTensor(DiffusionUpdateWeight):
                     "payload_gpu_uuids": payload_gpu_uuids,
                     "load_format": "flattened_bucket",
                     "target_modules": [target_module],
-                    "weight_version": str(weight_version),
+                    "weight_version": str(self.weight_version),
                 }
-                if weight_update_mode is not None:
+                if self.sgl_d_weight_update_mode is not None:
                     model = self.models[target_module]
                     adapter_config = model.peft_config[model.active_adapter]
-                    kwargs["weight_update_mode"] = weight_update_mode
+                    kwargs["weight_update_mode"] = self.sgl_d_weight_update_mode
                     kwargs["lora_alpha"] = adapter_config.lora_alpha
                     kwargs["lora_rank"] = adapter_config.r
                 ref = self._ipc_engine.update_weights_from_tensor.remote(**kwargs)
@@ -306,95 +169,23 @@ class DiffusionUpdateWeightFromTensor(DiffusionUpdateWeight):
 
 # TODO: update weights only for sgl-d LoRA params
 class DiffusionUpdateWeightFromTensorLoRA(DiffusionUpdateWeightFromTensor):
-    """LoRA-aware updater: merges adapters into base before pushing to rollout.
+    """LoRA-aware updater: pushes base weights with the adapters merged in.
 
-    The rollout engine has no LoRA layers — it receives standard weight keys
-    like ``transformer_blocks.0.attn.to_q.weight``.  We compute ``W_base + αBA/r``
-    on the fly during sync (no in-place mutation of the FSDP model).
+    The rollout engine has no LoRA layers -- it receives standard weight keys
+    like ``transformer_blocks.0.attn.to_q.weight``; the iterator computes
+    ``W_base + αBA/r`` on the fly (no in-place mutation of the FSDP model).
     """
 
-    def __init__(self, args, models):
-        super().__init__(args, models)
-        # Per-component LoRA index: component -> {param name -> (A, B, scaling)}.
-        self._lora_index: dict[str, dict[str, tuple]] = {}
-        for component, model in self.models.items():
-            index: dict[str, tuple] = {}
-            for name, module in model.named_modules():
-                if hasattr(module, "lora_A") and hasattr(module, "lora_B"):
-                    for adapter in module.lora_A:
-                        index[name + ".base_layer.weight"] = (
-                            module.lora_A[adapter],
-                            module.lora_B[adapter],
-                            module.scaling[adapter],
-                        )
-            self._lora_index[component] = index
-            logger.info(f"LoRA weight sync [{component}]: {len(index)} mergeable layers")
-
-    def _gather_full(self, t: torch.Tensor) -> torch.Tensor:
-        t = t.cuda()
-        if isinstance(t, DTensor):
-            return t.redistribute(placements=[Replicate()] * t.device_mesh.ndim).to_local()
-        return t
-
-    def _update_component_weights(self, target_module: str, model: torch.nn.Module) -> None:
+    def _update_component_weights(self, target_module: str) -> None:
         verify = os.environ.get("MILES_VERIFY_WEIGHT_SYNC", "").lower() in ("1", "true", "yes")
-        verify_pairs: list[tuple[str, torch.Tensor]] = [] if verify else None
-        lora_index = self._lora_index[target_module]
-
-        bucket, bucket_size = [], 0
-        for name, param in model.state_dict().items():
-            if "lora_" in name:
-                continue
-
-            param = param.cuda()
-            if isinstance(param, DTensor):
-                param = param.redistribute(
-                    placements=[Replicate()] * param.device_mesh.ndim,
-                    async_op=True,
-                ).to_local()
-
-            if name in lora_index:
-                # Merge LoRA for this layer on the fly instead of pre-computing
-                # all 720 deltas up front: Qwen-Image's MLP + attn deltas total
-                # tens of GB at peak — here only one delta is resident at a time.
-                A, B, s = lora_index[name]
-                delta = (self._gather_full(B.weight) @ self._gather_full(A.weight)) * s
-                param = param.wait() if hasattr(param, "wait") else param
-                param = param + delta.to(param.device, param.dtype)
-                del delta
-
-            # Strip PEFT's two wrapping layers so the name matches sglang-d's
-            # un-wrapped DiT state_dict (WeightsUpdater.load_weights_into_model
-            # silently drops any name not in ``module.named_parameters()``):
-            #
-            #   LoRA target  in: base_model.model.transformer_blocks.0.attn.to_q.base_layer.weight
-            #                out: transformer_blocks.0.attn.to_q.weight
-            #   non-target   in: base_model.model.transformer_blocks.0.norm1.weight
-            #                out: transformer_blocks.0.norm1.weight
-            #
-            # ``.base_layer`` is the inner wrapper (lora.Linear.base_layer);
-            # ``base_model.model.`` is PeftModel.base_model (=LoraModel) .model.
-            sglang_d_param_name = name.replace(".base_layer", "")
-            if sglang_d_param_name.startswith("base_model.model."):
-                sglang_d_param_name = sglang_d_param_name[len("base_model.model.") :]
-
-            sz = param.numel() * param.element_size()
-            if bucket and bucket_size + sz >= self.args.update_weight_buffer_size:
-                self.wait_and_update_bucket_weights(bucket, target_module)
-                bucket, bucket_size = [], 0
-            bucket.append((sglang_d_param_name, param))
-            bucket_size += sz
-            if verify_pairs is not None:
-                # Wait on async redistribute handle, snapshot CPU copy so the
-                # hash matches what the rollout engine stored (bytes-identical).
-                t = param.wait() if hasattr(param, "wait") else param
-                verify_pairs.append((sglang_d_param_name, t.detach().cpu().contiguous()))
-
-        if bucket:
-            self.wait_and_update_bucket_weights(bucket, target_module)
-
-        if verify_pairs is not None:
-            self._verify_weight_sync(verify_pairs, target_module)
+        pushed: list[tuple[str, torch.Tensor]] = []
+        for bucket in self._iter_buckets(target_module):
+            self.update_bucket_weights(bucket, target_module)
+            if verify:
+                # CPU snapshots, so the hash covers exactly the bytes the rollout engine stored
+                pushed.extend((name, tensor.detach().cpu().contiguous()) for name, tensor in bucket)
+        if verify:
+            self._verify_weight_sync(pushed, target_module)
 
     def _verify_weight_sync(self, pairs: list[tuple[str, torch.Tensor]], target_module: str) -> None:
         """Compare our expected merged-transformer SHA-256 against the live
@@ -449,89 +240,24 @@ class DiffusionUpdateWeightFromTensorLoRA(DiffusionUpdateWeightFromTensor):
 class DiffusionUpdateWeightFromTensorLoRAIPC(DiffusionUpdateWeightFromTensor):
     """Push only lora_A/lora_B tensors; rollout merges locally via weight_update_mode=lora_merge."""
 
-    def _prepare_lora_param(self, param: torch.Tensor) -> torch.Tensor:
-        param = param.cuda()
-        if isinstance(param, DTensor):
-            param = param.redistribute(
-                placements=[Replicate()] * param.device_mesh.ndim,
-                async_op=True,
-            ).to_local()
-        return param
+    sgl_d_weight_update_mode = LORA_IPC_WEIGHT_UPDATE_MODE
 
-    def _collect_layer_groups(
-        self, model: torch.nn.Module
-    ) -> tuple[list[list[tuple[str, torch.Tensor]]], list[str], int]:
-        """Group PEFT LoRA tensors so each layer's A/B pair stays in one IPC bucket.
+    def _iter_buckets(self, target_module: str) -> Iterator[list[tuple[str, torch.Tensor]]]:
+        return self.hf_weight_iterators[target_module].iter_hf_adapter_weights()
 
-        Names stay PEFT/diffusers-shaped (``transformer_blocks.0.attn.to_q.lora_A``).
-        sglang-d's ``lora_merge`` path applies ``param_names_mapping`` and the
-        disk-load FFN swap, so fused families such as H3 do not need a trainer-side
-        collector.
-        """
-        return collect_lora_layer_groups(model.state_dict())
-
-    def update_weights(self) -> None:
-        self.weight_version += 1
-        for target_module, model in self.models.items():
-            layer_groups, unmapped_keys, num_lora_keys = self._collect_layer_groups(model)
-            bucket: list[tuple[str, torch.Tensor]] = []
-            bucket_size = 0
-            num_buckets = 0
-            buffer_size = self.args.update_weight_buffer_size
-
-            for group in layer_groups:
-                group_size = sum(_tensor_nbytes(param) for _, param in group)
-                if bucket and bucket_size + group_size >= buffer_size:
-                    self.wait_and_update_bucket_weights(
-                        bucket,
-                        target_module,
-                        weight_update_mode=LORA_IPC_WEIGHT_UPDATE_MODE,
-                    )
-                    num_buckets += 1
-                    bucket = []
-                    bucket_size = 0
-
-                for sgld_name, param in group:
-                    bucket.append((sgld_name, self._prepare_lora_param(param)))
-                bucket_size += group_size
-
-            if bucket:
-                self.wait_and_update_bucket_weights(
-                    bucket,
-                    target_module,
-                    weight_update_mode=LORA_IPC_WEIGHT_UPDATE_MODE,
-                )
-                num_buckets += 1
-
-            if self.weight_version <= 2 and dist.is_initialized() and dist.get_rank() == 0:
-                # Report the layers actually pushed: a family that fuses projections
-                # into one rollout layer has fewer layers than PEFT modules.
-                num_layers = len(layer_groups)
-                sample_layers = [PeftLoRAKeyMapper.layer_prefix(group[0][0]) for group in layer_groups[:3]]
-                logger.info(
-                    "LoRA IPC weight sync v%s [%s]: pushed %d lora tensors, "
-                    "%d layer prefixes in %d buckets (unmapped=%d)",
-                    self.weight_version,
-                    target_module,
-                    num_lora_keys,
-                    num_layers,
-                    num_buckets,
-                    len(unmapped_keys),
-                )
-                if sample_layers:
-                    logger.info(
-                        "LoRA IPC [%s] sample layer prefixes: %s",
-                        target_module,
-                        sample_layers,
-                    )
-                if unmapped_keys:
-                    logger.warning(
-                        "LoRA IPC unmapped PEFT keys [%s] (first 5): %s",
-                        target_module,
-                        unmapped_keys[:5],
-                    )
-                if num_lora_keys == 0:
-                    logger.error(
-                        "LoRA IPC [%s]: no lora tensors found in training state_dict",
-                        target_module,
-                    )
+    def _update_component_weights(self, target_module: str) -> None:
+        num_lora_tensors = num_buckets = 0
+        for bucket in self._iter_buckets(target_module):
+            self.update_bucket_weights(bucket, target_module)
+            num_lora_tensors += len(bucket)
+            num_buckets += 1
+        if self.weight_version <= 2 and dist.is_initialized() and dist.get_rank() == 0:
+            logger.info(
+                "LoRA IPC weight sync v%s [%s]: pushed %d lora tensors in %d buckets",
+                self.weight_version,
+                target_module,
+                num_lora_tensors,
+                num_buckets,
+            )
+            if num_lora_tensors == 0:
+                logger.error("LoRA IPC [%s]: no lora tensors found in training state_dict", target_module)

@@ -81,21 +81,20 @@ sglang-d expects (e.g. `transformer_blocks.0.attn.to_q.weight`).
 
 `DiffusionUpdateWeightFromTensorLoRAIPC`:
 
-1. `collect_lora_layer_groups()` groups state-dict entries by layer prefix so
-   **lora_A and lora_B for the same layer always stay together**.
-2. `PeftLoRAKeyMapper.to_sgld_name()` strips PEFT wrappers
+1. `FSDPHfWeightIterator.iter_hf_adapter_weights()` turns each LoRA module into one unit,
+   its **lora_A and lora_B**, named by `to_hf_name()`
    (e.g. `transformer_blocks.0.attn.to_q.lora_A`). Fused families such as H3
    keep these diffusers names; sglang-d `lora_merge` applies
    `param_names_mapping` and the disk-load FFN swap.
-3. FSDP shard all-gather → pack into buckets capped by
+2. FSDP shard all-gather → `pack_units_by_size()` packs units into buckets capped by
    **`--update-weight-buffer-size`** (recipes use 2 GB) → CUDA IPC.
-4. Rollout engine receives `weight_update_mode="lora_merge"` with
+3. Rollout engine receives `weight_update_mode="lora_merge"` with
    `lora_alpha` and `lora_rank`.
 
-**Bucket packing:** the IPC updater iterates **layer groups**, not individual
-tensors. When adding the next group would exceed `--update-weight-buffer-size`,
-the current bucket is flushed first; the whole group (both `lora_A` and
-`lora_B`) then starts the next bucket. Pairs are never split across buckets.
+**Bucket packing:** every updater packs **units**, not individual tensors. When
+adding the next unit would exceed `--update-weight-buffer-size`, the current
+bucket is flushed first; the whole unit then starts the next bucket. A unit is
+never split across buckets, so a `lora_A` / `lora_B` pair always arrives together.
 
 Constant: `LORA_IPC_WEIGHT_UPDATE_MODE = "lora_merge"`.
 
@@ -110,7 +109,7 @@ Set automatically in `RolloutManager` when spawning engines.
 On the first few syncs, rank 0 logs lines like:
 
 ```text
-LoRA IPC weight sync v1 [transformer]: pushed N lora tensors, M layer prefixes in K buckets (unmapped=0)
+LoRA IPC weight sync v1 [transformer]: pushed N lora tensors in K buckets
 ```
 
 After FSDP all-gather, serialized buckets are collected on the **gather-src
@@ -122,7 +121,9 @@ worker stderr under `~/.ray/session_latest/logs/`.
 
 | File | Role |
 |---|---|
-| `miles/backends/fsdp_utils/diffusion_update_weight_utils.py` | Three updater classes + `PeftLoRAKeyMapper` |
+| `miles/backends/fsdp_utils/diffusion_update_weight_utils.py` | Three updater classes: send buckets over CUDA IPC |
+| `miles/backends/fsdp_utils/hf_weight_iterator.py` | `FSDPHfWeightIterator`: FSDP shards -> HF-named units (full, LoRA-merged, LoRA adapters) |
+| `miles/backends/training_utils/weight_update/hf_weight_iterator/` | `HfWeightIteratorBase` and bucketing (atomic groups, size-bounded packing), as in miles |
 | `miles/backends/fsdp_utils/actor.py` | Updater selection, LoRA apply via PEFT |
 | `miles/backends/sglang_diffusion_utils/sglang_diffusion_engine.py` | HTTP `update_weights_from_tensor` to rollout |
 | `miles/ray/rollout.py` | Engine env vars (`SGLANG_DIFFUSION_LORA_MERGE_FP32`) |
