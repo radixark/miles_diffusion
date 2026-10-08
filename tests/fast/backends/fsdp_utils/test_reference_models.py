@@ -162,7 +162,7 @@ def make_actor_forward_harness(
         return (new_pred - ref_pred).square().mean()
 
     harness = SimpleNamespace(
-        args=Namespace(ref_mode=ref_mode, loss_type=loss_type, train_async=False),
+        args=Namespace(ref_mode=ref_mode, loss_type=loss_type),
         models=models,
         ema_optimizer=ema_optimizer,
         model=torch.nn.ModuleDict(models),

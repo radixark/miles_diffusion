@@ -351,6 +351,7 @@ Every one takes a dotted path.
 | `--load` | str | – | |
 | `--ckpt-step` | int | – | Defaults to `latest_checkpointed_iteration.txt`. |
 | `--no-load-optim` / `--no-load-rng` | flag | off | |
+| `--async-exact-resume` | flag | off | Async training only. Also checkpoints the EMA from before the latest step and resamples the first resumed batch with it, so a resume matches an uninterrupted run. Off: that batch samples the loaded EMA. |
 
 ### Logging
 

@@ -1,8 +1,9 @@
 """One-rollout overlap.
 
 Each batch is sampled while the previous one trains, so it comes from the EMA before the latest step
-(NFT samples with --rollout-weights ema). Resume discards the prefetch and resamples its first batch
-from that checkpointed previous EMA, matching an uninterrupted run.
+(NFT samples with --rollout-weights ema). Resume discards the prefetch. With --async-exact-resume it
+resamples its first batch from the checkpointed previous EMA, matching an uninterrupted run; otherwise
+it samples that batch from the loaded EMA.
 """
 
 import sys
@@ -19,9 +20,10 @@ def train_loop(args, actor_model, rollout_manager, num_rollout_per_epoch):
     if args.start_rollout_id >= args.num_rollout:
         return
 
-    actor_model.update_weights(previous_ema=True)
+    actor_model.update_weights(previous_ema=args.async_exact_resume)
     current_batch = ray.get(rollout_manager.generate.remote(args.start_rollout_id))
-    actor_model.update_weights()
+    if args.async_exact_resume:
+        actor_model.update_weights()
 
     for rollout_id in range(args.start_rollout_id, args.num_rollout):
         is_last_rollout = rollout_id == args.num_rollout - 1

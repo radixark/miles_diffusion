@@ -824,6 +824,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=False,
                 help="Do not restore RNG state when resuming from --load.",
             )
+            parser.add_argument(
+                "--async-exact-resume",
+                action="store_true",
+                default=False,
+                help=(
+                    "Async training only: also checkpoint the EMA from before the latest step, and resample a "
+                    "resumed run's first batch with it so the resume matches an uninterrupted run. Without it, "
+                    "the first batch after a resume samples the loaded EMA."
+                ),
+            )
             reset_arg(
                 parser,
                 "--no-save-optim",

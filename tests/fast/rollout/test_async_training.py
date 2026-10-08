@@ -52,7 +52,7 @@ class RolloutProbe:
 
 @ray.remote
 class TrainerProbe:
-    def __init__(self, manager, delay, restored=None):
+    def __init__(self, manager, delay, restored=None, exact_resume=False):
         from miles.backends.fsdp_utils import actor
         from miles.utils.timer import Timer
 
@@ -66,13 +66,14 @@ class TrainerProbe:
         with torch.no_grad():
             self.param.zero_()
         self.global_step = 0
-        self.ema_optimizer = EMAOptimizer(self.model, decay=0.5, flat_steps=100, keep_previous=True)
+        self.ema_optimizer = EMAOptimizer(self.model, decay=0.5, flat_steps=100, keep_previous=exact_resume)
         if restored is not None:
             with torch.no_grad():
                 self.param.copy_(restored["param"])
             self.global_step = restored["global_step"]
             self.ema_optimizer.load_state_dict(restored["ema"])
-            self.ema_optimizer.previous_ema[self.param].copy_(restored["previous_ema"])
+            if exact_resume:
+                self.ema_optimizer.previous_ema[self.param].copy_(restored["previous_ema"])
         self.weight_updater = SimpleNamespace(update_weights=self._capture_weight)
         self.records = []
         self.saves = {}
@@ -88,7 +89,7 @@ class TrainerProbe:
 
     def _train_core(self, rollout_id, rollout_data):
         start = time.monotonic()
-        with self.ema_optimizer.use_weights(self.model, previous=True):
+        with self.ema_optimizer.use_weights(self.model):
             reference = self.param.item()
         assert rollout_data["rollout_id"] == rollout_id
         time.sleep(self.delay)
@@ -111,7 +112,9 @@ class TrainerProbe:
                 "param": self.param.detach(),
                 "global_step": self.global_step,
                 "ema": self.ema_optimizer.state_dict(),
-                "previous_ema": self.ema_optimizer.previous_ema[self.param],
+                "previous_ema": (
+                    self.ema_optimizer.previous_ema[self.param] if self.ema_optimizer.keep_previous else None
+                ),
             }
         )
 
@@ -146,7 +149,9 @@ def ray_runtime():
         ray.shutdown()
 
 
-def run_loop(tmp_path, monkeypatch, *, train_delay, rollout_delay, start=0, count=3, restored=None):
+def run_loop(
+    tmp_path, monkeypatch, *, train_delay, rollout_delay, start=0, count=3, restored=None, exact_resume=False
+):
     prompts = tmp_path / "prompts.jsonl"
     prompts.write_text("".join(json.dumps({"input": str(i)}) + "\n" for i in range(16)))
     args = Namespace(
@@ -166,11 +171,12 @@ def run_loop(tmp_path, monkeypatch, *, train_delay, rollout_delay, start=0, coun
         buffer_filter_path=None,
         use_wandb=False,
         rollout_weights="ema",
+        async_exact_resume=exact_resume,
     )
     metrics = []
     monkeypatch.setattr("train_diffusion_async.tracking_utils.log", lambda args, data, **kw: metrics.append(data))
     manager = RolloutProbe.remote(args, rollout_delay)
-    trainer = TrainerProbe.remote(manager, train_delay, restored)
+    trainer = TrainerProbe.remote(manager, train_delay, restored, exact_resume)
     group = TrainGroupProbe(trainer, manager)
     try:
         train_loop(args, group, manager, None)
@@ -192,40 +198,41 @@ def test_overlap_reference_cursor_and_update_barrier(tmp_path, monkeypatch, trai
     )
     assert [record[0]["sample_index"] for record in records] == [0, 1, 2]
     assert [record[0]["weight"] for record in records] == [0.0, 0.0, 0.5]
-    assert [record[3] for record in records] == [record[0]["weight"] for record in records]
-    # Startup publishes the previous EMA for batch 0, then the current EMA once batch 0 is sampled.
-    assert [(step, previous) for _, step, previous in updates] == [
-        (0, True),
-        (0, False),
-        (1, False),
-        (2, False),
-        (3, False),
-    ]
-    assert updates[1][0] >= events[0][2]
+    # Batches 1 and 2 were sampled one EMA step back, but each batch trains against the latest EMA.
+    assert [record[3] for record in records] == [0.0, 0.5, 1.25]
+    assert [(step, previous) for _, step, previous in updates] == [(0, False), (1, False), (2, False), (3, False)]
     assert saves[1]["global_step"] == 2
     for i in range(2):
         assert max(records[i][1], events[i + 1][1]) < min(records[i][2], events[i + 1][2])
-        assert updates[i + 2][0] >= events[i + 1][2]
+        assert updates[i + 1][0] >= events[i + 1][2]
     if rollout_delay > train_delay:
         # Rollout 1 saves a checkpoint; its drain wait must not disappear into save().
         assert metrics[1]["perf/drain_wait_time"] > 0.05
 
 
-def test_resume_matches_uninterrupted_run(tmp_path, monkeypatch):
+def test_exact_resume_matches_uninterrupted_run(tmp_path, monkeypatch):
     (tmp_path / "full").mkdir()
     (tmp_path / "resumed").mkdir()
     full_records, full_saves, _, _, _ = run_loop(
-        tmp_path / "full", monkeypatch, train_delay=0, rollout_delay=0, count=5
+        tmp_path / "full", monkeypatch, train_delay=0, rollout_delay=0, count=5, exact_resume=True
     )
-    _, saves, _, _, _ = run_loop(tmp_path / "resumed", monkeypatch, train_delay=0, rollout_delay=0)
-    records, resumed_saves, _, updates, _ = run_loop(
-        tmp_path / "resumed", monkeypatch, train_delay=0, rollout_delay=0, start=2, count=5, restored=saves[1]
+    _, saves, _, _, _ = run_loop(tmp_path / "resumed", monkeypatch, train_delay=0, rollout_delay=0, exact_resume=True)
+    records, resumed_saves, events, updates, _ = run_loop(
+        tmp_path / "resumed",
+        monkeypatch,
+        train_delay=0,
+        rollout_delay=0,
+        start=2,
+        count=5,
+        restored=saves[1],
+        exact_resume=True,
     )
     assert [r[0]["sample_index"] for r in records] == [2, 3, 4]
     # Batch 2 was prefetched with the EMA before step 2 (0.5); the resume resamples it from the checkpointed
-    # previous EMA rather than the current one (1.25), and trains every batch against the EMA that sampled it.
-    assert [(r[0]["weight"], r[3]) for r in records] == [(0.5, 0.5), (1.25, 1.25), (2.125, 2.125)]
+    # previous EMA rather than the current one (1.25). Every batch trains against the latest EMA.
+    assert [(r[0]["weight"], r[3]) for r in records] == [(0.5, 1.25), (1.25, 2.125), (2.125, 3.0625)]
     assert [(r[0]["weight"], r[3]) for r in records] == [(r[0]["weight"], r[3]) for r in full_records[2:]]
+    # Startup publishes the previous EMA for batch 2, then the current EMA once batch 2 is sampled.
     assert [(step, previous) for _, step, previous in updates] == [
         (2, True),
         (2, False),
@@ -233,16 +240,29 @@ def test_resume_matches_uninterrupted_run(tmp_path, monkeypatch):
         (4, False),
         (5, False),
     ]
+    assert updates[1][0] >= events[0][2]
     for key in ("param", "global_step", "previous_ema"):
         assert resumed_saves[4][key] == full_saves[4][key]
     assert resumed_saves[4]["ema"]["state"][0]["ema"] == full_saves[4]["ema"]["state"][0]["ema"]
+
+
+def test_resume_samples_loaded_ema_without_exact_resume(tmp_path, monkeypatch):
+    _, saves, _, _, _ = run_loop(tmp_path, monkeypatch, train_delay=0, rollout_delay=0)
+    assert saves[1]["previous_ema"] is None
+    records, _, _, updates, _ = run_loop(
+        tmp_path, monkeypatch, train_delay=0, rollout_delay=0, start=2, count=5, restored=saves[1]
+    )
+    assert [r[0]["sample_index"] for r in records] == [2, 3, 4]
+    # Batch 2 samples the loaded EMA (1.25), not the EMA it was prefetched with (0.5).
+    assert [(r[0]["weight"], r[3]) for r in records] == [(1.25, 1.25), (1.25, 2.125), (2.125, 3.0625)]
+    assert [(step, previous) for _, step, previous in updates] == [(2, False), (3, False), (4, False), (5, False)]
 
 
 @pytest.mark.parametrize("count", [0, 1])
 def test_empty_and_single_rollout(tmp_path, monkeypatch, count):
     records, _, events, updates, _ = run_loop(tmp_path, monkeypatch, train_delay=0, rollout_delay=0, count=count)
     assert len(records) == len(events) == count
-    assert len(updates) == (0 if count == 0 else count + 2)
+    assert len(updates) == (0 if count == 0 else count + 1)
 
 
 @pytest.mark.parametrize(
