@@ -104,9 +104,38 @@ def _load_audio_vae(ckpt_dir: str, device: torch.device):
     return vae.to(device=device, dtype=torch.float32).eval(), arch
 
 
+def _sglang_flash_attention(module, query, key, value, attention_mask, scaling=None, **kwargs):
+    """The causal FA3 varlen kernel sglang's native Qwen3-VL runs its language-model attention with.
+
+    Takes SDPA's masks: None means unpadded equal-length rows; a padded batch falls back to SDPA itself.
+    """
+    from sglang.kernels.ops.attention.flash_attention import flash_attn_varlen_func
+    from transformers.integrations.sdpa_attention import sdpa_attention_forward
+
+    if attention_mask is not None:
+        return sdpa_attention_forward(module, query, key, value, attention_mask, scaling=scaling, **kwargs)
+    batch, _, length, head_dim = query.shape
+    cu_seqlens = torch.arange(0, (batch + 1) * length, length, dtype=torch.int32, device=query.device)
+    query, key, value = (t.transpose(1, 2).reshape(batch * length, -1, head_dim) for t in (query, key, value))
+    output = flash_attn_varlen_func(
+        query,
+        key,
+        value,
+        cu_seqlens_q=cu_seqlens,
+        cu_seqlens_k=cu_seqlens,
+        max_seqlen_q=length,
+        max_seqlen_k=length,
+        softmax_scale=scaling,
+        causal=True,
+    )
+    output = output[0] if isinstance(output, tuple) else output
+    return output.reshape(batch, length, -1, head_dim), None
+
+
 def _load_text_encoder(ckpt_dir: str, device: torch.device):
     import torch.nn as nn
-    from transformers import AutoConfig, Qwen3VLModel
+    from transformers import AttentionInterface, AttentionMaskInterface, AutoConfig, Qwen3VLModel
+    from transformers.masking_utils import sdpa_mask
 
     # The checkpoint ships 64 layers; build the engine's 50-layer trim (the
     # rest, lm_head, and the final norm are unconsumed).
@@ -115,7 +144,17 @@ def _load_text_encoder(ckpt_dir: str, device: torch.device):
     encoder = Qwen3VLModel.from_pretrained(f"{ckpt_dir}/text_encoder", config=config, dtype=torch.bfloat16)
     # H3 reads the unnormalized layer-50 output, as MiniMaxH3Qwen3VLEncoder does.
     encoder.language_model.norm = nn.Identity()
-    return encoder.to(device).eval()
+    encoder = encoder.to(device).eval()
+    # Bitwise with the engine's encoder: it builds the vision rope frequencies on the GPU (1 ulp off the CPU pow)
+    # and runs language-model attention on its FA kernel; the vision tower stays on SDPA in both.
+    rotary = encoder.visual.rotary_pos_emb
+    rotary.inv_freq = 1.0 / (
+        rotary.theta ** (torch.arange(0, rotary.dim, 2, dtype=torch.float32, device=device) / rotary.dim)
+    )
+    AttentionInterface.register("minimax_h3_sglang_fa", _sglang_flash_attention)
+    AttentionMaskInterface.register("minimax_h3_sglang_fa", sdpa_mask)
+    encoder.config.text_config._attn_implementation = "minimax_h3_sglang_fa"
+    return encoder
 
 
 def checkpoint_dir(checkpoint: str, allow_patterns: list[str]) -> str:
