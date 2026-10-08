@@ -72,8 +72,6 @@ class TrainerProbe:
                 self.param.copy_(restored["param"])
             self.global_step = restored["global_step"]
             self.ema_optimizer.load_state_dict(restored["ema"])
-            if exact_resume:
-                self.ema_optimizer.previous_ema[self.param].copy_(restored["previous_ema"])
         self.weight_updater = SimpleNamespace(update_weights=self._capture_weight)
         self.records = []
         self.saves = {}
@@ -112,9 +110,6 @@ class TrainerProbe:
                 "param": self.param.detach(),
                 "global_step": self.global_step,
                 "ema": self.ema_optimizer.state_dict(),
-                "previous_ema": (
-                    self.ema_optimizer.previous_ema[self.param] if self.ema_optimizer.keep_previous else None
-                ),
             }
         )
 
@@ -241,14 +236,14 @@ def test_exact_resume_matches_uninterrupted_run(tmp_path, monkeypatch):
         (5, False),
     ]
     assert updates[1][0] >= events[0][2]
-    for key in ("param", "global_step", "previous_ema"):
+    for key in ("param", "global_step"):
         assert resumed_saves[4][key] == full_saves[4][key]
-    assert resumed_saves[4]["ema"]["state"][0]["ema"] == full_saves[4]["ema"]["state"][0]["ema"]
+    assert resumed_saves[4]["ema"]["state"][0] == full_saves[4]["ema"]["state"][0]
 
 
 def test_resume_samples_loaded_ema_without_exact_resume(tmp_path, monkeypatch):
     _, saves, _, _, _ = run_loop(tmp_path, monkeypatch, train_delay=0, rollout_delay=0)
-    assert saves[1]["previous_ema"] is None
+    assert list(saves[1]["ema"]["state"][0]) == ["ema"]
     records, _, _, updates, _ = run_loop(
         tmp_path, monkeypatch, train_delay=0, rollout_delay=0, start=2, count=5, restored=saves[1]
     )

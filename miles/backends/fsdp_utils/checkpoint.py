@@ -144,27 +144,9 @@ class OptimizerState(Stateful):
         )
 
 
-class PreviousEMAState(Stateful):
-    """Wrapper for the async trainer's previous EMA (``EMAOptimizer.previous_ema``), keyed by parameter name."""
-
-    def __init__(self, model, ema_optimizer):
-        self.model = model
-        self.ema_optimizer = ema_optimizer
-
-    def state_dict(self):
-        previous_ema = self.ema_optimizer.previous_ema
-        return {
-            "previous_ema": {
-                name: previous_ema[parameter]
-                for name, parameter in self.model.named_parameters()
-                if parameter in previous_ema
-            }
-        }
-
-    @torch.no_grad()
-    def load_state_dict(self, state_dict):
-        for name, tensor in self.state_dict()["previous_ema"].items():
-            tensor.copy_(state_dict["previous_ema"][name])
+def _has_previous_ema(ema_dir: Path) -> bool:
+    saved_keys = dcp.FileSystemReader(str(ema_dir)).read_metadata().state_dict_metadata
+    return any(key.endswith(".previous_ema") for key in saved_keys)
 
 
 class LRSchedulerState(Stateful):
@@ -221,7 +203,6 @@ def load(actor: Any) -> dict[str, Any] | None:
     optimizer_dir = checkpoint_dir / "optimizer"
     lr_scheduler_dir = checkpoint_dir / "lr_scheduler"
     ema_dir = checkpoint_dir / "ema"
-    previous_ema_dir = checkpoint_dir / "previous_ema"
 
     if not model_dir.exists():
         logger.info(f"[FSDP] Model checkpoint {model_dir} not found; skipping load.")
@@ -241,20 +222,23 @@ def load(actor: Any) -> dict[str, Any] | None:
 
     if actor.ema_optimizer is not None:
         if ema_dir.exists():
+            # Synchronous runs and async runs without --async-exact-resume save no previous EMA.
+            restarts_previous = actor.ema_optimizer.keep_previous and not _has_previous_ema(ema_dir)
+            if restarts_previous:
+                # DCP fails on keys the checkpoint lacks; reset_previous puts them back after the load.
+                for state in actor.ema_optimizer.state.values():
+                    del state["previous_ema"]
             ema_state = OptimizerState(actor.model, actor.ema_optimizer)
             dcp.load({"ema_state": ema_state}, checkpoint_id=str(ema_dir))
             logger.info(f"[FSDP] Loaded EMA from {ema_dir}")
+            if restarts_previous:
+                actor.ema_optimizer.reset_previous()
+                logger.warning(
+                    "[FSDP] EMA checkpoint has no previous EMA; the first async batch samples the loaded EMA"
+                )
         else:
             actor.ema_optimizer.reset_from_model()
             logger.info("[FSDP] EMA checkpoint missing; initialized EMA from the loaded model")
-        if actor.ema_optimizer.keep_previous:
-            if previous_ema_dir.exists():
-                previous_ema_state = PreviousEMAState(actor.model, actor.ema_optimizer)
-                dcp.load({"previous_ema_state": previous_ema_state}, checkpoint_id=str(previous_ema_dir))
-                logger.info(f"[FSDP] Loaded previous EMA from {previous_ema_dir}")
-            else:
-                actor.ema_optimizer.reset_previous()
-                logger.warning("[FSDP] Previous EMA checkpoint missing; the first async batch samples the loaded EMA")
 
     # Load optimizer state (optional)
     load_optimizer = not actor.args.no_load_optim
@@ -336,7 +320,6 @@ def save(actor: Any, iteration: int) -> None:
     optimizer_dir = checkpoint_dir / "optimizer"
     lr_scheduler_dir = checkpoint_dir / "lr_scheduler"
     ema_dir = checkpoint_dir / "ema"
-    previous_ema_dir = checkpoint_dir / "previous_ema"
 
     if dist.get_rank() == 0:
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -355,9 +338,6 @@ def save(actor: Any, iteration: int) -> None:
     if actor.ema_optimizer is not None:
         ema_state = OptimizerState(actor.model, actor.ema_optimizer)
         dcp.save({"ema_state": ema_state}, checkpoint_id=str(ema_dir))
-        if actor.ema_optimizer.keep_previous:
-            previous_ema_state = PreviousEMAState(actor.model, actor.ema_optimizer)
-            dcp.save({"previous_ema_state": previous_ema_state}, checkpoint_id=str(previous_ema_dir))
 
     # --no-save-optim drops both the optimizer and the LR scheduler.
     if not actor.args.no_save_optim:

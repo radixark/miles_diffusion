@@ -21,9 +21,9 @@ def reshard_model(model: torch.nn.Module) -> None:
 class EMAOptimizer(torch.optim.Optimizer):
     """EMA of the trainable weights, kept as optimizer state.
 
-    With ``keep_previous=True``, ``previous_ema`` also holds the EMA from before the latest ``step``:
-    async training samples each prefetched batch with it, and checkpoints save it so a resumed run
-    resamples its first batch with it.
+    With ``keep_previous=True``, each parameter's state also holds ``previous_ema``, the EMA from before
+    the latest ``step``: async training samples each prefetched batch with it, and checkpoints save it so
+    a resumed run resamples its first batch with it.
     """
 
     def __init__(
@@ -41,7 +41,6 @@ class EMAOptimizer(torch.optim.Optimizer):
             dict(decay=decay, uprate=uprate, uphold=uphold, flat_steps=flat_steps),
         )
         self.keep_previous = keep_previous
-        self.previous_ema: dict[torch.nn.Parameter, torch.Tensor] | None = None
         self.reset_from_model()
 
     @torch.no_grad()
@@ -55,7 +54,8 @@ class EMAOptimizer(torch.optim.Optimizer):
     def reset_previous(self) -> None:
         """Set the previous EMA to the current EMA, as before the first ``step``."""
         if self.keep_previous:
-            self.previous_ema = {parameter: state["ema"].clone() for parameter, state in self.state.items()}
+            for state in self.state.values():
+                state["previous_ema"] = state["ema"].clone()
 
     @torch.no_grad()
     def step(self, optimizer_step: int) -> None:
@@ -68,7 +68,9 @@ class EMAOptimizer(torch.optim.Optimizer):
             )
             ema_tensors = [_local_tensor(self.state[parameter]["ema"]) for parameter in group["params"]]
             if self.keep_previous:
-                previous_tensors = [_local_tensor(self.previous_ema[parameter]) for parameter in group["params"]]
+                previous_tensors = [
+                    _local_tensor(self.state[parameter]["previous_ema"]) for parameter in group["params"]
+                ]
                 torch._foreach_copy_(previous_tensors, ema_tensors)
             actor_tensors = [_local_tensor(parameter.detach()) for parameter in group["params"]]
             torch._foreach_lerp_(ema_tensors, actor_tensors, 1.0 - decay)
@@ -83,10 +85,9 @@ class EMAOptimizer(torch.optim.Optimizer):
         if previous and not self.keep_previous:
             raise RuntimeError("EMAOptimizer was built without keep_previous")
         reshard_model(model)
+        ema_key = "previous_ema" if previous else "ema"
         ema_weights = {
-            parameter: self.previous_ema[parameter] if previous else self.state[parameter]["ema"]
-            for parameter in model.parameters()
-            if parameter in self.state
+            parameter: self.state[parameter][ema_key] for parameter in model.parameters() if parameter in self.state
         }
         self._swap_with_actor(ema_weights)
         try:
