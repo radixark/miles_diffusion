@@ -126,6 +126,7 @@ worker stderr under `~/.ray/session_latest/logs/`.
 | File | Role |
 |---|---|
 | `miles/backends/fsdp_utils/diffusion_update_weight_utils.py` | Three updater classes: send buckets over CUDA IPC |
+| `miles/backends/fsdp_utils/adaptations/weight_bridge.py` | `ParamTransform` registry (train -> rollout name/shape), as in miles |
 | `miles/backends/fsdp_utils/hf_weight_iterator.py` | `FSDPHfWeightIterator`: FSDP shards -> HF-named units (full, LoRA-merged, LoRA adapters) |
 | `miles/backends/training_utils/weight_update/hf_weight_iterator/` | `HfWeightIteratorBase` and bucketing (atomic groups, size-bounded packing), as in miles |
 | `miles/backends/training_utils/weight_update/hf_weight_iterator/atomic_groups.py` | Per-family atomic groups for weights and adapters (today: LoRA adapters the rollout fuses into one layer) |

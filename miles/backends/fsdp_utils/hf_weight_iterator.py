@@ -5,6 +5,7 @@ from collections.abc import Iterator
 import torch
 from torch.distributed._functional_collectives import AsyncCollectiveTensor
 
+from miles.backends.fsdp_utils.adaptations import get_param_transform
 from miles.backends.fsdp_utils.dtensor import gather_full_param
 from miles.backends.training_utils.weight_update.hf_weight_iterator import HfWeightIteratorBase
 from miles.backends.training_utils.weight_update.hf_weight_iterator.atomic_groups import get_hf_atomic_update_groups
@@ -43,7 +44,9 @@ class FSDPHfWeightIterator(HfWeightIteratorBase):
                 # one delta resident at a time: all of Qwen-Image's deltas at once take tens of GB
                 delta = gather_full_param(lora_B.weight) @ gather_full_param(lora_A.weight) * scaling
                 full = full + delta.to(full.dtype)
-            yield [(to_hf_name(name), full)]
+            hf_name = to_hf_name(name)
+            expand = get_param_transform(hf_name, full, self.diffusion_model_family)
+            yield [(hf_name, full)] if expand is None else list(expand(hf_name, full, self.model))
 
     def _iter_hf_adapter_units(self) -> Iterator[list[tuple[str, torch.Tensor]]]:
         """One unit per LoRA module: sglang-d's lora_merge applies its lora_A and lora_B as a pair."""

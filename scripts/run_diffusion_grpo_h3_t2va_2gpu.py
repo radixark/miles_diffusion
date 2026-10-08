@@ -140,8 +140,6 @@ def execute(args: ScriptArgs, prompt_dir: str) -> None:
 
     optimizer_args = "--lr 1e-4 --weight-decay 1e-4 --adam-eps 1e-15 "
 
-    # H3's rollout DiT renames modules and fuses Q/K/V, so weights only reach the engine
-    # through the LoRA IPC path's layer grouper; the family rejects any other sync mode.
     lora_args = "--use-lora --lora-ipc-weight-sync --lora-rank 64 --lora-alpha 128 "
 
     reward_args = (
