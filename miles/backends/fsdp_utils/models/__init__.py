@@ -10,7 +10,7 @@ Onboarding a model family:
   package ``models/<family>/`` with at least:
 
   - ``loading.py`` — checkpoint resolution/materialization and ``load_component``
-  - ``modeling.py`` — ``load_scheduler``, ``enable_gradient_checkpointing``,
+  - ``modeling.py`` — ``enable_gradient_checkpointing``,
     optional ``flash_attention_entrypoints`` /
     ``required_flash_kernel_label`` for deterministic flash patching
   - ``parallel_plan.py`` — ``FSDP_PARALLEL_PLAN``,

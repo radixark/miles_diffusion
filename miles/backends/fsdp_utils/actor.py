@@ -22,7 +22,6 @@ from miles.utils.timer import Timer, inverse_timer, timer
 from miles.utils.tracking_utils import init_tracking
 from miles.utils.train_data_utils import (
     build_microbatch_schedule,
-    scheduler_meta_from_rollout,
     validate_same_microbatch_counts_across_train_ranks,
     validate_sample_aligned_windows,
 )
@@ -101,7 +100,6 @@ class FSDPTrainRayActor(TrainRayActor):
         if args.deterministic_mode:
             # flash-attn is opaque to torch's determinism flag; backends patch their own dispatch.
             self.model_backend.enable_deterministic_attention(args.fsdp_attention_backend)
-        self.scheduler = self.model_backend.load_scheduler(args)
         self.models = load_fsdp_models(
             args,
             self.model_backend,
@@ -331,16 +329,6 @@ class FSDPTrainRayActor(TrainRayActor):
             raise ValueError("rollout_data['train_data'] is empty")
 
         num_pairs = len(train_pairs)
-
-        # ------------- Rollout Scheduler Metadata -------------
-        scheduler_timesteps, scheduler_sigmas = scheduler_meta_from_rollout(
-            rollout_data,
-            device=device,
-        )
-        self.scheduler.timesteps = scheduler_timesteps
-        self.scheduler.sigmas = scheduler_sigmas
-        self.scheduler._step_index = None
-        self.scheduler._begin_index = None
 
         # ------------- Micro-batch schedule -------------
         num_optim_steps_per_rollout = self.args.num_steps_per_rollout

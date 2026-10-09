@@ -4,7 +4,6 @@ from typing import Any
 
 import torch
 
-from miles.utils.train_data_utils import scheduler_meta_from_samples
 from miles.utils.types import RolloutDebugTensors, Sample
 
 
@@ -14,19 +13,8 @@ def expand_samples_to_train_pairs(
     rewards: list[float],
     raw_rewards: list[float],
 ) -> dict[str, Any]:
-    train_data, scheduler_meta = _expand_samples_to_train_pairs(samples, rewards, raw_rewards)
-    return {"train_data": train_data, **scheduler_meta}
-
-
-def _expand_samples_to_train_pairs(
-    samples: list[Sample],
-    rewards: list[float],
-    raw_rewards: list[float],
-) -> tuple[list[dict[str, Any]], dict[str, torch.Tensor]]:
     """Flat train pairs in sample-major order (all pairs for sample 0, then sample 1, ...)."""
     train_data: list[dict[str, Any]] = []
-    scheduler_meta = scheduler_meta_from_samples(samples)
-
     for sample, rew, raw_r in zip(samples, rewards, raw_rewards, strict=True):
         traj, denoising_env, rollout_log_probs = _sample_required_inputs(sample)
         per_sample_features = _build_per_sample_features(
@@ -62,7 +50,7 @@ def _expand_samples_to_train_pairs(
     if not train_data:
         raise ValueError("No train pairs were produced from rollout samples")
 
-    return train_data, scheduler_meta
+    return {"train_data": train_data}
 
 
 def _sample_required_inputs(sample: Sample):

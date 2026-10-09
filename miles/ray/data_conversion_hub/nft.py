@@ -7,7 +7,6 @@ import torch
 
 from miles.utils.hash_utils import stable_hash
 from miles.utils.misc import load_function
-from miles.utils.train_data_utils import scheduler_meta_from_samples
 from miles.utils.types import Sample
 
 
@@ -64,15 +63,16 @@ def expand_samples_to_train_pairs(
             f"NFT convert length mismatch: samples={len(samples)} "
             f"rewards={len(rewards)} raw_rewards={len(raw_rewards)}"
         )
-    scheduler_meta = scheduler_meta_from_samples(samples)
     select_train_steps = load_function(args.diffusion_nft_timestep_strategy_path)
     train_data: list[dict[str, Any]] = []
     for position, (sample, adv, raw) in enumerate(zip(samples, rewards, raw_rewards, strict=True)):
         if sample.denoising_env is None:
             raise ValueError(f"sample {sample.index} missing denoising_env")
         x0 = _clean_x0_from_sample(sample)
+        if sample.dit_trajectory.sigmas is None:
+            raise ValueError(f"sample {sample.index} missing dit_trajectory.sigmas; NFT trains on the rollout grid")
         # The trajectory grid ends with the terminal sigma 0; the sigmas before it are the sampling steps.
-        step_sigmas = scheduler_meta["scheduler_sigmas"][:-1]
+        step_sigmas = sample.dit_trajectory.sigmas.detach().float()[:-1]
         # Keyed on the sample's global index, which the data source advances across rollouts,
         # so each sample draws its own steps and order and the run reproduces.
         stream = sample.index if sample.index is not None else position
@@ -93,4 +93,4 @@ def expand_samples_to_train_pairs(
                     "nft_num_timesteps": num_timesteps,
                 }
             )
-    return {"train_data": train_data, **scheduler_meta}
+    return {"train_data": train_data}

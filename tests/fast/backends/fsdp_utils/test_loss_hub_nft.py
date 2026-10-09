@@ -3,6 +3,7 @@
     rollout samples --> timestep pairs --> prepared noisy latents --> NFT loss
     NFT loss + kl_beta * mean((new_pred - ref_pred)^2) per pair when a KL reference is set
     pair sigma --family process_sigma_as_timesteps_input--> DiT timestep (sd3-style: x the config's num_train_timesteps)
+    each sample's own trajectory sigmas --> that sample's training sigmas
     sampling sigmas (terminal 0 excluded) --timestep strategy--> each sample's train sigmas, in training order
         drop_random_steps (default)  1.0 0.75 0.5 0.25 -> e.g. 0.5 1.0 0.25   k drawn per sample, random order
                                      --> across samples every sigma is trained
@@ -157,12 +158,13 @@ class TestNftHooks:
         assert out["train_data"][0]["advantage"] == rewards[0]
         assert out["train_data"][2]["advantage"] == rewards[1]
 
-    def test_convert_rejects_mismatched_scheduler_meta(self):
-        # One shared schedule per batch, same contract as the flow_grpo converter.
+    def test_convert_reads_each_samples_own_grid(self):
+        # sample 0 grid [1.0, 0.5, 0.0] -> trains at {1.0, 0.5}
+        # sample 1 grid [1.0, 0.3, 0.0] -> trains at {1.0, 0.3}
         class _Traj:
-            def __init__(self):
-                self.timesteps = torch.tensor([999.0, 500.0, 0.0])
-                self.sigmas = torch.tensor([1.0, 0.5, 0.0])
+            def __init__(self, sigmas):
+                self.timesteps = sigmas * 1000
+                self.sigmas = sigmas
                 self.latents = torch.zeros(3, 2, 2)
                 self.latent_step_indices = None
 
@@ -171,19 +173,17 @@ class TestNftHooks:
             neg_cond_kwargs = None
 
         samples = [
-            Sample(index=0, prompt="a", reward=1.0, dit_trajectory=_Traj(), denoising_env=_Env()),
-            Sample(index=1, prompt="b", reward=3.0, dit_trajectory=_Traj(), denoising_env=_Env()),
+            Sample(index=0, prompt="a", dit_trajectory=_Traj(torch.tensor([1.0, 0.5, 0.0])), denoising_env=_Env()),
+            Sample(index=1, prompt="b", dit_trajectory=_Traj(torch.tensor([1.0, 0.3, 0.0])), denoising_env=_Env()),
         ]
-        samples[1].dit_trajectory.sigmas = samples[1].dit_trajectory.sigmas + 1.0  # tamper
-        try:
-            expand_samples_to_train_pairs(_args(), samples, [1.0, 2.0], [1.0, 2.0])
-        except ValueError as e:
-            assert "scheduler_sigmas" in str(e)
-        else:
-            raise AssertionError("expected ValueError for mismatched scheduler_sigmas")
+        out = expand_samples_to_train_pairs(_args(), samples, [1.0, 2.0], [1.0, 2.0])
+        per_sample = {}
+        for pair in out["train_data"]:
+            per_sample.setdefault(pair["sample_index"], []).append(pair["timestep"])
+        assert per_sample == {0: [1.0, 0.5], 1: [1.0, pytest.approx(0.3)]}
 
     def test_convert_requires_rollout_sigmas(self):
-        # Sigmas come from the rollout scheduler snapshot; no timesteps/1000 fallback.
+        # Sigmas come from the rollout trajectory; no timesteps/1000 fallback.
         class _Traj:
             def __init__(self):
                 self.timesteps = torch.tensor([999.0, 500.0, 0.0])
@@ -313,7 +313,7 @@ class TestNftDeterminism:
         second = expand_samples_to_train_pairs(args, self._samples(), [-1.0, 1.0], [1.0, 3.0])
         got = [p["timestep"] for p in first["train_data"]]
         assert got == [p["timestep"] for p in second["train_data"]]
-        # Shuffled, not just handed back in scheduler order.
+        # Shuffled, not just handed back in grid order.
         assert got[: len(got) // 2] != sorted(got[: len(got) // 2], reverse=True)
 
     def test_random_drop_strategy_drops_a_random_sigma_per_sample(self):
