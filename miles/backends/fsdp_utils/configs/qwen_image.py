@@ -64,8 +64,8 @@ class QwenImageTrainPipelineConfig(TrainPipelineConfig):
     def process_timestep_as_input(self, timesteps):
         return timesteps / 1000.0
 
-    def process_sigma_as_timesteps_input(self, sigmas, *, num_train_timesteps):
-        # Identity only while the scheduler range equals the 1000 above; else sigma * N / 1000.
+    def process_sigma_as_timesteps_input(self, sigmas):
+        # Identity only while num_train_timesteps equals the 1000 above; else sigma * N / 1000.
         return sigmas
 
     lora_target_modules = [

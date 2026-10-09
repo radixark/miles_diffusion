@@ -46,10 +46,8 @@ def prepare_flow_grpo_batch(
     if len(ctx.models) == 1:
         component_name, model = next(iter(ctx.models.items()))
     else:
-        # Only multi-DiT families route timesteps to a phase, and only their schedulers are
-        # guaranteed to declare num_train_timesteps.
-        num_train_timesteps = int(ctx.scheduler.config.num_train_timesteps)
-        components = {config.component_for_timestep(t, num_train_timesteps) for t in timesteps.tolist()}
+        # Only multi-DiT families route timesteps to a phase.
+        components = {config.component_for_timestep(t) for t in timesteps.tolist()}
         if len(components) > 1:
             raise ValueError(
                 f"Micro-batch mixes denoising phases {sorted(components)}; set "
@@ -59,7 +57,6 @@ def prepare_flow_grpo_batch(
         model = ctx.models[component_name]
         guidance_scale = config.select_guidance_scale(
             float(timesteps[0]),
-            num_train_timesteps,
             guidance_scale,
             args.diffusion_guidance_scale_2,
         )
