@@ -15,6 +15,9 @@ nvidia-ml-py==13.595.45
 omegaconf==2.3.0
 open_clip_torch==2.24.0
 openai==2.6.1
+# paddleocr pulls these unpinned; OpenCV 5 changes OCR scores
+opencv-contrib-python==4.11.0.86
+opencv-python==4.11.0.86
 opencv-python-headless==4.10.0.84
 paddleocr==2.10.0
 paddlepaddle-gpu==2.6.2; platform_system == "Linux"
