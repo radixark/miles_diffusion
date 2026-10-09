@@ -39,6 +39,7 @@ SFT_CACHE_KEY_ARGS = (
     "diffusion_output_num_frames",
     "sft_frame_stride",
     "diffusion_task",
+    "seed",
 )
 
 
@@ -51,18 +52,27 @@ def localize_sft_media(sample: Sample, media_cache_dir: Path) -> None:
     ]
 
 
+def _sha256(payload: dict) -> bytes:
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).digest()
+
+
 def sft_sample_key(args, sample: Sample) -> tuple[str, int]:
-    """Cache identity includes the prompt, ordered conditions, target, all media files, and the args encoders read."""
+    """Cache identity includes the prompt, ordered conditions, target, all media files, and the args encoders read.
+
+    The latent seed depends only on the sample and --seed, so an encoder change (and its version bump) keeps every
+    sample's draws and runs before and after it stay comparable.
+    """
     paths = {*sample.target.values(), *(condition["uri"] for condition in sample.conditions)}
+    identity = {"prompt": sample.prompt, "conditions": sample.conditions, "target": sample.target}
     payload = {
         # Bump the version whenever the cached pair changes.
-        "version": 4,
+        "version": 5,
         "config": {key: vars(args)[key] for key in SFT_CACHE_KEY_ARGS},
-        "sample": {"prompt": sample.prompt, "conditions": sample.conditions, "target": sample.target},
+        "sample": identity,
         "files": [media_fingerprint(path) for path in sorted(paths)],
     }
-    digest = hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).digest()
-    return digest.hex() + ".pt", int.from_bytes(digest[8:16], "big") % 2**63
+    seed = int.from_bytes(_sha256({"seed": int(args.seed), "sample": identity})[8:16], "big") % 2**63
+    return _sha256(payload).hex() + ".pt", seed
 
 
 def read_media_clip(path: str, *, height: int, width: int, num_frames: int, frame_stride: int) -> dict:

@@ -1,10 +1,11 @@
 """Per-sample content addressing for the SFT cache.
 
-    Sample (prompt, conditions, target) + media file fingerprints + SFT_CACHE_KEY_ARGS
-        ──sha256──► (cache file name, latent seed)
+    Sample (prompt, conditions, target) + media file fingerprints + SFT_CACHE_KEY_ARGS ──sha256──► cache file name
+    Sample (prompt, conditions, target) + --seed                                      ──sha256──► latent seed
 
 What each test pins: keys are deterministic; each encode arg, the prompt and the file revision change the key;
-args no encoder reads leave the name and seed alone; keys differ per sample and per model family.
+the seed follows only the sample and --seed; args no encoder reads leave the name and seed alone; keys differ per
+sample and per model family.
 """
 
 from tests.ci.ci_register import register_cpu_ci
@@ -27,6 +28,7 @@ def _args(**overrides):
         diffusion_output_num_frames=81,
         sft_frame_stride=2,
         diffusion_task="t2va",
+        seed=1,
     )
     base.update(overrides)
     return Namespace(**base)
@@ -66,7 +68,21 @@ def test_key_invalidates_per_axis(tmp_path):
     os.utime(video, ns=(1, 1))
     replaced_name, replaced_seed = sft_sample_key(_args(), sample)
     assert replaced_name != base_name
-    assert replaced_seed != base_seed
+    assert replaced_seed == base_seed
+
+
+def test_seed_depends_only_on_the_sample_and_seed_arg(tmp_path):
+    video = tmp_path / "a.mp4"
+    video.write_bytes(b"x" * 100)
+    sample = _sample(video)
+    base_name, base_seed = sft_sample_key(_args(), sample)
+
+    name, seed = sft_sample_key(_args(seed=2), sample)
+    assert name != base_name
+    assert seed != base_seed
+    assert sft_sample_key(_args(), _sample(video, prompt="q"))[1] != base_seed
+    for encode_arg in (dict(diffusion_height=512), dict(sft_encoder_checkpoint="other")):
+        assert sft_sample_key(_args(**encode_arg), sample)[1] == base_seed
 
 
 def test_key_ignores_args_no_encoder_reads(tmp_path):
