@@ -1,12 +1,13 @@
 """read_media_clip: target file -> media clip, built on the MediaSource load layer.
 
     visual_source(path) -> ImageSource | VideoSource      load (miles.utils.media), chosen by extension
-      .info         ffprobe frame list     num_frames/fps/frame times, upright size, sample aspect ratio
+      .info         ffprobe frame list     num_frames/fps/frame times, upright size, sample aspect ratio,
+                                           soundtrack sample rate
       .decode       ffmpeg trim            frames [start, start + length) only, upright stored pixels
            |
     process: exact frame count, canvas size and square pixels, else an error; every frame_stride-th frame
            |
-    uint8 {"video": [C,T,H,W], "fps", "frame_times_seconds"}
+    uint8 {"video": [C,T,H,W], "fps", "frame_times_seconds", "audio_sample_rate"}
 
 What each test pins:
   image branch      single frame, byte-exact passthrough, EXIF orientation applied, wrong size rejected
@@ -22,6 +23,7 @@ What each test pins:
   missing pts       packets stored without timestamps (AVI with B-frames) still get frame times
   raw stream        a raw elementary stream, which has no container timeline, is rejected
   stream offset     frame times sit on the file timeline, so a video starting 1 s after its audio starts at 1 s
+  soundtrack        the first audio stream's sample rate comes from the same probe; a silent video has none
   subtitle track    a subtitle track adds no frames
   resolution change a mid-stream resolution change is rejected, since no single size describes the frames
   cover art         an audio file's attached picture is not a video stream, so the file is rejected
@@ -30,7 +32,8 @@ What each test pins:
 Real media (public Hugging Face fixtures at pinned revisions, and ffmpeg FATE samples pinned by sha256):
   cat-rotated.jpg    EXIF orientation 8 photo   stored 500x333 --rotate 90 CCW--> upright 333x500 frame
   sample_demo_1.mp4  H.264 + AAC, 640x360       243 frames at 25 fps; a mid-clip window equals an independent
-                                                ffmpeg select-filter decode of the same frames
+                                                ffmpeg select-filter decode of the same frames;
+                                                its AAC soundtrack is 44.1 kHz
   displaymatrix.mov  H.264, -90 degree rotation stored 160x240 of 1:2 pixels --turn clockwise--> upright 240x160
                      (FATE, cut to 33 frames)   of 2:1 pixels; a window equals the stored frames read with
                                                 -noautorotate and turned by hand
@@ -323,6 +326,19 @@ def test_frame_times_keep_the_video_stream_offset(tmp_path):
     assert VideoSource(str(offset_path)).info.frame_times_seconds[0] == pytest.approx(1.0, abs=1e-3)
 
 
+def test_soundtrack_sample_rate_is_probed_with_the_frames(tmp_path):
+    _require_ffmpeg("ffmpeg", "ffprobe")
+    from miles.utils.media import VideoSource
+
+    silent, voiced = str(tmp_path / "silent.mkv"), str(tmp_path / "voiced.mkv")
+    _encode_testsrc(silent, "-c:v", "mpeg4")
+    _encode_testsrc(
+        voiced, "-f", "lavfi", "-i", "sine=duration=2:sample_rate=16000", "-c:v", "mpeg4", "-c:a", "pcm_s16le"
+    )
+    assert VideoSource(voiced).info.audio_sample_rate == 16000
+    assert VideoSource(silent).info.audio_sample_rate is None
+
+
 def test_subtitle_track_adds_no_frames(tmp_path):
     _require_ffmpeg("ffmpeg", "ffprobe")
     from miles.utils.media import VideoSource
@@ -439,7 +455,7 @@ def test_video_source_probes_and_windows_a_real_h264_clip():
     path = _real_video()
     source = VideoSource(path)
     info = source.info
-    assert (info.num_frames, info.fps, info.width, info.height) == (243, 25.0, 640, 360)
+    assert (info.num_frames, info.fps, info.width, info.height, info.audio_sample_rate) == (243, 25.0, 640, 360, 44100)
     assert info.frame_times_seconds[100:103] == pytest.approx((4.0, 4.04, 4.08))
     # frames 100..102, decoded by select instead of trim:
     #   decode(100, 3)  ==  ffmpeg -vf "select=between(n,100,102)"

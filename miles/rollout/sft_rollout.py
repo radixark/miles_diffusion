@@ -68,8 +68,8 @@ def read_media_clip(path: str, *, height: int, width: int, num_frames: int, fram
     """Every ``frame_stride``-th frame of a file prepared offline as exactly ``(num_frames - 1) * frame_stride + 1``
     frames of ``width x height`` square pixels; any other file is an error.
 
-    Returns ``{"video": uint8 [C, T, H, W], "fps", "frame_times_seconds"}``, the times on the file timeline so a
-    family can cut the target audio over the same interval.
+    Returns ``{"video": uint8 [C, T, H, W], "fps", "frame_times_seconds", "audio_sample_rate"}``, the times on the
+    file timeline so a family can cut the soundtrack over the same interval.
     """
     source = visual_source(path)
     num_source_frames = (num_frames - 1) * frame_stride + 1
@@ -95,6 +95,7 @@ def read_media_clip(path: str, *, height: int, width: int, num_frames: int, fram
         "frame_times_seconds": (
             None if isinstance(source, ImageSource) else source.info.frame_times_seconds[::frame_stride]
         ),
+        "audio_sample_rate": source.info.audio_sample_rate,
     }
 
 
