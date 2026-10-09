@@ -304,8 +304,9 @@ Return a truthy value to skip the default logging; falsy layers on top.
 
 `--hf-checkpoint` names the diffusers pipeline for train + rollout. Family is
 resolved from the checkpoint name unless you pass `--diffusion-model-family`
-(e.g. `sd3`). For an unregistered family, pass `--train-pipeline-config-path`
-to a `TrainPipelineConfig` subclass instead.
+(e.g. `sd3`). The longest matching name pattern wins, so `Qwen/Qwen-Image-2.1`
+resolves to `qwen_image21`. For an unregistered family, pass
+`--train-pipeline-config-path` to a `TrainPipelineConfig` subclass instead.
 
 ### `--model-backend-path`
 

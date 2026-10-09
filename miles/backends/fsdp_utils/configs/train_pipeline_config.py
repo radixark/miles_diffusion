@@ -46,16 +46,22 @@ def _populate_registry() -> None:
 
 
 def resolve_diffusion_model_family(model_ref: str) -> str:
-    """Map a model reference to a family key by the refs each family declares."""
+    """Map a model reference to a family key. The longest matching name pattern wins."""
     override = os.environ.get("MILES_DIFFUSION_MODEL_FAMILY")
     if override:
         return override.strip().lower()
 
     _populate_registry()
     ref = str(model_ref).lower()
+    best_family = None
+    best_len = -1
     for family, config_cls in _REGISTRY.items():
-        if any(pattern in ref for pattern in config_cls.hf_ckpt_name_patterns):
-            return family
+        for pattern in config_cls.hf_ckpt_name_patterns:
+            if pattern and pattern in ref and len(pattern) > best_len:
+                best_family = family
+                best_len = len(pattern)
+    if best_family is not None:
+        return best_family
     raise ValueError(
         f"Cannot resolve diffusion model family for '{model_ref}' "
         f"(known families: {list(_REGISTRY)}). "

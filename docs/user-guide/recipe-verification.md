@@ -47,6 +47,8 @@ count as verification.
   - `run_diffusion_grpo_wan22_pickscore_17gpu_multinode.py` — Wan2.2 17-GPU
     full-finetune Flow-GRPO + PickScore.
 - **📈 V**
+  - `run_diffusion_grpo_qwenimage21_pickscore_1gpu_v2.py` — Qwen-Image 2.1
+    Flow-GRPO + PickScore.
   - `run_diffusion_sft_h3_t2va.py` — MiniMax H3 8-GPU LoRA SFT.
   - `run_diffusion_grpo_sd3_hps_sglang.py` — SD3.5 Flow-GRPO + HPSv2.1.
   - `run_diffusion_grpo_sd3_ocr_pickscore_sglang.py` — SD3.5 Flow-GRPO + 0.8 OCR + 0.2 PickScore.
