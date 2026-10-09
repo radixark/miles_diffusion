@@ -18,7 +18,8 @@ What each test pins:
   TestPrepareSftBatch   corruption identity, select_component's expert routing and served grid points,
                         determinism, known flow-shift grid values,
                         the visual stream draws exactly what the single-stream seed draws
-  TestSftLossFormula    exact-velocity zero loss, unit offset, sigma buckets partition the loss
+  TestSftLossFormula    exact-velocity zero loss, unit offset, sigma buckets partition the loss,
+                        --log-loss-sigma-bucket 0 emits only the loss
   TestJointStreams      each stream on its own --fsdp-flow-shift grid, draws independent across streams,
                         per-stream MSE normalization, rank-aligned expert choice, shape/stream-set rejection
 """
@@ -222,8 +223,9 @@ class TestPrepareSftBatch:
 
 
 class TestSftLossFormula:
-    def _loss(self, prediction_offset, metrics):
+    def _loss(self, prediction_offset, metrics, log_loss_sigma_bucket=5):
         ctx = _ctx({"transformer": nn.Identity()})
+        ctx.args.log_loss_sigma_bucket = log_loss_sigma_bucket
         batch = _batch()
         prepared = prepare_sft_batch(ctx, batch)
         new_pred = {"visual": _visual_target(prepared) + prediction_offset}
@@ -252,6 +254,11 @@ class TestSftLossFormula:
         sigmas = prepared.extras["sigmas"]["visual"]
         assert set(bucket_keys) == {sigma_bucket_key(min(int(float(s) * 5), 4), 5) for s in sigmas}
         assert torch.allclose(torch.tensor(sum(metrics.seen[key][0] for key in bucket_keys)), loss)
+
+    def test_disabled_sigma_buckets(self):
+        metrics = _Metrics()
+        self._loss(0.0, metrics, log_loss_sigma_bucket=0)
+        assert metrics.seen == {"loss": (0.0, 4)}
 
 
 def test_sigma_bucket_key_edges_are_floats():
