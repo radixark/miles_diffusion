@@ -37,15 +37,23 @@ def resolve_media_path(media: str, prompt_data: str) -> str:
     return str(Path(prompt_data).parent / media)
 
 
-def sft_sample_key(args, item: dict) -> tuple[str, int]:
-    """Content-addressed cache filename and latent-sampling seed for one (media, prompt) item."""
-    stat = Path(item["media"]).stat()
+def sft_target_path(sample: Sample, prompt_data: str) -> str:
+    media = sample.metadata.get("video") or sample.metadata.get("image")
+    if media is None:
+        raise ValueError(f"sample {sample.index} metadata has neither 'video' nor 'image': {sample.metadata}")
+    return resolve_media_path(media, prompt_data)
+
+
+def sft_sample_key(args, sample: Sample) -> tuple[str, int]:
+    """Content-addressed cache filename and latent-sampling seed for one (target media, prompt) sample."""
+    media = sft_target_path(sample, args.prompt_data)
+    stat = Path(media).stat()
     # Bump the version whenever the cached pair changes.
     digest = hashlib.sha256(
         f"v3|{args.diffusion_model_family}|{args.sft_encoder_checkpoint}"
         f"|{args.diffusion_height}x{args.diffusion_width}"
         f"|{args.diffusion_output_num_frames}s{args.sft_frame_stride}"
-        f"|{item['media']}|{stat.st_size}|{stat.st_mtime_ns}|{item['prompt']}".encode()
+        f"|{media}|{stat.st_size}|{stat.st_mtime_ns}|{sample.prompt}".encode()
     ).digest()
     return digest.hex()[:16] + ".pt", int.from_bytes(digest[8:16], "big") % 2**63
 
@@ -110,22 +118,22 @@ class SftEncodeActor:
             self.encoder = _relocate(self.encoder, torch.device("cpu"))
             torch.cuda.empty_cache()
 
-    def encode(self, items: list[dict], cache_dir: str) -> int:
+    def encode(self, samples: list[Sample], cache_dir: str) -> int:
         args = self.args
         encoder = self.encoder
         if args.sft_offload_encoder:
             encoder = _relocate(encoder, torch.device("cuda"))
-        for item in items:
+        for sample in samples:
             media_clip = read_media_clip(
-                item["media"],
+                sft_target_path(sample, args.prompt_data),
                 height=args.diffusion_height,
                 width=args.diffusion_width,
                 num_frames=args.diffusion_output_num_frames,
                 frame_stride=args.sft_frame_stride,
             )
-            generator = torch.Generator().manual_seed(item["latent_seed"])
-            pair = self.encoder_module.encode_sample(encoder, media_clip, item["prompt"], generator)
-            out_path = Path(cache_dir) / item["cache_name"]
+            generator = torch.Generator().manual_seed(sample.seed)
+            pair = self.encoder_module.encode_sample(encoder, sample, media_clip, generator, args)
+            out_path = Path(cache_dir) / sample.metadata["sft_cache_name"]
             # Temp-then-rename so an interrupted write never leaves a loadable-looking cache entry.
             tmp_path = out_path.with_name(out_path.name + ".tmp")
             torch.save(pair, tmp_path)
@@ -133,7 +141,7 @@ class SftEncodeActor:
         if args.sft_offload_encoder:
             self.encoder = _relocate(encoder, torch.device("cpu"))
             torch.cuda.empty_cache()
-        return len(items)
+        return len(samples)
 
 
 class SftEncodePool(metaclass=SingletonMeta):
@@ -185,16 +193,15 @@ def generate_rollout(args, rollout_id, data_source, evaluation: bool = False) ->
     samples = [sample for group in groups for sample in group]
 
     cache_dir = Path(args.prompt_data).parent / ".sft_cache"
-    items = []
     for sample in samples:
-        media = sample.metadata.get("video") or sample.metadata.get("image")
-        if media is None:
-            raise ValueError(f"sample {sample.index} metadata has neither 'video' nor 'image': {sample.metadata}")
-        item = {"media": resolve_media_path(media, args.prompt_data), "prompt": sample.prompt}
-        item["cache_name"], item["latent_seed"] = sft_sample_key(args, item)
-        items.append(item)
+        sample.metadata["sft_cache_name"], sample.seed = sft_sample_key(args, sample)
 
-    missing = {item["cache_name"]: item for item in items if not (cache_dir / item["cache_name"]).exists()}
+    # Keyed by cache name so a sample repeated across an epoch wrap is encoded once.
+    missing = {
+        sample.metadata["sft_cache_name"]: sample
+        for sample in samples
+        if not (cache_dir / sample.metadata["sft_cache_name"]).exists()
+    }
     encode_seconds = 0.0
     if missing:
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -202,15 +209,16 @@ def generate_rollout(args, rollout_id, data_source, evaluation: bool = False) ->
         pool.wait_for_train_step()
         start = time.time()
         actors = pool.actors
-        miss_items = list(missing.values())
-        shards = [miss_items[i :: len(actors)] for i in range(len(actors))]
+        misses = list(missing.values())
+        shards = [misses[i :: len(actors)] for i in range(len(actors))]
         ray.get(
             [actor.encode.remote(shard, str(cache_dir)) for actor, shard in zip(actors, shards, strict=True) if shard]
         )
         encode_seconds = time.time() - start
 
-    for sample, item in zip(samples, items, strict=True):
-        sample.train_metadata = {"sft_pair": torch.load(cache_dir / item["cache_name"], map_location="cpu")}
+    for sample in samples:
+        cache_name = sample.metadata.pop("sft_cache_name")
+        sample.train_metadata = {"sft_pair": torch.load(cache_dir / cache_name, map_location="cpu")}
         sample.status = Sample.Status.COMPLETED
 
     metrics = {
