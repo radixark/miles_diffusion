@@ -15,7 +15,7 @@ from tqdm import tqdm
 from miles.dashboard import hooks
 from miles.rollout.base_types import RolloutFnEvalOutput, RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
-from miles.utils.async_utils import run
+from miles.utils.async_utils import ray_get_cancellable, run
 from miles.utils.diffusion_data import Dataset as DiffusionDataset
 from miles.utils.diffusion_rollout_response import RolloutImageResponseParserActor
 from miles.utils.eval_config import EvalDatasetConfig
@@ -123,6 +123,8 @@ class GenerateState(metaclass=SingletonMeta):
         ]
         self._parser_rr = 0
         self.parser_inflight = [0] * args.rollout_parser_num_workers
+        # one call at a time per parser, matching the actor's default max_concurrency
+        self.parser_slots = [asyncio.Semaphore(1) for _ in range(args.rollout_parser_num_workers)]
 
         self.reset()
 
@@ -130,6 +132,24 @@ class GenerateState(metaclass=SingletonMeta):
         i = self._parser_rr % len(self.response_parsers)
         self._parser_rr += 1
         return i
+
+    async def call_parser(self, method: str, *args) -> tuple[Any, int]:
+        """Run a response parser method; returns (result, calls already waiting on that parser).
+
+        Calls wait for the parser's slot here rather than queueing on the actor: Ray can't cancel a call
+        already queued on a sync actor, so a rollout task cancelled while waiting never reaches it.
+        """
+        i = self.next_parser_idx()
+        queued = self.parser_inflight[i]
+        self.parser_inflight[i] += 1
+        parser = self.response_parsers[i]
+        try:
+            async with self.parser_slots[i]:
+                # .remote() copies the ~1GB body into plasma in the calling thread; keep it off the event loop
+                result = await ray_get_cancellable(lambda: getattr(parser, method).remote(*args))
+        finally:
+            self.parser_inflight[i] -= 1
+        return result, queued
 
     @contextmanager
     def dp_rank_context(self):
@@ -196,29 +216,12 @@ async def generate_microgroup(
     if args.rollout_fetch_in_parser:
         with st.stage("generate"):
             router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
-            i = state.next_parser_idx()
-            queued = state.parser_inflight[i]
-            state.parser_inflight[i] += 1
-            parser, pending = state.response_parsers[i], microgroup
-            try:
-                microgroup = await asyncio.to_thread(
-                    lambda: ray.get(parser.fetch_and_apply.remote(pending, router_url, payload))
-                )
-            finally:
-                state.parser_inflight[i] -= 1
+            microgroup, queued = await state.call_parser("fetch_and_apply", microgroup, router_url, payload)
     else:
         with st.stage("generate"):
             raw = await post(url, payload, raw=True)
         with st.stage("deserialize"):
-            i = state.next_parser_idx()
-            queued = state.parser_inflight[i]
-            state.parser_inflight[i] += 1
-            # .remote() copies the ~1GB body into plasma in the calling thread; keep it off the event loop
-            parser, pending = state.response_parsers[i], microgroup
-            try:
-                microgroup = await asyncio.to_thread(lambda: ray.get(parser.apply_raw.remote(pending, raw)))
-            finally:
-                state.parser_inflight[i] -= 1
+            microgroup, queued = await state.call_parser("apply_raw", microgroup, raw)
     for sample in microgroup:
         sample.parser_max_queue_depth = float(queued)
     st.attach(microgroup)
@@ -384,8 +387,12 @@ async def generate_rollout_async(
     )
 
     # TODO: oversampling and abort
-    # there are still some unfinished requests, abort them
-    # aborted_samples = await abort(args, rollout_id)
+    # there are still some unfinished requests (e.g. resubmitted after dynamic-filter drops); cancel them so
+    # they don't keep running on the shared event loop after reset() forgets them. Their Ray calls are cancelled
+    # too: POST-actor calls and parser calls still waiting for a slot stop; a parser call already running finishes.
+    for task in state.pendings:
+        task.cancel()
+    await asyncio.gather(*state.pendings, return_exceptions=True)
 
     assert len(data) == args.rollout_batch_size, f"Got {len(data)} samples, expected {args.rollout_batch_size}"
     data = sorted(data, key=lambda group: group[0][0].index if isinstance(group[0], list) else group[0].index)
