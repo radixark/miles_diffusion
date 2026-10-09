@@ -1851,7 +1851,7 @@ def miles_validate_args(args):
                 )
             from miles.rollout.encoder_hub import get_encoder
 
-            get_encoder(args.diffusion_model_family).validate_args(args)
+            get_encoder(args.diffusion_model_family, args.diffusion_task).validate_args(args)
         if args.fsdp_flow_shift is None or "visual" not in args.fsdp_flow_shift:
             raise ValueError("--loss-type sft_loss requires a visual --fsdp-flow-shift for the training sigma grid")
         if not all(math.isfinite(shift) and shift > 0 for shift in args.fsdp_flow_shift.values()):
