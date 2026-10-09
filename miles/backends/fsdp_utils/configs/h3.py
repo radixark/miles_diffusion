@@ -13,6 +13,15 @@ from .train_pipeline_config import TrainPipelineConfig, register_train_pipeline_
 AUDIO_IN_CHANNELS = 32
 
 
+def _without_padding_tail(layout: dict, token_tags: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Token tags and position ids without the padding tail [cu_seqlens[1], seq_len).
+
+    The engine attends the tail as its own document; the diffusers DiT attends unmasked, so the tail must not reach it.
+    """
+    used = int(layout["cu_seqlens"][1])
+    return token_tags[:used], layout["img_position_ids"][:used]
+
+
 @register_train_pipeline_config("h3")
 class H3TrainPipelineConfig(TrainPipelineConfig):
     """MiniMax H3 t2va video-only GRPO (audio branch frozen / deterministic in rollout)."""
@@ -136,12 +145,9 @@ class H3TrainPipelineConfig(TrainPipelineConfig):
             raise NotImplementedError("H3 packed forward supports batch size 1 for now")
 
         layout = {k: (v.to(device) if isinstance(v, torch.Tensor) else v) for k, v in packed.items()}
-        tags = (
-            token_tags.to(device) if isinstance(token_tags, torch.Tensor) else torch.tensor(token_tags, device=device)
-        )
         sigma = (timesteps_input["visual"].float() / float(self.sde_timestep_divisor)).view(-1)
         timestep = 1.0 - sigma
-        seq_len = int(layout["seq_len"])
+        token_tags, position_ids = _without_padding_tail(layout, torch.as_tensor(token_tags, device=device))
         width = latents.shape[-1]
 
         img_pos = layout["img_pos"].view(-1).long().to(device)
@@ -162,11 +168,9 @@ class H3TrainPipelineConfig(TrainPipelineConfig):
             audio_hidden_states=audio_hidden,
             encoder_hidden_states=encoder_hidden_states.to(dtype),
             timestep=timestep.to(dtype),
-            timestep_indices=layout.get("timestep_indices", torch.zeros(seq_len, device=device, dtype=torch.long)),
-            # Padding rows carry tag -1; the AdaLN table is indexed by tag, so they
-            # must be folded onto a real modality exactly as the rollout does.
-            token_tags=tags.long().clamp(min=0),
-            position_ids=layout["img_position_ids"].to(device=device, dtype=torch.float32),
+            timestep_indices=torch.zeros(token_tags.shape[0], device=device, dtype=torch.long),
+            token_tags=token_tags.long(),
+            position_ids=position_ids.to(device=device, dtype=torch.float32),
             video_indices=img_pos,
             audio_indices=audio_pos,
             text_indices=text_pos,
