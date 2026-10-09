@@ -124,8 +124,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             return parser
 
         def add_train_arguments(parser):
-            # Set by train_diffusion_async.py; not a CLI flag.
-            parser.set_defaults(train_async=False)
             parser.add_argument(
                 "--train-backend",
                 type=str,

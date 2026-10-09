@@ -205,7 +205,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 uprate=args.ema_decay_ramp,
                 uphold=args.ema_decay_max,
                 flat_steps=args.ema_decay_flat_steps,
-                keep_previous=args.train_async and args.async_exact_resume,
+                keep_previous=args.async_exact_resume,
             )
         checkpoint_payload = checkpoint.load(self)
 

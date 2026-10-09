@@ -70,7 +70,6 @@ def train(args):
         raise ValueError("async training requires separate resident train/rollout GPU pools")
     if args.loss_type != "nft":
         raise ValueError("async training supports only --loss-type nft")
-    args.train_async = True
 
     pgs = create_placement_groups(args)
     init_tracking(args)
