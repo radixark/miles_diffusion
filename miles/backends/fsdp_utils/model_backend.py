@@ -148,8 +148,13 @@ class DiffusersModelBackend(BaseModelBackend):
 
     def __init__(self, train_pipeline_config):
         super().__init__(train_pipeline_config)
+        self._deterministic_attention = False
 
     def set_attention_backend(self, model: torch.nn.Module, backend: str) -> None:
+        if backend == "_flash_3":
+            from .fa3_attention import install_diffusers_fa3_attention
+
+            install_diffusers_fa3_attention(deterministic=self._deterministic_attention)
         model.set_attention_backend(backend)
 
     def enable_gradient_checkpointing(self, model: torch.nn.Module) -> None:
@@ -173,21 +178,32 @@ class DiffusersModelBackend(BaseModelBackend):
         install_diffusers_usp_patch(model, parallel_state)
 
     def enable_deterministic_attention(self, backend: str | None) -> None:
-        # Configure every installed kernel we know how to control. Native/SDPA
-        # determinism is handled by torch.use_deterministic_algorithms; unsupported
-        # opaque kernels are rejected by argument validation before actor startup.
-        self._enable_deterministic_flash_attention()
+        self._deterministic_attention = True
+        if backend is None:
+            import diffusers.models.attention_dispatch as ad
 
-    def _enable_deterministic_flash_attention(self) -> None:
+            # Diffusers also permits selection through DIFFUSERS_ATTN_BACKEND.
+            backend, _ = ad._AttentionBackendRegistry.get_active_backend()
+        if backend == "_flash_3":
+            from .fa3_attention import install_diffusers_fa3_attention
+
+            install_diffusers_fa3_attention(deterministic=True)
+        elif backend in ("flash", "flash_varlen"):
+            self._enable_deterministic_flash_attention(backend)
+        elif "native" not in backend.lower() and "math" not in backend.lower():
+            raise ValueError(f"No deterministic Diffusers integration for attention backend {backend!r}")
+
+    def _enable_deterministic_flash_attention(self, backend: str) -> None:
         """Patch diffusers flash entrypoints to deterministic=True (backward only; idempotent)."""
         import diffusers.models.attention_dispatch as ad
 
-        from .arguments import deterministic_capable_flash_fns
+        from .arguments import _DETERMINISTIC_FLASH_BACKENDS, deterministic_capable_flash_fns
 
-        names = deterministic_capable_flash_fns()
-        for fn_name in names:
-            setattr(ad, fn_name, functools.partial(getattr(ad, fn_name), deterministic=True))
-        logger.info("Enabled deterministic flash attention backward for: %s", ", ".join(names))
+        fn_name = _DETERMINISTIC_FLASH_BACKENDS[backend]
+        if fn_name not in deterministic_capable_flash_fns():
+            raise RuntimeError(f"{backend} requires {fn_name} with a deterministic argument")
+        setattr(ad, fn_name, functools.partial(getattr(ad, fn_name), deterministic=True))
+        logger.info("Enabled deterministic flash attention backward for: %s", fn_name)
 
     def load_component(
         self,
