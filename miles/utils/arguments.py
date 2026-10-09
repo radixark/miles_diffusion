@@ -955,6 +955,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--diffusion-score-centering",
+                action="store_true",
+                help=(
+                    "Flow-GRPO score centering (arXiv:2609.20807): subtract the expected score under "
+                    "the rollout's transition, cancelling the drift that train/rollout numeric mismatch "
+                    "adds to the policy gradient. Exact for Gaussian SDE steps and a no-op when trainer "
+                    "and rollout agree. Needs the rollout's per-step means, so requires --diffusion-debug-mode."
+                ),
+            )
+            parser.add_argument(
                 "--diffusion-kl-beta",
                 type=float,
                 default=0.0,
@@ -1644,6 +1654,21 @@ def validate_reference_model_args(args) -> None:
         raise ValueError("--ref-mode lora_base requires --use-lora")
 
 
+def validate_score_centering_args(args) -> None:
+    if not args.diffusion_score_centering:
+        return
+    if args.loss_type != "policy_loss":
+        raise ValueError(
+            f"--diffusion-score-centering corrects the Flow-GRPO policy gradient; "
+            f"--loss-type {args.loss_type} has no SDE log-prob to center"
+        )
+    if not args.diffusion_debug_mode:
+        raise ValueError(
+            "--diffusion-score-centering needs the rollout's per-step prev-sample means, which "
+            "sglang-diffusion returns only under --diffusion-debug-mode"
+        )
+
+
 def validate_actor_lora_adapter(args) -> None:
     if args.lora_adapter_paths is None:
         return
@@ -1722,6 +1747,7 @@ def miles_validate_args(args):
         raise ValueError(f"--update-weight-target-module has duplicates: {args.update_weight_target_module!r}")
     validate_reference_model_args(args)
     validate_actor_lora_adapter(args)
+    validate_score_centering_args(args)
 
     if args.wandb_log_image_interval < 1:
         raise ValueError(f"wandb_log_image_interval must be >= 1, got {args.wandb_log_image_interval}")

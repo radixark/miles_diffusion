@@ -31,9 +31,13 @@ class TestDiffusersSdeStepBackend:
         backend = DiffusersSdeStepBackend(sched)
         got = backend.sde_step_logprob(v, t, nt, x, prev_sample=nxt, noise_level=0.7)
         want = sde_step_with_logprob(sched, v, t, x, prev_sample=nxt, noise_level=0.7)
-        for g, w in zip(got, want, strict=True):
+        for g, w in zip((got.prev_sample, got.log_prob, got.prev_mean, got.std_dev_t), want, strict=True):
             torch.testing.assert_close(g, w, rtol=0.0, atol=0.0)
-        assert got[1].shape == (2,)
+        assert got.log_prob.shape == (2,)
+        # noise_std is the std log_prob scored against, not the reported std_dev_t
+        torch.testing.assert_close(
+            backend.log_prob(nxt, got.prev_mean, got.noise_std), got.log_prob, rtol=0.0, atol=0.0
+        )
 
 
 class TestCpsSdeStepBackend:
@@ -45,7 +49,8 @@ class TestCpsSdeStepBackend:
         t = torch.tensor([700.0, 300.0])
         nt = torch.tensor([600.0, 0.0])  # terminal σ_next = 0
         x, v, nxt = (torch.randn(2, 128, 8) for _ in range(3))
-        _, log_prob, mean, std = sb.sde_step_logprob(v, t, nt, x, prev_sample=nxt, noise_level=0.8)
+        score = sb.sde_step_logprob(v, t, nt, x, prev_sample=nxt, noise_level=0.8)
+        log_prob, mean = score.log_prob, score.prev_mean
 
         sigma, sigma_next = (t / 1000).view(-1, 1, 1), (nt / 1000).view(-1, 1, 1)
         std_t = sigma_next * math.sin(0.8 * math.pi / 2)
