@@ -64,6 +64,7 @@ class TestTaskDispatch:
             ("sd3", "t2i", SD3TrainPipelineConfig),
             ("wan2_2", "t2v", Wan2_2TrainPipelineConfig),
             ("h3", "t2va", H3TrainPipelineConfig),
+            ("h3", "ref2va", H3TrainPipelineConfig),
         ],
     )
     def test_task_selects_config(self, family, task, config):
