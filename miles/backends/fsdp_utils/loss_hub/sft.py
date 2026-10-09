@@ -40,9 +40,10 @@ def prepare_sft_batch(
     *,
     pad_to_len: int | None = None,
 ) -> PreparedBatch:
-    """Corrupt every latent stream at its own sampled grid sigma; CFG-free cached cond.
+    """Corrupt every latent stream at one shared grid index, each through its own shifted grid; CFG-free cached cond.
 
-    The visual grid picks the DiT component; every stream then draws uniformly from the grid points it may use.
+    The visual grid picks the DiT component and the index is drawn uniformly from the points it serves. Sharing the
+    index pairs the streams' sigmas as inference steps them, one step index read through each stream's shift.
     """
     device = ctx.device
     config = ctx.train_pipeline_config
@@ -57,23 +58,25 @@ def prepare_sft_batch(
     }
     component_name, model, visual_pool = select_component(ctx, noise_schedules["visual"], device)
 
+    # The visual stream keeps the single-stream seed, so single-stream runs draw as before; other streams add their
+    # name, so adding a stream never changes another stream's noise.
+    seed_parts = ("sample", int(ctx.args.seed), ctx.rollout_id, ctx.microbatch_id, ctx.dp_rank)
+    generators = {
+        stream_name: torch.Generator(device=device).manual_seed(
+            stable_hash(*seed_parts) if stream_name == "visual" else stable_hash(*seed_parts, stream_name)
+        )
+        for stream_name in stream_names
+    }
+    idx = visual_pool[torch.randint(len(visual_pool), (bsz,), device=device, generator=generators["visual"])]
+
     latents, timesteps, sigmas, targets = {}, {}, {}, {}
     for stream_name in sorted(stream_names):
         x0 = torch.stack([pair["latent"][stream_name] for pair in batch]).to(device=device, dtype=torch.float32)
         noise_schedule = noise_schedules[stream_name]
-        # The visual stream keeps the single-stream seed, so single-stream runs draw as before; other streams add
-        # their name, so adding a stream never changes another stream's draws.
-        seed_parts = ("sample", int(ctx.args.seed), ctx.rollout_id, ctx.microbatch_id, ctx.dp_rank)
-        generator = torch.Generator(device=device).manual_seed(
-            stable_hash(*seed_parts) if stream_name == "visual" else stable_hash(*seed_parts, stream_name)
-        )
-        # Only the visual stream is held to the chosen component's grid points.
-        pool = visual_pool if stream_name == "visual" else torch.arange(len(noise_schedule.timesteps), device=device)
-        idx = pool[torch.randint(len(pool), (bsz,), device=device, generator=generator)]
         timesteps[stream_name] = noise_schedule.timesteps.to(device=device, dtype=torch.float32)[idx]
         sigmas[stream_name] = noise_schedule.sigmas.to(device=device, dtype=torch.float32)[idx]
 
-        noise = torch.randn(x0.shape, device=device, dtype=torch.float32, generator=generator)
+        noise = torch.randn(x0.shape, device=device, dtype=torch.float32, generator=generators[stream_name])
         sigma_exp = sigmas[stream_name].view(bsz, *([1] * (x0.ndim - 1)))
         latents[stream_name] = (1.0 - sigma_exp) * x0 + sigma_exp * noise
         targets[stream_name] = noise - x0
@@ -143,7 +146,7 @@ def sft_loss_formula(
     with torch.no_grad():
         metrics.emit_mean("loss", total=loss_sum, count=len(batch))
         num_buckets = ctx.args.log_loss_sigma_bucket
-        # Streams draw their sigmas independently, so only a single stream's loss is comparable within a bucket.
+        # Each stream reads the shared index through its own shift, so a bucket holds one stream's sigma.
         for stream_name, stream_losses in per_pair_losses.items():
             # A lone stream's loss is already the total.
             if len(per_pair_losses) > 1:

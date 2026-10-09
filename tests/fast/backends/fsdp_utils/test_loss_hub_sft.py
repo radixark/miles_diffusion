@@ -5,16 +5,17 @@
     prepare_sft_batch:
       grid       ──► FlowNoiseSchedule.shifted(--fsdp-flow-shift[name])
       select_component(visual grid), once, rank-aligned ──► DiT component + the visual grid points it serves
-      for each stream, its own seeded generator draws
+      each stream gets its own seeded generator
                        (visual: the single-stream seed; other streams add their name to it)
-      grid index ──► uniform over its pool (visual: the component's points; others: the whole grid)
-                 ──► timesteps[name], extras["sigmas"][name]
-      noise      ──► latents[name] = (1 - sigma) x0 + sigma noise,  extras["target"][name] = noise - x0
+      grid index ──► one per pair, uniform over the component's points, drawn by the visual generator
+                 ──► every stream reads it through its own grid: timesteps[name], extras["sigmas"][name]
+      noise      ──► from the stream's generator:
+                     latents[name] = (1 - sigma) x0 + sigma noise,  extras["target"][name] = noise - x0
                 │
     sft_loss_formula(new_pred keyed like latents): per pair, sum_streams mean((pred - target)^2);
                                                    a stream absent from new_pred or left out of
                                                    --fsdp-supervised-streams carries no loss
-      metrics    ──► loss                    the total, never bucketed: streams draw independent sigmas
+      metrics    ──► loss                    the total, never bucketed: each stream has its own sigma
                      loss_<stream>           only when >1 stream is supervised
                      loss_<stream>_sigma_*   every supervised stream, bucketed by its own sigma
 
@@ -24,7 +25,8 @@ What each test pins:
                         the visual stream draws exactly what the single-stream seed draws
   TestSftLossFormula    exact-velocity zero loss, unit offset, sigma buckets partition the loss,
                         --log-loss-sigma-bucket 0 on single-stream pairs emits only the loss
-  TestJointStreams      each stream on its own --fsdp-flow-shift grid, draws independent across streams,
+  TestJointStreams      each stream on its own --fsdp-flow-shift grid at the shared index, noise independent
+                        across streams,
                         per-stream MSE normalization, per-stream metrics bucketed by their own sigma,
                         an unpredicted or unsupervised stream adds no loss,
                         rank-aligned expert choice, shape/stream-set rejection
@@ -308,14 +310,16 @@ class TestJointStreams:
             )
         assert not set(prepared.extras["sigmas"]["audio"].tolist()) <= grids["visual"]
 
-    def test_stream_draws_are_independent_of_other_streams(self):
-        # Same clean latent in both streams, yet different draws; adding a third stream changes neither.
+    def test_streams_share_the_grid_index_but_not_the_noise(self):
+        # Same clean latent in both streams: one grid index, different noise; adding a third stream changes neither.
         ctx = _ctx({"transformer": nn.Identity()}, config=_SingleConfig())
         batch = _joint_batch(32)
         for pair in batch:
             pair["latent"]["audio"] = pair["latent"]["visual"].clone()
         first = prepare_sft_batch(ctx, batch)
-        assert not torch.equal(first.timesteps["visual"], first.timesteps["audio"])
+        grids = {name: FlowNoiseSchedule.shifted(FLOW_SHIFTS[name], NUM_TRAIN_TIMESTEPS) for name in FLOW_SHIFTS}
+        idx = torch.searchsorted(-grids["visual"].sigmas.float(), -first.extras["sigmas"]["visual"])
+        assert torch.equal(first.extras["sigmas"]["audio"], grids["audio"].sigmas.float()[idx])
         assert not torch.equal(first.extras["target"]["visual"], first.extras["target"]["audio"])
         for pair in batch:
             pair["latent"]["action"] = torch.ones(10, 7)
