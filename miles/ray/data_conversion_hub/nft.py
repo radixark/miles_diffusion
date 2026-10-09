@@ -6,6 +6,7 @@ from typing import Any
 import torch
 
 from miles.utils.hash_utils import stable_hash
+from miles.utils.misc import load_function
 from miles.utils.train_data_utils import scheduler_meta_from_samples
 from miles.utils.types import Sample
 
@@ -29,14 +30,24 @@ def _clean_x0_from_sample(sample: Sample) -> torch.Tensor:
     return traj.latents[-1].detach().cpu().float()
 
 
-def resolve_nft_sigmas(sigmas: torch.Tensor) -> torch.Tensor:
-    """The rollout schedule's sigmas without its terminal 0, which has no noise to train on."""
-    ts = sigmas.detach().float().flatten()
-    if ts.numel() == 0:
-        raise ValueError("scheduler.sigmas is empty")
-    if ts.numel() > 1 and torch.isclose(ts[-1], torch.zeros((), dtype=ts.dtype), atol=1e-8):
-        ts = ts[:-1]
-    return ts
+# ---- Timestep strategies: (args, num_steps, generator) -> the sampling-step indices to train on, in training
+# order. ``generator`` is seeded per sample. Point --diffusion-nft-timestep-strategy-path at any such function.
+
+
+def drop_random_steps(args: Namespace, num_steps: int, generator: torch.Generator) -> list[int]:
+    """Every sampling step but ``--diffusion-nft-num-dropped-timesteps`` ones drawn per sample, in a random
+    order, so across samples every step is trained."""
+    kept_steps = torch.randperm(num_steps, generator=generator)[: num_steps - args.diffusion_nft_num_dropped_timesteps]
+    return kept_steps.tolist()
+
+
+def drop_final_steps(args: Namespace, num_steps: int, generator: torch.Generator) -> list[int]:
+    """Every sampling step but the final ``--diffusion-nft-num-dropped-timesteps`` (lowest-noise) ones,
+    in schedule order."""
+    return list(range(num_steps - args.diffusion_nft_num_dropped_timesteps))
+
+
+# ---- Conversion
 
 
 def expand_samples_to_train_pairs(
@@ -54,27 +65,21 @@ def expand_samples_to_train_pairs(
             f"rewards={len(rewards)} raw_rewards={len(raw_rewards)}"
         )
     scheduler_meta = scheduler_meta_from_samples(samples)
-    sigmas = resolve_nft_sigmas(scheduler_meta["scheduler_sigmas"])
-    num_timesteps = max(1, int(sigmas.numel() * args.diffusion_nft_timestep_fraction))
-
+    select_train_steps = load_function(args.diffusion_nft_timestep_strategy_path)
     train_data: list[dict[str, Any]] = []
     for position, (sample, adv, raw) in enumerate(zip(samples, rewards, raw_rewards, strict=True)):
         if sample.denoising_env is None:
             raise ValueError(f"sample {sample.index} missing denoising_env")
         x0 = _clean_x0_from_sample(sample)
+        # The trajectory grid ends with the terminal sigma 0; the sigmas before it are the sampling steps.
+        step_sigmas = scheduler_meta["scheduler_sigmas"][:-1]
         # Keyed on the sample's global index, which the data source advances across rollouts,
-        # so each sample draws its own permutation and the run reproduces.
+        # so each sample draws its own steps and order and the run reproduces.
         stream = sample.index if sample.index is not None else position
-        shuffle_generator = torch.Generator().manual_seed(
-            stable_hash("nft_sigma_shuffle", int(args.seed), int(stream))
-        )
-        # Each sample trains its own random subset of the schedule, so every sigma is covered across samples.
-        sigma_order = (
-            torch.randperm(sigmas.numel(), generator=shuffle_generator)
-            if args.diffusion_nft_shuffle_timesteps
-            else torch.arange(sigmas.numel())
-        )
-        sample_sigmas = sigmas[sigma_order[:num_timesteps]]
+        generator = torch.Generator().manual_seed(stable_hash("nft_sigma_shuffle", int(args.seed), int(stream)))
+        train_steps = torch.tensor(select_train_steps(args, len(step_sigmas), generator), dtype=torch.long)
+        sample_sigmas = step_sigmas[train_steps]
+        num_timesteps = len(sample_sigmas)
         for t in sample_sigmas.tolist():
             train_data.append(
                 {

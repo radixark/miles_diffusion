@@ -271,9 +271,9 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--custom-prepare-train-batch-path` | str | – | Builds DiT inputs. |
 | `--custom-loss-function-path` | str | – | Loss **formula** only — the DiT forward stays in the actor. |
 | `--diffusion-nft-beta` | float | `1.0` | |
-| `--diffusion-nft-timestep-fraction` | float | `0.99` | Share of the rollout's denoising steps each sample trains on: `int(steps × fraction)` of its steps, drawn at random per sample. It counts steps, not a range of σ or timestep values; the final clean output (σ = 0) is never a training step. |
+| `--diffusion-nft-timestep-strategy-path` | str | `…nft.drop_random_steps` | `(args, num_steps, generator) -> list[int]` returning the denoising steps each sample trains on, in training order; `generator` is seeded per sample. Built in: `drop_random_steps` (random order), `drop_final_steps` (schedule order, noisiest first). The final clean output (σ = 0) is never a training step. |
+| `--diffusion-nft-num-dropped-timesteps` | int | `0` | Steps the built-in strategies drop: random ones per sample for `drop_random_steps`, the final (lowest-noise) ones for `drop_final_steps`. |
 | `--no-diffusion-nft-adaptive-weight` | flag | off | |
-| `--no-diffusion-nft-shuffle-timesteps` | flag | off | Train each sample's first steps in schedule order, noisiest first, instead of a random subset. |
 
 ### Reward
 
