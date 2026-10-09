@@ -1133,10 +1133,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
                 default=False,
                 help=(
-                    "Sync only lora_A/lora_B and let the rollout merge them with weight_update_mode=lora_merge "
-                    "(requires matching sglang-d LoRAPipeline support), over CUDA IPC with --colocate and NCCL "
-                    "otherwise. Without it, the trainer merges LoRA into the base weights and pushes full weights, "
-                    "which is supported only with --colocate."
+                    "With --colocate, sync only lora_A/lora_B to rollout via CUDA IPC with "
+                    "weight_update_mode=lora_merge (requires matching sglang-d LoRAPipeline support); without it, "
+                    "the trainer merges LoRA into the base weights and pushes full weights. Requires --colocate: "
+                    "without --colocate, LoRA always syncs lora_A/lora_B over NCCL for the rollout to merge."
                 ),
             )
             return parser
@@ -1658,6 +1658,11 @@ def validate_reference_model_args(args) -> None:
         raise ValueError("--ref-mode lora_base requires --use-lora")
 
 
+def rollout_merges_lora(args) -> bool:
+    """The rollout gets only lora_A/lora_B and merges them: with --lora-ipc-weight-sync, or LoRA without --colocate."""
+    return args.use_lora and not args.train_only and (args.lora_ipc_weight_sync or not args.colocate)
+
+
 def validate_actor_lora_adapter(args) -> None:
     if args.lora_adapter_paths is None:
         return
@@ -1682,12 +1687,13 @@ def validate_actor_lora_adapter(args) -> None:
                 f"Actor LoRA adapter for {component} must contain only LoRA A/B matrices; "
                 "DoRA, bias training, and modules_to_save are not supported by checkpoint and weight sync"
             )
-        if args.lora_ipc_weight_sync and (
+        if rollout_merges_lora(args) and (
             adapter_config.use_rslora or adapter_config.rank_pattern or adapter_config.alpha_pattern
         ):
             raise ValueError(
-                f"--lora-ipc-weight-sync requires uniform standard LoRA for {component}; "
-                "disable it for rsLoRA or per-layer rank/alpha"
+                f"Rollout-merged LoRA (--lora-ipc-weight-sync, or LoRA without --colocate) requires uniform "
+                f"standard LoRA for {component}; rsLoRA or per-layer rank/alpha need --colocate without "
+                "--lora-ipc-weight-sync"
             )
         if (adapter_config.r, adapter_config.lora_alpha) != (args.lora_rank, args.lora_alpha):
             raise ValueError(
@@ -1702,15 +1708,15 @@ def validate_lora_weight_sync_args(args) -> None:
     if args.lora_ipc_weight_sync:
         if not args.use_lora:
             raise ValueError("--lora-ipc-weight-sync requires --use-lora")
-        if not args.lora_target_modules:
+        if not args.colocate and syncs_weights_to_rollout:
             raise ValueError(
-                "--lora-ipc-weight-sync requires LoRA target modules; "
-                "set --hf-checkpoint (for per-model defaults) or --lora-target-modules."
+                "--lora-ipc-weight-sync requires --colocate; without --colocate, LoRA always syncs "
+                "lora_A/lora_B over NCCL for the rollout to merge"
             )
-    elif args.use_lora and not args.colocate and syncs_weights_to_rollout:
+    if rollout_merges_lora(args) and not args.lora_target_modules:
         raise ValueError(
-            "--use-lora without --colocate requires --lora-ipc-weight-sync: trainer-merged LoRA weights "
-            "have no NCCL weight sync yet"
+            "Rollout-merged LoRA requires LoRA target modules; "
+            "set --hf-checkpoint (for per-model defaults) or --lora-target-modules."
         )
 
 

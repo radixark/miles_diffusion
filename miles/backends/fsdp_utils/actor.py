@@ -213,11 +213,11 @@ class FSDPTrainRayActor(TrainRayActor):
         if self.args.train_only:
             self.weight_updater = None
         elif self.args.use_lora:
-            if not self.args.lora_ipc_weight_sync:
-                # Without --colocate, argument validation requires --lora-ipc-weight-sync.
-                updater = DiffusionUpdateWeightFromTensorLoRA
-            elif self.args.colocate:
-                updater = DiffusionUpdateWeightFromTensorLoRAIPC
+            if self.args.colocate:
+                if self.args.lora_ipc_weight_sync:
+                    updater = DiffusionUpdateWeightFromTensorLoRAIPC
+                else:
+                    updater = DiffusionUpdateWeightFromTensorLoRA
             else:
                 updater = DiffusionUpdateWeightLoRADistributed
             self.weight_updater = updater(self.args, self.models)

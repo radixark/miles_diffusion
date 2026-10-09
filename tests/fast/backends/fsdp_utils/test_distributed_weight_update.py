@@ -9,7 +9,7 @@ import pytest
 import torch
 
 from miles.backends.fsdp_utils import diffusion_update_weight_utils as update
-from miles.utils.arguments import validate_lora_weight_sync_args
+from miles.utils.arguments import rollout_merges_lora, validate_lora_weight_sync_args
 
 
 def test_connect_assigns_every_engine_rank_before_waiting(monkeypatch):
@@ -107,17 +107,17 @@ def test_lora_fields_follow_the_adapter_and_only_ride_lora_buckets(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "use_lora,lora_ipc_weight_sync,colocate,accepted",
+    "use_lora,lora_ipc_weight_sync,colocate,accepted,rollout_merges",
     [
-        (False, False, True, True),
-        (False, False, False, True),
-        (True, False, True, True),
-        (True, False, False, False),  # trainer-merged LoRA has no NCCL path yet
-        (True, True, True, True),
-        (True, True, False, True),
+        (False, False, True, True, False),
+        (False, False, False, True, False),
+        (True, False, True, True, False),  # the trainer merges and pushes full weights over IPC
+        (True, False, False, True, True),  # adapters over NCCL
+        (True, True, True, True, True),  # adapters over IPC
+        (True, True, False, False, True),  # IPC needs --colocate
     ],
 )
-def test_lora_without_colocate_needs_adapter_sync(use_lora, lora_ipc_weight_sync, colocate, accepted):
+def test_lora_ipc_weight_sync_needs_colocate(use_lora, lora_ipc_weight_sync, colocate, accepted, rollout_merges):
     args = SimpleNamespace(
         use_lora=use_lora,
         lora_ipc_weight_sync=lora_ipc_weight_sync,
@@ -126,17 +126,36 @@ def test_lora_without_colocate_needs_adapter_sync(use_lora, lora_ipc_weight_sync
         train_only=False,
         debug_rollout_only=False,
     )
+    assert rollout_merges_lora(args) == rollout_merges
     if accepted:
         validate_lora_weight_sync_args(args)
     else:
-        with pytest.raises(ValueError, match="requires --lora-ipc-weight-sync"):
+        with pytest.raises(ValueError, match="requires --colocate"):
             validate_lora_weight_sync_args(args)
 
 
-@pytest.mark.parametrize("mode", ["train_only", "debug_rollout_only"])
-def test_lora_runs_without_weight_sync_need_no_sync_mode(mode):
+def test_rollout_merged_lora_needs_target_modules():
     args = SimpleNamespace(
-        use_lora=True, lora_ipc_weight_sync=False, colocate=False, train_only=False, debug_rollout_only=False
+        use_lora=True,
+        lora_ipc_weight_sync=False,
+        colocate=False,
+        lora_target_modules=None,
+        train_only=False,
+        debug_rollout_only=False,
+    )
+    with pytest.raises(ValueError, match="requires LoRA target modules"):
+        validate_lora_weight_sync_args(args)
+
+
+@pytest.mark.parametrize("mode", ["train_only", "debug_rollout_only"])
+def test_lora_runs_without_weight_sync_skip_the_colocate_check(mode):
+    args = SimpleNamespace(
+        use_lora=True,
+        lora_ipc_weight_sync=True,
+        colocate=False,
+        lora_target_modules=["to_q"],
+        train_only=False,
+        debug_rollout_only=False,
     )
     setattr(args, mode, True)
     validate_lora_weight_sync_args(args)

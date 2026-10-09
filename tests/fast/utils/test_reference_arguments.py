@@ -28,6 +28,8 @@ def _args(**overrides):
         teacher_load=None,
         lora_adapter_paths=None,
         lora_ipc_weight_sync=False,
+        colocate=True,
+        train_only=False,
         lora_rank=2,
         lora_alpha=4,
         update_weight_target_modules=["transformer", "transformer_2"],
@@ -137,18 +139,20 @@ def test_actor_adapter_requires_lora_training_before_loading_config():
 
 
 @pytest.mark.parametrize(
-    ("config_options", "ipc", "message"),
+    ("config_options", "ipc", "colocate", "message"),
     [
-        ({"use_dora": True}, False, "must contain only LoRA A/B matrices"),
-        ({"use_rslora": True}, True, "requires uniform standard LoRA"),
+        ({"use_dora": True}, False, True, "must contain only LoRA A/B matrices"),
+        ({"use_rslora": True}, True, True, "requires uniform standard LoRA"),
+        ({"use_rslora": True}, False, False, "requires uniform standard LoRA"),  # adapters over NCCL
     ],
 )
-def test_loaded_adapter_rejects_unsupported_export_state(tmp_path, config_options, ipc, message):
+def test_loaded_adapter_rejects_unsupported_export_state(tmp_path, config_options, ipc, colocate, message):
     LoraConfig(r=2, lora_alpha=4, target_modules=["proj"], **config_options).save_pretrained(tmp_path)
     args = _args(
         use_lora=True,
         lora_adapter_paths=[str(tmp_path)],
         lora_ipc_weight_sync=ipc,
+        colocate=colocate,
         update_weight_target_modules=["transformer"],
     )
     with pytest.raises(ValueError, match=message):

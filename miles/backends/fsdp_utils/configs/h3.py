@@ -6,6 +6,7 @@ from argparse import Namespace
 
 import torch
 
+from miles.utils.arguments import rollout_merges_lora
 from miles.utils.types import CondKwargs
 
 from .train_pipeline_config import TrainPipelineConfig, register_train_pipeline_config
@@ -34,11 +35,11 @@ class H3TrainPipelineConfig(TrainPipelineConfig):
     @classmethod
     def validate_args(cls, args: Namespace) -> None:
         # H3's rollout DiT fuses Q/K/V and rewrites FFN layout. Those transforms
-        # live in sglang-d's lora_merge IPC path; train-side merge / full-weight
+        # live in sglang-d's lora_merge path; train-side merge / full-weight
         # sync would push dense names the engine drops. SFT (--train-only) has
         # no rollout engine and therefore no sync constraint.
-        if not args.train_only and not (args.use_lora and args.lora_ipc_weight_sync):
-            raise ValueError("H3 training requires --use-lora with --lora-ipc-weight-sync")
+        if not args.train_only and not rollout_merges_lora(args):
+            raise ValueError("H3 training requires --use-lora with --lora-ipc-weight-sync, or without --colocate")
 
     @classmethod
     def apply_rollout_sampling_params(
