@@ -609,12 +609,13 @@ class DiffusionUpdateWeightFromDistributed(DiffusionUpdateWeight):
     def connect_rollout_engines(self, rollout_engines, rollout_engine_lock):
         if dist.get_rank() != 0:
             return
+        # Engines reject a group name they already hold, which a partially failed init can leave on some of them,
+        # and leaving an unknown group is a no-op there; so every connect first clears the group on every engine.
+        engine_leaves = [engine.destroy_weights_update_group.remote(self._group_name) for engine in rollout_engines]
         if self._model_update_group is not None:
-            engine_leaves = [
-                engine.destroy_weights_update_group.remote(self._group_name) for engine in rollout_engines
-            ]
             dist.destroy_process_group(self._model_update_group)
-            ray.get(engine_leaves)
+            self._model_update_group = None
+        ray.get(engine_leaves)
         self.rollout_engines = rollout_engines
         self._model_update_group = connect_rollout_engines_from_distributed(
             rollout_engines=rollout_engines,

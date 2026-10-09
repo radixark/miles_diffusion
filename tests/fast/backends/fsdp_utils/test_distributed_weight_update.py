@@ -90,6 +90,29 @@ def test_reconnect_destroys_old_group_before_joining(monkeypatch):
     assert updater._model_update_group == "new"
 
 
+def test_first_connect_clears_groups_left_on_engines(monkeypatch):
+    # No trainer group yet, but an earlier partial init may have left the group on some engines.
+    args = SimpleNamespace(rollout_num_gpus_per_engine=1, distributed_timeout_minutes=1)
+    updater = update.DiffusionUpdateWeightFromDistributed(args, {})
+    events = []
+    engines = [
+        SimpleNamespace(
+            destroy_weights_update_group=SimpleNamespace(remote=lambda name, i=i: events.append(("leave", i, name)))
+        )
+        for i in range(2)
+    ]
+    monkeypatch.setattr(update.dist, "get_rank", lambda: 0)
+    monkeypatch.setattr(update.dist, "destroy_process_group", lambda group: events.append(("destroy", group)))
+    monkeypatch.setattr(update.ray, "get", lambda refs: events.append("ack"))
+    monkeypatch.setattr(
+        update, "connect_rollout_engines_from_distributed", lambda **kwargs: events.append("connect") or "new"
+    )
+    updater.connect_rollout_engines(engines, None)
+    group_name = updater._group_name
+    assert events == [("leave", 0, group_name), ("leave", 1, group_name), "ack", "connect"]
+    assert updater._model_update_group == "new"
+
+
 def test_lora_fields_follow_the_adapter_and_only_ride_lora_buckets(monkeypatch):
     # The rollout merges W + (alpha / r) * B @ A with the trained adapter's own alpha and r, not the CLI flags.
     model = SimpleNamespace(peft_config={"default": SimpleNamespace(lora_alpha=64, r=32)}, active_adapter="default")
