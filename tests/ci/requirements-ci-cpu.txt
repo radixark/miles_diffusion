@@ -35,6 +35,8 @@ partial-json-parser==0.2.1.1.post7
 prometheus-client==0.26.0
 psutil==7.2.2
 py-spy==0.4.2
+# pyarrow 26 requires numpy>=2; this resolve keeps numpy 1.26.4
+pyarrow==25.0.1
 pybase64==1.5.0
 pydantic==2.12.5
 python-multipart==0.0.32
