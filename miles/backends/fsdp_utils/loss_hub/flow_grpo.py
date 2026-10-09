@@ -80,10 +80,11 @@ def prepare_flow_grpo_batch(
         if use_cfg and neg_list is not None:
             neg_cond = config.collate_cond_for_sample_batch(neg_list, device, pad_to_len=pad_to_len)
 
+    # Rollout trajectories carry only the visual stream.
     return PreparedBatch(
-        latents=latents,
-        timesteps=timesteps,
-        timesteps_for_model=timesteps_for_model,
+        latents={"visual": latents},
+        timesteps={"visual": timesteps},
+        timesteps_for_model={"visual": timesteps_for_model},
         model=model,
         component_name=component_name,
         guidance_scale=guidance_scale,
@@ -109,9 +110,9 @@ def flow_grpo_loss_formula(
     batch: list[dict],
     prepared: PreparedBatch,
     *,
-    new_pred: torch.Tensor,
-    old_pred: torch.Tensor | None,
-    ref_pred: torch.Tensor | None,
+    new_pred: dict[str, torch.Tensor],
+    old_pred: dict[str, torch.Tensor] | None,
+    ref_pred: dict[str, torch.Tensor] | None,
     metrics: MetricBuffer,
     write_old_log_prob: bool = False,
     old_log_prob_from_new: bool = False,
@@ -131,8 +132,8 @@ def flow_grpo_loss_formula(
     }
 
     _, log_prob_new, prev_sample_mean_new, std_dev_t_new = ctx.sde_backend.sde_step_logprob(
-        new_pred.float(),
-        prepared.latents.float(),
+        new_pred["visual"].float(),
+        prepared.latents["visual"].float(),
         prev_sample=next_latents.float(),
         noise_level=noise_level,
         **sde_step_sigmas,
@@ -156,8 +157,8 @@ def flow_grpo_loss_formula(
         if ref_pred is None:
             raise ValueError("Flow-GRPO KL requires a reference DiT forward; set --ref-mode lora_base or ref")
         _, _, prev_sample_mean_ref, _ = ctx.sde_backend.sde_step_logprob(
-            ref_pred.float(),
-            prepared.latents.float(),
+            ref_pred["visual"].float(),
+            prepared.latents["visual"].float(),
             prev_sample=next_latents.float(),
             noise_level=noise_level,
             **sde_step_sigmas,
@@ -194,7 +195,7 @@ def flow_grpo_loss_formula(
             record_rollout_train_abs_diff(
                 metrics,
                 "model_output",
-                new_pred.float(),
+                new_pred["visual"].float(),
                 rollout_model_output.to(device=ctx.device, dtype=torch.float32),
                 component=prepared.component_name if len(ctx.models) > 1 else None,
             )

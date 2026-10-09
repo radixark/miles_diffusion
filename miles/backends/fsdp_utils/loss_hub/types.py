@@ -47,11 +47,15 @@ class FlowNoiseSchedule:
 
 @dataclass
 class PreparedBatch:
-    """Actor-owned DiT forward inputs produced by a prepare hook."""
+    """Actor-owned DiT forward inputs produced by a prepare hook.
 
-    latents: torch.Tensor
-    timesteps: torch.Tensor
-    timesteps_for_model: torch.Tensor
+    ``latents`` and both timestep fields are keyed by latent stream name: "visual", plus e.g.
+    "audio" for joint audio-video models. The DiT prediction comes back keyed the same way.
+    """
+
+    latents: dict[str, torch.Tensor]
+    timesteps: dict[str, torch.Tensor]
+    timesteps_for_model: dict[str, torch.Tensor]
     model: nn.Module
     component_name: str
     guidance_scale: float

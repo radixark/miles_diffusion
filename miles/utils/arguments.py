@@ -44,6 +44,17 @@ def reset_arg(parser, name, **kwargs):
         parser.add_argument(name, **kwargs)
 
 
+def parse_stream_flow_shifts(value: str) -> dict[str, float]:
+    """``"12"`` -> {"visual": 12.0}; ``"visual=12,audio=3"`` -> {"visual": 12.0, "audio": 3.0}."""
+    if "=" not in value:
+        return {"visual": float(value)}
+    stream_flow_shifts = {}
+    for term in value.split(","):
+        stream_name, _, shift = term.strip().partition("=")
+        stream_flow_shifts[stream_name] = float(shift)
+    return stream_flow_shifts
+
+
 def get_miles_extra_args_provider(add_custom_arguments=None):
     def add_miles_arguments(parser):
         # Ray
@@ -159,10 +170,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument(
                 "--fsdp-flow-shift",
-                type=float,
+                type=parse_stream_flow_shifts,
                 default=None,
                 help=(
-                    "Flow-matching shift for the SFT training sigma grid; RL pairs carry their "
+                    "Flow-matching shift of the SFT training sigma grid per latent stream, e.g. "
+                    '"visual=12,audio=3"; a bare number is the visual shift. RL pairs carry their '
                     "rollout sigmas instead. "
                     "Distinct from --diffusion-flow-shift, which configures the rollout engine."
                 ),
@@ -1830,8 +1842,10 @@ def miles_validate_args(args):
             from miles.rollout.encoder_hub import get_encoder
 
             get_encoder(args.diffusion_model_family).validate_args(args)
-        if args.fsdp_flow_shift is None:
-            raise ValueError("--loss-type sft_loss requires --fsdp-flow-shift for the training sigma grid")
+        if args.fsdp_flow_shift is None or "visual" not in args.fsdp_flow_shift:
+            raise ValueError("--loss-type sft_loss requires a visual --fsdp-flow-shift for the training sigma grid")
+        if not all(math.isfinite(shift) and shift > 0 for shift in args.fsdp_flow_shift.values()):
+            raise ValueError(f"--fsdp-flow-shift values must be finite and positive, got {args.fsdp_flow_shift}")
         if args.n_samples_per_prompt != 1:
             raise ValueError("--loss-type sft_loss requires --n-samples-per-prompt 1")
         if args.eval_interval is not None:

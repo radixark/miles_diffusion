@@ -44,10 +44,11 @@ def prepare_nft_batch(
         stable_hash("nft_corrupt", int(ctx.args.seed), ctx.rollout_id, ctx.microbatch_id, ctx.dp_rank)
     )
     xt = corrupt(x0, t, sample_noise(x0, generator=noise_generator))
+    # Rollout trajectories carry only the visual stream.
     return PreparedBatch(
-        latents=xt,
-        timesteps=t,
-        timesteps_for_model=config.process_sigma_as_timesteps_input(t),
+        latents={"visual": xt},
+        timesteps={"visual": t},
+        timesteps_for_model={"visual": config.process_sigma_as_timesteps_input(t)},
         model=model,
         component_name=component_name,
         guidance_scale=0.0,
@@ -106,9 +107,9 @@ def nft_loss_formula(
     batch: list[dict],
     prepared: PreparedBatch,
     *,
-    new_pred: torch.Tensor,
-    old_pred: torch.Tensor | None,
-    ref_pred: torch.Tensor | None,
+    new_pred: dict[str, torch.Tensor],
+    old_pred: dict[str, torch.Tensor] | None,
+    ref_pred: dict[str, torch.Tensor] | None,
     metrics: MetricBuffer,
     write_old_log_prob: bool = False,
     old_log_prob_from_new: bool = False,
@@ -120,15 +121,15 @@ def nft_loss_formula(
     use_adaptive = args.diffusion_nft_adaptive_weight
 
     x0 = prepared.extras["x0"]
-    t = prepared.timesteps
+    t = prepared.timesteps["visual"]
     t_exp = t.view(len(batch), *([1] * (x0.ndim - 1)))
     r = nft_r_from_advantages(prepared.advantage, adv_clip_max=adv_clip_max)
     pos_loss, neg_loss = nft_branch_losses(
         x0=x0,
-        xt=prepared.latents,
+        xt=prepared.latents["visual"],
         t_exp=t_exp,
-        new_pred=new_pred,
-        old_pred=old_pred,
+        new_pred=new_pred["visual"],
+        old_pred=old_pred["visual"],
         beta=beta,
         use_adaptive=use_adaptive,
     )
@@ -136,7 +137,7 @@ def nft_loss_formula(
     per_pair = (r_b * pos_loss / beta + (1.0 - r_b) * neg_loss / beta) * adv_clip_max
     kl = None
     if args.diffusion_kl_beta > 0:
-        kl = ((new_pred - ref_pred) ** 2).mean(dim=tuple(range(1, x0.ndim)))
+        kl = ((new_pred["visual"] - ref_pred["visual"]) ** 2).mean(dim=tuple(range(1, x0.ndim)))
         per_pair = per_pair + args.diffusion_kl_beta * kl
     loss_sum = per_pair.sum()
 

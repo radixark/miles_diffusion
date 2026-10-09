@@ -40,8 +40,9 @@ def resolve_media_path(media: str, prompt_data: str) -> str:
 def sft_sample_key(args, item: dict) -> tuple[str, int]:
     """Content-addressed cache filename and latent-sampling seed for one (media, prompt) item."""
     stat = Path(item["media"]).stat()
+    # Bump the version whenever the cached pair layout changes. v2: "latent" is keyed by stream name.
     digest = hashlib.sha256(
-        f"{args.diffusion_model_family}|{args.sft_encoder_checkpoint}"
+        f"v2|{args.diffusion_model_family}|{args.sft_encoder_checkpoint}"
         f"|{args.diffusion_height}x{args.diffusion_width}"
         f"|{args.diffusion_output_num_frames}s{args.sft_frame_stride}"
         f"|{item['media']}|{stat.st_size}|{stat.st_mtime_ns}|{item['prompt']}".encode()

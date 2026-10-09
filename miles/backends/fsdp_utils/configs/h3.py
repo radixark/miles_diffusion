@@ -108,8 +108,8 @@ class H3TrainPipelineConfig(TrainPipelineConfig):
         self,
         *,
         model: torch.nn.Module,
-        latents_input: torch.Tensor,
-        timesteps_input: torch.Tensor,
+        latents_input: dict[str, torch.Tensor],
+        timesteps_input: dict[str, torch.Tensor],
         pos_cond: dict | None,
         neg_cond: dict | None,
         joint_cond: dict | None,
@@ -117,8 +117,9 @@ class H3TrainPipelineConfig(TrainPipelineConfig):
         cfg_batching: bool,
         guidance_scale: float,
         true_cfg_scale: float | None,
-    ) -> torch.Tensor:
+    ) -> dict[str, torch.Tensor]:
         del neg_cond, joint_cond, use_cfg, cfg_batching, guidance_scale, true_cfg_scale
+        latents = latents_input["visual"]
         cond = dict(pos_cond or {})
         packed = cond.get("h3_packed_layout")
         token_tags = cond.get("h3_token_tags")
@@ -126,11 +127,11 @@ class H3TrainPipelineConfig(TrainPipelineConfig):
         if packed is None or token_tags is None or encoder_hidden_states is None:
             raise ValueError("H3 train requires h3_packed_layout, h3_token_tags, encoder_hidden_states in pos_cond")
 
-        device = latents_input.device
-        dtype = latents_input.dtype
+        device = latents.device
+        dtype = latents.dtype
 
-        # latents_input: [B, num_video_target_rows, width]
-        bsz = latents_input.shape[0]
+        # latents: [B, num_video_target_rows, width]
+        bsz = latents.shape[0]
         if bsz != 1:
             raise NotImplementedError("H3 packed forward supports batch size 1 for now")
 
@@ -138,10 +139,10 @@ class H3TrainPipelineConfig(TrainPipelineConfig):
         tags = (
             token_tags.to(device) if isinstance(token_tags, torch.Tensor) else torch.tensor(token_tags, device=device)
         )
-        sigma = (timesteps_input.float() / float(self.sde_timestep_divisor)).view(-1)
+        sigma = (timesteps_input["visual"].float() / float(self.sde_timestep_divisor)).view(-1)
         timestep = 1.0 - sigma
         seq_len = int(layout["seq_len"])
-        width = latents_input.shape[-1]
+        width = latents.shape[-1]
 
         img_pos = layout["img_pos"].view(-1).long().to(device)
         audio_pos = layout["audio_pos"].view(-1).long().to(device)
@@ -153,7 +154,7 @@ class H3TrainPipelineConfig(TrainPipelineConfig):
         # target rows are replayed; conditioning rows stay zero, as does the audio
         # stream (H3 GRPO trains the video branch only).
         video_hidden = torch.zeros(1, int(img_pos.shape[0]), width, device=device, dtype=dtype)
-        video_hidden[0, update_mask] = latents_input[0].to(dtype)
+        video_hidden[0, update_mask] = latents[0].to(dtype)
         audio_hidden = torch.zeros(1, int(audio_pos.shape[0]), AUDIO_IN_CHANNELS, device=device, dtype=dtype)
 
         out = model(
@@ -173,7 +174,7 @@ class H3TrainPipelineConfig(TrainPipelineConfig):
         velocity = out[0] if isinstance(out, tuple) else out.sample
         # Rows follow video_indices; keep the target subset and return the
         # diffusers-compatible flow direction (negated H3 velocity).
-        return (-velocity[0, update_mask]).to(dtype)
+        return {"visual": (-velocity[:, update_mask]).to(dtype)}
 
     def cfg_combine(
         self,
