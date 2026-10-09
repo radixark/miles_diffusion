@@ -490,7 +490,11 @@ class FSDPTrainRayActor(TrainRayActor):
         )
 
         def _compute_noise_pred(model) -> dict[str, torch.Tensor]:
-            with torch.autocast("cuda", dtype=forward_dtype, enabled=forward_dtype != torch.float32):
+            with torch.autocast(
+                "cuda",
+                dtype=forward_dtype,
+                enabled=forward_dtype != torch.float32 and train_pipeline_config.enable_autocast,
+            ):
                 return train_pipeline_config.compute_noise_pred(
                     model=model,
                     latents_input=latents_in,

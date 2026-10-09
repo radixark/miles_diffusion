@@ -94,6 +94,7 @@ class TrainPipelineConfig(abc.ABC):
     cfg_batching: bool = False
     # Model-boundary input dtypes (see input_dtype_policy); families opt into casts explicitly.
     input_dtype_policy: dict = {"latents": None, "cond": None, "timestep": None}
+    enable_autocast: bool = True
     # Default component paths (miles custom-function style); CLI args override.
     model_backend_path: str = "miles.backends.fsdp_utils.model_backend.DiffusersModelBackend"
     # Native model package import path; required when model_backend_path is MilesModelBackend.
