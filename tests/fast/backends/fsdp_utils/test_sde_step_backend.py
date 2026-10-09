@@ -5,7 +5,8 @@
     train pair at step i          sigma = sigmas[i], next_sigma = sigmas[i + 1]
 
     Diffusers: the pair's carried (sigma, next_sigma, sigma_max) must score bit-identically to
-               the old path that looked sigma up in a scheduler by timestep value.
+               the old path that looked sigma up in a scheduler by timestep value, and a first
+               sigma within isclose of 1 (FlowUniPC: 0.999993) takes sigma_max as the engine does.
     CPS:       the mean/std kernel over the carried sigmas must match sgl-d's rollout_sde_type="cps".
 """
 
@@ -58,6 +59,23 @@ class TestDiffusersSdeStepBackend:
         for g, w in zip(got, want, strict=True):
             torch.testing.assert_close(g, w, rtol=0.0, atol=0.0)
         assert got[1].shape == (3,)
+
+    def test_sigma_just_below_one_takes_sigma_max_like_the_engine(self):
+        # FlowUniPC at shift 12 starts at 0.999993, not 1.0; sgl-d's isclose still swaps in
+        # sigma_max there, where an exact == would leave sigma / (1 - sigma) ~ 1.4e5.
+        sigmas = torch.tensor([0.999993, 0.990818, 0.0])
+        x = torch.zeros(1, 4)
+        _, _, _, std_dev_t = DiffusersSdeStepBackend().sde_step_logprob(
+            torch.zeros(1, 4),
+            x,
+            prev_sample=x,
+            noise_level=0.7,
+            sigmas=sigmas[:1],
+            next_sigmas=sigmas[1:2],
+            sigma_max=sigmas[1:2],
+        )
+        expected = torch.sqrt(sigmas[0] / (1 - sigmas[1])) * 0.7
+        torch.testing.assert_close(std_dev_t.view(()), expected, rtol=0.0, atol=0.0)
 
 
 class TestCpsSdeStepBackend:
