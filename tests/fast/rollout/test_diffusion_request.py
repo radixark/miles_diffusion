@@ -40,6 +40,7 @@ def _args(tmp_path, **kwargs):
         diffusion_output_num_frames=5,
         sft_frame_stride=1,
         diffusion_task="t2va",
+        seed=1,
     )
     return Namespace(**(base | kwargs))
 
