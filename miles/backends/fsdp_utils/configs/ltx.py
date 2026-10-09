@@ -11,7 +11,7 @@ from miles.utils.types import CondKwargs
 from .train_pipeline_config import TrainPipelineConfig, register_train_pipeline_config
 
 
-@register_train_pipeline_config("ltx")
+@register_train_pipeline_config("ltx", tasks=("t2v",))
 class LTXTrainPipelineConfig(TrainPipelineConfig):
     """LTX-2.3 video GRPO: unguided velocity forward over ltx_core."""
 

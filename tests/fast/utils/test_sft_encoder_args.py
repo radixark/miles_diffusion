@@ -32,7 +32,7 @@ def args(monkeypatch: pytest.MonkeyPatch) -> Namespace:
             pass
 
     config = Config
-    monkeypatch.setattr(train_pipeline_config, "get_train_pipeline_config_cls", lambda family: config)
+    monkeypatch.setattr(train_pipeline_config, "get_train_pipeline_config_cls", lambda family, task: config)
     monkeypatch.setattr(
         sys,
         "argv",

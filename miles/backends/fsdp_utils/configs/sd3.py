@@ -9,7 +9,7 @@ from miles.utils.types import CondKwargs
 from .train_pipeline_config import TrainPipelineConfig, register_train_pipeline_config
 
 
-@register_train_pipeline_config("sd3")
+@register_train_pipeline_config("sd3", tasks=("t2i",))
 class SD3TrainPipelineConfig(TrainPipelineConfig):
     """Training-side adapters for diffusers SD3Transformer2DModel."""
 

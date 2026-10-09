@@ -22,7 +22,7 @@ def _without_padding_tail(layout: dict, token_tags: torch.Tensor) -> tuple[torch
     return token_tags[:used], layout["img_position_ids"][:used]
 
 
-@register_train_pipeline_config("h3")
+@register_train_pipeline_config("h3", tasks=("t2va",))
 class H3TrainPipelineConfig(TrainPipelineConfig):
     """MiniMax H3 t2va video-only GRPO (audio branch frozen / deterministic in rollout)."""
 
@@ -58,9 +58,8 @@ class H3TrainPipelineConfig(TrainPipelineConfig):
     ) -> None:
         extra_sampling_params.update(
             {
-                # sgl-d accepts only task=t2va for rollout and short_edge=768 for any
-                # H3 request, so neither is exposed as an argument.
-                "task": "t2va",
+                # sgl-d accepts only short_edge=768 for any H3 request, so it is not exposed as an argument.
+                "task": args.diffusion_task,
                 "conditions": [],
                 "target": {
                     "short_edge": 768,

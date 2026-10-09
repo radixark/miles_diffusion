@@ -35,7 +35,7 @@ def _is_gen_param(name: str) -> bool:
     return any(fragment in dotted for fragment in _GEN_PARAM_FRAGMENTS)
 
 
-@register_train_pipeline_config("cosmos3")
+@register_train_pipeline_config("cosmos3", tasks=("t2i",))
 class Cosmos3TrainPipelineConfig(TrainPipelineConfig):
     hf_ckpt_name_patterns = ("cosmos3", "cosmos-3")
     # Timesteps stay fp32 (bf16 rounds the karras grid); conds pass through, the packed forward casts its own inputs.

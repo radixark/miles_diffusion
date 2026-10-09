@@ -11,7 +11,7 @@ from miles.utils.types import CondKwargs
 from .train_pipeline_config import TrainPipelineConfig, register_train_pipeline_config
 
 
-@register_train_pipeline_config("wan2_2")
+@register_train_pipeline_config("wan2_2", tasks=("t2v",))
 class Wan2_2TrainPipelineConfig(TrainPipelineConfig):
     hf_ckpt_name_patterns = ("wan2.2", "wan-2.2")
     cfg_batching = False
