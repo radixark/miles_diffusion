@@ -69,12 +69,24 @@ python3 scripts/run_diffusion_nft_krea2_async.py
 
 ## 5. Reference results
 
-The 6 + 2 async recipe raises the OCR reward (`rollout/reward/raw_mean`) from ~0.29 (mean of the first 10
-rollouts) to ~0.88 (mean of the last 10) over 100 rollouts, at ~79 s per rollout:
+Both runs use the default seed (1234) and 100 rollouts. `eval/ocr_test` is the held-out OCR accuracy over 1018 prompts
+at 52 denoising steps, measured after the last rollout.
+
+### 5.1 Synchronous, 8 GPUs colocated
+
+The OCR reward (`rollout/reward/raw_mean`) rises from ~0.28 (mean of the first 10 rollouts) to ~0.94 (mean of the last
+10), at ~94 s per rollout; `eval/ocr_test` ends at 0.923:
+
+![Krea-2 8-GPU sync DiffusionNFT OCR reward mean](../../assets/images/krea2/sync8_ocr_reward_mean.png)
+
+### 5.2 Asynchronous, 6 training + 2 rollout GPUs
+
+The OCR reward rises from ~0.29 to ~0.88, at ~79 s per rollout; `eval/ocr_test` ends at 0.875:
 
 ![Krea-2 async DiffusionNFT OCR reward mean](../../assets/images/krea2/async_ocr_reward_mean.png)
 
-After the 100 rollouts, the held-out OCR accuracy (`eval/ocr_test`, 1018 prompts, 52 denoising steps) is 0.875.
+NFT varies a lot from seed to seed. Over seeds 1234, 4321 and 2026, the mean OCR reward of the last 10 rollouts is
+0.942, 0.905 and 0.907 for §5.1 and 0.885, 0.827 and 0.940 for §5.2.
 
 ## 6. Pairs well with
 
