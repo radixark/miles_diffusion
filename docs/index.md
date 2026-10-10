@@ -45,6 +45,7 @@ appear in the [Miles model list](https://miles.radixark.com/docs#supported-model
 | [Wan2.2-T2V-A14B](models/wan/wan2-2.md)                   | T2V       | Flow-GRPO + PickScore, LoRA SFT           |
 | [LTX-2.3](models/ltx/ltx2.md)                             | T2V       | Flow-GRPO + PickScore                     |
 | [Cosmos3-Nano](models/cosmos/cosmos3.md)                   | T2I       | Flow-GRPO + PickScore                     |
+| [Krea-2](models/krea/krea2.md)                             | T2I       | DiffusionNFT + OCR (sync, async)          |
 | [MiniMax H3](models/h3/h3.md)                             | T2VA      | Flow-GRPO + PickScore (t2va, video branch); 2-GPU recipe                                               |
 
 

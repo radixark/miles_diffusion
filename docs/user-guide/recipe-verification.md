@@ -46,6 +46,7 @@ count as verification.
 - **🧩 PG**
   - `run_diffusion_grpo_wan22_pickscore_17gpu_multinode.py` — Wan2.2 17-GPU
     full-finetune Flow-GRPO + PickScore.
+  - `run_diffusion_nft_krea2_async.py` — Krea-2 8-GPU async DiffusionNFT + OCR.
 - **📈 V**
   - `run_diffusion_sft_h3_t2va.py` — MiniMax H3 8-GPU LoRA SFT.
   - `run_diffusion_grpo_sd3_hps_sglang.py` — SD3.5 Flow-GRPO + HPSv2.1.

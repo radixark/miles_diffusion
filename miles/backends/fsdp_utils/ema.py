@@ -19,6 +19,13 @@ def reshard_model(model: torch.nn.Module) -> None:
 
 
 class EMAOptimizer(torch.optim.Optimizer):
+    """EMA of the trainable weights, kept as optimizer state.
+
+    With ``keep_previous=True``, each parameter's state also holds ``previous_ema``, the EMA from before
+    the latest ``step``: async training samples each prefetched batch with it, and checkpoints save it so
+    a resumed run resamples its first batch with it.
+    """
+
     def __init__(
         self,
         model: torch.nn.Module,
@@ -27,11 +34,13 @@ class EMAOptimizer(torch.optim.Optimizer):
         uprate: float = 0.001,
         uphold: float = 0.5,
         flat_steps: int = 0,
+        keep_previous: bool = False,
     ) -> None:
         super().__init__(
             (parameter for parameter in model.parameters() if parameter.requires_grad),
             dict(decay=decay, uprate=uprate, uphold=uphold, flat_steps=flat_steps),
         )
+        self.keep_previous = keep_previous
         self.reset_from_model()
 
     @torch.no_grad()
@@ -39,6 +48,14 @@ class EMAOptimizer(torch.optim.Optimizer):
         for group in self.param_groups:
             for parameter in group["params"]:
                 self.state[parameter]["ema"] = parameter.detach().clone()
+        self.reset_previous()
+
+    @torch.no_grad()
+    def reset_previous(self) -> None:
+        """Set the previous EMA to the current EMA, as before the first ``step``."""
+        if self.keep_previous:
+            for state in self.state.values():
+                state["previous_ema"] = state["ema"].clone()
 
     @torch.no_grad()
     def step(self, optimizer_step: int) -> None:
@@ -50,31 +67,41 @@ class EMAOptimizer(torch.optim.Optimizer):
                 else min((optimizer_step - group["flat_steps"]) * group["uprate"], group["uphold"])
             )
             ema_tensors = [_local_tensor(self.state[parameter]["ema"]) for parameter in group["params"]]
+            if self.keep_previous:
+                previous_tensors = [
+                    _local_tensor(self.state[parameter]["previous_ema"]) for parameter in group["params"]
+                ]
+                torch._foreach_copy_(previous_tensors, ema_tensors)
             actor_tensors = [_local_tensor(parameter.detach()) for parameter in group["params"]]
             torch._foreach_lerp_(ema_tensors, actor_tensors, 1.0 - decay)
 
     @contextmanager
-    def use_weights(self, model: torch.nn.Module):
-        """Temporarily put the EMA weights into ``model``'s shards.
+    def use_weights(self, model: torch.nn.Module, previous: bool = False):
+        """Temporarily put the EMA weights into ``model``'s shards; ``previous`` picks the EMA before the latest step.
 
         Gathered full parameters are dropped before swapping in and before swapping back,
         so no forward reads stale weights.
         """
+        if previous and not self.keep_previous:
+            raise RuntimeError("EMAOptimizer was built without keep_previous")
         reshard_model(model)
-        parameters = [parameter for parameter in model.parameters() if parameter in self.state]
-        self._swap_with_actor(parameters)
+        ema_key = "previous_ema" if previous else "ema"
+        ema_weights = {
+            parameter: self.state[parameter][ema_key] for parameter in model.parameters() if parameter in self.state
+        }
+        self._swap_with_actor(ema_weights)
         try:
             yield
         finally:
             reshard_model(model)
-            self._swap_with_actor(parameters)
+            self._swap_with_actor(ema_weights)
 
     @torch.no_grad()
-    def _swap_with_actor(self, parameters: list[torch.nn.Parameter]) -> None:
+    def _swap_with_actor(self, ema_weights: dict[torch.nn.Parameter, torch.Tensor]) -> None:
         # EMA shares the actor's device, so its own storage holds the actor weights while they are swapped out.
-        for parameter in parameters:
+        for parameter, ema_weight in ema_weights.items():
             actor_tensor = _local_tensor(parameter)
-            ema_tensor = _local_tensor(self.state[parameter]["ema"])
+            ema_tensor = _local_tensor(ema_weight)
             actor_copy = actor_tensor.clone()
             actor_tensor.copy_(ema_tensor)
             ema_tensor.copy_(actor_copy)

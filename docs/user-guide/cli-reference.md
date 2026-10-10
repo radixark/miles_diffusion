@@ -328,7 +328,7 @@ Every one takes a dotted path.
 | `--lora-adapter-path` | str+ | – | PEFT adapter directories the actor continues from, one per `--update-weight-target-module` entry, in order; `--lora-rank` / `--lora-alpha` must match their configs. |
 | `--lora-target-modules` | str+ | – | Defaults per model family. |
 | `--lora-init-weights` | str | `gaussian` | `kaiming-uniform` maps to PEFT's default; other PEFT schemes pass through. |
-| `--lora-ipc-weight-sync` | flag | off | Push only `lora_A`/`lora_B`; the engine merges locally. Requires `--use-lora`. |
+| `--lora-ipc-weight-sync` | flag | off | Push only `lora_A`/`lora_B` over CUDA IPC and let the rollout merge them (`weight_update_mode=lora_merge`); without it, the trainer merges LoRA into the base weights and pushes full weights. Requires `--use-lora` and `--colocate`. Without `--colocate`, LoRA always pushes `lora_A`/`lora_B` over NCCL for the rollout to merge. |
 
 ### EMA
 
@@ -351,6 +351,7 @@ Every one takes a dotted path.
 | `--load` | str | – | |
 | `--ckpt-step` | int | – | Defaults to `latest_checkpointed_iteration.txt`. |
 | `--no-load-optim` / `--no-load-rng` | flag | off | |
+| `--async-exact-resume` | flag | off | Async training only. Also checkpoints the EMA from before the latest step and resamples the first resumed batch with it, so a resume matches an uninterrupted run. Off: that batch samples the loaded EMA. |
 
 ### Logging
 

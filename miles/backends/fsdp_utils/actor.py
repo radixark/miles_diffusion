@@ -30,9 +30,11 @@ from miles.utils.train_data_utils import (
 from . import checkpoint
 from .device_move import move_model, move_optimizer, sleep_frozen_model, wake_up_frozen_model
 from .diffusion_update_weight_utils import (
+    DiffusionUpdateWeightFromDistributed,
     DiffusionUpdateWeightFromTensor,
     DiffusionUpdateWeightFromTensorLoRA,
     DiffusionUpdateWeightFromTensorLoRAIPC,
+    DiffusionUpdateWeightLoRADistributed,
 )
 from .ema import EMAOptimizer, reshard_model
 from .input_dtype_policy import apply_input_dtype_policy
@@ -203,18 +205,26 @@ class FSDPTrainRayActor(TrainRayActor):
                 uprate=args.ema_decay_ramp,
                 uphold=args.ema_decay_max,
                 flat_steps=args.ema_decay_flat_steps,
+                keep_previous=args.async_exact_resume,
             )
         checkpoint_payload = checkpoint.load(self)
 
         # sglang-d now supports /update_weights_from_tensor (PR #20464).
         if self.args.train_only:
             self.weight_updater = None
-        elif self.args.use_lora and self.args.lora_ipc_weight_sync:
-            self.weight_updater = DiffusionUpdateWeightFromTensorLoRAIPC(self.args, self.models)
         elif self.args.use_lora:
-            self.weight_updater = DiffusionUpdateWeightFromTensorLoRA(self.args, self.models)
-        else:
+            if self.args.colocate:
+                if self.args.lora_ipc_weight_sync:
+                    updater = DiffusionUpdateWeightFromTensorLoRAIPC
+                else:
+                    updater = DiffusionUpdateWeightFromTensorLoRA
+            else:
+                updater = DiffusionUpdateWeightLoRADistributed
+            self.weight_updater = updater(self.args, self.models)
+        elif self.args.colocate:
             self.weight_updater = DiffusionUpdateWeightFromTensor(self.args, self.models)
+        else:
+            self.weight_updater = DiffusionUpdateWeightFromDistributed(self.args, self.models)
 
         checkpoint.finalize_load(self, checkpoint_payload)
 
@@ -264,7 +274,8 @@ class FSDPTrainRayActor(TrainRayActor):
         checkpoint.save(self, iteration=rollout_id)
 
     @timer
-    def update_weights(self) -> None:  # type: ignore[override]
+    def update_weights(self, previous_ema: bool = False) -> None:  # type: ignore[override]
+        """Push the rollout weights; ``previous_ema`` pushes the EMA before the latest step (async resume)."""
         if self.args.train_only or self.args.debug_rollout_only:
             return
 
@@ -282,7 +293,9 @@ class FSDPTrainRayActor(TrainRayActor):
                 ray.get(self.rollout_manager.clear_num_new_engines.remote())
 
         rollout_weight_context = (
-            self.ema_optimizer.use_weights(self.model) if self.args.rollout_weights == "ema" else nullcontext()
+            self.ema_optimizer.use_weights(self.model, previous=previous_ema)
+            if self.args.rollout_weights == "ema"
+            else nullcontext()
         )
         with rollout_weight_context:
             self.weight_updater.update_weights()
@@ -522,7 +535,7 @@ class FSDPTrainRayActor(TrainRayActor):
 
         new_pred = _compute_noise_pred(prepared.model)
 
-        # pi_old: the EMA weights the rollout sampled with.
+        # pi_old: the latest EMA, also when an async batch was sampled with the EMA before it.
         old_pred = None
         if self.args.loss_type == "nft":
             with torch.no_grad(), self.ema_optimizer.use_weights(prepared.model):

@@ -144,6 +144,11 @@ class OptimizerState(Stateful):
         )
 
 
+def _has_previous_ema(ema_dir: Path) -> bool:
+    saved_keys = dcp.FileSystemReader(str(ema_dir)).read_metadata().state_dict_metadata
+    return any(key.endswith(".previous_ema") for key in saved_keys)
+
+
 class LRSchedulerState(Stateful):
     """Wrapper for LR scheduler state only."""
 
@@ -217,9 +222,20 @@ def load(actor: Any) -> dict[str, Any] | None:
 
     if actor.ema_optimizer is not None:
         if ema_dir.exists():
+            # Synchronous runs and async runs without --async-exact-resume save no previous EMA.
+            restarts_previous = actor.ema_optimizer.keep_previous and not _has_previous_ema(ema_dir)
+            if restarts_previous:
+                # DCP fails on keys the checkpoint lacks; reset_previous puts them back after the load.
+                for state in actor.ema_optimizer.state.values():
+                    del state["previous_ema"]
             ema_state = OptimizerState(actor.model, actor.ema_optimizer)
             dcp.load({"ema_state": ema_state}, checkpoint_id=str(ema_dir))
             logger.info(f"[FSDP] Loaded EMA from {ema_dir}")
+            if restarts_previous:
+                actor.ema_optimizer.reset_previous()
+                logger.warning(
+                    "[FSDP] EMA checkpoint has no previous EMA; the first async batch samples the loaded EMA"
+                )
         else:
             actor.ema_optimizer.reset_from_model()
             logger.info("[FSDP] EMA checkpoint missing; initialized EMA from the loaded model")
