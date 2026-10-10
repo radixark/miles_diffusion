@@ -376,6 +376,9 @@ def _compute_server_args(args, host, port, nccl_port):
         "enable_cfg_parallel": args.sglang_enable_cfg_parallel,
         # Skip warmup to avoid timeout during RL rollouts.
         "warmup_mode": "off",
+        # Miles places rollout memory itself (offload_rollout / onload_weights); sglang-d's auto policy would
+        # offload by the startup free memory, and its layerwise DiT offload breaks TP>1 full-weight sync.
+        "performance_mode": "manual",
     }
 
     if getattr(args, "diffusion_flow_shift", None) is not None:

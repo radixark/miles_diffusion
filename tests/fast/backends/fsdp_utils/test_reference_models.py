@@ -434,19 +434,20 @@ def test_ipc_publication_uses_loaded_adapter_config(tmp_path, unsharded_model_lo
         dist=SimpleNamespace(get_rank=lambda: 0, get_world_size=lambda group: 1, gather_object=gather_object),
         get_physical_gpu_id=lambda: "gpu-0",
         ray=SimpleNamespace(get=lambda result: result),
+        torch=torch,
     )
     exec(compile(ast.Module(body=[method], type_ignores=[]), str(path), "exec"), namespace)
     harness = SimpleNamespace(
         args=Namespace(lora_rank=64, lora_alpha=64),
         models=models,
+        weight_version=1,
+        sgl_d_weight_update_mode="lora_merge",
         _ipc_gather_src=0,
         _ipc_gather_group=None,
         _ipc_engine=SimpleNamespace(
             update_weights_from_tensor=SimpleNamespace(remote=lambda **kwargs: sent.append(kwargs))
         ),
     )
-    namespace[method.name](
-        harness, [("block.proj.lora_A.weight", torch.ones(2, 3))], "transformer", weight_update_mode="lora_merge"
-    )
+    namespace[method.name](harness, [("block.proj.lora_A.weight", torch.ones(2, 3))], "transformer")
     assert len(sent) == 1
     assert sent[0]["lora_rank"] == 2 and sent[0]["lora_alpha"] == 4

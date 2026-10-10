@@ -101,22 +101,25 @@ weight updates for diffusion engines.
 `DiffusionUpdateWeightFromTensorLoRAIPC` (IPC) and
 `DiffusionUpdateWeightLoRADistributed` (NCCL) share this path:
 
-1. `collect_lora_layer_groups()` groups state-dict entries by layer prefix so
-   **lora_A and lora_B for the same layer always stay together**.
-2. `PeftLoRAKeyMapper.to_sgld_name()` strips PEFT wrappers
+1. `FSDPHfWeightIterator.iter_hf_adapter_weights()` turns each LoRA module into one unit,
+   its **lora_A and lora_B**, named by `to_hf_name()`
    (e.g. `transformer_blocks.0.attn.to_q.lora_A`). Fused families such as H3
    keep these diffusers names; sglang-d `lora_merge` applies
    `param_names_mapping` and the disk-load FFN swap.
-3. FSDP shard all-gather → pack into buckets capped by
+2. FSDP shard all-gather → `pack_units_by_size()` packs units into buckets capped by
    **`--update-weight-buffer-size`** (recipes use 2 GB) → CUDA IPC or NCCL
    broadcast.
-4. Rollout engine receives `weight_update_mode="lora_merge"` with
+3. Rollout engine receives `weight_update_mode="lora_merge"` with
    `lora_alpha` and `lora_rank`.
 
-**Bucket packing:** the LoRA updater iterates **layer groups**, not individual
-tensors. When adding the next group would exceed `--update-weight-buffer-size`,
-the current bucket is flushed first; the whole group (both `lora_A` and
-`lora_B`) then starts the next bucket. Pairs are never split across buckets.
+**Bucket packing:** every updater packs **units**, not individual tensors. When
+adding the next unit would exceed `--update-weight-buffer-size`, the current
+bucket is flushed first; the whole unit then starts the next bucket. A unit is
+never split across buckets, so a `lora_A` / `lora_B` pair always arrives together.
+For a family whose rollout fuses projections into one layer (H3 `to_q/k/v`, Qwen-Image and
+Cosmos3 `add_q/k/v_proj`), the adapters of those projections form one **atomic update group**
+and share a bucket too: sglang-d's `lora_merge` replaces a fused layer's LoRA with the sections
+one request carries.
 
 Constant: `LORA_WEIGHT_UPDATE_MODE = "lora_merge"`.
 
@@ -131,7 +134,7 @@ Set automatically in `RolloutManager` when spawning engines that merge LoRA.
 On the first few syncs, rank 0 logs lines like:
 
 ```text
-LoRA weight sync v1 [transformer]: pushed N lora tensors, M layer prefixes in K buckets (unmapped=0)
+LoRA weight sync v1 [transformer]: pushed N lora tensors in K buckets
 ```
 
 After FSDP all-gather, IPC buckets are collected on the **gather-src rank**
@@ -144,7 +147,11 @@ for `LoRA weight sync` lines and Ray worker stderr under
 
 | File | Role |
 |---|---|
-| `miles/backends/fsdp_utils/diffusion_update_weight_utils.py` | IPC and NCCL updater classes + `PeftLoRAKeyMapper` |
+| `miles/backends/fsdp_utils/diffusion_update_weight_utils.py` | Updater classes: send buckets over CUDA IPC or NCCL |
+| `miles/backends/fsdp_utils/adaptations/weight_bridge.py` | `ParamTransform` registry (train -> rollout name/shape), as in miles |
+| `miles/backends/fsdp_utils/hf_weight_iterator.py` | `FSDPHfWeightIterator`: FSDP shards -> HF-named units (full, LoRA-merged, LoRA adapters) |
+| `miles/backends/training_utils/weight_update/hf_weight_iterator/` | `HfWeightIteratorBase` and bucketing (atomic groups, size-bounded packing), as in miles |
+| `miles/backends/training_utils/weight_update/hf_weight_iterator/atomic_groups.py` | Per-family atomic groups for weights and adapters (today: LoRA adapters the rollout fuses into one layer) |
 | `miles/backends/fsdp_utils/actor.py` | Updater selection, LoRA apply via PEFT |
 | `miles/backends/sglang_diffusion_utils/sglang_diffusion_engine.py` | HTTP `update_weights_from_tensor` (IPC) / `update_weights_from_distributed` (NCCL) to rollout |
 | `miles/utils/arguments.py` | `rollout_merges_lora(args)` and LoRA weight-sync validation |

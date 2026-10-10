@@ -116,15 +116,16 @@ def test_first_connect_clears_groups_left_on_engines(monkeypatch):
 def test_lora_fields_follow_the_adapter_and_only_ride_lora_buckets(monkeypatch):
     # The rollout merges W + (alpha / r) * B @ A with the trained adapter's own alpha and r, not the CLI flags.
     model = SimpleNamespace(peft_config={"default": SimpleNamespace(lora_alpha=64, r=32)}, active_adapter="default")
-    args = SimpleNamespace(lora_alpha=1, lora_rank=1)
-    updater = update.DiffusionUpdateWeightFromDistributed(args, {"transformer": model})
-    updater.rollout_engines, updater._model_update_group = ["engine"], "group"
-    calls = []
+    args = SimpleNamespace(lora_alpha=1, lora_rank=1, diffusion_model_family="sd3")
+    monkeypatch.setattr(update, "FSDPHfWeightIterator", lambda *args, **kwargs: None)
     monkeypatch.setattr(update.dist, "get_rank", lambda: 0)
+    calls = []
     monkeypatch.setattr(update, "broadcast_bucket", lambda **kwargs: calls.append(kwargs))
     tensors = [("a", torch.ones(1))]
-    updater.update_bucket_weights(tensors, "transformer", weight_update_mode="lora_merge")
-    updater.update_bucket_weights(tensors, "transformer")
+    for updater_cls in (update.DiffusionUpdateWeightLoRADistributed, update.DiffusionUpdateWeightFromDistributed):
+        updater = updater_cls(args, {"transformer": model})
+        updater.rollout_engines, updater._model_update_group = ["engine"], "group"
+        updater.update_bucket_weights(tensors, "transformer")
     assert (calls[0]["weight_update_mode"], calls[0]["lora_alpha"], calls[0]["lora_rank"]) == ("lora_merge", 64, 32)
     assert not {"weight_update_mode", "lora_alpha", "lora_rank"} & calls[1].keys()
 
