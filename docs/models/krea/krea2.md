@@ -44,9 +44,6 @@ deterministic ODE rollouts (10 steps, no CFG).
 `scripts/run_diffusion_nft_krea2.py` — FSDP DP=2 sharing the GPUs with two sglang engines; LoRA adapters sync over
 CUDA IPC. 8 prompts × 8 samples per step, micro-batch 2 with gradient checkpointing.
 
-**Status:** [○ NV — Not verified](../../user-guide/recipe-verification.md#nv) (a deterministic E2E runs it nightly; no
-complete training curve yet)
-
 ```bash
 python3 scripts/run_diffusion_nft_krea2.py
 ```
