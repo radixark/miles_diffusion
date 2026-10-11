@@ -83,7 +83,7 @@ class SdeStepBackend(abc.ABC):
         return prev_sample, self.log_prob(prev_sample, prev_mean, noise_std), prev_mean, std_dev_t
 
 
-class DiffusersSdeStepBackend(SdeStepBackend):
+class FlowSdeStepBackend(SdeStepBackend):
     """Flow-matching SDE (matches sgl-d flow_sde_sampling rollout_sde_type="sde"); current default."""
 
     def prev_sample_mean_and_std(

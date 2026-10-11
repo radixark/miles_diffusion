@@ -278,7 +278,7 @@ def loss_formula(ctx, batch, prepared, *, new_pred, ref_pred, metrics, **kwargs)
 ### `--sde-step-backend-path`
 
 **Class** implementing `SdeStepBackend`. Auto-selected from
-`--diffusion-sde-type` (`sde` / `ode` → `DiffusersSdeStepBackend`, `cps` →
+`--diffusion-sde-type` (`sde` / `ode` → `FlowSdeStepBackend`, `cps` →
 `CpsSdeStepBackend`) unless overridden. See
 [SDE step backend](../advanced/sde-backend.md).
 

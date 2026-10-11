@@ -16,8 +16,6 @@ class LTXTrainPipelineConfig(TrainPipelineConfig):
     """LTX-2.3 video GRPO: unguided velocity forward over ltx_core."""
 
     supports_cfg_training = False
-    # Rollout stores σ×1000 in trajectory timesteps; ltx_core AdaLN uses σ∈[0,1].
-    sde_timestep_divisor = 1000.0
     hf_ckpt_name_patterns = ("ltx",)
     model_backend_path = "miles.backends.fsdp_utils.model_backend.MilesModelBackend"
     model_package = "miles.backends.fsdp_utils.models.ltx"
@@ -135,7 +133,7 @@ class LTXTrainPipelineConfig(TrainPipelineConfig):
         # Trajectory timesteps are σ×1000; ltx_core AdaLN expects σ∈[0,1] and
         # multiplies by timestep_scale_multiplier (1000) internally.
         sigma_scaled = timesteps_input.to(latents_input.dtype)
-        sigma_unit = sigma_scaled / float(self.sde_timestep_divisor)
+        sigma_unit = sigma_scaled / float(self.num_train_timesteps)
         per_token_t = sigma_unit.view(B, 1).to(dtype)
 
         video_modality = Modality(

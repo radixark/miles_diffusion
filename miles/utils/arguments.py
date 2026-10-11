@@ -1993,10 +1993,10 @@ def miles_validate_args(args):
     # The train-side scorer must replicate the rollout dynamics; derive it from the same knob.
     if args.sde_step_backend_path is None:
         sde_step_backends = {
-            "sde": "miles.backends.fsdp_utils.sde_step_backend.DiffusersSdeStepBackend",
+            "sde": "miles.backends.fsdp_utils.sde_step_backend.FlowSdeStepBackend",
             "cps": "miles.backends.fsdp_utils.sde_step_backend.CpsSdeStepBackend",
             # NFT does not use the placeholder backend.
-            "ode": "miles.backends.fsdp_utils.sde_step_backend.DiffusersSdeStepBackend",
+            "ode": "miles.backends.fsdp_utils.sde_step_backend.FlowSdeStepBackend",
         }
         if args.diffusion_sde_type not in sde_step_backends:
             raise ValueError(

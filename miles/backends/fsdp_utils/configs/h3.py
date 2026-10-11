@@ -19,7 +19,6 @@ class H3TrainPipelineConfig(TrainPipelineConfig):
 
     hf_ckpt_name_patterns = ("minimax-h3", "minimax_h3", "/h3")
     supports_cfg_training = False
-    sde_timestep_divisor = 1000.0
     optimizer_state_allowed_missing = ["audio"]
 
     lora_target_modules = [
@@ -129,7 +128,7 @@ class H3TrainPipelineConfig(TrainPipelineConfig):
         tags = (
             token_tags.to(device) if isinstance(token_tags, torch.Tensor) else torch.tensor(token_tags, device=device)
         )
-        sigma = (timesteps_input.float() / float(self.sde_timestep_divisor)).view(-1)
+        sigma = (timesteps_input.float() / float(self.num_train_timesteps)).view(-1)
         timestep = 1.0 - sigma
         seq_len = int(layout["seq_len"])
         width = latents_input.shape[-1]

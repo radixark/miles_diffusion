@@ -17,7 +17,7 @@ import math
 
 import torch
 
-from miles.backends.fsdp_utils.sde_step_backend import CpsSdeStepBackend, DiffusersSdeStepBackend
+from miles.backends.fsdp_utils.sde_step_backend import CpsSdeStepBackend, FlowSdeStepBackend
 from miles.utils.sde_log_prob import sde_step_with_logprob
 
 
@@ -33,7 +33,7 @@ class _DiffusersFlowScheduler:
         return indices[1 if len(indices) > 1 else 0].item()
 
 
-class TestDiffusersSdeStepBackend:
+class TestFlowSdeStepBackend:
     def test_carried_sigmas_match_scheduler_lookup_bitwise(self):
         torch.manual_seed(0)
         shift, num_steps = 3.0, 10
@@ -43,7 +43,7 @@ class TestDiffusersSdeStepBackend:
         step = torch.tensor([0, 4, 9])  # first step (sigma == 1), a middle step, the step into sigma == 0
         v, x, nxt = (torch.randn(3, 4, 6) for _ in range(3))
 
-        got = DiffusersSdeStepBackend().sde_step_logprob(
+        got = FlowSdeStepBackend().sde_step_logprob(
             v,
             x,
             prev_sample=nxt,
