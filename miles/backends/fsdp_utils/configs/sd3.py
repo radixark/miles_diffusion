@@ -13,6 +13,7 @@ from .train_pipeline_config import TrainPipelineConfig, register_train_pipeline_
 class SD3TrainPipelineConfig(TrainPipelineConfig):
     """Training-side adapters for diffusers SD3Transformer2DModel."""
 
+    tasks = ("t2i",)
     hf_ckpt_name_patterns = ("stable-diffusion-3", "sd3")
     cfg_batching = False
 

@@ -26,6 +26,7 @@ def _without_padding_tail(layout: dict, token_tags: torch.Tensor) -> tuple[torch
 class H3TrainPipelineConfig(TrainPipelineConfig):
     """MiniMax H3 t2va video-only GRPO (audio branch frozen / deterministic in rollout)."""
 
+    tasks = ("t2va",)
     hf_ckpt_name_patterns = ("minimax-h3", "minimax_h3", "/h3")
     supports_cfg_training = False
     optimizer_state_allowed_missing = ["audio"]
@@ -48,9 +49,8 @@ class H3TrainPipelineConfig(TrainPipelineConfig):
     ) -> None:
         extra_sampling_params.update(
             {
-                # sgl-d accepts only task=t2va for rollout and short_edge=768 for any
-                # H3 request, so neither is exposed as an argument.
-                "task": "t2va",
+                # sgl-d accepts only short_edge=768 for any H3 request, so it is not exposed as an argument.
+                "task": args.diffusion_task,
                 "conditions": [],
                 "target": {
                     "short_edge": 768,

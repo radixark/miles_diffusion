@@ -26,6 +26,7 @@ def args(monkeypatch: pytest.MonkeyPatch) -> Namespace:
     class Config:
         model_backend_path = "external.Backend"
         supports_cfg_training = True
+        tasks = ("t2v",)
 
         @classmethod
         def validate_args(cls, args: Namespace) -> None:
@@ -37,7 +38,7 @@ def args(monkeypatch: pytest.MonkeyPatch) -> Namespace:
         sys,
         "argv",
         shlex.split(
-            "test --hf-checkpoint external-checkpoint --diffusion-model-family wan2_2 "
+            "test --hf-checkpoint external-checkpoint --diffusion-model-family wan2_2 --diffusion-task t2v "
             "--train-only --loss-type sft_loss --prompt-data dataset.yaml "
             "--rollout-function-path external.generate --fsdp-flow-shift 5 "
             "--rollout-batch-size 1 --global-batch-size 1 --num-rollout 1 "
@@ -64,6 +65,12 @@ def test_flow_shift_is_keyed_by_stream(args: Namespace) -> None:
 def test_flow_shift_rejects_missing_visual_and_bad_values(args: Namespace, flow_shift, message) -> None:
     args.fsdp_flow_shift = flow_shift
     with pytest.raises(ValueError, match=message):
+        miles_validate_args(args)
+
+
+def test_task_outside_config_tasks_is_rejected(args: Namespace) -> None:
+    args.diffusion_task = "t2i"
+    with pytest.raises(ValueError, match="trains --diffusion-task"):
         miles_validate_args(args)
 
 

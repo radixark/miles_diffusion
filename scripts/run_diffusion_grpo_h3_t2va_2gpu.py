@@ -92,7 +92,7 @@ def execute(args: ScriptArgs, prompt_dir: str) -> None:
     run_name = f"diffusion_grpo_h3_t2va_{U.create_run_id()}"
 
     ckpt_args = (
-        f"--hf-checkpoint {MODEL} "
+        f"--hf-checkpoint {MODEL} --diffusion-task t2va "
         f"--save {args.output_dir}/{run_name}/ckpt "
         f"--save-interval {args.save_interval} "
     )

@@ -42,7 +42,9 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
     num_train_gpus, num_rollout_gpus = (3, 1) if args.four_gpu_ci else (6, 2)
     num_gpus = num_train_gpus + num_rollout_gpus
 
-    ckpt_args = f"--hf-checkpoint {MODEL} --save {args.output_dir}/{run_name}/ckpt --save-interval 20 "
+    ckpt_args = (
+        f"--hf-checkpoint {MODEL} --diffusion-task t2i --save {args.output_dir}/{run_name}/ckpt --save-interval 20 "
+    )
 
     rollout_args = (
         "--rollout-function-path miles.rollout.sglang_diffusion_rollout.generate_rollout "

@@ -241,6 +241,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--diffusion-task",
+                type=str,
+                default=None,
+                help=(
+                    "Task to train, one of the family TrainPipelineConfig's tasks: input-to-output in SGLang's "
+                    "ModelTaskType terms (t2i, t2v), or the family's own SGLang request task (H3: t2va). Required "
+                    "unless the config declares no tasks."
+                ),
+            )
+            parser.add_argument(
                 "--train-pipeline-config-path",
                 type=str,
                 default=None,
@@ -1807,6 +1817,10 @@ def miles_validate_args(args):
         raise ValueError(
             f"{cfg_cls.__name__} trains unguided (supports_cfg_training=False); set "
             f"--diffusion-guidance-scale 1.0 and drop --diffusion-negative-prompt"
+        )
+    if cfg_cls.tasks and args.diffusion_task not in cfg_cls.tasks:
+        raise ValueError(
+            f"{cfg_cls.__name__} trains --diffusion-task {list(cfg_cls.tasks)}, got {args.diffusion_task!r}"
         )
     cfg_cls.validate_args(args)
     if args.use_lora and args.lora_target_modules is None:

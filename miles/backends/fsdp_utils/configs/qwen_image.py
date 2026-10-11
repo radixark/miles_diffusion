@@ -56,6 +56,7 @@ def _rebuild_pos_embed_freqs_on_cuda(model) -> None:
 
 @register_train_pipeline_config("qwen_image")
 class QwenImageTrainPipelineConfig(TrainPipelineConfig):
+    tasks = ("t2i",)
     hf_ckpt_name_patterns = ("qwen-image",)
     cfg_batching = False
 

@@ -11,6 +11,7 @@ from .train_pipeline_config import TrainPipelineConfig, register_train_pipeline_
 
 @register_train_pipeline_config("krea2")
 class Krea2TrainPipelineConfig(TrainPipelineConfig):
+    tasks = ("t2i",)
     hf_ckpt_name_patterns = ("krea-2",)
 
     @classmethod

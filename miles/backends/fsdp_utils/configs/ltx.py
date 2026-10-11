@@ -15,6 +15,7 @@ from .train_pipeline_config import TrainPipelineConfig, register_train_pipeline_
 class LTXTrainPipelineConfig(TrainPipelineConfig):
     """LTX-2.3 video GRPO: unguided velocity forward over ltx_core."""
 
+    tasks = ("t2v",)
     supports_cfg_training = False
     hf_ckpt_name_patterns = ("ltx",)
     model_backend_path = "miles.backends.fsdp_utils.model_backend.MilesModelBackend"

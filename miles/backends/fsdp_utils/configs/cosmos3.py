@@ -37,6 +37,7 @@ def _is_gen_param(name: str) -> bool:
 
 @register_train_pipeline_config("cosmos3")
 class Cosmos3TrainPipelineConfig(TrainPipelineConfig):
+    tasks = ("t2i",)
     hf_ckpt_name_patterns = ("cosmos3", "cosmos-3")
     # Timesteps stay fp32 (bf16 rounds the karras grid); conds pass through, the packed forward casts its own inputs.
     input_dtype_policy = {"latents": "default", "cond": None, "timestep": "fp32"}
