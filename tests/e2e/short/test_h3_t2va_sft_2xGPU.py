@@ -10,6 +10,7 @@ e2e exercising the SFT encode -> cache -> train path."""
 from tests.ci.e2e_metrics_registry import register_e2e_ci
 
 register_e2e_ci(
+    disabled="cumem mechanism probe",
     est_time=3000,
     suite="stage-c-3-gpu-h200",
     labels=["e2e"],

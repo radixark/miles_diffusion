@@ -22,7 +22,12 @@ register_e2e_ci(
     est_time=1200,
     suite="stage-c-5-gpu-h200",
     script="scripts/run_diffusion_grpo_pickscore_5gpu_flowgrpo_aligned.py",
-    args=["--num-rollout", "2"],
+    args=[
+        "--num-rollout",
+        "2",
+        "--extra-args",
+        '--train-env-vars \'{"NCCL_DEBUG":"INFO","NCCL_DEBUG_SUBSYS":"INIT,P2P,ALLOC,NVLS,REG"}\'',
+    ],
     labels=["e2e"],
     metrics=[
         "rollout/reward/raw_num_samples",

@@ -1,4 +1,6 @@
+import faulthandler
 import logging
+import sys
 from argparse import Namespace
 from contextlib import nullcontext
 
@@ -66,6 +68,7 @@ class FSDPTrainRayActor(TrainRayActor):
 
     @with_defer(lambda: Timer().start("train_wait"))
     def init(self, args: Namespace, role: str, with_ref: bool = False) -> int:  # type: ignore[override]
+        faulthandler.dump_traceback_later(20, repeat=True, file=sys.stderr)  # CI probe
         super().init(args, role, with_ref)
 
         if args.deterministic_mode:
@@ -222,6 +225,7 @@ class FSDPTrainRayActor(TrainRayActor):
             self.weight_updater = DiffusionUpdateWeightFromDistributed(self.args, self.models)
 
         checkpoint.finalize_load(self, checkpoint_payload)
+        faulthandler.cancel_dump_traceback_later()  # CI probe
 
         if self.args.offload_train:
             self.sleep()
@@ -266,7 +270,10 @@ class FSDPTrainRayActor(TrainRayActor):
     def save_model(self, rollout_id: int, force_sync: bool = False) -> None:  # type: ignore[override]
         if self.args.save is None:
             return
+        if not dist.is_initialized() or dist.get_rank() == 0:  # CI probe
+            faulthandler.dump_traceback_later(20, repeat=True, file=sys.stderr)
         checkpoint.save(self, iteration=rollout_id)
+        faulthandler.cancel_dump_traceback_later()  # CI probe
 
     @timer
     def update_weights(self, previous_ema: bool = False) -> None:  # type: ignore[override]

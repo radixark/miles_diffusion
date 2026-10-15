@@ -7,6 +7,7 @@ so every metric is compared strictly, bit for bit."""
 from tests.ci.e2e_metrics_registry import register_e2e_ci
 
 register_e2e_ci(
+    disabled="cumem mechanism probe",
     est_time=1800,
     suite="stage-c-5-gpu-h200",
     script="scripts/run_diffusion_grpo_ltx23_sglang.py",
