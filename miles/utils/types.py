@@ -40,6 +40,9 @@ class CondKwargs:
     pos: torch.Tensor | None = None
     # Cosmos3: token-level conditioning (no separate text encoder).
     text_ids: torch.Tensor | None = None
+    # FLUX.3: 4-axis RoPE coordinates of the image latent tokens / text tokens (seq_len, 4).
+    flux3_img_4d_rope_pos_ids: torch.Tensor | None = None
+    flux3_txt_4d_rope_pos_ids: torch.Tensor | None = None
     text_mask: torch.Tensor | None = None
     fps: float | None = None
 

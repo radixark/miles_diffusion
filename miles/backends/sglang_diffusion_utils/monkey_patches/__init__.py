@@ -7,6 +7,7 @@ those groups before model construction.
 
 - ``qwen_image``: bitwise train<->rollout parity for the Qwen-Image DiT.
 - ``ltx``:  LTX rollout cond kwargs + AV cross-off (video-only train parity).
+- ``flux3_image``: a CFG scale <= 1 turns CFG off in the FLUX.3 image rollout.
 
 Patch modules are imported inside ``apply_*`` only, so CPU-only Ray actors
 can import this package without pulling sglang triton kernels. Adding a
@@ -57,6 +58,13 @@ def apply_ltx2_rollout_patches() -> None:
 
     patch_ltx2_rollout_cond_kwargs.apply()
     patch_ltx2_disable_av_cross.apply()
+
+
+@register_rollout_patch_group("flux3_image")
+def apply_flux3_image_rollout_patches() -> None:
+    from miles.backends.sglang_diffusion_utils.monkey_patches import patch_flux3_image_cfg_off
+
+    patch_flux3_image_cfg_off.apply()
 
 
 def validate_rollout_patch_groups(names: list[str]) -> None:

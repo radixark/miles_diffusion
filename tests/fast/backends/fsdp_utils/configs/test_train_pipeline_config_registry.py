@@ -9,7 +9,7 @@ What each test pins:
   family resolution   HF ids and local paths match case-insensitively; unknown refs fail; the env var wins
   compute_noise_pred  no CFG is one pos pass; joint-batch CFG equals two-pass CFG
   timestep input      each family reproduces the arithmetic its sglang-d DiT runs
-  sigma input         sd3 / wan2_2 scale by num_train_timesteps = 1000; qwen_image / krea2 pass sigma through
+  sigma input         sd3 / wan2_2 scale by num_train_timesteps = 1000; qwen_image / krea2 / flux3_image pass sigma through
 """
 
 from tests.ci.ci_register import register_cpu_ci
@@ -19,6 +19,7 @@ register_cpu_ci(est_time=30, suite="stage-a-cpu", labels=[])
 import pytest
 import torch
 
+from miles.backends.fsdp_utils.configs.flux3_image import Flux3ImageTrainPipelineConfig
 from miles.backends.fsdp_utils.configs.krea2 import Krea2TrainPipelineConfig
 from miles.backends.fsdp_utils.configs.qwen_image import QwenImageTrainPipelineConfig
 from miles.backends.fsdp_utils.configs.sd3 import SD3TrainPipelineConfig
@@ -36,6 +37,7 @@ class TestFamilyResolution:
             ("Wan-AI/Wan2.2-T2V-A14B", "wan2_2"),
             ("/data/ckpts/SD3.5-Medium-Finetune", "sd3"),
             ("krea/Krea-2-Raw", "krea2"),
+            ("black-forest-labs/flux-3-image-klein-base", "flux3_image"),
         ],
     )
     def test_known_patterns(self, ref, family):
@@ -139,7 +141,9 @@ class TestProcessSigmaAsTimestepsInput:
         out = config_cls.process_sigma_as_timesteps_input(config_cls, self.SIGMAS)
         assert torch.equal(out, self.SIGMAS * float(self.NUM_TRAIN_TIMESTEPS))
 
-    @pytest.mark.parametrize("config_cls", [QwenImageTrainPipelineConfig, Krea2TrainPipelineConfig])
+    @pytest.mark.parametrize(
+        "config_cls", [QwenImageTrainPipelineConfig, Krea2TrainPipelineConfig, Flux3ImageTrainPipelineConfig]
+    )
     def test_passes_the_sigma_through(self, config_cls):
         out = config_cls.process_sigma_as_timesteps_input(config_cls, self.SIGMAS)
         assert torch.equal(out, self.SIGMAS)
@@ -165,7 +169,7 @@ class TestCfgCombinePrefersTrueCfgScale:
         # so its output legitimately isn't `neg + true_cfg_scale * (pos - neg)`; it has its own
         # dedicated coverage in this repo's cfg_combine tests for that rescale branch.
         "config_cls",
-        [SD3TrainPipelineConfig, Wan2_2TrainPipelineConfig, Krea2TrainPipelineConfig],
+        [SD3TrainPipelineConfig, Wan2_2TrainPipelineConfig, Krea2TrainPipelineConfig, Flux3ImageTrainPipelineConfig],
     )
     def test_true_cfg_scale_overrides_guidance_scale(self, config_cls):
         out = config_cls().cfg_combine(self.POS, self.NEG, self.GUIDANCE_SCALE, true_cfg_scale=self.TRUE_CFG_SCALE)

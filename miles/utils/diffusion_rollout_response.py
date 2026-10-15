@@ -114,6 +114,8 @@ def _parse_cond_kwargs(
         h3_token_tags=_deserialize_optional_tensor(data.get("h3_token_tags"), deserialize_func=deserialize_func),
         pos=deserialize_func(data.get("pos")),
         text_ids=deserialize_func(data.get("text_ids")),
+        flux3_img_4d_rope_pos_ids=deserialize_func(data.get("flux3_img_4d_rope_pos_ids")),
+        flux3_txt_4d_rope_pos_ids=deserialize_func(data.get("flux3_txt_4d_rope_pos_ids")),
         text_mask=deserialize_func(data.get("text_mask")),
         fps=data.get("fps"),
     )

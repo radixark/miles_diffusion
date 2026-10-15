@@ -16,6 +16,11 @@ _ADDED_QKV_LORA_GROUPS = [
     ),
 ]
 
+_FUSED_QKV_GROUPS = [
+    AtomicUpdateGroup("to_qkv_lora", (".q_proj.lora_A", ".k_proj.lora_A", ".v_proj.lora_A"), optional=True),
+    AtomicUpdateGroup("to_qkv", (".q_proj.weight", ".k_proj.weight", ".v_proj.weight"), optional=True),
+]
+
 
 def get_hf_atomic_update_groups(diffusion_model_family: str | None) -> list[AtomicUpdateGroup]:
     """Atomic groups for a diffusion model family. H3 fuses to_q/k/v into qkv_proj; Qwen-Image and Cosmos3
@@ -24,4 +29,6 @@ def get_hf_atomic_update_groups(diffusion_model_family: str | None) -> list[Atom
         return list(_H3_LORA_GROUPS)
     if diffusion_model_family in ("qwen_image", "cosmos3"):
         return list(_ADDED_QKV_LORA_GROUPS)
+    if diffusion_model_family == "flux3_image":
+        return list(_FUSED_QKV_GROUPS)
     return []

@@ -4,7 +4,6 @@ GRPO rollouts load."""
 import re
 
 import torch
-from sglang.multimodal_gen.runtime.models.dits.minimax_h3 import _ARCH_DEFAULTS, _diffusers_h3_checkpoint
 
 from miles.backends.fsdp_utils.adaptations.weight_bridge import register_param_transform
 
@@ -19,6 +18,10 @@ def _to_fl2va(name: str, full: torch.Tensor, model) -> list[tuple[str, torch.Ten
     [gate, value]). FL2VA fuses an attention's to_q / to_k / to_v into one qkv_proj, and each weight arrives
     in its own call, so stash them and emit the fused tensor once the attention is complete.
     """
+    # Imported here: the engine's H3 module pulls GPU-probing kernels at import, and GPU-less
+    # actors (the rollout manager) import this registry.
+    from sglang.multimodal_gen.runtime.models.dits.minimax_h3 import _ARCH_DEFAULTS, _diffusers_h3_checkpoint
+
     qkv = _QKV_NAME.match(name)
     if qkv is None:
         return list(_diffusers_h3_checkpoint([(name, full)]))
