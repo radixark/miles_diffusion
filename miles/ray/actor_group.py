@@ -1,3 +1,5 @@
+import os
+
 import ray
 from ray.util.placement_group import PlacementGroup
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
@@ -50,6 +52,9 @@ class RayTrainGroup:
             "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": "1",
             **self.args.train_env_vars,
         }
+
+        if self.args.colocate:
+            env_vars.setdefault("NCCL_CUMEM_ENABLE", os.environ.get("NCCL_CUMEM_ENABLE", "0"))
 
         if self.args.deterministic_mode:
             # Must be in the process env at spawn: NCCL reads it at
