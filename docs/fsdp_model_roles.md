@@ -72,7 +72,8 @@ the shards rather than on gathered copies.
 
 `--use-ema` creates the EMA optimizer. Under `--loss-type nft` it is π_old: the rollout
 samples with it (`--rollout-weights ema`) and the loss trains against its prediction.
-`--ref-mode` only selects the KL reference (`lora_base` or `ref`), so NFT can use both.
+`--ref-mode` only selects the KL reference (`none`, `lora_base`, or `ref`; it defaults to
+`lora_base` when `--diffusion-kl-beta > 0`, else `none`), so NFT can use EMA and a reference together.
 EMA updates once after a rollout's training completes, and its decay follows the actor's
 optimizer step count, as in DiffusionNFT. Publishing or retrying a weight update never advances
 EMA. EMA evaluation and publication swap the EMA values into the actor's shards and
@@ -91,13 +92,16 @@ iter_0000001/
   optimizer/     AdamW state
   lr_scheduler/  scheduler state
   ema/           EMA optimizer state and decay schedule
+  rng.pt         torch and CUDA RNG state
+  meta.json      step counters and next rollout id
 ```
 
 EMA uses the existing distributed optimizer-state checkpoint wrapper, including
-parameter names and DTensor sharding. `--no-save-optim` and `--no-load-optim` apply
-to AdamW; EMA remains independently saved and restored. Loading a legacy checkpoint
-without EMA seeds EMA from the loaded actor and logs that its averaging history
-starts over. Disabling EMA simply omits this state from loading.
+parameter names and DTensor sharding. `--no-save-optim` skips saving both AdamW and
+LR-scheduler state; `--no-load-optim` skips loading AdamW state only, so a saved
+LR-scheduler state is still restored. EMA remains independently saved and restored.
+Loading a legacy checkpoint without EMA seeds EMA from the loaded actor and logs that
+its averaging history starts over. Disabling EMA simply omits this state from loading.
 
 ## Sleep/wake and native CPU offload
 

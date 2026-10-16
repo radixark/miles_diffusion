@@ -76,7 +76,7 @@ python3 scripts/run_diffusion_grpo_flux3_image_hps_8gpu.py
 
 Both runs use the default seed and the recipe defaults on one 8×H200 node, except that the Flow-GRPO run stops at
 150 rollouts (`--num-rollout 150`; the recipe default is 200). Held-out numbers use the first 32 prompts
-of each reward's test split, one image per prompt at a fixed seed, with the training sampling settings.
+of each reward's test split, one image per prompt at a fixed seed, at the training step count.
 
 ### 5.1 DiffusionNFT + PickScore
 
@@ -85,7 +85,8 @@ The PickScore reward (`rollout/reward/raw_mean`, PickScore / 26) rises from 0.76
 
 ![FLUX 3 Image Klein DiffusionNFT PickScore reward mean](../../assets/images/flux3-image/nft_pickscore_reward_mean.png)
 
-On held-out PickScore prompts at 16 steps:
+On held-out PickScore prompts at 16 steps, the training setting. Klein Base's own default is 50 steps with CFG 3.5,
+so neither base row shows its default quality:
 
 | Model | Sampling | PickScore / 26 |
 | --- | --- | --- |
@@ -122,8 +123,9 @@ it is flat for the first ~20 rollouts, as expected of a full finetune at lr 1e-5
 
 ![FLUX 3 Image Klein Flow-GRPO HPSv2.1 reward mean](../../assets/images/flux3-image/grpo_hps_reward_mean.png)
 
-On held-out HPDv2 prompts at 10 steps with CFG 3.5, HPSv2.1 goes from 0.270 (base) to 0.282 (rollout 150), higher on
-29/32 prompts. The gain is small but consistent: images keep their composition and gain detail and color.
+On held-out HPDv2 prompts at 10 steps with CFG 3.5 (the training settings, not Klein Base's 50-step default),
+HPSv2.1 goes from 0.270 (base) to 0.282 (rollout 150), higher on 29/32 prompts. The gain is small but consistent:
+images keep their composition and gain detail and color.
 
 Case studies (base and Flow-GRPO, both with CFG 3.5):
 

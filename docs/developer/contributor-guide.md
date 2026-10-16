@@ -65,7 +65,7 @@ Four tiers, by what they need:
 | Directory | Needs | What it is |
 |---|---|---|
 | `tests/fast/` | CPU only | Argument validation, config registry, dtype-map compilation, loss math, data splitting. The bulk of the suite. |
-| `tests/fast-gpu/` | 1-2 GPUs | FSDP behaviour that only exists on device: param-dtype maps, hybrid shard, SP attention parity, LoRA weight sync. Includes ported upstream PyTorch FSDP tests. |
+| `tests/fast-gpu/` | 1-4 GPUs | FSDP behaviour that only exists on device: param-dtype maps, hybrid shard, SP attention parity, LoRA weight sync. Includes ported upstream PyTorch FSDP tests. |
 | `tests/e2e/short/` | 2-5 GPUs | Runs an actual launch script for a few rollouts and compares its **metric series** against a recorded standard. |
 | `tests/ci/` | — | The harness itself: registry, label filter, suite runner, e2e standards. |
 
@@ -85,8 +85,9 @@ Stage A (CPU) gates every GPU stage: a broken import should not burn GPU runner 
 
 ### Registering a test with CI
 
-CI discovers tests by **AST-parsing** a `register_*_ci(...)` call at the top of the file — the
-call is a runtime no-op and never executes.
+CI discovers tests by **AST-parsing** a module-level `register_*_ci(...)` call — scheduling never
+imports the file, and `register_cpu_ci` / `register_cuda_ci` are runtime no-ops (`register_e2e_ci`,
+below, also runs the recipe when the file executes).
 
 ```python
 from tests.ci.ci_register import register_cpu_ci
@@ -124,6 +125,8 @@ them. The canonical registry is `tests/ci/labels.py`:
 | `ray` | Actors and placement groups |
 | `router` | Routing decisions |
 | `arguments` | Top-level argparse / `validate_args` |
+| `e2e` | Opt-in full-recipe GPU e2e runs (heavy) |
+| `model-scripts` | `train_diffusion.py` + `scripts/*.py` smoke tests |
 
 Two meta-labels bypass the filter and run everything: `run-ci-all` and `run-ci-image`.
 
@@ -171,7 +174,7 @@ pre-commit run --all-files --show-diff-on-failure --color=always
 ```
 
 Hooks: `ruff` (with `--fix`), `autoflake`, `isort` (black profile), `black`, plus the standard
-YAML / large-file / private-key checks.
+YAML / case-conflict / large-file / private-key checks and `requirements-txt-fixer`.
 
 - **Line length 119** (`black` and `isort` in `pyproject.toml`).
 - **Python ≥ 3.12** — modern syntax is fine (`X | None`, `match`, PEP 695 where it reads well).

@@ -24,7 +24,7 @@ temporal compression).
 
 | Model | HF ID | Notes |
 |---|---|---|
-| Wan2.2-T2V-A14B | [Wan-AI/Wan2.2-T2V-A14B-Diffusers](https://huggingface.co/Wan-AI/Wan2.2-T2V-A14B-Diffusers) | Default in both Wan recipes |
+| Wan2.2-T2V-A14B | [Wan-AI/Wan2.2-T2V-A14B-Diffusers](https://huggingface.co/Wan-AI/Wan2.2-T2V-A14B-Diffusers) | Default in all three Wan recipes |
 
 
 ## 3. Family config

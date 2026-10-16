@@ -21,7 +21,6 @@ signatures they expect, and the defaults they replace — in the same spirit as
 | | `--custom-reward-post-process-path` | Advantage normalization |
 | **Filtering** | `--dynamic-sampling-filter-path` | Per-group keep / drop |
 | | `--buffer-filter-path` | Buffer dequeue selection |
-| | `--rollout-sample-filter-path` | Per-sample loss mask |
 | **Training** | `--custom-expand-samples-to-train-pairs-path` | Trajectory → train pairs |
 | | `--custom-convert-samples-to-train-data-path` | Full sample → train_data |
 | | `--custom-prepare-train-batch-path` | DiT batch preparation |
@@ -41,8 +40,9 @@ shortcut that auto-fills several of the train-side paths; see § Training.
 
 ### `--rollout-function-path`
 
-Replace the entire train rollout. Diffusion recipes use
-`miles.rollout.sglang_diffusion_rollout.generate_rollout` (not the LLM default).
+Replace the entire train rollout. Diffusion recipes pass
+`miles.rollout.sglang_diffusion_rollout.generate_rollout`; the flag's default
+(`miles.rollout.sglang_rollout.generate_rollout`, the LLM path) is not shipped here.
 
 ```python
 def generate_rollout(
@@ -73,6 +73,8 @@ class CustomDataSource:
     def save(self, rollout_id) -> None: ...
     def load(self, rollout_id=None) -> None: ...
 ```
+
+`RolloutManager` also reads `len(data_source.dataset)` when `--num-rollout` is unset.
 
 ### `--custom-generate-function-path`
 
@@ -115,7 +117,7 @@ steps for debugging / A-B runs.
 
 ## Reward
 
-Built-in scorers (`--rm-type pickscore` / `ocr`) are documented in
+Built-in scorers (`--rm-type pickscore` / `hps` / `ocr` / `custom_api` / `openai_api`) are documented in
 [Rewards](rewards.md). The hooks below replace that dispatch entirely.
 
 ### `--custom-rm-path`
@@ -134,17 +136,19 @@ custom function is the whole dispatch.
 ```
 
 `--custom-rm-args` is an opaque string passed through as `args.custom_rm_args` for the
-custom RM to parse.
+custom RM to parse (requires `--custom-rm-path`).
 
 Shipped custom RMs:
 
 | Path | What |
 |---|---|
-| `miles.rollout.rm_hub.weighted_mixture_rm.weighted_mixture_rm` | Weighted sum of built-in rewards (`hps`, `pickscore`, `ocr`), weights from `--custom-rm-args "hps=0.7,pickscore=0.3"`; returns a dict per sample, train on it with `--reward-key weighted`. See [Rewards](rewards.md) § Combining rewards. |
+| `miles.rollout.rm_hub.weighted_mixture_rm.weighted_mixture_rm` | Weighted sum of built-in rewards (`hps`, `pickscore`, `ocr`, `custom_api`, `openai_api`), weights from `--custom-rm-args "hps=0.7,pickscore=0.3"`; returns a dict per sample, train on it with `--reward-key weighted`. See [Rewards](rewards.md) § Combining rewards. |
 
-HTTP / remote scoring: implement a batched custom RM and read `args.rm_url` (or
-your own flags). Encode images from `sample.generated_output` (see
-`generated_output_to_rgb_hwc_uint8_frames` in `miles/utils/processing_utils.py`):
+HTTP / remote scoring: `--rm-type openai_api` / `custom_api` (configured by
+`--openai-api-rm-config` / `--custom-api-rm-config`) call an external service; otherwise
+implement a batched custom RM and read `args.rm_url` (or your own flags). Encode images
+from `sample.generated_output` (see `generated_output_to_rgb_hwc_uint8_frames` in
+`miles/utils/processing_utils.py`):
 
 ```python
 import aiohttp
@@ -199,26 +203,14 @@ def filter_function(args, samples: list[Sample], **kwargs):
 ### `--buffer-filter-path`
 
 Select samples when dequeuing from the rollout buffer. Default is `pop_first`
-in `miles/rollout/data_source.py`.
+in `miles/rollout/data_source.py`. The stock diffusion rollout never calls
+`add_samples`, so this only fires when a custom rollout refills the buffer.
 
 ```python
 def buffer_filter(
     args, rollout_id: int | None, buffer: list[list[Sample]], num_samples: int
 ) -> list[list[Sample]]:
     ...
-```
-
-### `--rollout-sample-filter-path`
-
-Per-sample, in-place. Set `sample.remove_sample = True` to exclude a sample from
-the loss (it still participates in advantage normalization).
-
-```python
-def filter_function(args, data: list[list[Sample]]) -> None:
-    for group in data:
-        for s in group:
-            if not_good(s):
-                s.remove_sample = True
 ```
 
 ***
@@ -231,8 +223,12 @@ def filter_function(args, data: list[list[Sample]]) -> None:
 |---|---|---|---|
 | `policy_loss` (default) | Flow-GRPO built-in | `prepare_flow_grpo_batch` | `flow_grpo_loss_formula` |
 | `nft` | `data_conversion_hub.nft.expand_samples_to_train_pairs` | `loss_hub.nft.prepare_nft_batch` | `nft_loss_formula` |
-| `sft_loss` | (via SFT convert) | required custom / SFT defaults | required custom / SFT defaults |
+| `sft_loss` | none; convert `sft_rollout.convert_samples_to_train_data` | `loss_hub.sft.prepare_sft_batch` | `sft_loss_formula` |
 | `custom_loss` | your expand (or convert) | your prepare | your formula |
+
+`sft_loss` auto-fills nothing: it requires the convert, rollout-log, prepare and loss
+paths (see `scripts/run_diffusion_sft_wan22.py`). `custom_loss` behaves like `policy_loss`:
+any hook left unset falls back to the Flow-GRPO built-in.
 
 DiT forward always stays in the FSDP actor; the loss hook only computes the
 objective.
@@ -273,11 +269,12 @@ equivalent under `loss_hub.nft`. `PreparedBatch.latents`, `timesteps` and
 ### `--custom-loss-function-path`
 
 ```python
-def loss_formula(ctx, batch, prepared, *, new_pred, ref_pred, metrics, **kwargs):
+def loss_formula(ctx, batch, prepared, *, new_pred, old_pred, ref_pred, metrics, **kwargs):
     ...
 ```
 
 `new_pred`, `old_pred` and `ref_pred` are keyed by the same stream names as `prepared.latents`.
+`old_pred` is `None` unless `--loss-type nft`; `ref_pred` is `None` with `--ref-mode none`.
 
 ### `--sde-step-backend-path`
 
@@ -340,7 +337,7 @@ flags into a forked recipe.)
 
 ## Pairs well with
 
-- [Rewards](rewards.md) — built-in PickScore / OCR and prompt JSONL.
+- [Rewards](rewards.md) — built-in PickScore / HPS / OCR and prompt JSONL.
 - [SDE step backend](../advanced/sde-backend.md) — step strategies and SDE kernels.
 - [LoRA weight sync](../advanced/lora.md) — IPC merge path used by most recipes.
 - [SD3 model guide](../models/sd3/sd3.md) — end-to-end recipe flags.
