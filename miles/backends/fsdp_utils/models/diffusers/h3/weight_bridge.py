@@ -22,8 +22,9 @@ def _diffusers_h3_checkpoint(
 ) -> Iterator[tuple[str, torch.Tensor]]:
     """Map Diffusers H3 names/layout to the fused native checkpoint layout.
 
-    Cloned from sglang-d's ``dits/minimax_h3.py``: importing that module loads the whole DiT,
-    whose attention backends need a GPU at import time, and the rollout manager has none.
+    Clone of sglang-d's ``_diffusers_h3_checkpoint`` (``dits/minimax_h3.py``); keep the two identical.
+    Importing that module loads the whole DiT, whose attention backends need a GPU at import time,
+    and the rollout manager has none.
     """
     mapping = get_param_names_mapping(_ARCH_DEFAULTS.param_names_mapping)
     pending: dict[str, dict[int, torch.Tensor]] = defaultdict(dict)
