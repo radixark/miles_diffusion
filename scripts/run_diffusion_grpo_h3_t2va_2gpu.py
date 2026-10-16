@@ -112,7 +112,7 @@ def execute(args: ScriptArgs, prompt_dir: str) -> None:
     )
 
     diffusion_args = (
-        "--diffusion-num-steps 10 "
+        "--diffusion-num-steps 9 "
         "--diffusion-guidance-scale 1.0 "
         "--diffusion-noise-level 0.7 "
         "--diffusion-sde-type sde "
@@ -197,7 +197,7 @@ def execute(args: ScriptArgs, prompt_dir: str) -> None:
         ),
         num_gpus_per_node=2,
         config=args,
-        extra_env_vars={"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"},
+        extra_env_vars={"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True", "MINIMAX_H3_VAE_DECODER_FUSED_NORM": "0"},
     )
 
 
