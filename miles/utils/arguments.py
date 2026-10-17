@@ -113,7 +113,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action=argparse.BooleanOptionalAction,
                 help=(
                     "Whether to offload the training actor to CPU during training. "
-                    "This will always be true when --colocate is set."
+                    "Defaults to on when --colocate is set."
                 ),
             )
             parser.add_argument(
@@ -121,7 +121,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action=argparse.BooleanOptionalAction,
                 help=(
                     "Whether to offload the rollout generator to CPU during training. "
-                    "This will always be true when --colocate is set."
+                    "Defaults to on when --colocate is set."
                 ),
             )
             parser.add_argument(
@@ -275,7 +275,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--model-backend-path",
                 type=str,
                 default=None,
-                help="Model loading function path; default from the family config.",
+                help="Model backend class path, constructed with the family config; default from the family config.",
             )
             parser.add_argument(
                 "--diffusion-num-steps",
@@ -414,8 +414,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--diffusion-sde-window-range",
                 type=str,
                 default=None,
-                help="'lo,hi' bounds for the SDE window start (inclusive, exclusive). "
-                "Defaults to [0, num_inference_steps].",
+                help="'lo,hi': the whole SDE window lies in [lo, hi). " "Defaults to [0, num_inference_steps).",
             )
             parser.add_argument(
                 "--diffusion-sde-candidate-steps",
@@ -430,8 +429,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--diffusion-step-strategy-path",
                 type=str,
                 default=None,
-                help="Dotted path to a factory(args) -> StepStrategy callable. "
-                "Overrides --diffusion-num-sde-steps.",
+                help="Dotted path to `fn(args, sample, num_steps, seed) -> (sde_step_indices, "
+                "returned_latent_indices)`, called per engine request. The built-ins in "
+                "miles.rollout.step_strategy_hub read --diffusion-num-sde-steps.",
             )
             parser.add_argument(
                 "--diffusion-log-prob-no-const",
@@ -519,9 +519,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help=(
-                    "Substitute the inner `def generate(args, sample, sampling_params)` call inside "
-                    "the diffusion rollout. Useful for multi-turn refinement / custom CFG schedules / "
-                    "specialised sampling pipelines. The function may optionally accept `evaluation=...`."
+                    "Substitute the per-microgroup generation call inside the diffusion rollout: "
+                    "`async def generate(args, microgroup: list[Sample], sampling_params) -> list[Sample]`. "
+                    "Useful for multi-turn refinement / custom CFG schedules / specialised sampling "
+                    "pipelines. The function may optionally accept `evaluation=...`."
                 ),
             )
             parser.add_argument(
@@ -568,10 +569,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help=(
-                    "Per-sample loss-mask filter run after dynamic_sampling_filter. Signature: "
-                    "`def filter(args, data: list[list[Sample]]) -> None`. The function should set "
-                    "`sample.remove_sample = True` on samples that should be excluded from loss "
-                    "computation (they still participate in advantage normalisation)."
+                    "In-place hook run on the train rollout's groups before they are returned. Signature: "
+                    "`def filter(args, data: list[list[Sample]]) -> None`. Nothing downstream reads a "
+                    "per-sample drop flag, so it cannot exclude samples from the loss."
                 ),
             )
             # update weight
@@ -1983,7 +1983,7 @@ def miles_validate_args(args):
     validate_sp_args(args)
     validate_hybrid_shard_args(args)
 
-    # always true on offload for colocate at the moment.
+    # Offload defaults on under --colocate; an explicit --no-offload-* is kept.
     if args.colocate:
         if args.offload_train is None:
             args.offload_train = True

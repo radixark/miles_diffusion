@@ -31,6 +31,7 @@ def hf_download_dataset(full_name: str, include: str | None = None, data_dir: st
 @dataclass
 class ExecuteTrainConfig:
     cuda_core_dump: bool = False
+    # Not read by the shipped launchers; the node count comes from --actor-num-nodes.
     num_nodes: int = int(os.environ.get("SLURM_JOB_NUM_NODES", "1"))
     cuda_visible_devices: str = ""
     extra_env_vars: str = ""
@@ -114,7 +115,7 @@ def execute_train(
             if k in os.environ
         },
         "no_proxy": f"127.0.0.1,{master_addr}",
-        # torch distributed needs this on every node, not just the submitting shell.
+        # Train actors replace it with the address they negotiate (miles/ray/train_actor.py).
         "MASTER_ADDR": master_addr,
         **(
             {

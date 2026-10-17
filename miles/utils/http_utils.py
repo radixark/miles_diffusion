@@ -194,7 +194,7 @@ def _init_ray_distributed_post(args):
     """Initialize one or more Ray async actors per node for HTTP POST.
 
     Uses NodeAffinitySchedulingStrategy to place actors on distinct nodes.
-    Controlled by MILES_HTTP_POST_ACTORS_PER_NODE.
+    Starts --num-gpus-per-node actors per node.
     """
     global _post_actors
     if _post_actors:
