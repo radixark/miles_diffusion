@@ -6,17 +6,11 @@ import logging
 import multiprocessing
 import os
 import time
-from typing import TYPE_CHECKING
-
 import requests
-from sglang.srt.utils.common import kill_process_tree
 
 from miles.ray.ray_actor import RayActor
 from miles.utils.arguments import rollout_merges_lora
 from miles.utils.http_utils import get_host_info
-
-if TYPE_CHECKING:
-    from sglang.multimodal_gen.runtime.server_args import ServerArgs
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +43,21 @@ def _bootstrap_scheduler_process_with_rollout_patches(spec):
     bootstrap_scheduler_process(spec)
 
 
-def _launch_server_target(server_args, apply_rollout_patches: bool = False):
+def _launch_server_target(args, host, port, nccl_port, apply_rollout_patches: bool = False):
+    prespawned = None
+    if getattr(args, "rollout_prespawn_schedulers", False) and not apply_rollout_patches:
+        # Before any sglang import, so the workers import the same stack in parallel with this process.
+        from miles.backends.sglang_diffusion_utils.scheduler_prespawn import prespawn
+
+        prespawned = prespawn(args.rollout_num_gpus_per_engine)
+
+    # ServerArgs is built here, not in the engine actor: this process imports sglang anyway, and keeping
+    # sglang out of the actor takes one full sglang import (~40 s) off the engine startup path.
+    from sglang.multimodal_gen.runtime.server_args import ServerArgs
+
+    server_args = ServerArgs.from_kwargs(**_compute_server_args(args, host=host, port=port, nccl_port=nccl_port))
+    server_args.host = server_args.host.strip("[]")
+
     # addict.Dict loses its `__frozen` attribute across spawn pickle; rebuild it.
     import addict
 
@@ -62,26 +70,54 @@ def _launch_server_target(server_args, apply_rollout_patches: bool = False):
 
         _ls_mod.bootstrap_scheduler_process = _bootstrap_scheduler_process_with_rollout_patches
 
-    from sglang.multimodal_gen.runtime.launch_server import launch_server
+    import sglang.multimodal_gen.runtime.launch_server as launch_mod
 
-    launch_server(server_args)
+    if prespawned is not None:
+        if hasattr(launch_mod, "register_prespawned_schedulers"):
+            launch_mod.register_prespawned_schedulers(prespawned)
+        else:
+            logger.warning("--rollout-prespawn-schedulers needs sglang's register_prespawned_schedulers; ignoring it")
+            for worker in prespawned:
+                worker.cancel()
+    launch_mod.launch_server(server_args)
+
+
+def _picklable_args(args):
+    """Copy of ``args`` that survives the plain pickle of a spawn start (Ray used cloudpickle to get it here)."""
+    import argparse
+    import pickle
+
+    kept = {}
+    for key, value in vars(args).items():
+        try:
+            pickle.dumps(value)
+        except Exception:
+            continue
+        kept[key] = value
+    return argparse.Namespace(**kept)
 
 
 def launch_server_process(
-    server_args: ServerArgs,
+    args,
+    host: str,
+    port: int,
+    nccl_port: int,
     apply_rollout_patches: bool = False,
 ) -> multiprocessing.Process:
+    """Start the sglang-d server in a child process and wait until it is healthy.
+
+    ``host`` is bracketed for IPv6 (as in the server URL); the child strips it for binding.
+    """
     # use spawn to avoid potential risks of fork in terms of subthreads or CUDA.
     multiprocessing.set_start_method("spawn", force=True)
-    server_args.host = server_args.host.strip("[]")
     p = multiprocessing.Process(
         target=_launch_server_target,
-        args=(server_args, apply_rollout_patches),
+        args=(_picklable_args(args), host, port, nccl_port, apply_rollout_patches),
     )
     p.start()
 
     _wait_server_healthy(
-        base_url=server_args.url(),
+        base_url=f"http://{host}:{port}",
         is_process_alive=lambda: p.is_alive(),
     )
 
@@ -134,22 +170,14 @@ class SGLangDiffusionEngine(RayActor):
 
         host = _format_v6_uri(host)
 
-        server_args_dict = _compute_server_args(
-            self.args,
-            host=host,
-            port=port,
-            nccl_port=nccl_port,
-        )
+        self.node_rank = getattr(self.args, "sglang_node_rank", None) or 0
+        self.server_host = host
+        self.server_port = port
+        self._nccl_port = nccl_port
 
-        self.node_rank = server_args_dict.get("node_rank", 0)
-        self.server_host = server_args_dict["host"]
-        self.server_port = server_args_dict["port"]
+        self._init_normal()
 
-        self._init_normal(server_args_dict)
-
-    def _init_normal(self, server_args_dict):
-        from sglang.multimodal_gen.runtime.server_args import ServerArgs
-
+    def _init_normal(self):
         logger.info(f"Launch HttpServerEngineAdapter at: {self.server_host}:{self.server_port}")
         self._pin_to_assigned_gpu()
         from miles.backends.sglang_diffusion_utils.monkey_patches import ROLLOUT_PATCH_GROUPS_ENV
@@ -159,7 +187,10 @@ class SGLangDiffusionEngine(RayActor):
             os.environ[ROLLOUT_PATCH_GROUPS_ENV] = ",".join(patch_groups)
             logger.info("Launching sglang-d with rollout patch groups: %s", patch_groups)
         self.process = launch_server_process(
-            ServerArgs.from_kwargs(**server_args_dict),
+            self.args,
+            host=self.server_host,
+            port=self.server_port,
+            nccl_port=self._nccl_port,
             apply_rollout_patches=bool(patch_groups),
         )
 
@@ -339,6 +370,8 @@ class SGLangDiffusionEngine(RayActor):
 
             if response is not None:
                 response.raise_for_status()
+        from sglang.srt.utils.common import kill_process_tree
+
         kill_process_tree(self.process.pid)
 
     def release_memory_occupation(self):

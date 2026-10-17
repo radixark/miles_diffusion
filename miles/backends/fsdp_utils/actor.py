@@ -28,13 +28,6 @@ from miles.utils.train_data_utils import (
 
 from . import checkpoint
 from .device_move import move_model, move_optimizer, sleep_frozen_model, wake_up_frozen_model
-from .diffusion_update_weight_utils import (
-    DiffusionUpdateWeightFromDistributed,
-    DiffusionUpdateWeightFromTensor,
-    DiffusionUpdateWeightFromTensorLoRA,
-    DiffusionUpdateWeightFromTensorLoRAIPC,
-    DiffusionUpdateWeightLoRADistributed,
-)
 from .ema import EMAOptimizer, reshard_model
 from .input_dtype_policy import apply_input_dtype_policy
 from .loss_hub import DiffusionLossContext, flow_grpo_loss_formula, prepare_flow_grpo_batch
@@ -203,6 +196,17 @@ class FSDPTrainRayActor(TrainRayActor):
                 keep_previous=args.async_exact_resume,
             )
         checkpoint_payload = checkpoint.load(self)
+
+        # Imported here, not at module level: it pulls in sglang (~25 s), which the driver and other
+        # processes that only need this class or fsdp_utils' helpers should not pay for. Not in a
+        # background thread either: concurrent imports of transformers are not safe.
+        from .diffusion_update_weight_utils import (
+            DiffusionUpdateWeightFromDistributed,
+            DiffusionUpdateWeightFromTensor,
+            DiffusionUpdateWeightFromTensorLoRA,
+            DiffusionUpdateWeightFromTensorLoRAIPC,
+            DiffusionUpdateWeightLoRADistributed,
+        )
 
         # sglang-d now supports /update_weights_from_tensor (PR #20464).
         if self.args.train_only:

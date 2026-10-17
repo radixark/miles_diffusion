@@ -77,21 +77,23 @@ class RayTrainGroup:
 
         TrainRayActor = ray.remote(num_gpus=1, runtime_env={"env_vars": env_vars})(actor_impl)
 
-        # Create worker actors
-        self._actor_handlers = []
-        master_addr, master_port = None, None
-        for rank in range(world_size):
-            actor = TrainRayActor.options(
+        # Create every rank at once so their process start-up overlaps; rank 0 picks the rendezvous address
+        # in its constructor and the other ranks get it before init (actor calls run in submission order).
+        self._actor_handlers = [
+            TrainRayActor.options(
                 num_cpus=num_gpus_per_actor,
                 num_gpus=num_gpus_per_actor,
                 scheduling_strategy=PlacementGroupSchedulingStrategy(
                     placement_group=pg,
                     placement_group_bundle_index=reordered_bundle_indices[rank],
                 ),
-            ).remote(world_size, rank, master_addr, master_port)
-            if rank == 0:
-                master_addr, master_port = ray.get(actor.get_master_addr_and_port.remote())
-            self._actor_handlers.append(actor)
+            ).remote(world_size, rank, None, None)
+            for rank in range(world_size)
+        ]
+        master_addr, master_port = ray.get(self._actor_handlers[0].get_master_addr_and_port.remote())
+        ray.get(
+            [actor.set_master_addr_and_port.remote(master_addr, master_port) for actor in self._actor_handlers[1:]]
+        )
 
     def async_init(self, args, role, with_ref=False):
         """

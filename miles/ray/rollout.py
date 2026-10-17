@@ -11,7 +11,6 @@ import numpy as np
 import ray
 import torch
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
-from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 
 from miles.backends.sglang_diffusion_utils.sglang_diffusion_engine import SGLangDiffusionEngine
 from miles.ray.data_conversion_hub.flow_grpo import (
@@ -43,6 +42,9 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
+
+# sglang.srt.constants.GPU_MEMORY_TYPE_WEIGHTS; importing it pulls in all of sglang (~10 s) at actor start.
+GPU_MEMORY_TYPE_WEIGHTS = "weights"
 
 
 @ray.remote
@@ -532,6 +534,8 @@ def init_rollout_engines(args, pg, all_rollout_engines):
             "SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT": "true",
             "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION": "false",
             "SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE": "false",
+            # The RunAI streamer is copy-bound (~2.4 GiB/s even from a warm page cache); mmap is much faster.
+            "SGLANG_USE_RUNAI_MODEL_STREAMER": "false",
         }
         if rollout_merges_lora(args):
             # Merge in the train forward dtype, not fp32, to cut train/rollout consistency error.

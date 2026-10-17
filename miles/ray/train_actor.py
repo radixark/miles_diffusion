@@ -49,6 +49,11 @@ class TrainRayActor(RayActor):
         os.environ["CUDA_VISIBLE_DEVICES"] = str(local_gpu_id)
         os.environ["LOCAL_RANK"] = "0"
 
+    def set_master_addr_and_port(self, master_addr, master_port):
+        self.master_addr, self.master_port = master_addr, master_port
+        os.environ["MASTER_ADDR"] = self.master_addr
+        os.environ["MASTER_PORT"] = str(self.master_port)
+
     def init(self, args, role, with_ref=False):
         self.args = args
         self.role = role
