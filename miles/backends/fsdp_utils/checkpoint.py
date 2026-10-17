@@ -361,6 +361,8 @@ def save(actor: Any, iteration: int) -> None:
             "micro_step": actor.micro_step,
             "world_size": dist.get_world_size(),
             "timestamp": time.time(),
+            # A single-module run's DCP keys do not name the module; LoRA export reads it from here.
+            "update_weight_target_modules": list(actor.args.update_weight_target_modules),
         }
         _write_checkpoint_metadata(checkpoint_dir / "meta.json", metadata)
 

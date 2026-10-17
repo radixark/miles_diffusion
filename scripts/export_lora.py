@@ -21,8 +21,14 @@ def main() -> None:
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--lora-rank", type=int, required=True)
     parser.add_argument("--lora-alpha", type=int, required=True)
+    parser.add_argument(
+        "--component",
+        default=None,
+        help="Pipeline module the adapter belongs to (e.g. transformer_ref); defaults to the module recorded "
+        "in the checkpoint's meta.json, else transformer",
+    )
     args = parser.parse_args()
-    export_lora_safetensors(args.ckpt_dir, args.out, args.lora_rank, args.lora_alpha)
+    export_lora_safetensors(args.ckpt_dir, args.out, args.lora_rank, args.lora_alpha, args.component)
 
 
 if __name__ == "__main__":
