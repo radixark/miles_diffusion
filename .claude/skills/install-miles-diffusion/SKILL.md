@@ -59,11 +59,16 @@ pulls from (`FA3_WHEELS_REPO` / `FA3_WHEELS_TAG`), so pip installs it like any o
 
 ## sglang and miles are anchored to the refs the Dockerfile builds from
 
-sglang comes from the `sglang-miles-h3` integration branch and miles from `main`, as in the
-Dockerfile (`SGLANG_DIFFUSION_BRANCH=sglang-miles-h3`, `MILES_DIFFUSION_COMMIT=main`). The
+sglang comes from the `sglang-miles` integration branch and miles from `main`, as in the
+Dockerfile (`SGLANG_DIFFUSION_BRANCH=sglang-miles`, `MILES_DIFFUSION_COMMIT=main`). The
 difference is that the Dockerfile follows the branch tip at build time while this pins a commit
 and checks it is an ancestor of the branch. That check matters: the first capture pinned a local
 cherry-pick that exists in no remote.
+
+`sglang-miles` is rebuilt from time to time, so the image's own build commit can fall off the
+branch. `SGLANG_COMMIT` is then the commit nightly CI installs on top of `OFFICIAL_IMAGE` (CI
+reinstalls sglang from the branch with `--no-deps`), not the one `refresh.sh` reads from the box;
+set it by hand after a refresh.
 
 Because the ancestor check needs real history, the checkout is a blob-filtered full clone rather
 than the image's `--depth=1`, so setuptools_scm reports a different commit count for the same
