@@ -60,10 +60,11 @@ Options shared by every launcher, from the `ExecuteTrainConfig` base class and r
 
 | Option | Default | Purpose |
 |---|---|---|
-| `--num-nodes` | `$SLURM_JOB_NUM_NODES` or `1` | Training nodes |
-| `--cuda-visible-devices` | inherited from the environment | Physical GPUs the job may use. Applied by exporting it for `ray start`. |
+| `--num-nodes` | `$SLURM_JOB_NUM_NODES` or `1` | Carried by the base class but read by no shipped launcher; the node count comes from `--actor-num-nodes` in the flag blocks |
+| `--cuda-visible-devices` | inherited from the environment | Physical GPUs the job may use; must list exactly as many GPUs as the recipe runs on. Applied by exporting it for `ray start`. |
 | `--output-dir` | `<repo>/logs` | Where checkpoints and dumps are written |
-| `--extra-env-vars` | empty | Extra env vars added to the Ray runtime env |
+| `--extra-env-vars` | empty | Extra env vars added to the Ray runtime env, as JSON or space-separated `KEY=VALUE` |
+| `--cuda-core-dump` | off | Adds the CUDA core-dump-on-exception env vars to the Ray runtime env; dumps go to `--output-dir` |
 | `--extra-args` | empty | Extra flags appended to the `train_diffusion.py` command line |
 
 wandb flags are emitted only when `WANDB_API_KEY` is set — logging turns on by exporting the
@@ -107,24 +108,25 @@ From lightest to heaviest:
    the flag blocks directly for anything you want to keep.
 
 The Typer flags are also the CI interface: an e2e test names the recipe and passes its knobs
-(`script="scripts/run_diffusion_grpo_sd3_ocr_sglang.py", args=["--num-rollout", "2", ...]`), so
+(`script="scripts/run_diffusion_grpo_sd3_ocr_sglang.py", args=["--num-rollout", "2"]`), so
 launch scripts must stay runnable with no arguments and configurable through `ScriptArgs` — CI
 drives them the same way you do.
 
 ## What execute_train runs on your machine
 
-1. Kills stale `sglang` / `ray` / `miles` processes.
-2. Starts a fresh cluster with `export CUDA_VISIBLE_DEVICES=... && ray start --head` — the
-   device list must be in the raylet's own environment; set per job or per actor it never
-   reaches the scheduler, which then places work on excluded GPUs.
-3. Builds the Ray runtime env: NCCL socket vars, `MASTER_ADDR`, `PYTHONPATH`, plus anything
-   from `--extra-env-vars`.
+1. Kills stale `sglang` / `sgl_diffusion` / `miles` / `redis` processes, and `ray` unless the
+   cluster is external.
+2. Starts a fresh cluster with `ray start --head`, prefixed with `export CUDA_VISIBLE_DEVICES=... &&`
+   when `--cuda-visible-devices` is set — the device list must be in the raylet's own environment;
+   set per job or per actor it never reaches the scheduler, which then places work on excluded GPUs.
+3. Builds the Ray runtime env: NCCL socket vars, `MASTER_ADDR`, `PYTHONPATH`, plus the recipe's
+   own `extra_env_vars` and anything from `--extra-env-vars`.
 4. Submits the job: `ray job submit -- python3 train_diffusion.py <flags>`.
 
 | Env var | Effect |
 |---|---|
-| `MILES_SCRIPT_EXTERNAL_RAY=1` | A scheduler already built the Ray cluster: skip the teardown and `ray start`, only submit. `--cuda-visible-devices` must be empty here — export it before each `ray start` instead. Used by the multi-node recipe below. |
-| `MILES_SCRIPT_ENABLE_RAY_SUBMIT=0` | Run everything except the submission — shows what a launcher would do |
+| `MILES_SCRIPT_EXTERNAL_RAY=1` | A scheduler already built the Ray cluster: skip `ray stop` and `ray start`, and submit into the running cluster. `--cuda-visible-devices` must be empty here — export it before each `ray start` instead. Used by the multi-node recipe below. |
+| `MILES_SCRIPT_ENABLE_RAY_SUBMIT=0` | Run everything up to the submission (dataset download, process cleanup, `ray start`) and skip `ray job submit`; the training command line is not printed |
 | `MASTER_ADDR` | Where the single-node `ray start --head` binds, default `127.0.0.1`. The training process group does NOT use it: rank 0 negotiates its real node IP and a free port at runtime, so multi-node needs no setting here |
 
 ## The batch-size arithmetic
@@ -150,9 +152,10 @@ abort at parse time. `global_batch_size` counts samples and must divide by `dp_s
 | `--diffusion-train-iter-order` | — | Tile visit order (2D only) |
 | `--train-dp-split-mode` | — | `contiguous` or `stride` dealing of pairs to DP ranks |
 
-Most recipes use the 2D tile — it states "S samples × T timesteps per forward" directly, which
-the flat knob cannot express. Wan2.2 is the exception: `--micro-batch-size 2` is its way of
-keeping each forward on one side of the high/low-noise expert boundary.
+Most GRPO recipes use the 2D tile — it states "S samples × T timesteps per forward" directly, which
+the flat knob cannot express. The NFT and SFT recipes, Cosmos3, and the 5-GPU Wan2.2 recipe use the
+flat knob; Wan2.2 trains one shared SDE step per rollout, so its `--micro-batch-size 2` forwards
+never span the high/low-noise expert boundary.
 
 Worked example (the Qwen-Image recipe):
 
@@ -231,6 +234,8 @@ ray start --address=<head-ip>:6379 --num-gpus 1
 `ray status` on the head should show every node and the full GPU count.
 
 ### Submit
+
+On the head node (the launcher submits to `127.0.0.1:8265` unless `RAY_ADDRESS` is set):
 
 ```bash
 ulimit -n 1000000   # the driver needs it too

@@ -98,6 +98,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
     sglang_args = (
         "--use-miles-router "
         "--sglang-server-concurrency 8 "
+        "--sglang-lora-merge-mode merge "
         "--sglang-dit-precision bf16 "
         "--sglang-vae-slicing "
         "--update-weight-buffer-size 2147483648 "

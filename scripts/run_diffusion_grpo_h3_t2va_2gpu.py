@@ -158,6 +158,7 @@ def execute(args: ScriptArgs, prompt_dir: str) -> None:
     sglang_args = (
         "--use-miles-router "
         "--sglang-server-concurrency 2 "
+        "--sglang-lora-merge-mode merge "
         "--sglang-tp-size 2 "
         "--sglang-sp-degree 1 "
         "--sglang-ulysses-degree 1 "

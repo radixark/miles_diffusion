@@ -5,11 +5,11 @@
 ## Build locally (no push)
 
 ```bash
-just build-local
+docker build -f docker/Dockerfile -t radixark/miles_diffusion:local .
 ```
 
-Builds `radixark/miles-diffusion:<version>-local` locally without pushing.
-(`<version>` is read from `docker/version.txt`.)
+Builds the image locally without pushing, from the repo root (the same command CI runs in
+`docker-build.yml`).
 
 ## PR build check (in `pr-test.yml`)
 

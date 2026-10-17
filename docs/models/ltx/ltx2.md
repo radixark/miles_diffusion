@@ -6,8 +6,8 @@ description: Video GRPO on LTX-2.3 — native model package, CPS-SDE, unguided f
 
 [LTX-2](https://github.com/Lightricks/LTX-2) is Lightricks' audio-video DiT. LTX-2.3 is the
 variant miles-diffusion trains, and the framework's most unusual family: the only one that does
-**not** go through diffusers, the only one trained **unguided**, and the only one on the **CPS**
-SDE kernel.
+**not** go through diffusers and the only one on the **CPS** SDE kernel, and, like MiniMax H3,
+trained **unguided**.
 
 **Key highlights for RL training:**
 
@@ -46,7 +46,7 @@ Registered in `miles/backends/fsdp_utils/configs/ltx.py`:
 ## 4. Launch
 
 Canonical recipe: `scripts/run_diffusion_grpo_ltx23_sglang.py` — a 5-GPU Ray node with 4 GPUs shared by FSDP and
-rollout plus 1 separately scheduled PickScore GPU, 57 frames @ 24 fps, 512×768.
+rollout plus 1 separately scheduled PickScore GPU, 57 frames @ 24 fps, 512×768 (height × width).
 
 **Status:** [🛡️ FG — Fully gated](../../user-guide/recipe-verification.md#fg)
 
@@ -59,13 +59,13 @@ python3 scripts/run_diffusion_grpo_ltx23_sglang.py
 - The step strategy is `epoch_global_random_choice`: 3 SDE steps drawn once per epoch from
   candidates 0-9 and shared by every sample — with only 64 samples per rollout, per-request
   randomization would add variance the batch is too small to average out.
-- The clip range is `1e-5`, an order of magnitude tighter than the image recipes' `1e-4`.
+- The clip range is `1e-5`, an order of magnitude tighter than the SD3.5 and Qwen-Image recipes' `1e-4`.
 - `--pickscore-num-frames 3` scores three evenly-spaced frames per video; scoring all 57 would
   dominate rollout time for a reward signal that barely changes.
 - Health checks are relaxed (`--rollout-health-check-interval 120`, router failure threshold 30):
   a 57-frame request takes minutes, and the image-recipe defaults would kill healthy engines
   mid-generation.
-- `--rollout-parser-num-workers 8`: 57-frame trajectory tensors are large enough that one
+- `--rollout-parser-num-workers 16`: 57-frame trajectory tensors are large enough that one
   deserializer actor starves the engines.
 
 ## 6. Reference results

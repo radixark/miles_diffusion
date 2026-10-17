@@ -73,6 +73,7 @@ def build_rollout_sampling_params(
         sampling_params["fps"] = int(args.diffusion_fps)
 
     extra_sampling_params = dict(extra_sampling_params or {})
+    extra_sampling_params["quality"] = args.diffusion_quality
     if args.diffusion_guidance_scale_2 is not None:
         extra_sampling_params["guidance_scale_2"] = float(args.diffusion_guidance_scale_2)
 
