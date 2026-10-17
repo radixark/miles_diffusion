@@ -39,12 +39,13 @@ training), leave out `--lora-ipc-weight-sync`: LoRA always pushes only
 | `--lora-alpha` | LoRA alpha (typically 2× rank) |
 | `--lora-target-modules` | Override family defaults (optional) |
 | `--lora-init-weights` | Init scheme, e.g. `gaussian` |
-| `--update-weight-buffer-size` | Sync bucket size in bytes (recipes use 2 GB) |
+| `--update-weight-buffer-size` | Sync bucket size in bytes (most recipes use 2 GB) |
 | `--update-weight-target-module` | Component to sync (SD3 default: `transformer`) |
 | `--colocate` | Train and rollout share GPU visibility and sync over CUDA IPC; without it, weights sync over NCCL |
 
 <Warning>
-`--lora-ipc-weight-sync` requires both `--use-lora` and `--colocate`. Without
+`--lora-ipc-weight-sync` requires `--use-lora`, and `--colocate` whenever weights
+are synced (any run without `--train-only` or `--debug-rollout-only`). Without
 colocation, CUDA IPC handles cannot cross the train/rollout process boundary;
 LoRA then always syncs `lora_A` / `lora_B` over NCCL, and the flag is rejected.
 </Warning>
@@ -107,13 +108,13 @@ weight updates for diffusion engines.
    keep these diffusers names; sglang-d `lora_merge` applies
    `param_names_mapping` and the disk-load FFN swap.
 2. FSDP shard all-gather → `pack_units_by_size()` packs units into buckets capped by
-   **`--update-weight-buffer-size`** (recipes use 2 GB) → CUDA IPC or NCCL
+   **`--update-weight-buffer-size`** (most recipes use 2 GB) → CUDA IPC or NCCL
    broadcast.
 3. Rollout engine receives `weight_update_mode="lora_merge"` with
    `lora_alpha` and `lora_rank`.
 
 **Bucket packing:** every updater packs **units**, not individual tensors. When
-adding the next unit would exceed `--update-weight-buffer-size`, the current
+adding the next unit would reach or exceed `--update-weight-buffer-size`, the current
 bucket is flushed first; the whole unit then starts the next bucket. A unit is
 never split across buckets, so a `lora_A` / `lora_B` pair always arrives together.
 For a family whose rollout fuses projections into one layer (H3 `to_q/k/v`, Qwen-Image and
@@ -127,7 +128,7 @@ Rollout-side merge precision is controlled by environment variable
 `SGLANG_DIFFUSION_LORA_MERGE_FP32`:
 
 - `"1"` when `--diffusion-forward-dtype fp32`
-- `"0"` otherwise (fp16 merge)
+- `"0"` otherwise (no fp32 upcast: the engine merges in its own weight dtype, e.g. bf16)
 
 Set automatically in `RolloutManager` when spawning engines that merge LoRA.
 
@@ -152,7 +153,8 @@ for `LoRA weight sync` lines and Ray worker stderr under
 | `miles/backends/fsdp_utils/hf_weight_iterator.py` | `FSDPHfWeightIterator`: FSDP shards -> HF-named units (full, LoRA-merged, LoRA adapters) |
 | `miles/backends/training_utils/weight_update/hf_weight_iterator/` | `HfWeightIteratorBase` and bucketing (atomic groups, size-bounded packing), as in miles |
 | `miles/backends/training_utils/weight_update/hf_weight_iterator/atomic_groups.py` | Per-family atomic groups for weights and adapters (today: LoRA adapters the rollout fuses into one layer) |
-| `miles/backends/fsdp_utils/actor.py` | Updater selection, LoRA apply via PEFT |
+| `miles/backends/fsdp_utils/actor.py` | Updater selection |
+| `miles/backends/fsdp_utils/model_loader.py` | LoRA apply via PEFT (`apply_lora`, `load_lora_adapter`) |
 | `miles/backends/sglang_diffusion_utils/sglang_diffusion_engine.py` | HTTP `update_weights_from_tensor` (IPC) / `update_weights_from_distributed` (NCCL) to rollout |
 | `miles/utils/arguments.py` | `rollout_merges_lora(args)` and LoRA weight-sync validation |
 | `miles/ray/rollout.py` | Engine env vars (`SGLANG_DIFFUSION_LORA_MERGE_FP32`) |

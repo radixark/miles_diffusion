@@ -17,6 +17,7 @@ def _args(**overrides):
     values = dict(
         diffusion_negative_prompt=None,
         diffusion_generator_device=None,
+        diffusion_quality="exact",
         diffusion_eval_num_steps=None,
         diffusion_num_steps=10,
         diffusion_width=832,

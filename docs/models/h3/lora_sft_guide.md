@@ -14,7 +14,7 @@ the base is *relatively* weak at (though still strong enough compared with other
 ## 2. Data curation
 
 H3 is strong. Most stock footage looks *worse* than what it generates, and metadata
-filters can't tell (<20% usable yield). So we built a data pipeline: **a VLM watches the
+filters can't tell (under 20% usable yield). So we built a data pipeline: **a VLM watches the
 frames for coarse screening, a human GSB blind test makes the fine cut**, and
 preprocessing (next section) lands the winners on H3's serving grid.
 
@@ -47,7 +47,7 @@ Data must land exactly on H3's serving grid (the encoder rejects anything off-gr
 | Item | Value |
 |---|---|
 | Canvas | short_edge=768, 16:9 → 1344×768 |
-| Frame rate | 24 fps (strictly validated, ±0.01) |
+| Frame rate | constant 24 fps (strictly validated: every frame within 2 ms of its 24 fps slot) |
 | Frame count | 17n+5 lattice, minimum 107 frames ≈ 4.46 s |
 
 One ffmpeg pass (the same chain the engine uses): `fps=24,
@@ -97,7 +97,7 @@ Performance reference (8×H200, 254 windows):
 | Rollout overlap | rollout `i+1` is produced while rollout `i` trains. A colocated encode burst still waits for the train step, so a cold epoch stalls on encoding while a warm one hides the cache load entirely; `--rollout-num-gpus` reserves encoder GPUs and overlaps the encoding too |
 | Encoder residency | `--sft-offload-encoder`: the ~70 GB encoder sleeps in host RAM and only occupies the GPU during encode bursts |
 | Training | ~31 s per optimizer step, `--num-steps-per-rollout` 4 of them per encoded batch |
-| Checkpoints | saved at every epoch boundary and on the final rollout; iter_N means N rollouts completed |
+| Checkpoints | saved every `--save-interval` rollouts (the recipe passes 20), at every epoch boundary, and on the final rollout; iter_N means N rollouts completed |
 
 End to end, the default 3 epochs (21 rollouts, 84 steps) take 66 min from a cold cache;
 10 epochs (70 rollouts, 280 steps) take 2 h 50 min cold, 2 h 31 min on a warm one.

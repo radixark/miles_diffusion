@@ -1,6 +1,6 @@
 ---
 title: Rewards
-description: Built-in reward models (PickScore, HPS, OCR), rm_hub dispatch, and prompt data format.
+description: Built-in reward models (PickScore, HPS, OCR, API rewards), rm_hub dispatch, and prompt data format.
 ---
 Miles-diffusion scores generated images (or video frames) after each rollout
 microgroup. Reward computation lives in `miles/rollout/rm_hub/` and is invoked
@@ -13,7 +13,8 @@ For `--custom-rm-path`, `--custom-reward-post-process-path`, and other
 
 | Stage | Flag | Role |
 |---|---|---|
-| Reward type | `--rm-type` | Selects built-in scorer (`pickscore`, `hps`, `ocr`); ignored when `--custom-rm-path` is set |
+| Reward type | `--rm-type` | Selects built-in scorer (`pickscore`, `hps`, `ocr`, `openai_api`, `custom_api`); ignored when `--custom-rm-path` is set |
+| API reward config | `--openai-api-rm-config`, `--custom-api-rm-config` | YAML file or inline `base64:<payload>` for the two API rewards |
 | Per-sample override | `metadata.rm_type` in JSONL | Overrides global `--rm-type` |
 | Custom reward / norm | see [Customization](customization.md) | `--custom-rm-path`, `--custom-reward-post-process-path` |
 
@@ -48,8 +49,8 @@ batching. For video outputs, frames are uniformly sampled
 | `--pickscore-batch-size` | 8 | Batch size per actor |
 | `--pickscore-processor-path` | — | Required for pickscore |
 | `--pickscore-model-path` | — | Required for pickscore |
-| `--pickscore-num-frames` | None | Video frame sampling count |
-| `--pickscore-reward-colocate` | False | One worker per rollout GPU (requires `--colocate`) |
+| `--pickscore-num-frames` | None | Evenly spaced video frames scored per sample (None = every frame) |
+| `--pickscore-reward-colocate` | False | Seat the `--pickscore-num-workers` actors on rollout GPUs, one per placement-group bundle (requires `--colocate`) |
 
 Example from `scripts/run_diffusion_nft_sd3_pickscore.py`:
 
@@ -91,7 +92,7 @@ Use a custom RM when defining video frame aggregation semantics.
 | `--hps-batch-size` | 8 | Batch size per actor |
 | `--hps-version` | `v2.1` | `v2.0` or `v2.1` checkpoint |
 | `--hps-checkpoint-path` | None | Local checkpoint; unset downloads from `xswu/HPSv2` |
-| `--hps-reward-colocate` | False | One worker per rollout GPU (requires `--colocate`) |
+| `--hps-reward-colocate` | False | Seat the `--hps-num-workers` actors on rollout GPUs, one per placement-group bundle (requires `--colocate`) |
 
 Example from `scripts/run_diffusion_grpo_sd3_hps_sglang.py`:
 
@@ -122,7 +123,8 @@ built on first use.
 `--custom-rm-path` receives `(args, samples)` and can call the built-in scorers
 directly; `--custom-rm-args` is an opaque string the framework hands to that function
 through `args`, so the function owns its own config grammar. The shipped example
-`miles/rollout/rm_hub/weighted_mixture_rm.py` reads `name=weight,name=weight`:
+`miles/rollout/rm_hub/weighted_mixture_rm.py` reads `name=weight,name=weight`, with names
+from `hps`, `pickscore`, `ocr`, `custom_api`, `openai_api`:
 
 ```bash
 --custom-rm-path miles.rollout.rm_hub.weighted_mixture_rm.weighted_mixture_rm \
@@ -136,8 +138,8 @@ The example returns a dict per sample (`{"hps": ..., "pickscore": ..., "weighted
 `--reward-key` picks the entry GRPO trains on, and every entry of a dict reward gets its own
 `rollout/reward/<name>_mean` panel, so the components stay visible while the sum is optimized.
 
-Weights apply to raw scores (HPSv2.1 ≈ 0.25–0.35, PickScore/26 ≈ 0.8–0.9, OCR ∈ [0, 1]), so
-pick them with the scales in mind. Colocated pools share one slot ledger, so several rewards
+Weights apply to raw scores (HPSv2.1 ≈ 0.25–0.35, PickScore/26 ≈ 0.8–0.9, OCR ∈ [0, 1], default
+OpenAI API rubric ∈ [0, 4]), so pick them with the scales in mind. Colocated pools share one slot ledger, so several rewards
 can colocate without overlapping. Rewards receive `generated_output` itself, and every reward actor
 quantises it to uint8 on its own terms.
 
@@ -166,11 +168,32 @@ substring hit as perfect (`dist=0`), and caps `dist` at `len(target)` — see
 OCR runs on **CPU** Ray actors (`--ocr-num-workers`, default 4). Used by the
 SD3 Flow-GRPO recipe (`scripts/run_diffusion_grpo_sd3_ocr_sglang.py`).
 
+### API rewards (`--rm-type openai_api` / `custom_api`)
+
+Implementation: `miles/rollout/rm_hub/openai_api.py` and `miles/rollout/rm_hub/api.py`.
+
+Each sample is one HTTP request, sent by a single zero-GPU Ray actor that runs up to
+`max_concurrency` (default 8) requests at once. The config is a YAML file or inline
+`base64:<payload>` with `actor_class`, `actor_kwargs`, and `max_concurrency`; a flat mapping is
+taken as the `actor_kwargs` of the default actor.
+
+| `--rm-type` | Config flag | Actor |
+|---|---|---|
+| `openai_api` | `--openai-api-rm-config` | `OpenAIImageRewardActor` (or a subclass) |
+| `custom_api` | `--custom-api-rm-config` | Any `ApiRewardActor` subclass implementing `build_request` / `send_request` / `parse_response`; defaults to `OpenAIImageRewardActor` |
+
+`OpenAIImageRewardActor` sends the generation prompt and the image (PNG data URL) to an
+OpenAI-compatible Chat Completions endpoint, with the config `prompt` as the system rubric, and asks
+for a JSON `score`. Its kwargs are `model` and `api_key_env` (required), `base_url`, `prompt` or
+`prompt_path`, `score_min` / `score_max` (default 0 / 4), and `timeout_s`; scores outside that range
+raise. It accepts image outputs only (one frame).
+
 ### Remote RM (`--rm-type remote_rm`)
 
 The CLI exposes `--rm-url` for a remote reward service, but **`rm_hub` does not
 implement `remote_rm` today** — selecting it raises `NotImplementedError`.
-Use `--custom-rm-path` to call an external service instead (see below).
+To call an external service, use the API rewards above or a `--custom-rm-path`
+function that reads `args.rm_url`.
 
 ## 3. Call chain
 
@@ -181,7 +204,9 @@ generate_and_rm_microgroup()
     → all pickscore?   pickscore_rm (batched)
     → all hps?         hps_rm (batched)
     → all ocr?         ocr_rm (batched, one image per actor call)
-    → else             per-sample async_rm → ocr / pickscore / hps / NotImplementedError
+    → all custom_api?  custom_api_rm (batched, one request per actor call)
+    → all openai_api?  openai_api_rm (batched, one request per actor call)
+    → else             per-sample async_rm → ocr / pickscore / hps / custom_api / openai_api / NotImplementedError
   → sample.reward = score
   → RolloutManager._post_process_rewards()      # GRPO advantage normalization
 ```
@@ -215,8 +240,8 @@ Dataset repo: [`rockdu/miles-diffusion-datasets`](https://huggingface.co/dataset
 | Subset | Used by |
 |---|---|
 | `hpdv2/` | SD3 HPS Flow-GRPO |
-| `flowgrpo_pickscore/` | PickScore recipes (SD3 NFT, Qwen-Image, Wan2.2, LTX) |
-| `flowgrpo_ocr/` | SD3 OCR Flow-GRPO, NFT smoke test |
+| `flowgrpo_pickscore/` | PickScore recipes (SD3 NFT, Qwen-Image, Wan2.2, LTX, Cosmos3, Krea-2, MiniMax H3) |
+| `flowgrpo_ocr/` | SD3 OCR and OCR & PickScore Flow-GRPO, Krea-2 OCR NFT, NFT smoke test |
 
 ### Per-sample rm_type override
 
@@ -228,4 +253,4 @@ metadata.get("rm_type") or args.rm_type
 ```
 
 Mixed rm_types within one microgroup fall back to per-sample dispatch (no
-batched PickScore/HPS fast path).
+batched fast path).

@@ -391,6 +391,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="generator_device field for POST /rollout/generate.",
             )
             parser.add_argument(
+                "--diffusion-quality",
+                type=str,
+                choices=["exact", "lossless", "high"],
+                default="exact",
+                help="sglang-diffusion request quality level; exact is the bit-identical reference path.",
+            )
+            parser.add_argument(
                 "--diffusion-sde-type",
                 type=str,
                 default="sde",
