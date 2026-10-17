@@ -346,38 +346,46 @@ async def generate_rollout_async(
     data = []
     do_print = True
     pbar = tqdm(total=target_data_size * args.n_samples_per_prompt, desc="Rollout generation")
-    while len(data) < target_data_size:
-        while state.remaining_batch_size < target_data_size:
-            # get samples from the buffer and submit the generation requests.
-            samples = data_source(args.over_sampling_batch_size)
-            state.submit_generate_tasks(samples)
+    try:
+        while len(data) < target_data_size:
+            while state.remaining_batch_size < target_data_size:
+                # get samples from the buffer and submit the generation requests.
+                # only top up the groups the filter dropped, so every fetched prompt is kept or dropped.
+                samples = data_source(target_data_size - state.remaining_batch_size)
+                state.submit_generate_tasks(samples)
 
-        # wait for the generation to finish
-        done, state.pendings = await asyncio.wait(state.pendings, return_when=asyncio.FIRST_COMPLETED)
-        for task in done:
-            group: list[Sample] = task.result()
+            # wait for the generation to finish
+            done, state.pendings = await asyncio.wait(state.pendings, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                group: list[Sample] = task.result()
 
-            if do_print:
-                sample = group[0][0] if isinstance(group[0], list) else group[0]
-                logger.info(
-                    f"First rollout sample prompt: {[str(sample.prompt)]}, reward: {sample.reward}",
-                )
-                do_print = False
+                if do_print:
+                    sample = group[0][0] if isinstance(group[0], list) else group[0]
+                    logger.info(
+                        f"First rollout sample prompt: {[str(sample.prompt)]}, reward: {sample.reward}",
+                    )
+                    do_print = False
 
-            assert len(group) == args.n_samples_per_prompt
-            dynamic_filter_output = call_dynamic_filter(dynamic_filter, args, group)
-            if not dynamic_filter_output.keep:
-                metric_gatherer.on_dynamic_filter_drop(reason=dynamic_filter_output.reason)
-                state.remaining_batch_size -= 1
-                continue
+                assert len(group) == args.n_samples_per_prompt
+                dynamic_filter_output = call_dynamic_filter(dynamic_filter, args, group)
+                if not dynamic_filter_output.keep:
+                    metric_gatherer.on_dynamic_filter_drop(reason=dynamic_filter_output.reason)
+                    state.remaining_batch_size -= 1
+                    continue
 
-            # add the samples to the data
-            # NOTE: here we have not stored all the unused samples back to the data buffer.
-            if len(data) < target_data_size:
-                data.append(group)
-                pbar.update(args.n_samples_per_prompt)
+                # add the samples to the data
+                if len(data) < target_data_size:
+                    data.append(group)
+                    pbar.update(args.n_samples_per_prompt)
+    finally:
+        pbar.close()
+        # the event loop outlives this call; don't leave generation running into offload or weight sync.
+        for task in state.pendings:
+            task.cancel()
+        await asyncio.gather(*state.pendings, return_exceptions=True)
+        # reset the global state to prevent effects on the next rollout or eval.
+        state.reset()
 
-    pbar.close()
     sample = data[-1][0][0] if isinstance(data[-1][0], list) else data[-1][0]
     logger.info(
         f"Finish rollout, prompt: {[str(sample.prompt)]}, reward: {sample.reward}",
@@ -390,8 +398,6 @@ async def generate_rollout_async(
     assert len(data) == args.rollout_batch_size, f"Got {len(data)} samples, expected {args.rollout_batch_size}"
     data = sorted(data, key=lambda group: group[0][0].index if isinstance(group[0], list) else group[0].index)
 
-    # reset the global state to prevent effects on the next rollout or eval.
-    state.reset()
     if args.rollout_sample_filter_path is not None:
         filter_func = load_function(args.rollout_sample_filter_path)
         filter_func(args, data)
