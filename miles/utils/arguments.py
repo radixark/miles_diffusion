@@ -1757,6 +1757,24 @@ def validate_lora_weight_sync_args(args) -> None:
         )
 
 
+def validate_train_sde_backend(args) -> None:
+    """Reject rollouts the train-side SDE backend cannot score like the engine does."""
+    # The engine drops the Gaussian constants under this flag while FlowSdeStepBackend keeps them,
+    # so every old/new log-prob ratio would be off.
+    if args.diffusion_log_prob_no_const and args.diffusion_sde_type == "sde" and args.sde_step_backend_path is None:
+        raise ValueError(
+            "--diffusion-log-prob-no-const with --diffusion-sde-type sde needs a --sde-step-backend-path "
+            "whose log_prob also drops the constants"
+        )
+    # ODE rollouts carry zero log-probs and no noise; only a custom loss formula (NFT's is the default
+    # under --loss-type nft) can train on them, the Flow-GRPO one would score them as SDE steps.
+    if args.diffusion_sde_type == "ode" and args.custom_loss_function_path is None:
+        raise ValueError(
+            "--diffusion-sde-type ode is for DiffusionNFT (--loss-type nft) or a custom loss formula; "
+            "the Flow-GRPO loss needs an sde or cps rollout"
+        )
+
+
 def miles_validate_args(args):
     args.eval_datasets = _resolve_eval_datasets(args)
 
@@ -2042,6 +2060,7 @@ def miles_validate_args(args):
     # cps/ode log_probs drop Gaussian constants on both the engine and trainer sides.
     if args.diffusion_sde_type in ("cps", "ode"):
         args.diffusion_log_prob_no_const = True
+    validate_train_sde_backend(args)
 
     # The train-side scorer must replicate the rollout dynamics; derive it from the same knob.
     if args.sde_step_backend_path is None:
