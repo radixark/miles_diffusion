@@ -31,12 +31,12 @@ on:
         description: 'SGLang branch/commit (default: sglang-miles)'
         required: false
         type: string
-        default: 'sglang-miles-diffusion'
+        default: 'sglang-miles'
       ci_sglang_repo:
-        description: 'SGLang repository owner/name (default: Rockdu/sglang)'
+        description: 'SGLang repository owner/name (default: sgl-project/sglang)'
         required: false
         type: string
-        default: 'Rockdu/sglang'
+        default: 'sgl-project/sglang'
       ci_image_tag:
         description: 'miles-diffusion Docker image tag (default: latest)'
         required: false

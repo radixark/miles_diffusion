@@ -15,7 +15,7 @@ on:
         type: string
         default: '["h200", "5gpu"]'
       ci_sglang_pr:
-        description: 'SGLang branch, commit, or PR (default: main)'
+        description: 'SGLang branch, commit, or PR (default: sglang-miles)'
         required: false
         type: string
       ci_sglang_repo:
