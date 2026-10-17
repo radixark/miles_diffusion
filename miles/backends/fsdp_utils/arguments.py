@@ -18,6 +18,7 @@ class FSDPArgs:
     lr_warmup_fraction: float | None = None
     lr_wsd_decay_iters: int | None = None
     lr_wsd_decay_style: str | None = None
+    # No effect in this backend: a saved LR-scheduler state is always restored on --load.
     use_checkpoint_lr_scheduler: bool = True
     override_lr_scheduler: bool = False
     weight_decay: float = 0.0

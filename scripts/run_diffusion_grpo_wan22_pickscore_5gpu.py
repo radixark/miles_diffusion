@@ -10,8 +10,8 @@ steps 1,2 train `transformer` (high-noise) and step 3 trains `transformer_2` (lo
 both experts get gradient stochastically and --update-weight-target-module syncs both.
 
 Per rollout: 48 prompts x 16 samples = 768 samples; num_steps_per_rollout=2 gives 384 per
-optimizer step over 4 train GPUs. micro-batch-size 2 keeps every micro-batch phase-pure
-(one DiT, one CFG scale); 4 OOMs on H200.
+optimizer step over 4 train GPUs. The shared SDE step keeps every micro-batch phase-pure
+(one DiT, one CFG scale); micro-batch-size 2 is the memory limit, 4 OOMs on H200.
 
 Gradient checkpointing stays off: Wan2.2 under FSDP2 mixed precision hits a
 torch.utils.checkpoint CheckpointError on the fp32 RoPE freq buffers. If you OOM, lower

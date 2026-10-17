@@ -65,7 +65,7 @@ class H3TrainPipelineConfig(TrainPipelineConfig):
     ) -> None:
         extra_sampling_params.update(
             {
-                # sgl-d accepts only short_edge=768 for any H3 request, so it is not exposed as an argument.
+                # 768 is the only H3 short edge MiniMax verifies (sgl-d warns on others), so it is not exposed as an argument.
                 "task": args.diffusion_task,
                 "conditions": [],
                 "target": {
