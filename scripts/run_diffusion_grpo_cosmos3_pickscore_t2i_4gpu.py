@@ -117,6 +117,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
     sglang_args = (
         "--use-miles-router "
         "--sglang-server-concurrency 8 "
+        "--sglang-lora-merge-mode merge "
         "--update-weight-buffer-size 2147483648 "
         "--update-weight-target-module transformer "
     )
@@ -147,6 +148,8 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
             "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:False",
             # RL rollout scores raw samples; skip the serving-side guardrail models.
             "SGLANG_DISABLE_COSMOS3_GUARDRAILS": "1",
+            # Keep the Cosmos3 VAE decode in the default memory format (bit-identical rewards).
+            "SGLANG_DIFFUSION_VAE_CHANNELS_LAST_3D": "0",
         },
     )
 

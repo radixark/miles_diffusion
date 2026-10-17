@@ -118,6 +118,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         "--rollout-fetch-in-parser "
         "--rollout-parser-num-workers 16 "
         "--sglang-server-concurrency 8 "
+        "--sglang-lora-merge-mode merge "
         "--sglang-dit-precision fp16 "
         "--sglang-vae-slicing "
         "--update-weight-buffer-size 2147483648 "

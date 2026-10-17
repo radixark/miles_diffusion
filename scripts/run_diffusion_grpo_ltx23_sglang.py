@@ -93,6 +93,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         "--use-miles-router "
         "--rollout-fetch-in-parser "
         "--sglang-server-concurrency 4 "
+        "--sglang-lora-merge-mode merge "
         "--sglang-attention-backend torch_sdpa "
         "--sglang-dit-precision bf16 "
         "--update-weight-buffer-size 2147483648 "
