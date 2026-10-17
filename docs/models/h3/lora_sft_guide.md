@@ -1,4 +1,7 @@
-# Training an H3 LoRA with miles-diffusion SFT
+---
+title: Training an H3 LoRA with SFT
+description: Build a MiniMax H3 fire / explosion / smoke LoRA with the 8-GPU t2va SFT recipe — topic selection, data curation, preprocessing, training and results.
+---
 
 Follow this guide to tune **an explosion / fire / smoke reality enhancer** for MiniMax-H3.
 The LoRA is always-on: no trigger word, just load it. Alpha is the strength slider

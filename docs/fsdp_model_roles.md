@@ -1,4 +1,7 @@
-# FSDP model roles and sleep/wake
+---
+title: FSDP Model Roles and Sleep/Wake
+description: The FSDP trainer's actor, frozen reference and teacher models, and EMA — where each comes from, how they are checkpointed, and how sleep/wake moves them.
+---
 
 The FSDP trainer owns one trainable actor, optional independent frozen reference
 and teacher models, and an optional EMA optimizer. Each model contains the same
