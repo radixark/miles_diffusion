@@ -51,6 +51,7 @@ def _rebuild_qwen21_rope_on_cuda(model) -> None:
 
 @register_train_pipeline_config("qwen_image21")
 class QwenImage21TrainPipelineConfig(TrainPipelineConfig):
+    tasks = ("t2i",)
     hf_ckpt_name_patterns = (
         "qwen-image-2.1",
         "qwen-image-21",
@@ -82,7 +83,7 @@ class QwenImage21TrainPipelineConfig(TrainPipelineConfig):
         # diffusers' 2.1 pipeline passes ``t / 1000``; sglang-d divides inside the DiT.
         return timesteps / 1000.0
 
-    def process_sigma_as_timesteps_input(self, sigmas, *, num_train_timesteps):
+    def process_sigma_as_timesteps_input(self, sigmas):
         return sigmas
 
     def _latent_hw(self) -> tuple[int, int]:
@@ -192,8 +193,8 @@ class QwenImage21TrainPipelineConfig(TrainPipelineConfig):
         self,
         *,
         model: torch.nn.Module,
-        latents_input: torch.Tensor,
-        timesteps_input: torch.Tensor,
+        latents_input: dict[str, torch.Tensor],
+        timesteps_input: dict[str, torch.Tensor],
         pos_cond: dict | None,
         neg_cond: dict | None,
         joint_cond: dict | None,
@@ -201,7 +202,7 @@ class QwenImage21TrainPipelineConfig(TrainPipelineConfig):
         cfg_batching: bool,
         guidance_scale: float,
         true_cfg_scale: float | None,
-    ) -> torch.Tensor:
+    ) -> dict[str, torch.Tensor]:
         # The 2.1 DiT projects the joint text+image sequence; keep the target image tail.
         pred = super().compute_noise_pred(
             model=model,
@@ -215,8 +216,8 @@ class QwenImage21TrainPipelineConfig(TrainPipelineConfig):
             guidance_scale=guidance_scale,
             true_cfg_scale=true_cfg_scale,
         )
-        target_tokens = latents_input.shape[1]
-        return pred[:, -target_tokens:]
+        target_tokens = latents_input["visual"].shape[1]
+        return {"visual": pred["visual"][:, -target_tokens:]}
 
     def cfg_combine(
         self,

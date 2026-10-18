@@ -72,8 +72,8 @@ def test_compute_noise_pred_keeps_target_tail():
     latents = torch.arange(8.0).reshape(1, 4, 2)
     pred = cfg.compute_noise_pred(
         model=_TailDiT(),
-        latents_input=latents,
-        timesteps_input=torch.tensor([0.5]),
+        latents_input={"visual": latents},
+        timesteps_input={"visual": torch.tensor([0.5])},
         pos_cond={},
         neg_cond=None,
         joint_cond=None,
@@ -82,4 +82,4 @@ def test_compute_noise_pred_keeps_target_tail():
         guidance_scale=1.0,
         true_cfg_scale=1.0,
     )
-    torch.testing.assert_close(pred, latents * 2)
+    torch.testing.assert_close(pred["visual"], latents * 2)

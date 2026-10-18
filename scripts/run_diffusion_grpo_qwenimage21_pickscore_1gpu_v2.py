@@ -53,7 +53,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
     train_jsonl = f"{data_dir}/train.jsonl" if Path(data_dir).is_dir() else data_dir
 
     ckpt_args = (
-        f"--hf-checkpoint {args.hf_checkpoint} --diffusion-model-family qwen_image21 "
+        f"--hf-checkpoint {args.hf_checkpoint} --diffusion-model-family qwen_image21 --diffusion-task t2i "
         f"--save {args.output_dir}/{run_name}/ckpt --save-interval 10 "
     )
 
