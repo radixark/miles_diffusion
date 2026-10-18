@@ -6,10 +6,12 @@
     {stream: latents}, cond --compute_noise_pred-------> {stream: noise pred}: no CFG | two-pass | joint-batch CFG
 
 What each test pins:
-  family resolution   HF ids and local paths match case-insensitively; unknown refs fail; the env var wins
+  family resolution   HF ids and local paths match case-insensitively, the longest pattern wins; unknown refs
+                      fail; the env var wins
   compute_noise_pred  no CFG is one pos pass; joint-batch CFG equals two-pass CFG
   timestep input      each family reproduces the arithmetic its sglang-d DiT runs
-  sigma input         sd3 / wan2_2 scale by num_train_timesteps = 1000; qwen_image / krea2 pass sigma through
+  sigma input         sd3 / wan2_2 scale by num_train_timesteps = 1000; qwen_image / qwen_image21 / krea2 pass
+                      sigma through
 """
 
 from tests.ci.ci_register import register_cpu_ci

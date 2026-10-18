@@ -1,3 +1,16 @@
+"""Qwen-Image 2.1 train config: what the single-stream DiT receives.
+
+    text embeds [L, D] + mask --prepare_cond_kwargs--> img_mask = [0]*L + [1]*(target tokens / 4)
+    per-sample conds ---------collate_cond_for_sample_batch--> text padded to the batch max, same img_mask tail
+    joint DiT output [text | image] --compute_noise_pred--> {"visual": image tail}
+
+What each test pins:
+  prepare      the target slots follow the text slots, one per 2x2 latent group
+  collate      padding widens the text slots and the mask; the target slots stay last
+  cfg_combine  plain uncond + scale * (cond - uncond), no cond-norm rescale (unlike Qwen-Image 1.0)
+  noise pred   only the image tail of the joint output is the prediction
+"""
+
 from tests.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=15, suite="stage-a-cpu", labels=[])
@@ -53,10 +66,6 @@ class TestQwenImage21Cond:
         neg = torch.zeros(1, 4, 2)
         out = self.cfg.cfg_combine(pos, neg, guidance_scale=1.0, true_cfg_scale=2.0)
         torch.testing.assert_close(out, torch.full((1, 4, 2), 2.0))
-
-    def test_timestep_divides_by_1000(self):
-        t = torch.tensor([1000.0, 250.0])
-        torch.testing.assert_close(self.cfg.process_timestep_as_input(t), t / 1000.0)
 
     def test_no_legacy_window_pad(self):
         # The window-wide pad exists only so Qwen-Image 1.0 stays bitwise with the old collate.
