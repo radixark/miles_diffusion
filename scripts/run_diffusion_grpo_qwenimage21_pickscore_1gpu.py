@@ -1,21 +1,17 @@
 """Qwen-Image 2.1 PickScore Flow-GRPO, 1-GPU recipe.
 
-CFG 1.0, SDE 3–5, LoRA 64/128, 512² / 10 steps.
+resolution=512, num_steps=10, guidance=1.0 (2.1 is CFG-distilled), noise_level=1.2,
+sde_window_size=2 over steps 3-5, LoRA rank 64 / alpha 128.
 
-  16 prompts × 16 samples = 256 / rollout
-  lr 1e-4
-  200 rollouts default
-  micro-batch 4, PickScore batch 8, sglang concurrency 4
+Per rollout: 16 prompts x 16 samples = 256 samples, two optimizer steps, lr 1e-4.
+
+Layout: train, sgld and the PickScore reward worker share the one GPU (colocated).
 
 Usage:
-    python3 scripts/run_diffusion_grpo_qwenimage21_pickscore_1gpu_v2.py \\
-        --hf-checkpoint /path/to/Qwen-Image-2.1 \\
-        --prompt-data /path/to/flowgrpo_pickscore
+    python3 scripts/run_diffusion_grpo_qwenimage21_pickscore_1gpu.py
 """
 
-import os
 from dataclasses import dataclass
-from pathlib import Path
 
 import typer
 
@@ -25,32 +21,24 @@ MODEL = "Qwen/Qwen-Image-2.1"
 DATASET = "rockdu/miles-diffusion-datasets"
 DATASET_SUBSET = "flowgrpo_pickscore"
 WANDB_PROJECT = "miles-diffusion-grpo"
-SGLANG_21_PYTHON = os.environ.get("SGLANG_21_PYTHON", "")
-DIFFUSERS_21_SRC = os.environ.get("DIFFUSERS_21_SRC", "")
-PICKSCORE_PROCESSOR = os.environ.get("PICKSCORE_PROCESSOR_PATH", "laion/CLIP-ViT-H-14-laion2B-s32B-b79K")
-PICKSCORE_MODEL = os.environ.get("PICKSCORE_MODEL_PATH", "yuvalkirstain/PickScore_v1")
 
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
     num_rollout: int = 200
     hf_checkpoint: str = MODEL
-    prompt_data: str = ""
     data_dir: str = "/root/datasets"
     eval_interval: int = 0
     extra_args: str = ""
 
 
 def prepare(args: ScriptArgs) -> str:
-    if args.prompt_data:
-        return args.prompt_data
     local_dir = U.hf_download_dataset(DATASET, include=f"{DATASET_SUBSET}/**", data_dir=args.data_dir)
     return f"{local_dir}/{DATASET_SUBSET}"
 
 
 def execute(args: ScriptArgs, data_dir: str) -> None:
-    run_name = f"diffusion_grpo_qwenimage21_pickscore_1gpu_v2_{U.create_run_id()}"
-    train_jsonl = f"{data_dir}/train.jsonl" if Path(data_dir).is_dir() else data_dir
+    run_name = f"diffusion_grpo_qwenimage21_pickscore_1gpu_{U.create_run_id()}"
 
     ckpt_args = (
         f"--hf-checkpoint {args.hf_checkpoint} --diffusion-model-family qwen_image21 --diffusion-task t2i "
@@ -59,7 +47,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
 
     rollout_args = (
         "--rollout-function-path miles.rollout.sglang_diffusion_rollout.generate_rollout "
-        f"--prompt-data {train_jsonl} "
+        f"--prompt-data {data_dir}/train.jsonl "
         "--input-key input "
         "--rollout-batch-size 16 "
         "--n-samples-per-prompt 16 "
@@ -77,18 +65,15 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         "--diffusion-step-strategy-path miles.rollout.step_strategy_hub.sde_window "
         "--diffusion-num-sde-steps 2 "
         "--diffusion-sde-window-range 3,5 "
-        "--rollout-return-full-trajectory "
         "--rollout-patch-group qwen_image21 "
     )
 
     eval_args = "--skip-eval-before-train "
     if args.eval_interval:
-        test_jsonl = f"{data_dir}/test.jsonl"
-        eval_args = (
-            f"--eval-prompt-data pickscore_test {test_jsonl} "
+        eval_args += (
+            f"--eval-prompt-data pickscore_test {data_dir}/test.jsonl "
             f"--eval-interval {args.eval_interval} "
             "--diffusion-eval-num-steps 20 "
-            "--skip-eval-before-train "
         )
 
     grpo_args = "--advantage-estimator grpo --globalize-reward-std --diffusion-clip-range 1e-4 "
@@ -97,6 +82,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
 
     lora_args = (
         "--use-lora --lora-ipc-weight-sync --lora-rank 64 --lora-alpha 128 --lora-init-weights gaussian "
+        # PEFT evaluates adapters unmerged; merging rounds differently in bf16.
         "--sglang-lora-merge-mode dynamic "
     )
 
@@ -105,8 +91,8 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         "--pickscore-reward-colocate "
         "--pickscore-num-workers 1 "
         "--pickscore-batch-size 8 "
-        f"--pickscore-processor-path {PICKSCORE_PROCESSOR} "
-        f"--pickscore-model-path {PICKSCORE_MODEL} "
+        "--pickscore-processor-path laion/CLIP-ViT-H-14-laion2B-s32B-b79K "
+        "--pickscore-model-path yuvalkirstain/PickScore_v1 "
     )
 
     wandb_args = U.get_default_wandb_args(
@@ -119,6 +105,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         "--rollout-parser-num-workers 4 "
         "--sglang-server-concurrency 4 "
         "--sglang-attention-backend torch_sdpa "
+        # Resolves the engine config when --hf-checkpoint is a local directory without the model name.
         "--sglang-model-id Qwen-Image-2.1 "
         "--update-weight-buffer-size 1073741824 "
     )
@@ -139,18 +126,6 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         "--diffusion-debug-mode "
     )
 
-    extra_env_vars = {
-        "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
-        "WANDB_MODE": "offline",
-    }
-    pythonpath = ":".join(p for p in (SGLANG_21_PYTHON, DIFFUSERS_21_SRC, os.environ.get("PYTHONPATH", "")) if p)
-    if pythonpath:
-        extra_env_vars["PYTHONPATH"] = pythonpath
-    if os.environ.get("HF_HOME"):
-        extra_env_vars["HF_HOME"] = os.environ["HF_HOME"]
-    if os.environ.get("HUGGINGFACE_HUB_CACHE"):
-        extra_env_vars["HUGGINGFACE_HUB_CACHE"] = os.environ["HUGGINGFACE_HUB_CACHE"]
-
     U.execute_train(
         train_args=(
             f"{ckpt_args} {rollout_args} {eval_args} {grpo_args} {optimizer_args} "
@@ -159,7 +134,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         ),
         num_gpus_per_node=1,
         config=args,
-        extra_env_vars=extra_env_vars,
+        extra_env_vars={"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"},
     )
 
 

@@ -42,12 +42,8 @@ Registered in `miles/backends/fsdp_utils/configs/qwen_image21.py`:
 
 ## 4. Launch
 
-Canonical recipe: `scripts/run_diffusion_grpo_qwenimage21_pickscore_1gpu_v2.py` — 1
+Canonical recipe: `scripts/run_diffusion_grpo_qwenimage21_pickscore_1gpu.py` — 1
 colocated GPU, train + sglang + PickScore, 512×512, 16×16 group, lr 1e-4.
-
-The engine must be the sglang 2.1 branch and diffusers must export
-`QwenImage21Transformer2DModel`. If those checkouts are not already on
-`PYTHONPATH`, point `SGLANG_21_PYTHON` and `DIFFUSERS_21_SRC` at them.
 Real-weight GRPO needs ≥80GB; 32GB only finished generate.
 
 **Status:** [📈 V — Verified](../../user-guide/recipe-verification.md#v) — 200 rollouts.
@@ -55,13 +51,12 @@ Smoothed `rollout/reward/raw_mean` rises from about 0.81 to about 0.86.
 
 ```bash
 # alignment diagnostic: freeze weights so log_prob_mean_abs_diff is train-vs-rollout
-python3 scripts/run_diffusion_grpo_qwenimage21_pickscore_1gpu_v2.py \
-  --num-rollout 2 --eval-interval 0 --extra-args "--debug-skip-optimizer-step"
+python3 scripts/run_diffusion_grpo_qwenimage21_pickscore_1gpu.py \
+  --num-rollout 2 --extra-args "--debug-skip-optimizer-step"
 
-# local / dummy checkpoint + local prompts
-python3 scripts/run_diffusion_grpo_qwenimage21_pickscore_1gpu_v2.py \
-  --hf-checkpoint /path/to/qwen-image-2.1 \
-  --prompt-data /path/to/flowgrpo_pickscore
+# local checkpoint
+python3 scripts/run_diffusion_grpo_qwenimage21_pickscore_1gpu.py \
+  --hf-checkpoint /path/to/qwen-image-2.1
 ```
 
 ## 5. Recipe notes
@@ -72,8 +67,6 @@ python3 scripts/run_diffusion_grpo_qwenimage21_pickscore_1gpu_v2.py \
 - `--rollout-patch-group qwen_image21` turns off the engine's prefix KV cache so
   every SDE step recomputes the full joint sequence, matching the trainer, and keeps
   the RoPE layouts out of the rollout response.
-- `--rollout-return-full-trajectory` is on so train-pair conversion can index
-  the SDE window against a full 0..T latent array.
 - `--sglang-lora-merge-mode dynamic` keeps PEFT unmerged on the engine, same as 1.0.
 - A 32 GB card will not hold the full 2.1 DiT + Qwen3-VL + VAE + PickScore at
   1024² without offload. Raise batch/resolution only after adding GPUs or
