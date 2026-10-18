@@ -2,7 +2,6 @@
 title: Recipe Verification Levels
 description: Evidence levels for documented training recipes.
 ---
-# Recipe verification levels
 
 Every recipe is assigned one evidence level. The level applies to the exact script and
 topology named in the model guide, not to the model family as a whole.
