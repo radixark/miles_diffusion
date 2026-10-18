@@ -15,9 +15,8 @@ from .train_pipeline_config import TrainPipelineConfig, register_train_pipeline_
 class LTXTrainPipelineConfig(TrainPipelineConfig):
     """LTX-2.3 video GRPO: unguided velocity forward over ltx_core."""
 
+    tasks = ("t2v",)
     supports_cfg_training = False
-    # Rollout stores σ×1000 in trajectory timesteps; ltx_core AdaLN uses σ∈[0,1].
-    sde_timestep_divisor = 1000.0
     hf_ckpt_name_patterns = ("ltx",)
     model_backend_path = "miles.backends.fsdp_utils.model_backend.MilesModelBackend"
     model_package = "miles.backends.fsdp_utils.models.ltx"
@@ -89,8 +88,8 @@ class LTXTrainPipelineConfig(TrainPipelineConfig):
         self,
         *,
         model: torch.nn.Module,
-        latents_input: torch.Tensor,
-        timesteps_input: torch.Tensor,
+        latents_input: dict[str, torch.Tensor],
+        timesteps_input: dict[str, torch.Tensor],
         pos_cond: dict | None,
         neg_cond: dict | None,
         joint_cond: dict | None,
@@ -98,15 +97,16 @@ class LTXTrainPipelineConfig(TrainPipelineConfig):
         cfg_batching: bool,
         guidance_scale: float,
         true_cfg_scale: float | None,
-    ) -> torch.Tensor:
-        # LTX trains unguided (supports_cfg_training=False): single velocity pass.
+    ) -> dict[str, torch.Tensor]:
+        # LTX trains unguided (supports_cfg_training=False): single velocity pass over the video modality.
+        latents = latents_input["visual"]
         cond = dict(pos_cond or {})
         if "context" not in cond:
             raise ValueError("LTX train requires denoising_env.pos_cond_kwargs.encoder_hidden_states")
         if "positions" not in cond:
             from miles.backends.fsdp_utils.models.ltx.positions import prepare_video_positions
 
-            batch_size, num_tokens, _ = latents_input.shape
+            batch_size, num_tokens, _ = latents.shape
             cond["positions"] = prepare_video_positions(
                 batch_size=batch_size,
                 num_tokens=num_tokens,
@@ -114,10 +114,10 @@ class LTXTrainPipelineConfig(TrainPipelineConfig):
                 width=self._width,
                 num_frames=self._num_frames,
                 fps=self._fps,
-                device=latents_input.device,
-                dtype=latents_input.dtype,
+                device=latents.device,
+                dtype=latents.dtype,
             )
-        return self.forward_velocity(model, latents_input, timesteps_input, cond)
+        return {"visual": self.forward_velocity(model, latents, timesteps_input["visual"], cond)}
 
     def forward_velocity(
         self,
@@ -135,7 +135,7 @@ class LTXTrainPipelineConfig(TrainPipelineConfig):
         # Trajectory timesteps are σ×1000; ltx_core AdaLN expects σ∈[0,1] and
         # multiplies by timestep_scale_multiplier (1000) internally.
         sigma_scaled = timesteps_input.to(latents_input.dtype)
-        sigma_unit = sigma_scaled / float(self.sde_timestep_divisor)
+        sigma_unit = sigma_scaled / float(self.num_train_timesteps)
         per_token_t = sigma_unit.view(B, 1).to(dtype)
 
         video_modality = Modality(

@@ -198,14 +198,14 @@ def resolve_transformer_checkpoint(
 
 def load_component(
     component: str,
-    args,
     *,
+    checkpoint_path: str,
     master_dtype: torch.dtype,
     materialize_weights: bool,
 ):
     if component != TRAIN_COMPONENT:
         raise ValueError(f"LTX trains the single DiT ({TRAIN_COMPONENT!r}); got {component!r}")
-    checkpoint = resolve_transformer_checkpoint(str(args.hf_checkpoint))
+    checkpoint = resolve_transformer_checkpoint(checkpoint_path)
     return load_transformer_for_train(
         checkpoint,
         device="cpu",

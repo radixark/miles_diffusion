@@ -1,4 +1,7 @@
-# Training an H3 LoRA with miles-diffusion SFT
+---
+title: Training an H3 LoRA with SFT
+description: Build a MiniMax H3 fire / explosion / smoke LoRA with the 8-GPU t2va SFT recipe — topic selection, data curation, preprocessing, training and results.
+---
 
 Follow this guide to tune **an explosion / fire / smoke reality enhancer** for MiniMax-H3.
 The LoRA is always-on: no trigger word, just load it. Alpha is the strength slider
@@ -14,7 +17,7 @@ the base is *relatively* weak at (though still strong enough compared with other
 ## 2. Data curation
 
 H3 is strong. Most stock footage looks *worse* than what it generates, and metadata
-filters can't tell (<20% usable yield). So we built a data pipeline: **a VLM watches the
+filters can't tell (under 20% usable yield). So we built a data pipeline: **a VLM watches the
 frames for coarse screening, a human GSB blind test makes the fine cut**, and
 preprocessing (next section) lands the winners on H3's serving grid.
 
@@ -47,7 +50,7 @@ Data must land exactly on H3's serving grid (the encoder rejects anything off-gr
 | Item | Value |
 |---|---|
 | Canvas | short_edge=768, 16:9 → 1344×768 |
-| Frame rate | 24 fps (strictly validated, ±0.01) |
+| Frame rate | constant 24 fps (strictly validated: every frame within 2 ms of its 24 fps slot) |
 | Frame count | 17n+5 lattice, minimum 107 frames ≈ 4.46 s |
 
 One ffmpeg pass (the same chain the engine uses): `fps=24,
@@ -55,11 +58,12 @@ scale=...:flags=lanczos, crop=1344:768`, cut to 107 frames. The training manifes
 jsonl, one line per sample:
 
 ```json
-{"prompt": "...", "metadata": {"video": "clips/clip.mp4"}}
+{"prompt": "...", "target": {"visual": "clips/clip.mp4"}}
 ```
 
 Relative paths are anchored at the jsonl's own directory — the dataset works wherever it
-is downloaded.
+is downloaded. The published jsonl also repeats each path under `metadata.video`, the field
+releases before `target` read.
 
 The output of sections 2–3 is published as
 [rockdu/WISA-80K-Practical-Dynamics-254](https://huggingface.co/datasets/rockdu/WISA-80K-Practical-Dynamics-254)
@@ -79,8 +83,8 @@ Watch the run's log in wandb (project `miles-diffusion-sft`).
 
 The recipe defaults are exactly the validated optimum: **lr 3e-5, weight decay 0.01,
 LoRA rank 64 / alpha 128, rollout batch 32 (1 sample per GPU per optimizer step)**,
-`--fsdp-flow-shift 12.0`, `--diffusion-guidance-scale 1.0` (H3 has no CFG),
-`--sft-offload-encoder`.
+`--fsdp-flow-shift visual=12,audio=3`, `--fsdp-supervised-streams visual`,
+`--diffusion-guidance-scale 1.0` (H3 has no CFG), `--sft-offload-encoder`.
 
 miles-diffusion started with RL and later grew to cover SFT. Read a rollout here as whatever
 produces the next batch of training samples — RL generates them, SFT encodes them. Each batch is
@@ -93,9 +97,10 @@ Performance reference (8×H200, 254 windows):
 |---|---|
 | Encoding | ~15 s/clip/GPU; the first 8 rollouts (one dataset pass) each stall ~110 s on their own misses, 230 s for rollout 0 which builds the pool; warm from rollout 8 |
 | Cache | content-addressed, ≈2× dataset size, lives in `.sft_cache/` next to the jsonl, reused across runs |
+| Rollout overlap | rollout `i+1` is produced while rollout `i` trains. A colocated encode burst still waits for the train step, so a cold epoch stalls on encoding while a warm one hides the cache load entirely; `--rollout-num-gpus` reserves encoder GPUs and overlaps the encoding too |
 | Encoder residency | `--sft-offload-encoder`: the ~70 GB encoder sleeps in host RAM and only occupies the GPU during encode bursts |
 | Training | ~31 s per optimizer step, `--num-steps-per-rollout` 4 of them per encoded batch |
-| Checkpoints | saved at every epoch boundary and on the final rollout; iter_N means N rollouts completed |
+| Checkpoints | saved every `--save-interval` rollouts (the recipe passes 20), at every epoch boundary, and on the final rollout; iter_N means N rollouts completed |
 
 End to end, the default 3 epochs (21 rollouts, 84 steps) take 66 min from a cold cache;
 10 epochs (70 rollouts, 280 steps) take 2 h 50 min cold, 2 h 31 min on a warm one.
@@ -135,8 +140,9 @@ Other tips for DiT LoRA SFT:
   (default 10 buckets) compare like with like.
 - **Quality beats quantity**: ~200 clips that survived the GSB gate converge in
   10 epochs and outperform larger, looser pools.
-- **Don't train audio**: real-footage audio tracks are noisy; the t2va recipe trains only
-  the video branch — audio is rolled out but excluded from the loss.
+- **Don't train audio on noisy soundtracks**: real-footage audio tracks are noisy, so the t2va
+  recipe passes `--fsdp-supervised-streams visual`. The soundtrack is still encoded, noised and
+  fed to the DiT as its native joint input, but excluded from the loss; drop the flag to train audio.
 
 ## 6. Results
 

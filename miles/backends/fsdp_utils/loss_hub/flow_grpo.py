@@ -29,7 +29,9 @@ def prepare_flow_grpo_batch(
     latents = _stack_pair_field(batch, "latent", device)
     next_latents = _stack_pair_field(batch, "next_latent", device)
     timesteps = _stack_pair_field(batch, "timestep", device)
-    next_timesteps = _stack_pair_field(batch, "next_timestep", device)
+    sigmas = _stack_pair_field(batch, "sigma", device)
+    next_sigmas = _stack_pair_field(batch, "next_sigma", device)
+    sigma_max = _stack_pair_field(batch, "sigma_max", device)
     log_prob_old = _stack_pair_field(batch, "log_prob_old", device)
     advantage = torch.tensor(
         [float(pair["advantage"]) for pair in batch],
@@ -46,10 +48,8 @@ def prepare_flow_grpo_batch(
     if len(ctx.models) == 1:
         component_name, model = next(iter(ctx.models.items()))
     else:
-        # Only multi-DiT families route timesteps to a phase, and only their schedulers are
-        # guaranteed to declare num_train_timesteps.
-        num_train_timesteps = int(ctx.scheduler.config.num_train_timesteps)
-        components = {config.component_for_timestep(t, num_train_timesteps) for t in timesteps.tolist()}
+        # Only multi-DiT families route timesteps to a phase.
+        components = {config.component_for_timestep(t) for t in timesteps.tolist()}
         if len(components) > 1:
             raise ValueError(
                 f"Micro-batch mixes denoising phases {sorted(components)}; set "
@@ -59,7 +59,6 @@ def prepare_flow_grpo_batch(
         model = ctx.models[component_name]
         guidance_scale = config.select_guidance_scale(
             float(timesteps[0]),
-            num_train_timesteps,
             guidance_scale,
             args.diffusion_guidance_scale_2,
         )
@@ -81,10 +80,11 @@ def prepare_flow_grpo_batch(
         if use_cfg and neg_list is not None:
             neg_cond = config.collate_cond_for_sample_batch(neg_list, device, pad_to_len=pad_to_len)
 
+    # Rollout trajectories carry only the visual stream.
     return PreparedBatch(
-        latents=latents,
-        timesteps=timesteps,
-        timesteps_for_model=timesteps_for_model,
+        latents={"visual": latents},
+        timesteps={"visual": timesteps},
+        timesteps_for_model={"visual": timesteps_for_model},
         model=model,
         component_name=component_name,
         guidance_scale=guidance_scale,
@@ -97,7 +97,9 @@ def prepare_flow_grpo_batch(
         advantage=advantage,
         extras={
             "next_latents": next_latents,
-            "next_timesteps": next_timesteps,
+            "sigmas": sigmas,
+            "next_sigmas": next_sigmas,
+            "sigma_max": sigma_max,
             "log_prob_old": log_prob_old,
         },
     )
@@ -108,8 +110,9 @@ def flow_grpo_loss_formula(
     batch: list[dict],
     prepared: PreparedBatch,
     *,
-    new_pred: torch.Tensor,
-    ref_pred: torch.Tensor | None,
+    new_pred: dict[str, torch.Tensor],
+    old_pred: dict[str, torch.Tensor] | None,
+    ref_pred: dict[str, torch.Tensor] | None,
     metrics: MetricBuffer,
     write_old_log_prob: bool = False,
     old_log_prob_from_new: bool = False,
@@ -121,16 +124,19 @@ def flow_grpo_loss_formula(
     kl_beta = float(args.diffusion_kl_beta)
 
     next_latents = prepared.extras["next_latents"]
-    next_timesteps = prepared.extras["next_timesteps"]
     log_prob_old_rollout = prepared.extras["log_prob_old"]
+    sde_step_sigmas = {
+        "sigmas": prepared.extras["sigmas"],
+        "next_sigmas": prepared.extras["next_sigmas"],
+        "sigma_max": prepared.extras["sigma_max"],
+    }
 
     _, log_prob_new, prev_sample_mean_new, std_dev_t_new = ctx.sde_backend.sde_step_logprob(
-        new_pred.float(),
-        prepared.timesteps,
-        next_timesteps,
-        prepared.latents.float(),
+        new_pred["visual"].float(),
+        prepared.latents["visual"].float(),
         prev_sample=next_latents.float(),
         noise_level=noise_level,
+        **sde_step_sigmas,
     )
 
     if write_old_log_prob:
@@ -149,14 +155,13 @@ def flow_grpo_loss_formula(
     kl_sum = loss_sum.new_zeros(())
     if kl_beta > 0:
         if ref_pred is None:
-            raise ValueError("Flow-GRPO KL requires a reference DiT forward (actor ref_mode=lora_base)")
+            raise ValueError("Flow-GRPO KL requires a reference DiT forward; set --ref-mode lora_base or ref")
         _, _, prev_sample_mean_ref, _ = ctx.sde_backend.sde_step_logprob(
-            ref_pred.float(),
-            prepared.timesteps,
-            next_timesteps,
-            prepared.latents.float(),
+            ref_pred["visual"].float(),
+            prepared.latents["visual"].float(),
             prev_sample=next_latents.float(),
             noise_level=noise_level,
+            **sde_step_sigmas,
         )
         kl_per_pair = ((prev_sample_mean_new - prev_sample_mean_ref) ** 2).mean(
             dim=tuple(range(1, prev_sample_mean_new.ndim)),
@@ -190,7 +195,7 @@ def flow_grpo_loss_formula(
             record_rollout_train_abs_diff(
                 metrics,
                 "model_output",
-                new_pred.float(),
+                new_pred["visual"].float(),
                 rollout_model_output.to(device=ctx.device, dtype=torch.float32),
                 component=prepared.component_name if len(ctx.models) > 1 else None,
             )

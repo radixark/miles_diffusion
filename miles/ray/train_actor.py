@@ -110,7 +110,7 @@ class TrainRayActor(RayActor):
 
     def clear_memory(self):
         print_memory("before TrainRayActor.clear_memory")
-        clear_memory()
+        clear_memory(collect_garbage=not self.args.skip_train_actor_gc_collect)
         print_memory("after TrainRayActor.clear_memory")
 
     @abc.abstractmethod

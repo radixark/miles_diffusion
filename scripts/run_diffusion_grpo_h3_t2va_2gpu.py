@@ -92,7 +92,7 @@ def execute(args: ScriptArgs, prompt_dir: str) -> None:
     run_name = f"diffusion_grpo_h3_t2va_{U.create_run_id()}"
 
     ckpt_args = (
-        f"--hf-checkpoint {MODEL} "
+        f"--hf-checkpoint {MODEL} --diffusion-task t2va "
         f"--save {args.output_dir}/{run_name}/ckpt "
         f"--save-interval {args.save_interval} "
     )
@@ -140,8 +140,6 @@ def execute(args: ScriptArgs, prompt_dir: str) -> None:
 
     optimizer_args = "--lr 1e-4 --weight-decay 1e-4 --adam-eps 1e-15 "
 
-    # H3's rollout DiT renames modules and fuses Q/K/V, so weights only reach the engine
-    # through the LoRA IPC path's layer grouper; the family rejects any other sync mode.
     lora_args = "--use-lora --lora-ipc-weight-sync --lora-rank 64 --lora-alpha 128 "
 
     reward_args = (
@@ -160,6 +158,7 @@ def execute(args: ScriptArgs, prompt_dir: str) -> None:
     sglang_args = (
         "--use-miles-router "
         "--sglang-server-concurrency 2 "
+        "--sglang-lora-merge-mode merge "
         "--sglang-tp-size 2 "
         "--sglang-sp-degree 1 "
         "--sglang-ulysses-degree 1 "

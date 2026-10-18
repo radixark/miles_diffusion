@@ -24,7 +24,7 @@ temporal compression).
 
 | Model | HF ID | Notes |
 |---|---|---|
-| Wan2.2-T2V-A14B | [Wan-AI/Wan2.2-T2V-A14B-Diffusers](https://huggingface.co/Wan-AI/Wan2.2-T2V-A14B-Diffusers) | Default in both Wan recipes |
+| Wan2.2-T2V-A14B | [Wan-AI/Wan2.2-T2V-A14B-Diffusers](https://huggingface.co/Wan-AI/Wan2.2-T2V-A14B-Diffusers) | Default in all three Wan recipes |
 
 
 ## 3. Family config
@@ -76,6 +76,10 @@ Recipe: `scripts/run_diffusion_sft_wan22.py`
 ```bash
 MILES_SCRIPT_DATA_JSONL=/abs/data.jsonl python3 scripts/run_diffusion_sft_wan22.py
 ```
+
+Each jsonl row is `{"prompt": "...", "target": {"visual": "/abs/path.mp4"}}`. Prepare the videos offline: each must
+already be 832×480 with square pixels and exactly 161 frames (81 frames at `--sft-frame-stride 2`). The encoder
+rejects any other video rather than resizing or trimming it.
 
 ## 5. Reference results
 

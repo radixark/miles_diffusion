@@ -31,7 +31,7 @@ Only Nano has a validated recipe and training curve.
 
 | Size  | Composition              | HF checkpoints                                                                                                                                                                                                   | Status                            |
 | ----- | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------- |
-| Nano  | 16 B (8 B UND + 8 B GEN) | [Cosmos3-Nano](https://huggingface.co/nvidia/Cosmos3-Nano), [Cosmos3-Nano-Policy-DROID](https://huggingface.co/nvidia/Cosmos3-Nano-Policy-DROID)                                                                 | **Validated** — canonical recipes |
+| Nano  | 16 B (8 B UND + 8 B GEN) | [Cosmos3-Nano](https://huggingface.co/nvidia/Cosmos3-Nano)                                                                                                                                                       | **Validated** — canonical recipe  |
 
 
 
@@ -43,7 +43,7 @@ From `miles/backends/fsdp_utils/configs/cosmos3.py`:
 | Property       | Value                                            | Why                                                                                                 |
 | -------------- | ------------------------------------------------ | --------------------------------------------------------------------------------------------------- |
 | Timestep dtype | fp32, no scaling                                 | The Karras grid is non-integer and sgl-d conditions on exact fp32 values — bf16 rounds 993.25 → 992 |
-| Cond dtype     | pass-through                                     | mRoPE position ids sit at ~15000 where bf16 spacing is 128; a boundary cast scrambles rotary phases |
+| Cond dtype     | pass-through                                     | cond carries only token ids, the text mask and fps; the packed forward casts its own inputs         |
 | CFG batching   | Off (asserted)                                   | Packed forward is single-sample                                                                     |
 | LoRA targets   | GEN attention (`add_*_proj`, `to_add_out`)       | UND tower and unused sound/action heads stay frozen                                                 |
 | Frozen params  | Name-fragment allowlist (`_GEN_PARAM_FRAGMENTS`) | UND sits inside the graph and cannot be detached                                                    |
@@ -59,9 +59,11 @@ and PickScore colocated on 4 GPUs; T2I (832×480, 1 frame).
 **Status:** [🛡️ FG — Fully gated](../../user-guide/recipe-verification.md#fg)
 
 ```bash
-export SGLANG_DISABLE_COSMOS3_GUARDRAILS=1   # RL scores raw samples; skip serving-side guardrail models
 python3 scripts/run_diffusion_grpo_cosmos3_pickscore_t2i_4gpu.py
 ```
+
+The recipe sets `SGLANG_DISABLE_COSMOS3_GUARDRAILS=1` in the job environment: RL scores raw
+samples, so the serving-side guardrail models are skipped.
 
 
 

@@ -85,6 +85,8 @@ class TrainPipelineConfig(abc.ABC):
     """Base class. Subclass per model family."""
 
     model_family: str | None = None
+    # --diffusion-task values this config trains: SGLang ModelTaskType terms (t2i, t2v) or the family's request task.
+    tasks: tuple[str, ...] = ()
     lora_target_modules: list[str] = ["to_q", "to_k", "to_v", "to_out.0"]
     optimizer_state_allowed_missing: list[str] = []
     # Case-insensitive substrings matched against the checkpoint name (--hf-checkpoint).
@@ -94,10 +96,13 @@ class TrainPipelineConfig(abc.ABC):
     cfg_batching: bool = False
     # Model-boundary input dtypes (see input_dtype_policy); families opt into casts explicitly.
     input_dtype_policy: dict = {"latents": None, "cond": None, "timestep": None}
+    enable_autocast: bool = True
     # Default component paths (miles custom-function style); CLI args override.
     model_backend_path: str = "miles.backends.fsdp_utils.model_backend.DiffusersModelBackend"
     # Native model package import path; required when model_backend_path is MilesModelBackend.
     model_package: str | None = None
+    # Flow-matching timestep range: timestep = sigma * num_train_timesteps.
+    num_train_timesteps: int = 1000
 
     @classmethod  # noqa: B027 — optional hook, deliberately non-abstract
     def validate_args(cls, args) -> None:
@@ -118,8 +123,6 @@ class TrainPipelineConfig(abc.ABC):
         of the generic fields drop them here.
         """
 
-    sde_timestep_divisor = 1.0
-
     def configure(self, args) -> None:  # noqa: B027  optional no-op hook, not abstract
         """Bind the request constants a family needs at train time; default binds none."""
 
@@ -128,18 +131,18 @@ class TrainPipelineConfig(abc.ABC):
         sglang-d DiT rescales it -- the arithmetic has to match, not just the value."""
         return timesteps
 
-    def process_sigma_as_timesteps_input(self, sigmas: torch.Tensor, *, num_train_timesteps: int) -> torch.Tensor:
+    def process_sigma_as_timesteps_input(self, sigmas: torch.Tensor) -> torch.Tensor:
         """NFT's sigma as this family's DiT takes its timesteps input. Separate from
         ``process_timestep_as_input`` rather than pre-multiplying into it: for a family that
         divides there, the composition is a multiply and a divide that do not cancel in fp32."""
-        return sigmas * float(num_train_timesteps)
+        return sigmas * float(self.num_train_timesteps)
 
     def compute_noise_pred(
         self,
         *,
         model: torch.nn.Module,
-        latents_input: torch.Tensor,
-        timesteps_input: torch.Tensor,
+        latents_input: dict[str, torch.Tensor],
+        timesteps_input: dict[str, torch.Tensor],
         pos_cond: dict | None,
         neg_cond: dict | None,
         joint_cond: dict | None,
@@ -147,24 +150,26 @@ class TrainPipelineConfig(abc.ABC):
         cfg_batching: bool,
         guidance_scale: float,
         true_cfg_scale: float | None,
-    ) -> torch.Tensor:
-        """Default diffusers forward with CFG; families with a different forward override."""
+    ) -> dict[str, torch.Tensor]:
+        """Default diffusers forward with CFG over the visual stream; families with a different forward override."""
+        latents = latents_input["visual"]
+        timesteps = timesteps_input["visual"]
 
         def _forward(cond: dict) -> torch.Tensor:
             return model(
-                hidden_states=latents_input,
-                timestep=timesteps_input,
+                hidden_states=latents,
+                timestep=timesteps,
                 return_dict=False,
                 **cond,
             )[0]
 
         if not use_cfg:
-            return _forward(pos_cond)
+            return {"visual": _forward(pos_cond)}
         if cfg_batching:
             # forward pos+neg as one joint batch to align with sglang-d
             joint_out = model(
-                hidden_states=torch.cat([latents_input, latents_input], dim=0),
-                timestep=torch.cat([timesteps_input, timesteps_input], dim=0),
+                hidden_states=torch.cat([latents, latents], dim=0),
+                timestep=torch.cat([timesteps, timesteps], dim=0),
                 return_dict=False,
                 **joint_cond,
             )[0]
@@ -172,12 +177,14 @@ class TrainPipelineConfig(abc.ABC):
         else:
             noise_pred_pos = _forward(pos_cond)
             noise_pred_neg = _forward(neg_cond)
-        return self.cfg_combine(
-            noise_pred_pos,
-            noise_pred_neg,
-            guidance_scale,
-            true_cfg_scale=true_cfg_scale,
-        )
+        return {
+            "visual": self.cfg_combine(
+                noise_pred_pos,
+                noise_pred_neg,
+                guidance_scale,
+                true_cfg_scale=true_cfg_scale,
+            )
+        }
 
     @abc.abstractmethod
     def prepare_cond_kwargs(

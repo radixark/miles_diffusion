@@ -22,6 +22,7 @@ from miles.rollout.rm_hub import create_colocated_reward_pools
 from miles.rollout.rm_hub.core import ColocatedRewardSlots, bundle_deal_order
 from miles.rollout.sft_rollout import SftEncodePool
 from miles.utils import tracking_utils
+from miles.utils.arguments import rollout_merges_lora
 from miles.utils.health_monitor import RolloutHealthMonitor
 from miles.utils.http_utils import _wrap_ipv6, find_available_port, get_host_info, init_http_client
 from miles.utils.iter_utils import group_by
@@ -167,11 +168,14 @@ class RolloutManager:
         assert self.args.rollout_global_dataset
         return len(self.data_source.dataset) // self.args.rollout_batch_size
 
-    def generate(self, rollout_id):
+    def generate(self, rollout_id, train_in_flight=None):
+        """`train_in_flight`: refs of the train step this generate overlaps; colocated SFT encoders wait for them."""
         from miles.dashboard import hooks
 
         start_time = time.time()
         self.rollout_id = rollout_id
+        if self.encode_pool is not None:
+            self.encode_pool.train_in_flight = train_in_flight
         hooks.set_rollout_id(rollout_id)
         self.health_monitoring_resume()
         logger.info("RolloutManager generate start: rollout_id=%s", rollout_id)
@@ -529,7 +533,7 @@ def init_rollout_engines(args, pg, all_rollout_engines):
             "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION": "false",
             "SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE": "false",
         }
-        if args.lora_ipc_weight_sync:
+        if rollout_merges_lora(args):
             # Merge in the train forward dtype, not fp32, to cut train/rollout consistency error.
             env_vars["SGLANG_DIFFUSION_LORA_MERGE_FP32"] = "1" if args.diffusion_forward_dtype == "fp32" else "0"
 

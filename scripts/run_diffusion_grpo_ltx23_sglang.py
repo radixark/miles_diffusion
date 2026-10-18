@@ -38,7 +38,9 @@ def prepare(args: ScriptArgs) -> str:
 def execute(args: ScriptArgs, data_dir: str) -> None:
     run_name = f"diffusion_grpo_ltx23_pickscore_{U.create_run_id()}"
 
-    ckpt_args = f"--hf-checkpoint {MODEL} --save {args.output_dir}/{run_name}/ckpt --save-interval 50 "
+    ckpt_args = (
+        f"--hf-checkpoint {MODEL} --diffusion-task t2v --save {args.output_dir}/{run_name}/ckpt --save-interval 50 "
+    )
 
     rollout_args = (
         "--rollout-function-path miles.rollout.sglang_diffusion_rollout.generate_rollout "
@@ -91,6 +93,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         "--use-miles-router "
         "--rollout-fetch-in-parser "
         "--sglang-server-concurrency 4 "
+        "--sglang-lora-merge-mode merge "
         "--sglang-attention-backend torch_sdpa "
         "--sglang-dit-precision bf16 "
         "--update-weight-buffer-size 2147483648 "

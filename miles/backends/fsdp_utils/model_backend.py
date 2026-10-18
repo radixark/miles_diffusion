@@ -4,7 +4,7 @@ Selected via ``--model-backend-path`` (miles custom-function style); the
 family config declares the default. Four concerns, all properties of the
 concrete modeling rather than of the training loop:
 
-  - ``load_component`` / ``load_scheduler``: checkpoint -> model components and scheduler
+  - ``load_component``: checkpoint -> model components
   - ``enable_gradient_checkpointing``: how this model turns on grad ckpt
   - ``fsdp_parallel_plan``: FSDP wrapping and parameter precision policy
   - ``sequence_parallel_plan`` / ``install_sequence_parallel_attention``:
@@ -22,7 +22,6 @@ import functools
 import importlib
 import logging
 from dataclasses import replace
-from typing import Any
 
 import torch
 from diffusers import DiffusionPipeline
@@ -48,15 +47,11 @@ class BaseModelBackend(abc.ABC):
     def load_component(
         self,
         component: str,
-        args,
         *,
+        checkpoint_path: str,
         master_dtype: torch.dtype,
         materialize_weights: bool,
     ) -> torch.nn.Module:
-        raise NotImplementedError
-
-    @abc.abstractmethod
-    def load_scheduler(self, args) -> Any:
         raise NotImplementedError
 
     @abc.abstractmethod
@@ -107,20 +102,17 @@ class MilesModelBackend(BaseModelBackend):
     def load_component(
         self,
         component: str,
-        args,
         *,
+        checkpoint_path: str,
         master_dtype: torch.dtype,
         materialize_weights: bool,
     ) -> torch.nn.Module:
         return self._pkg.loading.load_component(
             component,
-            args,
+            checkpoint_path=checkpoint_path,
             master_dtype=master_dtype,
             materialize_weights=materialize_weights,
         )
-
-    def load_scheduler(self, args) -> Any:
-        return self._pkg.modeling.load_scheduler(args)
 
     def enable_gradient_checkpointing(self, model: torch.nn.Module) -> None:
         self._pkg.modeling.enable_gradient_checkpointing(model)
@@ -192,12 +184,12 @@ class DiffusersModelBackend(BaseModelBackend):
     def load_component(
         self,
         component: str,
-        args,
         *,
+        checkpoint_path: str,
         master_dtype: torch.dtype,
         materialize_weights: bool,
     ) -> torch.nn.Module:
-        model_cls = self._resolve_component_class(args, component)
+        model_cls = self._resolve_component_class(checkpoint_path, component)
         kwargs = {
             "subfolder": component,
             "torch_dtype": master_dtype,
@@ -212,17 +204,13 @@ class DiffusersModelBackend(BaseModelBackend):
         if not materialize_weights and keep_in_fp32 is not None:
             model_cls._keep_in_fp32_modules = None
         try:
-            return model_cls.from_pretrained(args.hf_checkpoint, **kwargs)
+            return model_cls.from_pretrained(checkpoint_path, **kwargs)
         finally:
             if not materialize_weights and keep_in_fp32 is not None:
                 model_cls._keep_in_fp32_modules = keep_in_fp32
 
-    def load_scheduler(self, args) -> Any:
-        scheduler_cls = self._resolve_component_class(args, "scheduler")
-        return scheduler_cls.from_pretrained(args.hf_checkpoint, subfolder="scheduler")
-
     @classmethod
-    def _resolve_component_class(cls, args, component: str):
+    def _resolve_component_class(cls, checkpoint_path: str, component: str):
         """Resolve ``component``'s class from ``model_index.json``.
 
         Components load individually via ``cls.from_pretrained(subfolder=...)`` rather
@@ -233,13 +221,13 @@ class DiffusersModelBackend(BaseModelBackend):
         loaded from disk anyway — on every rank, and with ``low_cpu_mem_usage=False``
         it also trips diffusers' ``_keep_in_fp32_modules`` guard.
         """
-        config = DiffusionPipeline.load_config(args.hf_checkpoint)
+        config = DiffusionPipeline.load_config(checkpoint_path)
         if component not in config:
-            raise ValueError(f"pipeline {args.hf_checkpoint} has no component {component!r}")
+            raise ValueError(f"pipeline {checkpoint_path} has no component {component!r}")
         component_cls = cls._component_class(config[component])
         if component_cls is None:
             raise ValueError(
-                f"cannot resolve the class for component {component!r} of {args.hf_checkpoint} "
+                f"cannot resolve the class for component {component!r} of {checkpoint_path} "
                 f"from spec {config[component]!r}; remote-code components are not supported"
             )
         return component_cls

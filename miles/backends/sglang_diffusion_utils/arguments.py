@@ -35,6 +35,8 @@ def add_sglang_diffusion_arguments(parser):
         "nccl_port",
         "skip_server_warmup",
         "enable_return_routed_experts",
+        # pinned to "manual" in _compute_server_args
+        "performance_mode",
     ]
 
     def new_add_argument_wrapper(*name_or_flags, **kwargs):

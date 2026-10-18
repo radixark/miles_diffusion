@@ -17,6 +17,8 @@ def _server_args(**overrides):
         sglang_enable_cfg_parallel=False,
         use_lora=True,
         lora_ipc_weight_sync=True,
+        colocate=True,
+        train_only=False,
         lora_target_modules=["to_q", "to_k"],
     )
     base.update(overrides)
@@ -33,3 +35,8 @@ class TestLoRATargetModulesServerArgs:
         args = _server_args(lora_ipc_weight_sync=False)
         kwargs = _compute_server_args(args, "127.0.0.1", 15000, 15001)
         assert "lora_target_modules" not in kwargs
+
+    def test_lora_without_colocate_uses_resolved_args(self):
+        args = _server_args(lora_ipc_weight_sync=False, colocate=False)
+        kwargs = _compute_server_args(args, "127.0.0.1", 15000, 15001)
+        assert kwargs["lora_target_modules"] == ["to_q", "to_k"]

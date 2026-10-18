@@ -6,14 +6,14 @@ description: SD3 family config, LoRA targets, and launch recipes for Flow-GRPO a
 
 [Stable Diffusion 3.5 Medium](https://huggingface.co/stabilityai/stable-diffusion-3.5-medium)
 is the primary SD3 checkpoint used in miles-diffusion recipes. SD3 uses a
-DiT transformer with dual text-encoder conditioning (`encoder_hidden_states` +
+DiT transformer with two text-conditioning inputs (`encoder_hidden_states` +
 `pooled_projections`).
 
 **Key highlights for RL training:**
 
 - Single DiT component — weight sync targets `--update-weight-target-module transformer` (default).
-- LoRA on all attention projections (self-attn + cross-attn add projections).
-- Supports **Flow-GRPO** (OCR or HPS) and **DiffusionNFT** (PickScore) objectives.
+- LoRA on the joint-attention `attn` projections of both streams (image `to_*`, text `add_*_proj` / `to_add_out`).
+- Supports **Flow-GRPO** (OCR, HPS, or 0.8 OCR + 0.2 PickScore) and **DiffusionNFT** (PickScore) objectives.
 - Gated Hugging Face model — requires `HF_TOKEN`.
 
 ## 2. Supported variants
@@ -190,7 +190,7 @@ MILES_SCRIPT_SMOKE=1 python3 scripts/run_diffusion_nft_sd3_pickscore.py
 | Script | `run_diffusion_grpo_sd3_ocr_sglang.py` | `run_diffusion_grpo_sd3_hps_sglang.py` | `run_diffusion_grpo_sd3_ocr_pickscore_sglang.py` | `run_diffusion_nft_sd3_pickscore.py` |
 | `--loss-type` | `policy_loss` (default) | `policy_loss` (default) | `policy_loss` (default) | `nft` |
 | SDE | Full window, noise=0.7, CFG=4.5 | Full window, noise=0.7, CFG=4.5 | Full window, noise=0.7, CFG=4.5 | ODE, noise=0 |
-| Reference | LoRA base KL (β 0.04) | LoRA base KL (β 0.01) | LoRA base KL (β 0.04) | EMA (`--use-ema`) |
+| Reference | LoRA base KL (β 0.04) | LoRA base KL (β 0.01) | LoRA base KL (β 0.04) | None; `π_old` is the EMA (`--use-ema`) |
 | Reward placement | CPU OCR | Colocated HPS actor | CPU OCR + colocated PickScore actor | Dedicated PickScore GPU |
 | Verification | FG | V | V | FG |
 
@@ -202,6 +202,9 @@ MILES_SCRIPT_SMOKE=1 python3 scripts/run_diffusion_nft_sd3_pickscore.py
 
 **GRPO + HPS:** 2 GPUs colocated (`--colocate --hps-reward-colocate`); one HPS
 actor shares the rollout GPUs.
+
+**GRPO + OCR & PickScore:** 2 GPUs colocated (`--colocate --pickscore-reward-colocate`);
+OCR on CPU Ray actors, one PickScore actor shares the rollout GPUs.
 
 **NFT + PickScore:**
 
@@ -246,7 +249,7 @@ with these settings of its own:
 | Setting | Value |
 |---|---|
 | Algorithm | `--loss-type nft` |
-| Reference | `--ref-mode ema --use-ema --ema-rollout-policy ema` |
+| π_old | `--use-ema --rollout-weights ema` |
 | Reward | `--rm-type pickscore` |
 | SDE | `--diffusion-sde-type ode --diffusion-noise-level 0.0` |
 | LoRA | rank 32, alpha 64, IPC sync |
@@ -265,8 +268,8 @@ All SD3 recipes use LoRA with IPC weight sync:
 --update-weight-buffer-size 2147483648
 ```
 
-See [LoRA weight sync](../../advanced/lora.md) for the three updater paths and IPC
-merge internals.
+See [LoRA weight sync](../../advanced/lora.md) for how the weight-sync updater is selected
+and the IPC merge internals.
 
 ## 8. Precision notes
 
@@ -293,12 +296,10 @@ Train/rollout dtype alignment for Flow-GRPO is covered in
 ### Flow-GRPO + OCR
 
 Observed `rollout/reward/raw_mean` from one
-`scripts/run_diffusion_grpo_sd3_ocr_sglang.py` run (default batch, 600 rollouts). The curve is an example, not a CI
-acceptance range:
+`scripts/run_diffusion_grpo_sd3_ocr_sglang.py` run (default batch, 600 rollouts): the mean of the first 50 rollouts
+is 0.462 and of the last 50 is 0.841. The curve is an example, not a CI acceptance range:
 
 ![Flow-GRPO OCR raw reward](../../assets/images/sd3/grpo-ocr-raw-reward.png)
-
-Online runs: wandb project **`miles-diffusion-grpo`**.
 
 ### Flow-GRPO + OCR & PickScore
 
@@ -317,9 +318,9 @@ Observed `rollout/reward/raw_mean` from one `scripts/run_diffusion_nft_sd3_picks
 
 ![DiffusionNFT PickScore raw reward](../../assets/images/sd3/nft-pickscore-raw-reward.png)
 
-Online runs: wandb project **`miles-diffusion-nft`**. That run observed held-out
-**`eval/pickscore_test` ≈ 0.78** with `--eval-interval 30` and 50 denoise steps at eval time; this value is not asserted
-by the E2E fixture.
+That run observed held-out
+**`eval/pickscore_test` 0.850 / 0.859 / 0.863** at rollouts 29 / 59 / 89 with `--eval-interval 30` and 50 denoise steps
+at eval time; these values are not asserted by the E2E fixture.
 
 ## 10. Pairs well with
 

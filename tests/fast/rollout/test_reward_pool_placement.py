@@ -63,6 +63,7 @@ def test_colocated_workers_take_one_slot_each_at_the_colocated_share():
 
     assert [o["scheduling_strategy"].placement_group_bundle_index for o in actor_cls.created] == [0, 1]
     assert [o["num_gpus"] for o in actor_cls.created] == [COLOCATED_REWARD_GPU] * 2
+    assert [o["max_concurrency"] for o in actor_cls.created] == [1, 1]
     assert slots.remaining == 0
 
 

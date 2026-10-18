@@ -1,3 +1,10 @@
+"""Native LTX contracts:
+
+role checkpoint -> native resolver -> transformer loader
+model family    -> FSDP plan and attention backend
+video geometry  -> positions with matching latent token count
+"""
+
 from tests.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=30, suite="stage-a-cpu", labels=[])
@@ -25,29 +32,34 @@ class TestLTXPackage:
         sentinel = object()
         seen = {}
 
-        def fake_load_component(component, args, *, master_dtype, materialize_weights):
+        def resolve_checkpoint(checkpoint_path):
+            seen["checkpoint_path"] = checkpoint_path
+            return "resolved-transformer.safetensors"
+
+        def load_transformer(checkpoint, *, device, dtype, materialize_weights):
             seen.update(
-                component=component,
-                args=args,
-                master_dtype=master_dtype,
+                checkpoint=checkpoint,
+                device=device,
+                dtype=dtype,
                 materialize_weights=materialize_weights,
             )
             return sentinel
 
-        monkeypatch.setattr(backend._pkg.loading, "load_component", fake_load_component)
-        args = object()
+        monkeypatch.setattr(backend._pkg.loading, "resolve_transformer_checkpoint", resolve_checkpoint)
+        monkeypatch.setattr(backend._pkg.loading, "load_transformer_for_train", load_transformer)
         result = backend.load_component(
             "transformer",
-            args,
+            checkpoint_path="teacher-checkpoint",
             master_dtype=torch.float32,
             materialize_weights=True,
         )
 
         assert result is sentinel
         assert seen == {
-            "component": "transformer",
-            "args": args,
-            "master_dtype": torch.float32,
+            "checkpoint_path": "teacher-checkpoint",
+            "checkpoint": "resolved-transformer.safetensors",
+            "device": "cpu",
+            "dtype": torch.float32,
             "materialize_weights": True,
         }
         assert not hasattr(backend._pkg.modeling, "load_component")

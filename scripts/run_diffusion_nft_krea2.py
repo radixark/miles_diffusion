@@ -1,7 +1,7 @@
 """Krea-2-Raw DiffusionNFT training (OCR by default, PickScore via --reward).
 
-Same NFT shape as run_diffusion_nft_sd3_pickscore.py: EMA reference (--ref-mode ema),
-rollout under pi_old (--ema-rollout-policy ema), deterministic ODE rollout
+Same NFT shape as run_diffusion_nft_sd3_pickscore.py: EMA pi_old (--use-ema),
+rollout under pi_old (--rollout-weights ema), deterministic ODE rollout
 (noise_level=0, sde_type=ode) with no CFG. Krea-2 specifics: bf16, 1024px, and one
 sample per rollout request (the engine's krea2 pipeline has no per-request output
 expansion). Rollout debug tensors are collected (--diffusion-debug-mode).
@@ -60,7 +60,9 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
     run_name = f"diffusion_nft_krea2_{args.reward}_{U.create_run_id()}"
     num_rollout = args.num_rollout or (1 if args.smoke else 100)
 
-    ckpt_args = f"--hf-checkpoint {MODEL} --save {args.output_dir}/{run_name}/ckpt --save-interval 20 "
+    ckpt_args = (
+        f"--hf-checkpoint {MODEL} --diffusion-task t2i --save {args.output_dir}/{run_name}/ckpt --save-interval 20 "
+    )
 
     rollout_args = (
         "--rollout-function-path miles.rollout.sglang_diffusion_rollout.generate_rollout "
@@ -89,15 +91,14 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
     grpo_args = (
         "--loss-type nft "
         "--diffusion-nft-beta 1.0 "
-        "--diffusion-nft-timestep-fraction 0.99 "
+        "--diffusion-nft-num-dropped-timesteps 1 "
         "--advantage-estimator grpo "
         "--globalize-reward-std "
     )
 
     ema_args = (
-        "--ref-mode ema "
         "--use-ema "
-        "--ema-rollout-policy ema "
+        "--rollout-weights ema "
         "--ema-decay-init 0.001 "
         "--ema-decay-ramp 0.001 "
         "--ema-decay-max 0.5 "

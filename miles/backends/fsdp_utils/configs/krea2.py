@@ -11,6 +11,7 @@ from .train_pipeline_config import TrainPipelineConfig, register_train_pipeline_
 
 @register_train_pipeline_config("krea2")
 class Krea2TrainPipelineConfig(TrainPipelineConfig):
+    tasks = ("t2i",)
     hf_ckpt_name_patterns = ("krea-2",)
 
     @classmethod
@@ -19,7 +20,7 @@ class Krea2TrainPipelineConfig(TrainPipelineConfig):
         if args.rollout_microgroup_size != 1:
             raise ValueError("krea2 rollout serves one sample per request; use --rollout-microgroup-size 1")
 
-    def process_sigma_as_timesteps_input(self, sigmas: torch.Tensor, *, num_train_timesteps: int) -> torch.Tensor:
+    def process_sigma_as_timesteps_input(self, sigmas: torch.Tensor) -> torch.Tensor:
         # The DiT takes flow time in [0, 1]; its sinusoidal embed applies the x1000 itself.
         return sigmas
 
@@ -83,4 +84,5 @@ class Krea2TrainPipelineConfig(TrainPipelineConfig):
         guidance_scale: float,
         true_cfg_scale: float | None = None,
     ) -> torch.Tensor:
-        return noise_pred_neg + guidance_scale * (noise_pred_pos - noise_pred_neg)
+        scale = true_cfg_scale if true_cfg_scale is not None else guidance_scale
+        return noise_pred_neg + scale * (noise_pred_pos - noise_pred_neg)

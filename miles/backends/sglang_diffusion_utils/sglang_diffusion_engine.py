@@ -12,6 +12,7 @@ import requests
 from sglang.srt.utils.common import kill_process_tree
 
 from miles.ray.ray_actor import RayActor
+from miles.utils.arguments import rollout_merges_lora
 from miles.utils.http_utils import get_host_info
 
 if TYPE_CHECKING:
@@ -35,14 +36,17 @@ def _to_local_gpu_id(physical_gpu_id: int) -> int:
     )
 
 
-def _scheduler_process_with_rollout_patches(*args, **kwargs):
+def _bootstrap_scheduler_process_with_rollout_patches(spec):
     # Re-apply patches here: the spawned scheduler grandchild re-imports modules fresh, losing the parent's patches.
+    # Patch after platform init, as bootstrap orders it; its own init call is then a no-op.
+    from sglang.multimodal_gen.runtime.managers.worker_bootstrap import bootstrap_scheduler_process
+    from sglang.multimodal_gen.runtime.platforms import initialize_current_platform
+
     from miles.backends.sglang_diffusion_utils.monkey_patches import apply_env_selected_rollout_patches
 
+    initialize_current_platform()
     apply_env_selected_rollout_patches()
-    from sglang.multimodal_gen.runtime.managers.gpu_worker import run_scheduler_process
-
-    return run_scheduler_process(*args, **kwargs)
+    bootstrap_scheduler_process(spec)
 
 
 def _launch_server_target(server_args, apply_rollout_patches: bool = False):
@@ -56,7 +60,7 @@ def _launch_server_target(server_args, apply_rollout_patches: bool = False):
         # Rebind the scheduler entrypoint in launch_server's module so spawn pickles our patched wrapper by qualname.
         import sglang.multimodal_gen.runtime.launch_server as _ls_mod
 
-        _ls_mod.run_scheduler_process = _scheduler_process_with_rollout_patches
+        _ls_mod.bootstrap_scheduler_process = _bootstrap_scheduler_process_with_rollout_patches
 
     from sglang.multimodal_gen.runtime.launch_server import launch_server
 
@@ -268,6 +272,49 @@ class SGLangDiffusionEngine(RayActor):
             payload,
         )
 
+    def init_weights_update_group(
+        self, master_address, master_port, rank_offset, world_size, group_name, backend="nccl"
+    ):
+        return self._make_request(
+            "init_weights_update_group",
+            {
+                "master_address": master_address,
+                "master_port": master_port,
+                "rank_offset": rank_offset,
+                "world_size": world_size,
+                "group_name": group_name,
+                "backend": backend,
+            },
+        )
+
+    def destroy_weights_update_group(self, group_name):
+        return self._make_request("destroy_weights_update_group", {"group_name": group_name})
+
+    def update_weights_from_distributed(
+        self,
+        names,
+        dtypes,
+        shapes,
+        group_name,
+        target_modules,
+        weight_update_mode=None,
+        lora_alpha=None,
+        lora_rank=None,
+    ):
+        return self._make_request(
+            "update_weights_from_distributed",
+            {
+                "names": names,
+                "dtypes": dtypes,
+                "shapes": shapes,
+                "group_name": group_name,
+                "target_modules": target_modules,
+                "weight_update_mode": weight_update_mode,
+                "lora_alpha": lora_alpha,
+                "lora_rank": lora_rank,
+            },
+        )
+
     def get_weights_checksum(self, module_names: list[str] | None = None) -> dict:
         """Query the live engine for SHA-256 checksums of the named pipeline modules.
 
@@ -329,6 +376,9 @@ def _compute_server_args(args, host, port, nccl_port):
         "enable_cfg_parallel": args.sglang_enable_cfg_parallel,
         # Skip warmup to avoid timeout during RL rollouts.
         "warmup_mode": "off",
+        # Miles places rollout memory itself (offload_rollout / onload_weights); sglang-d's auto policy would
+        # offload by the startup free memory, and its layerwise DiT offload breaks TP>1 full-weight sync.
+        "performance_mode": "manual",
     }
 
     if getattr(args, "diffusion_flow_shift", None) is not None:
@@ -339,7 +389,7 @@ def _compute_server_args(args, host, port, nccl_port):
         if hasattr(args, f"sglang_{attr.name}") and attr.name not in kwargs:
             kwargs[attr.name] = getattr(args, f"sglang_{attr.name}")
 
-    if getattr(args, "use_lora", False) and getattr(args, "lora_ipc_weight_sync", False):
+    if rollout_merges_lora(args):
         kwargs["lora_target_modules"] = args.lora_target_modules
     # dit_precision / vae_precision are PipelineConfig fields, not ServerArgs, so forward them explicitly (only when changed from the class default, to avoid clobbering a subclass override).
     from sglang.multimodal_gen.configs.pipeline_configs.base import PipelineConfig

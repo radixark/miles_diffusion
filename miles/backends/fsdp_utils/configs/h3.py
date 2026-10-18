@@ -1,4 +1,4 @@
-"""MiniMax H3 family config: t2va video-only Flow-GRPO."""
+"""MiniMax H3: video-only Flow-GRPO and joint audio/video Ref2VA SFT."""
 
 from __future__ import annotations
 
@@ -13,14 +13,26 @@ from .train_pipeline_config import TrainPipelineConfig, register_train_pipeline_
 AUDIO_IN_CHANNELS = 32
 
 
+def _without_padding_tail(layout: dict, token_tags: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Token tags and position ids without the padding tail [cu_seqlens[1], seq_len).
+
+    The engine attends the tail as its own document; the diffusers DiT attends unmasked, so the tail must not reach it.
+    """
+    used = int(layout["cu_seqlens"][1])
+    return token_tags[:used], layout["img_position_ids"][:used]
+
+
 @register_train_pipeline_config("h3")
 class H3TrainPipelineConfig(TrainPipelineConfig):
-    """MiniMax H3 t2va video-only GRPO (audio branch frozen / deterministic in rollout)."""
+    """MiniMax H3: t2va video-only GRPO, and joint video/audio SFT of t2va or Ref2VA through one packed forward."""
 
+    tasks = ("t2va", "ref2va")
     hf_ckpt_name_patterns = ("minimax-h3", "minimax_h3", "/h3")
     supports_cfg_training = False
-    sde_timestep_divisor = 1000.0
+    # No loss reaches the audio head when audio is unsupervised (GRPO, or SFT with --fsdp-supervised-streams visual),
+    # so its LoRA may hold no optimizer state.
     optimizer_state_allowed_missing = ["audio"]
+    enable_autocast = False
 
     lora_target_modules = [
         "attn.to_q",
@@ -33,12 +45,16 @@ class H3TrainPipelineConfig(TrainPipelineConfig):
 
     @classmethod
     def validate_args(cls, args: Namespace) -> None:
-        # H3's rollout DiT fuses Q/K/V and rewrites FFN layout. Those transforms
-        # live in sglang-d's lora_merge IPC path; train-side merge / full-weight
-        # sync would push dense names the engine drops. SFT (--train-only) has
-        # no rollout engine and therefore no sync constraint.
-        if not args.train_only and not (args.use_lora and args.lora_ipc_weight_sync):
-            raise ValueError("H3 training requires --use-lora with --lora-ipc-weight-sync")
+        if args.loss_type == "sft_loss" and args.micro_batch_size != 1:
+            raise ValueError("H3 packed SFT requires --micro-batch-size 1")
+        # The visual shift would mis-set the audio's corruption sigmas and AdaLN conditioning.
+        if args.loss_type == "sft_loss" and "audio" not in (args.fsdp_flow_shift or {}):
+            raise ValueError("H3 SFT requires --fsdp-flow-shift visual=...,audio=...")
+        if args.diffusion_task == "ref2va":
+            if args.loss_type != "sft_loss":
+                raise ValueError("H3 rollout serves only the t2va task")
+            if args.update_weight_target_modules != ["transformer_ref"]:
+                raise ValueError("H3 Ref2VA SFT requires --update-weight-target-module transformer_ref")
 
     @classmethod
     def apply_rollout_sampling_params(
@@ -49,9 +65,8 @@ class H3TrainPipelineConfig(TrainPipelineConfig):
     ) -> None:
         extra_sampling_params.update(
             {
-                # sgl-d accepts only task=t2va for rollout and short_edge=768 for any
-                # H3 request, so neither is exposed as an argument.
-                "task": "t2va",
+                # 768 is the only H3 short edge MiniMax verifies (sgl-d warns on others), so it is not exposed as an argument.
+                "task": args.diffusion_task,
                 "conditions": [],
                 "target": {
                     "short_edge": 768,
@@ -108,8 +123,8 @@ class H3TrainPipelineConfig(TrainPipelineConfig):
         self,
         *,
         model: torch.nn.Module,
-        latents_input: torch.Tensor,
-        timesteps_input: torch.Tensor,
+        latents_input: dict[str, torch.Tensor],
+        timesteps_input: dict[str, torch.Tensor],
         pos_cond: dict | None,
         neg_cond: dict | None,
         joint_cond: dict | None,
@@ -117,63 +132,77 @@ class H3TrainPipelineConfig(TrainPipelineConfig):
         cfg_batching: bool,
         guidance_scale: float,
         true_cfg_scale: float | None,
-    ) -> torch.Tensor:
+    ) -> dict[str, torch.Tensor]:
+        """Pack the target rows of each stream, plus any reference rows, and run one joint H3 forward.
+
+        Each row group gets its own time through ``timestep_indices``; text keeps the target video time:
+
+            row group         rows                 time                             when
+            target video      update_mask          visual                           always
+            target audio      audio_update_mask    audio                            latents_input has audio (SFT)
+            reference video   ~update_mask         max(visual, reference visual)    pos_cond has references (Ref2VA)
+            reference audio   ~audio_update_mask   max(audio, reference audio)      pos_cond has references (Ref2VA)
+
+        RL feeds the visual stream alone, so its audio rows stay zero at the video time.
+        """
         del neg_cond, joint_cond, use_cfg, cfg_batching, guidance_scale, true_cfg_scale
-        cond = dict(pos_cond or {})
-        packed = cond.get("h3_packed_layout")
-        token_tags = cond.get("h3_token_tags")
-        encoder_hidden_states = cond.get("encoder_hidden_states")
-        if packed is None or token_tags is None or encoder_hidden_states is None:
-            raise ValueError("H3 train requires h3_packed_layout, h3_token_tags, encoder_hidden_states in pos_cond")
-
-        device = latents_input.device
-        dtype = latents_input.dtype
-
-        # latents_input: [B, num_video_target_rows, width]
-        bsz = latents_input.shape[0]
-        if bsz != 1:
+        cond = pos_cond
+        visual = latents_input["visual"]
+        device, dtype = visual.device, visual.dtype
+        if visual.shape[0] != 1:
             raise NotImplementedError("H3 packed forward supports batch size 1 for now")
 
-        layout = {k: (v.to(device) if isinstance(v, torch.Tensor) else v) for k, v in packed.items()}
-        tags = (
-            token_tags.to(device) if isinstance(token_tags, torch.Tensor) else torch.tensor(token_tags, device=device)
+        layout = {k: (v.to(device) if isinstance(v, torch.Tensor) else v) for k, v in cond["h3_packed_layout"].items()}
+        token_tags, position_ids = _without_padding_tail(layout, torch.as_tensor(cond["h3_token_tags"], device=device))
+        visual_positions = layout["img_pos"].view(-1).long()
+        audio_positions = layout["audio_pos"].view(-1).long()
+        visual_mask = layout["update_mask"].view(-1).bool()
+        # A t2va layout packs every audio row as a target and carries no audio_update_mask.
+        audio_mask = (
+            layout.get("audio_update_mask", torch.ones_like(audio_positions, dtype=torch.bool)).view(-1).bool()
         )
-        sigma = (timesteps_input.float() / float(self.sde_timestep_divisor)).view(-1)
-        timestep = 1.0 - sigma
-        seq_len = int(layout["seq_len"])
-        width = latents_input.shape[-1]
 
-        img_pos = layout["img_pos"].view(-1).long().to(device)
-        audio_pos = layout["audio_pos"].view(-1).long().to(device)
-        update_mask = layout["update_mask"].view(-1).bool().to(device)
-        text_pos = layout["text_pos"].view(-1).long().to(device)
-
-        # The transformer takes one row block per modality, each ordered like its
-        # ``*_indices``, and scatters them into the packed buffer itself. Only the
-        # target rows are replayed; conditioning rows stay zero, as does the audio
-        # stream (H3 GRPO trains the video branch only).
-        video_hidden = torch.zeros(1, int(img_pos.shape[0]), width, device=device, dtype=dtype)
-        video_hidden[0, update_mask] = latents_input[0].to(dtype)
-        audio_hidden = torch.zeros(1, int(audio_pos.shape[0]), AUDIO_IN_CHANNELS, device=device, dtype=dtype)
+        # The transformer takes one row block per modality, each ordered like its ``*_indices``, and scatters them
+        # into the packed buffer itself. H3 time runs from t=0 noise to t=1 clean.
+        visual_hidden = torch.zeros(1, int(visual_positions.shape[0]), visual.shape[-1], device=device, dtype=dtype)
+        visual_hidden[0, visual_mask] = visual[0].to(dtype)
+        audio_hidden = torch.zeros(1, int(audio_positions.shape[0]), AUDIO_IN_CHANNELS, device=device, dtype=dtype)
+        visual_time = 1.0 - (timesteps_input["visual"].float() / float(self.num_train_timesteps)).view(-1)
+        times = [visual_time]
+        timestep_indices = torch.zeros(token_tags.shape[0], device=device, dtype=torch.long)
+        if "audio" in latents_input:
+            audio_hidden[0, audio_mask] = latents_input["audio"][0].to(dtype)
+            audio_time = 1.0 - (timesteps_input["audio"].float() / float(self.num_train_timesteps)).view(-1)
+            timestep_indices[audio_positions[audio_mask]] = len(times)
+            times.append(audio_time)
+        if "h3_reference_visual" in cond:
+            visual_hidden[0, ~visual_mask] = cond["h3_reference_visual"].to(device=device, dtype=dtype)
+            audio_hidden[0, ~audio_mask] = cond["h3_reference_audio"].to(device=device, dtype=dtype)
+            timestep_indices[visual_positions[~visual_mask]] = len(times)
+            times.append(visual_time.clamp_min(cond["h3_reference_visual_timestep"]))
+            timestep_indices[audio_positions[~audio_mask]] = len(times)
+            times.append(audio_time.clamp_min(cond["h3_reference_audio_timestep"]))
 
         out = model(
-            hidden_states=video_hidden,
+            hidden_states=visual_hidden,
             audio_hidden_states=audio_hidden,
-            encoder_hidden_states=encoder_hidden_states.to(dtype),
-            timestep=timestep.to(dtype),
-            timestep_indices=layout.get("timestep_indices", torch.zeros(seq_len, device=device, dtype=torch.long)),
-            # Padding rows carry tag -1; the AdaLN table is indexed by tag, so they
-            # must be folded onto a real modality exactly as the rollout does.
-            token_tags=tags.long().clamp(min=0),
-            position_ids=layout["img_position_ids"].to(device=device, dtype=torch.float32),
-            video_indices=img_pos,
-            audio_indices=audio_pos,
-            text_indices=text_pos,
+            encoder_hidden_states=cond["encoder_hidden_states"].to(device=device, dtype=dtype),
+            timestep=torch.cat(times).to(dtype),
+            timestep_indices=timestep_indices,
+            token_tags=token_tags.long(),
+            position_ids=position_ids.to(device=device, dtype=torch.float32),
+            video_indices=visual_positions,
+            audio_indices=audio_positions,
+            text_indices=layout["text_pos"].view(-1).long(),
         )
-        velocity = out[0] if isinstance(out, tuple) else out.sample
-        # Rows follow video_indices; keep the target subset and return the
-        # diffusers-compatible flow direction (negated H3 velocity).
-        return (-velocity[0, update_mask]).to(dtype)
+        # H3 predicts clean - noise; the shared flow objective predicts noise - clean.
+        visual_velocity = out[0] if isinstance(out, tuple) else out.sample
+        predictions = {"visual": (-visual_velocity[:, visual_mask]).to(dtype)}
+        # A silent target's audio rows are noised silence: they keep the packed sequence native but carry no loss.
+        if "audio" in latents_input and cond["h3_target_has_soundtrack"]:
+            audio_velocity = out[1] if isinstance(out, tuple) else out.audio_sample
+            predictions["audio"] = (-audio_velocity[:, audio_mask]).to(dtype)
+        return predictions
 
     def cfg_combine(
         self,

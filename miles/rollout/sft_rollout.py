@@ -8,9 +8,9 @@ manager placement group.
 """
 
 import hashlib
+import json
 import logging
 import os
-import subprocess
 import time
 from pathlib import Path
 
@@ -20,118 +20,94 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from miles.rollout.base_types import RolloutFnTrainOutput
 from miles.utils import tracking_utils
+from miles.utils.media import ImageSource, maybe_download_media, media_fingerprint, visual_source
 from miles.utils.metric_utils import compute_rollout_step
-from miles.utils.misc import SingletonMeta, load_function
+from miles.utils.misc import SingletonMeta
+from miles.utils.timer import timer
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
 
 ENCODE_GPU_FRACTION = 0.3
 
-
-def resolve_media_path(media: str, prompt_data: str) -> str:
-    """Relative media paths are anchored at the dataset jsonl's directory (portable datasets)."""
-    if os.path.isabs(media):
-        return media
-    return str(Path(prompt_data).parent / media)
-
-
-def sft_sample_key(args, item: dict) -> tuple[str, int]:
-    """Content-addressed cache filename and latent-sampling seed for one (media, prompt) item."""
-    stat = Path(item["media"]).stat()
-    digest = hashlib.sha256(
-        f"{args.diffusion_model_family}|{args.sft_encoder_checkpoint}"
-        f"|{args.diffusion_height}x{args.diffusion_width}"
-        f"|{args.diffusion_output_num_frames}s{args.sft_frame_stride}"
-        f"|{item['media']}|{stat.st_size}|{stat.st_mtime_ns}|{item['prompt']}".encode()
-    ).digest()
-    return digest.hex()[:16] + ".pt", int.from_bytes(digest[8:16], "big") % 2**63
+# Every args field an encoder reads; the cache key and latent seed depend on exactly these.
+SFT_CACHE_KEY_ARGS = (
+    "diffusion_model_family",
+    "sft_encoder_checkpoint",
+    "diffusion_height",
+    "diffusion_width",
+    "diffusion_output_num_frames",
+    "sft_frame_stride",
+    "diffusion_task",
+    "seed",
+)
 
 
-IMAGE_EXTENSIONS = {".bmp", ".jpeg", ".jpg", ".png", ".webp"}
+def localize_sft_media(sample: Sample, media_cache_dir: Path) -> None:
+    """Point the sample's target and conditions at local files, downloading URLs once into media_cache_dir."""
+    sample.target = {kind: maybe_download_media(uri, media_cache_dir) for kind, uri in sample.target.items()}
+    sample.conditions = [
+        {**condition, "uri": maybe_download_media(condition["uri"], media_cache_dir)}
+        for condition in sample.conditions
+    ]
 
 
-def _probe_video(path: str) -> tuple[int, int, float]:
-    """(width, height, fps) of the first video stream."""
-    probe = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "stream=width,height,avg_frame_rate",
-            "-of",
-            "csv=p=0:s=,",
-            path,
-        ],
-        capture_output=True,
-        text=True,
-    )
-    try:
-        width, height, rate = probe.stdout.strip().split(",")[:3]
-        num, _, den = rate.partition("/")
-        return int(width), int(height), float(num) / float(den or 1)
-    except (ValueError, ZeroDivisionError):
-        raise ValueError(f"ffprobe could not read {path}: {probe.stderr.strip()[:200]}") from None
+def _sha256(payload: dict) -> bytes:
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).digest()
 
 
-def _decode_video(path: str) -> tuple[torch.Tensor, float]:
-    """All frames as uint8 [T, C, H, W], plus the stream fps.
+def sft_sample_key(args, sample: Sample) -> tuple[str, int]:
+    """Cache identity includes the prompt, ordered conditions, target, all media files, and the args encoders read.
 
-    sgl-diffusion reads every media file the same way (``subprocess.run`` on
-    ffmpeg into a raw rgb24 stream, see minimax_h3/reference_encoding.py), and
-    ffmpeg is the only decoder available on every platform this trains on:
-    torchvision 0.26 -- the pinned version -- ships no video API at all, and
-    torchcodec has no Linux ARM build.
+    The latent seed depends only on the sample and --seed, so an encoder change (and its version bump) keeps every
+    sample's draws and runs before and after it stay comparable.
     """
-    import numpy as np
-
-    width, height, fps = _probe_video(path)
-    decoded = subprocess.run(
-        ["ffmpeg", "-v", "error", "-i", path, "-map", "0:v:0", "-an", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
-        capture_output=True,
-    )
-    if decoded.returncode != 0:
-        raise ValueError(f"ffmpeg failed on {path}: {decoded.stderr.decode()[:200]}")
-    frame_bytes = width * height * 3
-    if not decoded.stdout or len(decoded.stdout) % frame_bytes:
-        raise ValueError(
-            f"{path}: ffmpeg returned {len(decoded.stdout)} bytes, "
-            f"not a whole number of {width}x{height} rgb24 frames"
-        )
-    frames = np.frombuffer(decoded.stdout, dtype=np.uint8).reshape(-1, height, width, 3)
-    return torch.from_numpy(frames.copy()).permute(0, 3, 1, 2), fps
+    paths = {*sample.target.values(), *(condition["uri"] for condition in sample.conditions)}
+    identity = {"prompt": sample.prompt, "conditions": sample.conditions, "target": sample.target}
+    payload = {
+        # Bump the version whenever the cached pair changes.
+        "version": 5,
+        "config": {key: vars(args)[key] for key in SFT_CACHE_KEY_ARGS},
+        "sample": identity,
+        "files": [media_fingerprint(path) for path in sorted(paths)],
+    }
+    seed = int.from_bytes(_sha256({"seed": int(args.seed), "sample": identity})[8:16], "big") % 2**63
+    return _sha256(payload).hex() + ".pt", seed
 
 
 def read_media_clip(path: str, *, height: int, width: int, num_frames: int, frame_stride: int) -> dict:
-    if Path(path).suffix.lower() in IMAGE_EXTENSIONS:
-        if num_frames != 1:
-            raise ValueError(f"{path} is an image, which requires --diffusion-output-num-frames 1")
-        import numpy as np
-        from PIL import Image
+    """Every ``frame_stride``-th frame of a file prepared offline as exactly ``(num_frames - 1) * frame_stride + 1``
+    frames of ``width x height`` square pixels; any other file is an error.
 
-        frames = torch.from_numpy(np.asarray(Image.open(path).convert("RGB"))).permute(2, 0, 1)[None]
-        fps = None
-    else:
-        video, fps = _decode_video(path)
-        span = (num_frames - 1) * frame_stride + 1
-        if video.shape[0] < span:
-            raise ValueError(f"{path} has {video.shape[0]} frames, need {span}")
-        start = (video.shape[0] - span) // 2
-        frames = video[start : start + span : frame_stride]
-
-    # Always emit uint8; each family owns its preprocessing.
-    if frames.shape[2:] != (height, width):
-        scale = max(height / frames.shape[2], width / frames.shape[3])
-        new_h = max(height, round(frames.shape[2] * scale))
-        new_w = max(width, round(frames.shape[3] * scale))
-        resized = torch.nn.functional.interpolate(frames.float(), size=(new_h, new_w), mode="bilinear", antialias=True)
-        top = (new_h - height) // 2
-        left = (new_w - width) // 2
-        frames = resized[:, :, top : top + height, left : left + width].round().clamp(0, 255).to(torch.uint8)
-    return {"video": frames.permute(1, 0, 2, 3), "fps": fps}
+    Returns ``{"video": uint8 [C, T, H, W], "fps", "frame_times_seconds", "audio_sample_rate"}``, the times on the
+    file timeline so a family can cut the soundtrack over the same interval.
+    """
+    source = visual_source(path)
+    num_source_frames = (num_frames - 1) * frame_stride + 1
+    if source.info.num_frames != num_source_frames:
+        raise ValueError(
+            f"{path} has {source.info.num_frames} frames; --diffusion-output-num-frames {num_frames} at "
+            f"--sft-frame-stride {frame_stride} needs exactly {num_source_frames}; cut the file to that length offline"
+        )
+    if (source.info.width, source.info.height) != (width, height):
+        raise ValueError(
+            f"{path} is {source.info.width}x{source.info.height}, not the {width}x{height} canvas; resize it offline"
+        )
+    # Scaling then cropping leaves aspect residues such as 4096:4095, which display within half a pixel.
+    if round(width * source.info.sample_aspect_ratio) != width:
+        raise ValueError(
+            f"{path} has non-square pixels (sample aspect ratio {source.info.sample_aspect_ratio}); "
+            "resample it to square pixels offline"
+        )
+    frames = source.decode(0, num_source_frames)[::frame_stride]
+    return {
+        "video": frames.permute(1, 0, 2, 3),
+        "fps": source.info.fps,
+        "frame_times_seconds": (
+            None if isinstance(source, ImageSource) else source.info.frame_times_seconds[::frame_stride]
+        ),
+        "audio_sample_rate": source.info.audio_sample_rate,
+    }
 
 
 def _relocate(obj, device: torch.device):
@@ -154,28 +130,28 @@ class SftEncodeActor:
         from miles.rollout.encoder_hub import get_encoder
 
         self.args = args
-        self.encoder_module = get_encoder(args.diffusion_model_family)
+        self.encoder_module = get_encoder(args.diffusion_model_family, args.diffusion_task)
         self.encoder = self.encoder_module.load_encoder(args, torch.device("cuda"))
         if args.sft_offload_encoder:
             self.encoder = _relocate(self.encoder, torch.device("cpu"))
             torch.cuda.empty_cache()
 
-    def encode(self, items: list[dict], cache_dir: str) -> int:
+    def encode(self, samples: list[Sample], cache_dir: str) -> int:
         args = self.args
         encoder = self.encoder
         if args.sft_offload_encoder:
             encoder = _relocate(encoder, torch.device("cuda"))
-        for item in items:
+        for sample in samples:
             media_clip = read_media_clip(
-                item["media"],
+                sample.target["visual"],
                 height=args.diffusion_height,
                 width=args.diffusion_width,
                 num_frames=args.diffusion_output_num_frames,
                 frame_stride=args.sft_frame_stride,
             )
-            generator = torch.Generator().manual_seed(item["latent_seed"])
-            pair = self.encoder_module.encode_sample(encoder, media_clip, item["prompt"], generator)
-            out_path = Path(cache_dir) / item["cache_name"]
+            generator = torch.Generator().manual_seed(sample.seed)
+            pair = self.encoder_module.encode_sample(encoder, sample, media_clip, generator, args)
+            out_path = Path(cache_dir) / sample.metadata["sft_cache_name"]
             # Temp-then-rename so an interrupted write never leaves a loadable-looking cache entry.
             tmp_path = out_path.with_name(out_path.name + ".tmp")
             torch.save(pair, tmp_path)
@@ -183,10 +159,7 @@ class SftEncodeActor:
         if args.sft_offload_encoder:
             self.encoder = _relocate(encoder, torch.device("cpu"))
             torch.cuda.empty_cache()
-        return len(items)
-
-
-_scheduler_grid: tuple[torch.Tensor, torch.Tensor] | None = None
+        return len(samples)
 
 
 class SftEncodePool(metaclass=SingletonMeta):
@@ -198,6 +171,8 @@ class SftEncodePool(metaclass=SingletonMeta):
         self._args = args
         self._placement_group = placement_group
         self._actors: list | None = None
+        # set per generate by RolloutManager; None when the encoders have their own GPUs
+        self.train_in_flight: list | None = None
 
     @property
     def actors(self) -> list:
@@ -219,26 +194,12 @@ class SftEncodePool(metaclass=SingletonMeta):
         logger.info("SFT encode pool: %d workers at %.2f GPU each", len(self._actors), ENCODE_GPU_FRACTION)
         return self._actors
 
-
-def _get_scheduler_grid(args) -> tuple[torch.Tensor, torch.Tensor]:
-    global _scheduler_grid
-    if _scheduler_grid is None:
-        config = load_function(args.train_pipeline_config_path)()
-        scheduler = load_function(args.model_backend_path)(config).load_scheduler(args)
-        # Shift-only flow schedulers (H3) carry no num_train_timesteps; use the
-        # conventional 1000-point grid for them.
-        if hasattr(scheduler.config, "num_train_timesteps"):
-            num_train_timesteps = int(scheduler.config.num_train_timesteps)
-        else:
-            num_train_timesteps = 1000
-        shift = args.fsdp_flow_shift
-        sigmas = torch.linspace(1.0, 1.0 / num_train_timesteps, num_train_timesteps, dtype=torch.float64)
-        sigmas = shift * sigmas / (1.0 + (shift - 1.0) * sigmas)
-        _scheduler_grid = (
-            (sigmas * num_train_timesteps).to(torch.float32),
-            torch.cat([sigmas, torch.zeros(1, dtype=torch.float64)]).to(torch.float32),
-        )
-    return _scheduler_grid
+    def wait_for_train_step(self) -> None:
+        """A prefetched rollout's encode burst must not share a GPU with the train step it overlaps."""
+        if not self.train_in_flight:
+            return
+        with timer("sft_encode_wait"):
+            ray.get(self.train_in_flight)
 
 
 def generate_rollout(args, rollout_id, data_source, evaluation: bool = False) -> RolloutFnTrainOutput:
@@ -250,30 +211,33 @@ def generate_rollout(args, rollout_id, data_source, evaluation: bool = False) ->
     samples = [sample for group in groups for sample in group]
 
     cache_dir = Path(args.prompt_data).parent / ".sft_cache"
-    items = []
     for sample in samples:
-        media = sample.metadata.get("video") or sample.metadata.get("image")
-        if media is None:
-            raise ValueError(f"sample {sample.index} metadata has neither 'video' nor 'image': {sample.metadata}")
-        item = {"media": resolve_media_path(media, args.prompt_data), "prompt": sample.prompt}
-        item["cache_name"], item["latent_seed"] = sft_sample_key(args, item)
-        items.append(item)
+        localize_sft_media(sample, cache_dir / "media")
+        sample.metadata["sft_cache_name"], sample.seed = sft_sample_key(args, sample)
 
-    missing = {item["cache_name"]: item for item in items if not (cache_dir / item["cache_name"]).exists()}
+    # Keyed by cache name so a sample repeated across an epoch wrap is encoded once.
+    missing = {
+        sample.metadata["sft_cache_name"]: sample
+        for sample in samples
+        if not (cache_dir / sample.metadata["sft_cache_name"]).exists()
+    }
     encode_seconds = 0.0
     if missing:
         cache_dir.mkdir(parents=True, exist_ok=True)
+        pool = SftEncodePool(args)
+        pool.wait_for_train_step()
         start = time.time()
-        actors = SftEncodePool(args).actors
-        miss_items = list(missing.values())
-        shards = [miss_items[i :: len(actors)] for i in range(len(actors))]
+        actors = pool.actors
+        misses = list(missing.values())
+        shards = [misses[i :: len(actors)] for i in range(len(actors))]
         ray.get(
             [actor.encode.remote(shard, str(cache_dir)) for actor, shard in zip(actors, shards, strict=True) if shard]
         )
         encode_seconds = time.time() - start
 
-    for sample, item in zip(samples, items, strict=True):
-        sample.train_metadata = {"sft_pair": torch.load(cache_dir / item["cache_name"], map_location="cpu")}
+    for sample in samples:
+        cache_name = sample.metadata.pop("sft_cache_name")
+        sample.train_metadata = {"sft_pair": torch.load(cache_dir / cache_name, map_location="cpu")}
         sample.status = Sample.Status.COMPLETED
 
     metrics = {
@@ -285,12 +249,7 @@ def generate_rollout(args, rollout_id, data_source, evaluation: bool = False) ->
 
 
 def convert_samples_to_train_data(args, samples: list[Sample]) -> dict:
-    scheduler_timesteps, scheduler_sigmas = _get_scheduler_grid(args)
-    return {
-        "train_data": [sample.train_metadata["sft_pair"] for sample in samples],
-        "scheduler_timesteps": scheduler_timesteps,
-        "scheduler_sigmas": scheduler_sigmas,
-    }
+    return {"train_data": [sample.train_metadata["sft_pair"] for sample in samples]}
 
 
 def log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_time) -> bool:

@@ -1,3 +1,17 @@
+"""Train pipeline config registry: checkpoint -> family config -> what the DiT receives.
+
+    checkpoint ref --resolve_diffusion_model_family----> family config
+    trajectory t   --process_timestep_as_input---------> DiT timestep
+    sigma          --process_sigma_as_timesteps_input--> DiT timestep (scaled by the family's num_train_timesteps)
+    {stream: latents}, cond --compute_noise_pred-------> {stream: noise pred}: no CFG | two-pass | joint-batch CFG
+
+What each test pins:
+  family resolution   HF ids and local paths match case-insensitively; unknown refs fail; the env var wins
+  compute_noise_pred  no CFG is one pos pass; joint-batch CFG equals two-pass CFG
+  timestep input      each family reproduces the arithmetic its sglang-d DiT runs
+  sigma input         sd3 / wan2_2 scale by num_train_timesteps = 1000; qwen_image / krea2 pass sigma through
+"""
+
 from tests.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=30, suite="stage-a-cpu", labels=[])
@@ -72,8 +86,8 @@ class TestComputeNoisePred:
     def _call(self, **overrides):
         kwargs = dict(
             model=_CondBiasDiT(),
-            latents_input=self.h,
-            timesteps_input=torch.tensor([3.0, 5.0]),
+            latents_input={"visual": self.h},
+            timesteps_input={"visual": torch.tensor([3.0, 5.0])},
             pos_cond=self.pos,
             neg_cond=self.neg,
             joint_cond=None,
@@ -83,7 +97,7 @@ class TestComputeNoisePred:
             true_cfg_scale=None,
         )
         kwargs.update(overrides)
-        return self.cfg.compute_noise_pred(**kwargs)
+        return self.cfg.compute_noise_pred(**kwargs)["visual"]
 
     def test_no_cfg_is_single_pos_pass(self):
         torch.testing.assert_close(self._call(use_cfg=False), self.h * 2.0 + 1.0)
@@ -99,7 +113,7 @@ class TestComputeNoisePred:
 
 class TestProcessTimestepAsInput:
     # What a family hands its DiT as the timestep, given the trajectory's t and the
-    # scheduler range N. Each family must reproduce the arithmetic its sglang-d DiT runs.
+    # family's num_train_timesteps N. Each family must reproduce the arithmetic its sglang-d DiT runs.
     #
     #   sd3, wan2_2, krea2   t         the DiT takes the trajectory timestep unchanged
     #   qwen_image           t / 1000  the model's own normalizer, which Timesteps(scale=1000) undoes
@@ -126,19 +140,16 @@ class TestProcessSigmaAsTimestepsInput:
     SIGMAS = torch.tensor([0.8474337458610535, 0.5])
 
     @pytest.mark.parametrize("config_cls", [SD3TrainPipelineConfig, Wan2_2TrainPipelineConfig])
-    def test_scales_up_to_the_scheduler_range(self, config_cls):
-        out = config_cls.process_sigma_as_timesteps_input(
-            config_cls, self.SIGMAS, num_train_timesteps=self.NUM_TRAIN_TIMESTEPS
-        )
+    def test_scales_up_to_num_train_timesteps(self, config_cls):
+        assert config_cls.num_train_timesteps == self.NUM_TRAIN_TIMESTEPS
+        out = config_cls.process_sigma_as_timesteps_input(config_cls, self.SIGMAS)
         assert torch.equal(out, self.SIGMAS * float(self.NUM_TRAIN_TIMESTEPS))
 
     @pytest.mark.parametrize(
         "config_cls", [QwenImageTrainPipelineConfig, QwenImage21TrainPipelineConfig, Krea2TrainPipelineConfig]
     )
     def test_passes_the_sigma_through(self, config_cls):
-        out = config_cls.process_sigma_as_timesteps_input(
-            config_cls, self.SIGMAS, num_train_timesteps=self.NUM_TRAIN_TIMESTEPS
-        )
+        out = config_cls.process_sigma_as_timesteps_input(config_cls, self.SIGMAS)
         assert torch.equal(out, self.SIGMAS)
 
     def test_qwen_image_round_trip_is_not_identity(self):
@@ -147,3 +158,40 @@ class TestProcessSigmaAsTimestepsInput:
             QwenImageTrainPipelineConfig, self.SIGMAS * float(self.NUM_TRAIN_TIMESTEPS)
         )
         assert not torch.equal(round_tripped, self.SIGMAS)
+
+
+class TestCfgCombinePrefersTrueCfgScale:
+    # true_cfg_scale, when set, must win over guidance_scale for every family whose
+    # forward is guided (H3 opts out entirely -- it raises instead).
+    POS = torch.tensor([2.0])
+    NEG = torch.tensor([0.0])
+    GUIDANCE_SCALE = 3.0
+    TRUE_CFG_SCALE = 5.0
+
+    @pytest.mark.parametrize(
+        # Qwen-Image excluded here: it additionally norm-rescales whenever true_cfg_scale > 1,
+        # so its output legitimately isn't `neg + true_cfg_scale * (pos - neg)`; it has its own
+        # dedicated coverage in this repo's cfg_combine tests for that rescale branch.
+        "config_cls",
+        [SD3TrainPipelineConfig, Wan2_2TrainPipelineConfig, Krea2TrainPipelineConfig],
+    )
+    def test_true_cfg_scale_overrides_guidance_scale(self, config_cls):
+        out = config_cls().cfg_combine(self.POS, self.NEG, self.GUIDANCE_SCALE, true_cfg_scale=self.TRUE_CFG_SCALE)
+        # neg + true_cfg_scale * (pos - neg), NOT guidance_scale
+        torch.testing.assert_close(out, self.NEG + self.TRUE_CFG_SCALE * (self.POS - self.NEG))
+
+    def test_qwen_image_scale_selection_before_rescale(self):
+        # Isolate scale selection from the norm-rescale branch by using a single-element
+        # last dim, where pos_norm/combined_norm rescale is a no-op scalar ratio of abs values.
+        out = QwenImageTrainPipelineConfig().cfg_combine(
+            self.POS, self.NEG, self.GUIDANCE_SCALE, true_cfg_scale=self.TRUE_CFG_SCALE
+        )
+        assert not torch.allclose(out, self.NEG + self.GUIDANCE_SCALE * (self.POS - self.NEG))
+
+    @pytest.mark.parametrize(
+        "config_cls",
+        [SD3TrainPipelineConfig, Wan2_2TrainPipelineConfig, QwenImageTrainPipelineConfig, Krea2TrainPipelineConfig],
+    )
+    def test_falls_back_to_guidance_scale_when_unset(self, config_cls):
+        out = config_cls().cfg_combine(self.POS, self.NEG, self.GUIDANCE_SCALE, true_cfg_scale=None)
+        torch.testing.assert_close(out, self.NEG + self.GUIDANCE_SCALE * (self.POS - self.NEG))

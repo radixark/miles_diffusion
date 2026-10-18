@@ -1,23 +1,25 @@
-"""8-GPU MiniMax H3 t2va LoRA SFT on a (video, prompt) jsonl dataset.
+"""MiniMax H3 t2va LoRA SFT on a (video, prompt) jsonl dataset.
 
 No sglang engines: the sft_rollout plugin lazily encodes each round's cache misses
 through a colocated encoder actor pool (Qwen3-VL-32B layer-50 text encoder + H3 video
-VAE), writing one content-addressed file per sample into .sft_cache/ next to the jsonl.
+and audio VAEs), writing one content-addressed file per sample into .sft_cache/ next to the jsonl.
 The encoder is non-resident: it is dropped after every miss burst, so train steps never
 share the GPU with its ~70GB of weights.
 
-Dataset rows: {"prompt": "...", "metadata": {"video": "clips/x.mp4"}}, relative to the jsonl
+Dataset rows: {"prompt": "...", "target": {"visual": "clips/x.mp4"}}, relative to the jsonl
 Videos must already sit on H3's serving grid: short_edge=768 canvas, 24 fps, and a
-17n+5 frame count (the default spec is 1344x768 / 107 frames, ~4.46 s). See
+17n+5 frame count (the default spec is exactly 1344x768 / 107 frames, ~4.46 s). See
 docs/models/h3/lora_sft_guide.md sections 2-3 for how DATASET was built to this spec.
 
 Per rollout step: 32 samples, num_steps_per_rollout=4, so 8 samples per optimizer
-step over 8 dp ranks is 1 sample per rank at mbs=1 (the batch size the reference
-lr/wd defaults were validated with).
+step over the default 8 dp ranks is 1 sample per rank at mbs=1 (the batch size the
+reference lr/wd defaults were validated with).
 
 Usage:
     python3 scripts/run_diffusion_sft_h3_t2va.py   # downloads DATASET on first run
     # custom data: append --prompt-data /abs/train.jsonl via --extra-args (last flag wins)
+    python3 scripts/run_diffusion_sft_h3_t2va.py --num-gpus 2 \
+        --extra-args "--num-rollout 2 --rollout-batch-size 4 --num-steps-per-rollout 2"   # 2-GPU smoke
 """
 
 from dataclasses import dataclass
@@ -36,6 +38,7 @@ LORA_TARGET_MODULES = "attn.to_q attn.to_k attn.to_v attn.to_out.0 ff.net.0.proj
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
+    num_gpus: int = 8
     data_dir: str = "/root/datasets"
     resume_ckpt: str = ""
     start_rollout: int = -1
@@ -51,7 +54,7 @@ def execute(args: ScriptArgs) -> None:
     run_name = f"diffusion_sft_h3_t2va_{U.create_run_id()}"
 
     ckpt_args = (
-        f"--hf-checkpoint {MODEL} --sft-encoder-checkpoint {MODEL} "
+        f"--hf-checkpoint {MODEL} --sft-encoder-checkpoint {MODEL} --diffusion-task t2va "
         f"--save {args.output_dir}/{run_name}/ckpt --save-interval 20 "
     )
     if args.resume_ckpt:
@@ -102,22 +105,24 @@ def execute(args: ScriptArgs) -> None:
         "--fsdp-master-dtype fp32 "
         "--fsdp-reduce-dtype fp32 "
         "--diffusion-forward-dtype bf16 "
-        # Match the engine's t2va serving schedule (video shift 12) so training
-        # sigmas cover the same grid inference will sample.
-        "--fsdp-flow-shift 12.0 "
+        # Each stream samples sigmas on its engine serving schedule: video shift 12, audio shift 3.
+        "--fsdp-flow-shift visual=12,audio=3 "
+        # Real-footage soundtracks are noisy: the audio is noised and fed to the DiT but adds no loss.
+        "--fsdp-supervised-streams visual "
     )
 
     perf_args = "--micro-batch-size 1 --gradient-checkpointing "
 
-    misc_args = "--actor-num-gpus-per-node 8 --num-gpus-per-node 8 "
+    misc_args = f"--actor-num-gpus-per-node {args.num_gpus} --num-gpus-per-node {args.num_gpus} "
 
     U.execute_train(
         train_args=(
             f"{ckpt_args} {rollout_args} {sft_args} {optimizer_args} {lora_args} "
             f"{wandb_args} {train_backend_args} {perf_args} {misc_args} {args.extra_args}"
         ),
-        num_gpus_per_node=8,
+        num_gpus_per_node=args.num_gpus,
         config=args,
+        train_script="train_sft.py",
     )
 
 

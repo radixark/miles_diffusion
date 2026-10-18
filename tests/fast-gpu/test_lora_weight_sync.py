@@ -15,7 +15,6 @@ from peft import LoraConfig, get_peft_model
 from miles.backends.fsdp_utils.diffusion_update_weight_utils import (
     DiffusionUpdateWeightFromTensorLoRA,
     DiffusionUpdateWeightFromTensorLoRAIPC,
-    PeftLoRAKeyMapper,
 )
 
 
@@ -27,14 +26,14 @@ class _TinyBlock(torch.nn.Module):
 
 
 class _CaptureUpdater(DiffusionUpdateWeightFromTensorLoRA):
-    """Capture flushed buckets instead of pushing to rollout engines."""
+    """Capture the buckets as pushed to the rollout engine."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.buckets: list[list[tuple[str, torch.Tensor]]] = []
 
-    def wait_and_update_bucket_weights(self, bucket, target_module, weight_update_mode=None):
-        self.buckets.append([(name, tensor.clone()) for name, tensor in bucket])
+    def update_bucket_weights(self, named_tensors, target_module):
+        self.buckets.append([(name, tensor.clone()) for name, tensor in named_tensors])
 
 
 class _CaptureLoRAIPCUpdater(DiffusionUpdateWeightFromTensorLoRAIPC):
@@ -44,8 +43,8 @@ class _CaptureLoRAIPCUpdater(DiffusionUpdateWeightFromTensorLoRAIPC):
         super().__init__(*args, **kwargs)
         self.buckets: list[list[tuple[str, torch.Tensor]]] = []
 
-    def wait_and_update_bucket_weights(self, bucket, target_module, weight_update_mode=None):
-        self.buckets.append([(name, tensor.clone()) for name, tensor in bucket])
+    def update_bucket_weights(self, named_tensors, target_module):
+        self.buckets.append([(name, tensor.clone()) for name, tensor in named_tensors])
 
 
 def _make_peft_model():
@@ -60,7 +59,9 @@ def _make_peft_model():
 
 
 def _fake_args(buffer_size):
-    return Namespace(update_weight_buffer_size=buffer_size, train_pipeline_config_path=None)
+    return Namespace(
+        update_weight_buffer_size=buffer_size, train_pipeline_config_path=None, diffusion_model_family=None
+    )
 
 
 def _run_update(peft_model, buffer_size):
@@ -79,7 +80,7 @@ def _assert_buckets_have_complete_ab_pairs(buckets):
     for bucket in buckets:
         by_layer: dict[str, set[str]] = {}
         for name, _ in bucket:
-            prefix = PeftLoRAKeyMapper.layer_prefix(name)
+            prefix = name.rsplit(".lora_", 1)[0]
             ab = "A" if ".lora_A" in name else "B"
             by_layer.setdefault(prefix, set()).add(ab)
         for prefix, abs_ in by_layer.items():

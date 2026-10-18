@@ -40,16 +40,15 @@ def prepare_nft_batch(
     pos_list = [config.prepare_cond_kwargs(batch[i]["denoising_env"].pos_cond_kwargs, device) for i in range(bsz)]
     pos_cond = config.collate_cond_for_sample_batch(pos_list, device, pad_to_len=pad_to_len)
 
-    num_train_timesteps = ctx.scheduler.config.num_train_timesteps
-
     noise_generator = torch.Generator(device=device).manual_seed(
         stable_hash("nft_corrupt", int(ctx.args.seed), ctx.rollout_id, ctx.microbatch_id, ctx.dp_rank)
     )
     xt = corrupt(x0, t, sample_noise(x0, generator=noise_generator))
+    # Rollout trajectories carry only the visual stream.
     return PreparedBatch(
-        latents=xt,
-        timesteps=t,
-        timesteps_for_model=config.process_sigma_as_timesteps_input(t, num_train_timesteps=num_train_timesteps),
+        latents={"visual": xt},
+        timesteps={"visual": t},
+        timesteps_for_model={"visual": config.process_sigma_as_timesteps_input(t)},
         model=model,
         component_name=component_name,
         guidance_scale=0.0,
@@ -108,36 +107,38 @@ def nft_loss_formula(
     batch: list[dict],
     prepared: PreparedBatch,
     *,
-    new_pred: torch.Tensor,
-    ref_pred: torch.Tensor | None,
+    new_pred: dict[str, torch.Tensor],
+    old_pred: dict[str, torch.Tensor] | None,
+    ref_pred: dict[str, torch.Tensor] | None,
     metrics: MetricBuffer,
     write_old_log_prob: bool = False,
     old_log_prob_from_new: bool = False,
 ) -> torch.Tensor:
-    """Dual-policy x0-MSE. Actor must supply ``ref_pred`` (EMA / LoRA-base)."""
-    if ref_pred is None:
-        raise ValueError("NFT loss formula requires a reference prediction from the actor")
-
+    """Dual-policy x0-MSE against pi_old, plus ``kl_beta * mean((v_new - v_ref)^2)`` per pair with a KL reference."""
     args = ctx.args
     beta = args.diffusion_nft_beta
     adv_clip_max = args.diffusion_adv_clip_max
     use_adaptive = args.diffusion_nft_adaptive_weight
 
     x0 = prepared.extras["x0"]
-    t = prepared.timesteps
+    t = prepared.timesteps["visual"]
     t_exp = t.view(len(batch), *([1] * (x0.ndim - 1)))
     r = nft_r_from_advantages(prepared.advantage, adv_clip_max=adv_clip_max)
     pos_loss, neg_loss = nft_branch_losses(
         x0=x0,
-        xt=prepared.latents,
+        xt=prepared.latents["visual"],
         t_exp=t_exp,
-        new_pred=new_pred,
-        old_pred=ref_pred,
+        new_pred=new_pred["visual"],
+        old_pred=old_pred["visual"],
         beta=beta,
         use_adaptive=use_adaptive,
     )
     r_b = r.to(dtype=pos_loss.dtype)
     per_pair = (r_b * pos_loss / beta + (1.0 - r_b) * neg_loss / beta) * adv_clip_max
+    kl = None
+    if args.diffusion_kl_beta > 0:
+        kl = ((new_pred["visual"] - ref_pred["visual"]) ** 2).mean(dim=tuple(range(1, x0.ndim)))
+        per_pair = per_pair + args.diffusion_kl_beta * kl
     loss_sum = per_pair.sum()
 
     with torch.no_grad():
@@ -158,5 +159,7 @@ def nft_loss_formula(
             count=1,
         )
         metrics.emit_mean("adv_abs_mean", total=prepared.advantage.abs().sum(), count=bsz)
+        if kl is not None:
+            metrics.emit_mean("kl_loss", total=kl.sum(), count=bsz)
 
     return loss_sum

@@ -4,7 +4,9 @@ No sglang engines: the sft_rollout plugin lazily encodes each round's cache miss
 a colocated encoder actor pool, writing one content-addressed file per sample into
 .sft_cache/ next to the jsonl. Epoch 2 onward is all cache hits.
 
-Dataset rows: {"prompt": "...", "metadata": {"video": "/abs/path.mp4"}}
+Dataset rows: {"prompt": "...", "target": {"visual": "/abs/path.mp4"}}
+Videos must already be 832x480 with exactly 161 frames (81 frames at stride 2); the encoder
+rejects anything else rather than resizing or trimming it.
 
 Per rollout step: 64 samples, num_steps_per_rollout=4, so 16 samples per optimizer step
 over 4 dp ranks is 4 samples per rank at mbs=1.
@@ -40,11 +42,11 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 def execute(args: ScriptArgs) -> None:
     if not args.data_jsonl:
-        raise SystemExit("set --data-jsonl (or MILES_SCRIPT_DATA_JSONL) to a jsonl with prompt + metadata.video")
+        raise SystemExit("set --data-jsonl (or MILES_SCRIPT_DATA_JSONL) to a jsonl with prompt + target.visual")
     run_name = f"diffusion_sft_wan22_{U.create_run_id()}"
 
     ckpt_args = (
-        f"--hf-checkpoint {MODEL} --sft-encoder-checkpoint {MODEL} "
+        f"--hf-checkpoint {MODEL} --sft-encoder-checkpoint {MODEL} --diffusion-task t2v "
         f"--save {args.output_dir}/{run_name}/ckpt --save-interval 20 "
     )
     if args.resume_ckpt:
@@ -106,6 +108,7 @@ def execute(args: ScriptArgs) -> None:
         ),
         num_gpus_per_node=4,
         config=args,
+        train_script="train_sft.py",
     )
 
 

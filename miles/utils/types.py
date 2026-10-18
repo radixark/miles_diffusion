@@ -75,6 +75,10 @@ class Sample:
     request_id: str | None = None
     # prompt
     prompt: str = ""
+    # Reference media {"type", "uri", "role", ...}; <Picture i> in the prompt is the i-th entry.
+    conditions: list[dict[str, Any]] = field(default_factory=list)
+    # SFT supervised media: {"visual": video or image, "audio"?: ...}.
+    target: dict[str, Any] = field(default_factory=dict)
     # reproducibility
     seed: int | None = None
     # Eager tensor on CPU. Image rollout shape: ``[C, T, H, W]`` (``T==1`` typical).

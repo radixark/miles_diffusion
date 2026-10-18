@@ -1,19 +1,34 @@
-"""Smoke tests for DiffusionNFT hooks (prepare + loss formula; actor owns DiT)."""
+"""DiffusionNFT sampling, timestep expansion, and batch preparation.
+
+    rollout samples --> timestep pairs --> prepared {"visual": noisy latents} --> NFT loss
+    NFT loss + kl_beta * mean((new_pred - ref_pred)^2) per pair when a KL reference is set
+    pair sigma --family process_sigma_as_timesteps_input--> DiT timestep (sd3-style: x the config's num_train_timesteps)
+    each sample's own trajectory sigmas --> that sample's training sigmas
+    sampling sigmas (terminal 0 excluded) --timestep strategy--> each sample's train sigmas, in training order
+        drop_random_steps (default)  1.0 0.75 0.5 0.25 -> e.g. 0.5 1.0 0.25   k drawn per sample, random order
+                                     --> across samples every sigma is trained
+        drop_final_steps             1.0 0.8 0.6 0.4 0.2 -> 1.0 0.8 0.6       the final k, schedule order
+    seed + sample index --> repeatable per-sample train steps and order
+    seed + rollout + microbatch --> repeatable noise
+"""
 
 from tests.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=30, suite="stage-a-cpu", labels=[])
 
 from argparse import Namespace
+from types import SimpleNamespace
 
+import pytest
 import torch
 
 from miles.backends.fsdp_utils.configs.qwen_image import QwenImageTrainPipelineConfig
 from miles.backends.fsdp_utils.configs.train_pipeline_config import TrainPipelineConfig
-from miles.backends.fsdp_utils.ema import EmaShadow
-from miles.backends.fsdp_utils.loss_hub.nft import corrupt, nft_r_from_advantages, prepare_nft_batch
+from miles.backends.fsdp_utils.loss_hub.nft import corrupt, nft_loss_formula, nft_r_from_advantages, prepare_nft_batch
 from miles.backends.fsdp_utils.loss_hub.types import DiffusionLossContext
-from miles.ray.data_conversion_hub.nft import expand_samples_to_train_pairs, resolve_nft_sigmas
+from miles.ray.data_conversion_hub.nft import expand_samples_to_train_pairs
+from miles.utils.hash_utils import stable_hash
+from miles.utils.misc import function_registry
 from miles.utils.types import Sample
 
 
@@ -24,8 +39,8 @@ def _args(**overrides):
         globalize_reward_std=False,
         grpo_std_normalization=True,
         reward_key=None,
-        diffusion_nft_timestep_fraction=1.0,
-        diffusion_nft_shuffle_timesteps=False,
+        diffusion_nft_timestep_strategy_path="miles.ray.data_conversion_hub.nft.drop_final_steps",
+        diffusion_nft_num_dropped_timesteps=0,
         seed=42,
         custom_prepare_train_batch_path=None,
         custom_loss_function_path=None,
@@ -47,13 +62,82 @@ class TestNftMath:
         assert torch.allclose(xt[0], torch.full((4,), 0.75))
         assert torch.allclose(xt[1], torch.full((4,), 0.25))
 
-    def test_resolve_sigmas_drops_zero_and_fraction(self):
-        sigmas = torch.tensor([1.0, 0.8, 0.6, 0.4, 0.2, 0.0])
-        ts = resolve_nft_sigmas(sigmas, training_timestep_fraction=0.99)
-        assert torch.allclose(ts, torch.tensor([1.0, 0.8, 0.6, 0.4]))
+    def test_kl_to_the_reference_adds_to_each_pair(self):
+        # 2 pairs, new - ref = 1 everywhere --> kl = 1 per pair --> loss grows by kl_beta * 2
+        torch.manual_seed(0)
+        new_pred, old_pred = {"visual": torch.randn(2, 4)}, {"visual": torch.randn(2, 4)}
+        prepared = SimpleNamespace(
+            extras={"x0": torch.randn(2, 4)},
+            latents={"visual": torch.randn(2, 4)},
+            timesteps={"visual": torch.tensor([0.3, 0.7])},
+            advantage=torch.tensor([1.0, -1.0]),
+        )
+        batch = [{"nft_num_timesteps": 1}, {"nft_num_timesteps": 1}]
+        metrics = SimpleNamespace(emit_mean=lambda *args, **kwargs: None)
+
+        def loss(kl_beta):
+            args = Namespace(
+                diffusion_nft_beta=1.0,
+                diffusion_adv_clip_max=5.0,
+                diffusion_nft_adaptive_weight=True,
+                diffusion_kl_beta=kl_beta,
+            )
+            ctx = SimpleNamespace(args=args, device=torch.device("cpu"))
+            return nft_loss_formula(
+                ctx,
+                batch,
+                prepared,
+                new_pred=new_pred,
+                old_pred=old_pred,
+                ref_pred={"visual": new_pred["visual"] - 1.0},
+                metrics=metrics,
+            )
+
+        torch.testing.assert_close(loss(0.5) - loss(0.0), torch.tensor(0.5 * 2))
 
 
 class TestNftHooks:
+    def test_final_drop_strategy_drops_the_lowest_noise_steps(self):
+        # grid [1.0, 0.8, 0.6, 0.4, 0.2, 0.0], drop 2:
+        #   sampling steps 1.0 0.8 0.6 0.4 0.2   (terminal 0 is never a train step)
+        #   trained        1.0 0.8 0.6           (the final two, 0.4 and 0.2, are dropped)
+        class _Traj:
+            def __init__(self):
+                self.sigmas = torch.tensor([1.0, 0.8, 0.6, 0.4, 0.2, 0.0])
+                self.timesteps = self.sigmas * 1000
+                self.latents = torch.zeros(6, 2, 2)
+                self.latent_step_indices = None
+
+        class _Env:
+            pos_cond_kwargs = {}
+            neg_cond_kwargs = None
+
+        samples = [Sample(index=0, prompt="a", dit_trajectory=_Traj(), denoising_env=_Env())]
+        out = expand_samples_to_train_pairs(_args(diffusion_nft_num_dropped_timesteps=2), samples, [0.0], [0.0])
+        assert [pair["timestep"] for pair in out["train_data"]] == pytest.approx([1.0, 0.8, 0.6])
+
+    def test_custom_timestep_strategy_picks_the_train_steps(self):
+        # grid [1.0, 0.75, 0.5, 0.25, 0.0], strategy keeps steps {0, 3} -> trains at {1.0, 0.25}
+        class _Traj:
+            def __init__(self):
+                self.sigmas = torch.tensor([1.0, 0.75, 0.5, 0.25, 0.0])
+                self.timesteps = self.sigmas * 1000
+                self.latents = torch.zeros(5, 2, 2)
+                self.latent_step_indices = None
+
+        class _Env:
+            pos_cond_kwargs = {}
+            neg_cond_kwargs = None
+
+        def keep_first_and_last(args, num_steps, generator):
+            return [0, num_steps - 1]
+
+        samples = [Sample(index=0, prompt="a", dit_trajectory=_Traj(), denoising_env=_Env())]
+        args = _args(diffusion_nft_timestep_strategy_path="test:keep_first_and_last")
+        with function_registry.temporary("test:keep_first_and_last", keep_first_and_last):
+            out = expand_samples_to_train_pairs(args, samples, [0.0], [0.0])
+        assert [pair["timestep"] for pair in out["train_data"]] == [1.0, 0.25]
+
     def test_convert_expands_k_timestep_pairs(self):
         class _Traj:
             def __init__(self):
@@ -80,12 +164,13 @@ class TestNftHooks:
         assert out["train_data"][0]["advantage"] == rewards[0]
         assert out["train_data"][2]["advantage"] == rewards[1]
 
-    def test_convert_rejects_mismatched_scheduler_meta(self):
-        # One shared schedule per batch, same contract as the flow_grpo converter.
+    def test_convert_reads_each_samples_own_grid(self):
+        # sample 0 grid [1.0, 0.5, 0.0] -> trains at {1.0, 0.5}
+        # sample 1 grid [1.0, 0.3, 0.0] -> trains at {1.0, 0.3}
         class _Traj:
-            def __init__(self):
-                self.timesteps = torch.tensor([999.0, 500.0, 0.0])
-                self.sigmas = torch.tensor([1.0, 0.5, 0.0])
+            def __init__(self, sigmas):
+                self.timesteps = sigmas * 1000
+                self.sigmas = sigmas
                 self.latents = torch.zeros(3, 2, 2)
                 self.latent_step_indices = None
 
@@ -94,19 +179,17 @@ class TestNftHooks:
             neg_cond_kwargs = None
 
         samples = [
-            Sample(index=0, prompt="a", reward=1.0, dit_trajectory=_Traj(), denoising_env=_Env()),
-            Sample(index=1, prompt="b", reward=3.0, dit_trajectory=_Traj(), denoising_env=_Env()),
+            Sample(index=0, prompt="a", dit_trajectory=_Traj(torch.tensor([1.0, 0.5, 0.0])), denoising_env=_Env()),
+            Sample(index=1, prompt="b", dit_trajectory=_Traj(torch.tensor([1.0, 0.3, 0.0])), denoising_env=_Env()),
         ]
-        samples[1].dit_trajectory.sigmas = samples[1].dit_trajectory.sigmas + 1.0  # tamper
-        try:
-            expand_samples_to_train_pairs(_args(), samples, [1.0, 2.0], [1.0, 2.0])
-        except ValueError as e:
-            assert "scheduler_sigmas" in str(e)
-        else:
-            raise AssertionError("expected ValueError for mismatched scheduler_sigmas")
+        out = expand_samples_to_train_pairs(_args(), samples, [1.0, 2.0], [1.0, 2.0])
+        per_sample = {}
+        for pair in out["train_data"]:
+            per_sample.setdefault(pair["sample_index"], []).append(pair["timestep"])
+        assert per_sample == {0: [1.0, 0.5], 1: [1.0, pytest.approx(0.3)]}
 
     def test_convert_requires_rollout_sigmas(self):
-        # Sigmas come from the rollout scheduler snapshot; no timesteps/1000 fallback.
+        # Sigmas come from the rollout trajectory; no timesteps/1000 fallback.
         class _Traj:
             def __init__(self):
                 self.timesteps = torch.tensor([999.0, 500.0, 0.0])
@@ -131,6 +214,7 @@ class _StubConfig:
     """Cond plumbing stubbed out. Binds both hooks so a prepare wired to the wrong one fails on
     the numbers, not on a missing attribute."""
 
+    num_train_timesteps = 1000
     process_timestep_as_input = TrainPipelineConfig.process_timestep_as_input
     process_sigma_as_timesteps_input = TrainPipelineConfig.process_sigma_as_timesteps_input
 
@@ -151,7 +235,6 @@ class _QwenStyleConfig(_StubConfig):
 
 
 class TestPrepareNftBatch:
-    NUM_TRAIN_TIMESTEPS = 1000
     # 0.8474... does not survive a multiply then divide by 1000 in fp32.
     SIGMAS = [0.8474337458610535, 0.5]
 
@@ -164,7 +247,6 @@ class TestPrepareNftBatch:
             models={"transformer": torch.nn.Identity()},
             train_pipeline_config=config,
             sde_backend=None,
-            scheduler=Namespace(config=Namespace(num_train_timesteps=self.NUM_TRAIN_TIMESTEPS)),
             args=Namespace(seed=42),
             forward_dtype=torch.float32,
             device=torch.device("cpu"),
@@ -187,24 +269,24 @@ class TestPrepareNftBatch:
         seen = {}
 
         class _Recording(_StubConfig):
-            def process_sigma_as_timesteps_input(self, sigmas, *, num_train_timesteps):
+            def process_sigma_as_timesteps_input(self, sigmas):
                 seen["sigmas"] = sigmas.clone()
-                seen["num_train_timesteps"] = num_train_timesteps
                 return sigmas
 
         prepare_nft_batch(self._ctx(_Recording()), self._batch())
         assert torch.equal(seen["sigmas"], torch.tensor(self.SIGMAS))
-        assert seen["num_train_timesteps"] == self.NUM_TRAIN_TIMESTEPS
 
-    def test_sd3_style_family_gets_the_scheduler_range(self):
+    def test_sd3_style_family_gets_sigma_times_num_train_timesteps(self):
         prepared = prepare_nft_batch(self._ctx(_Sd3StyleConfig()), self._batch())
-        assert torch.equal(prepared.timesteps, torch.tensor(self.SIGMAS))
-        assert torch.equal(prepared.timesteps_for_model, torch.tensor(self.SIGMAS) * float(self.NUM_TRAIN_TIMESTEPS))
+        assert torch.equal(prepared.timesteps["visual"], torch.tensor(self.SIGMAS))
+        assert torch.equal(
+            prepared.timesteps_for_model["visual"], torch.tensor(self.SIGMAS) * float(_StubConfig.num_train_timesteps)
+        )
 
     def test_qwen_style_family_gets_the_sigma_bit_exactly(self):
         prepared = prepare_nft_batch(self._ctx(_QwenStyleConfig()), self._batch())
         # equal, not allclose: the wrong hook would still pass allclose.
-        assert torch.equal(prepared.timesteps_for_model, torch.tensor(self.SIGMAS))
+        assert torch.equal(prepared.timesteps_for_model["visual"], torch.tensor(self.SIGMAS))
 
 
 class TestNftDeterminism:
@@ -232,16 +314,38 @@ class TestNftDeterminism:
         ]
 
     def test_sigma_shuffle_reproduces(self):
-        args = _args(diffusion_nft_shuffle_timesteps=True)
+        args = _args(diffusion_nft_timestep_strategy_path="miles.ray.data_conversion_hub.nft.drop_random_steps")
         first = expand_samples_to_train_pairs(args, self._samples(), [-1.0, 1.0], [1.0, 3.0])
         second = expand_samples_to_train_pairs(args, self._samples(), [-1.0, 1.0], [1.0, 3.0])
         got = [p["timestep"] for p in first["train_data"]]
         assert got == [p["timestep"] for p in second["train_data"]]
-        # Shuffled, not just handed back in scheduler order.
+        # Shuffled, not just handed back in grid order.
         assert got[: len(got) // 2] != sorted(got[: len(got) // 2], reverse=True)
 
+    def test_random_drop_strategy_drops_a_random_sigma_per_sample(self):
+        # schedule [1.0, 0.75, 0.5, 0.25], drop 1 --> 3 sigmas per sample, each missing a random one,
+        # trained in the order randperm(4)[:3] of the sample's generator
+        args = _args(
+            diffusion_nft_timestep_strategy_path="miles.ray.data_conversion_hub.nft.drop_random_steps",
+            diffusion_nft_num_dropped_timesteps=1,
+        )
+        samples = [sample for _ in range(4) for sample in self._samples()]
+        for index, sample in enumerate(samples):
+            sample.index = index
+        out = expand_samples_to_train_pairs(args, samples, [0.0] * len(samples), [0.0] * len(samples))
+        per_sample = {}
+        for pair in out["train_data"]:
+            per_sample.setdefault(pair["sample_index"], []).append(pair["timestep"])
+        assert all(len(set(sigmas)) == 3 for sigmas in per_sample.values())
+        assert set().union(*per_sample.values()) == {1.0, 0.75, 0.5, 0.25}
+        # The recorded NFT e2e standards depend on this exact per-sample order.
+        sampling_sigmas = self._traj().sigmas[:-1]
+        for index, sigmas in per_sample.items():
+            generator = torch.Generator().manual_seed(stable_hash("nft_sigma_shuffle", args.seed, index))
+            assert sigmas == sampling_sigmas[torch.randperm(4, generator=generator)[:3]].tolist()
+
     def test_each_sample_draws_its_own_permutation(self):
-        args = _args(diffusion_nft_shuffle_timesteps=True)
+        args = _args(diffusion_nft_timestep_strategy_path="miles.ray.data_conversion_hub.nft.drop_random_steps")
         out = expand_samples_to_train_pairs(args, self._samples(), [-1.0, 1.0], [1.0, 3.0])
         per_sample = {}
         for pair in out["train_data"]:
@@ -254,35 +358,10 @@ class TestNftDeterminism:
         batch = TestPrepareNftBatch()._batch()
         first = prepare_nft_batch(ctx, batch)
         second = prepare_nft_batch(ctx, batch)
-        assert torch.equal(first.latents, second.latents)
+        assert torch.equal(first.latents["visual"], second.latents["visual"])
 
     def test_a_different_microbatch_draws_different_noise(self):
         harness = TestPrepareNftBatch()
         first = prepare_nft_batch(harness._ctx(_Sd3StyleConfig()), harness._batch())
         second = prepare_nft_batch(harness._ctx(_Sd3StyleConfig(), microbatch_id=1), harness._batch())
-        assert not torch.equal(first.latents, second.latents)
-
-
-class TestEmaShadow:
-    def _model(self):
-        return torch.nn.Linear(4, 4, bias=False)
-
-    def test_snapshot_and_update(self):
-        m = self._model()
-        ema = EmaShadow(m.parameters(), decay=0.5, uprate=0.001, uphold=0.5, flat_steps=10)
-        init = m.weight.detach().clone()
-        with torch.no_grad():
-            m.weight.add_(1.0)
-        delta = ema.update()
-        assert delta == 0.5
-        assert torch.allclose(ema.shadow[0], init + 0.5)
-
-    def test_swap_in_restores_exactly(self):
-        m = self._model()
-        ema = EmaShadow(m.parameters(), decay=0.1)
-        live = m.weight.detach().clone()
-        with torch.no_grad():
-            m.weight.add_(2.0)
-        with ema.swap_in():
-            assert torch.equal(m.weight.detach(), live)
-        assert torch.equal(m.weight.detach(), live + 2.0)
+        assert not torch.equal(first.latents["visual"], second.latents["visual"])

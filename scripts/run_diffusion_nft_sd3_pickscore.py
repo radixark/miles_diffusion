@@ -3,8 +3,8 @@
 Batch shape follows the UniRL 100-rollout override: 8 prompts x 8 samples, micro=4, on 2
 train GPUs plus a dedicated reward GPU.
 
-NFT needs a reference model, supplied here by the EMA copy (--ref-mode ema), and samples
-under pi_old via --ema-rollout-policy ema. noise_level=0 with sde_type=ode makes the
+NFT trains against its EMA copy pi_old (--use-ema) and samples
+under pi_old via --rollout-weights ema. noise_level=0 with sde_type=ode makes the
 rollout deterministic, which NFT requires.
 
 Smoke mode swaps in the small OCR dataset and a tiny batch, for checking the pipeline end
@@ -48,7 +48,9 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
     run_name = f"diffusion_nft_sd3_pickscore_{U.create_run_id()}"
     num_rollout = args.num_rollout or (1 if args.smoke else 100)
 
-    ckpt_args = f"--hf-checkpoint {MODEL} --save {args.output_dir}/{run_name}/ckpt --save-interval 20 "
+    ckpt_args = (
+        f"--hf-checkpoint {MODEL} --diffusion-task t2i --save {args.output_dir}/{run_name}/ckpt --save-interval 20 "
+    )
 
     rollout_args = (
         "--rollout-function-path miles.rollout.sglang_diffusion_rollout.generate_rollout "
@@ -76,15 +78,14 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
     grpo_args = (
         "--loss-type nft "
         "--diffusion-nft-beta 1.0 "
-        "--diffusion-nft-timestep-fraction 0.99 "
+        "--diffusion-nft-num-dropped-timesteps 1 "
         "--advantage-estimator grpo "
         "--globalize-reward-std "
     )
 
     ema_args = (
-        "--ref-mode ema "
         "--use-ema "
-        "--ema-rollout-policy ema "
+        "--rollout-weights ema "
         "--ema-decay-init 0.001 "
         "--ema-decay-ramp 0.001 "
         "--ema-decay-max 0.5 "
@@ -117,6 +118,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         "--rollout-fetch-in-parser "
         "--rollout-parser-num-workers 16 "
         "--sglang-server-concurrency 8 "
+        "--sglang-lora-merge-mode merge "
         "--sglang-dit-precision fp16 "
         "--sglang-vae-slicing "
         "--update-weight-buffer-size 2147483648 "

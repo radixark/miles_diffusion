@@ -92,7 +92,7 @@ def _compute_config_for_logging(args):
     return output
 
 
-# https://docs.wandb.ai/guides/track/log/distributed-training/#track-all-processes-to-a-single-run
+# Online, joins the primary's run in shared mode so every process logs to one run.
 def init_wandb_secondary(args, router_addr=None):
     wandb_run_id = args.wandb_run_id
     if wandb_run_id is None:
