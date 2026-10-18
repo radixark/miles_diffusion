@@ -17,7 +17,7 @@ class TestQwenImage21Cond:
 
     def test_prepare_appends_target_slots(self):
         enc = torch.randn(8, 16)
-        cond = CondKwargs(encoder_hidden_states=[enc], txt_seq_lens=[8])
+        cond = CondKwargs(encoder_hidden_states=[enc], encoder_attention_mask=[torch.ones(8, dtype=torch.bool)])
         out = self.cfg.prepare_cond_kwargs(cond, torch.device("cpu"))
         assert out["encoder_hidden_states"].shape == (1, 8, 16)
         assert out["img_shapes"] == [[(1, 4, 4)]]
@@ -29,11 +29,15 @@ class TestQwenImage21Cond:
 
     def test_collate_pads_text_and_keeps_target_slots(self):
         short = self.cfg.prepare_cond_kwargs(
-            CondKwargs(encoder_hidden_states=[torch.randn(3, 8)], txt_seq_lens=[3]),
+            CondKwargs(
+                encoder_hidden_states=[torch.randn(3, 8)], encoder_attention_mask=[torch.ones(3, dtype=torch.bool)]
+            ),
             torch.device("cpu"),
         )
         long = self.cfg.prepare_cond_kwargs(
-            CondKwargs(encoder_hidden_states=[torch.randn(7, 8)], txt_seq_lens=[7]),
+            CondKwargs(
+                encoder_hidden_states=[torch.randn(7, 8)], encoder_attention_mask=[torch.ones(7, dtype=torch.bool)]
+            ),
             torch.device("cpu"),
         )
         out = self.cfg.collate_cond_for_sample_batch([short, long], torch.device("cpu"), pad_to_len=10)
@@ -42,6 +46,7 @@ class TestQwenImage21Cond:
         assert out["img_mask"].shape == (2, 10 + 4)
         assert out["img_mask"][:, :10].sum() == 0
         assert out["img_mask"][:, 10:].all()
+        assert out["encoder_hidden_states_mask"].sum(dim=1).tolist() == [3, 7]
 
     def test_cfg_combine_has_no_rescale(self):
         pos = torch.ones(1, 4, 2)

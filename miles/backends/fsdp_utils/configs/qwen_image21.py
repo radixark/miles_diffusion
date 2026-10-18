@@ -129,10 +129,6 @@ class QwenImage21TrainPipelineConfig(TrainPipelineConfig):
             if mask.ndim == 1:
                 mask = mask.unsqueeze(0)
             kwargs["encoder_hidden_states_mask"] = mask
-        elif cond.txt_seq_lens and "encoder_hidden_states" in kwargs:
-            text_len = kwargs["encoder_hidden_states"].shape[1]
-            L = int(cond.txt_seq_lens[0])
-            kwargs["encoder_hidden_states_mask"] = torch.arange(text_len, device=device).unsqueeze(0) < L
         kwargs["img_shapes"] = [self._img_shapes()]
         return kwargs
 
@@ -143,36 +139,14 @@ class QwenImage21TrainPipelineConfig(TrainPipelineConfig):
         pad_to_len: int | None = None,
     ) -> dict:
         """Pad text embeds, then append the same target-slot img_mask to every row."""
-        encs: list[torch.Tensor] = []
-        text_masks: list[torch.Tensor] = []
-        seq_lens: list[int] = []
-        for kw in per_sample_cond_kwargs:
-            enc = kw["encoder_hidden_states"]
-            assert enc.shape[0] == 1, f"collate expects batch=1 encoder_hidden_states, got {tuple(enc.shape)}"
-            encs.append(enc)
-            text_len = enc.shape[1]
-            mask = kw.get("encoder_hidden_states_mask")
-            if mask is None:
-                mask = torch.ones(1, text_len, dtype=torch.bool, device=enc.device)
-            text_masks.append(mask.to(dtype=torch.bool))
-            seq_lens.append(int(mask.sum().item()) if mask.dtype == torch.bool else text_len)
-
+        encs = [kw["encoder_hidden_states"] for kw in per_sample_cond_kwargs]
+        masks = [kw["encoder_hidden_states_mask"] for kw in per_sample_cond_kwargs]
         max_len = max(enc.shape[1] for enc in encs)
         if pad_to_len is not None:
             max_len = max(max_len, int(pad_to_len))
 
-        padded_encs = []
-        padded_masks = []
-        for enc, mask in zip(encs, text_masks, strict=True):
-            cur = enc.shape[1]
-            if cur < max_len:
-                enc = F.pad(enc, (0, 0, 0, max_len - cur))
-                mask = F.pad(mask, (0, max_len - cur))
-            elif cur > max_len:
-                enc = enc[:, :max_len, :]
-                mask = mask[:, :max_len]
-            padded_encs.append(enc)
-            padded_masks.append(mask)
+        padded_encs = [F.pad(enc, (0, 0, 0, max_len - enc.shape[1])) for enc in encs]
+        padded_masks = [F.pad(mask, (0, max_len - mask.shape[1])) for mask in masks]
 
         target_slots = self._target_slots()
         img_mask = torch.cat(
