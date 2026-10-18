@@ -42,6 +42,9 @@ class CondKwargs:
     text_ids: torch.Tensor | None = None
     text_mask: torch.Tensor | None = None
     fps: float | None = None
+    # Optional replay metadata for masked, patch-based conditioning.
+    wan_ti2v_reserved_frames_mask: torch.Tensor | None = None
+    wan_ti2v_patch_size: tuple[int, int, int] | None = None
 
 
 @dataclass
