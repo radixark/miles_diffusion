@@ -69,9 +69,9 @@ python3 scripts/run_diffusion_grpo_qwenimage21_pickscore_1gpu_v2.py \
 - Official sampling is 40 steps / CFG 1. This recipe uses 10 steps and the
   same SDE window as Qwen-Image 1.0 (`--diffusion-sde-window-range 3,5`, 2 SDE
   steps). Default is 16 prompts × 16 samples, lr 1e-4, 200 rollouts.
-- `--rollout-patch-group qwen_image21` wipes the engine's prefix KV cache
-  every step and disables the 2.1 fused kernels so every SDE step reruns the
-  full joint sequence, matching the trainer.
+- `--rollout-patch-group qwen_image21` turns off the engine's prefix KV cache so
+  every SDE step recomputes the full joint sequence, matching the trainer, and keeps
+  the RoPE layouts out of the rollout response.
 - `--rollout-return-full-trajectory` is on so train-pair conversion can index
   the SDE window against a full 0..T latent array.
 - `--sglang-lora-merge-mode dynamic` keeps PEFT unmerged on the engine, same as 1.0.
