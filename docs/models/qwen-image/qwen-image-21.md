@@ -46,8 +46,8 @@ Canonical recipe: `scripts/run_diffusion_grpo_qwenimage21_pickscore_1gpu.py` —
 colocated GPU, train + sglang + PickScore, 512×512, 16×16 group, lr 1e-4.
 Real-weight GRPO needs ≥80GB; 32GB only finished generate.
 
-**Status:** [📈 V — Verified](../../user-guide/recipe-verification.md#v) — 200 rollouts.
-Smoothed `rollout/reward/raw_mean` rises from about 0.81 to about 0.86.
+**Status:** [📈 V — Verified](../../user-guide/recipe-verification.md#v) — 200 rollouts on one H200.
+Smoothed `rollout/reward/raw_mean` rises from about 0.82 to about 0.87.
 
 ```bash
 # alignment diagnostic: freeze weights so log_prob_mean_abs_diff is train-vs-rollout
@@ -74,12 +74,12 @@ python3 scripts/run_diffusion_grpo_qwenimage21_pickscore_1gpu.py \
 
 ## 6. Reference results
 
-The canonical 1-GPU recipe over 200 rollouts (512², 16×16, lr 1e-4):
+The canonical 1-GPU recipe over 200 rollouts (512², 16×16, lr 1e-4) on one H200:
 
 ![Qwen-Image 2.1 PickScore reward mean](../../assets/images/qwen-image/reward_mean.png)
 
-Smoothed `rollout/reward/raw_mean` moves from about 0.81 to about 0.86.
-`train/log_prob_mean_abs_diff` stays near 4e-5 on the same run:
+Smoothed `rollout/reward/raw_mean` moves from about 0.82 to about 0.87.
+`train/log_prob_mean_abs_diff` stays near 2e-5 on the same run:
 
 ![Qwen-Image 2.1 log-prob mean abs diff](../../assets/images/qwen-image/log_prob_mean_abs_diff.png)
 
