@@ -9,6 +9,40 @@ from miles.utils.types import CondKwargs
 from .train_pipeline_config import TrainPipelineConfig, register_train_pipeline_config
 
 
+def _krea2_attention_with_gqa(self, attn, hidden_states, attention_mask=None, image_rotary_emb=None):
+    """diffusers 0.40's ``Krea2AttnProcessor.__call__``: SDPA takes the 12 K/V heads with ``enable_gqa``.
+
+    0.41 repeats K/V to all 48 heads before SDPA, so every layer saves 4x the K/V for backward.
+    """
+    from diffusers.models.transformers import transformer_krea2
+
+    query = attn.to_q(hidden_states).unflatten(-1, (attn.num_heads, attn.head_dim))
+    key = attn.to_k(hidden_states).unflatten(-1, (attn.num_kv_heads, attn.head_dim))
+    value = attn.to_v(hidden_states).unflatten(-1, (attn.num_kv_heads, attn.head_dim))
+    gate = attn.to_gate(hidden_states)
+
+    query = attn.norm_q(query)
+    key = attn.norm_k(key)
+
+    if image_rotary_emb is not None:
+        query = transformer_krea2.apply_rotary_emb(query, image_rotary_emb, sequence_dim=1)
+        key = transformer_krea2.apply_rotary_emb(key, image_rotary_emb, sequence_dim=1)
+
+    # Looked up on the module so the sequence-parallel dispatch wrapper still applies.
+    hidden_states = transformer_krea2.dispatch_attention_fn(
+        query,
+        key,
+        value,
+        attn_mask=attention_mask,
+        enable_gqa=attn.num_heads != attn.num_kv_heads,
+        backend=self._attention_backend,
+        parallel_config=self._parallel_config,
+    )
+    hidden_states = hidden_states.flatten(2, 3)
+    hidden_states = hidden_states * torch.sigmoid(gate)
+    return attn.to_out[0](hidden_states)
+
+
 @register_train_pipeline_config("krea2")
 class Krea2TrainPipelineConfig(TrainPipelineConfig):
     tasks = ("t2i",)
@@ -86,3 +120,8 @@ class Krea2TrainPipelineConfig(TrainPipelineConfig):
     ) -> torch.Tensor:
         scale = true_cfg_scale if true_cfg_scale is not None else guidance_scale
         return noise_pred_neg + scale * (noise_pred_pos - noise_pred_neg)
+
+    def postprocess_model_after_materialize(self, model: torch.nn.Module) -> None:
+        from diffusers.models.transformers import transformer_krea2
+
+        transformer_krea2.Krea2AttnProcessor.__call__ = _krea2_attention_with_gqa
