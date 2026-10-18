@@ -27,17 +27,18 @@ Use an independent reference with:
 
 ```bash
 --hf-checkpoint /models/student \
---ref-mode ref --ref-load /models/reference \
---teacher-load /models/teacher \
---custom-loss-function-path my_losses.distill_loss
+--ref-mode ref --ref-load /models/reference
 ```
 
-All three sources use the same family backend, component names, input preparation,
-and device mesh. This provides separate model instances, not cross-family
-distillation or a new DMD2 loss. The existing loss receives the reference prediction.
-Custom prepare/loss hooks can access `ctx.reference_models` and `ctx.teacher_models`
-by component name. The teacher has no built-in consumer, so `--teacher-load` requires
-one of these hooks. Teacher inference should run inside `torch.no_grad()`.
+Both sources use the same family backend, component names, input preparation, and
+device mesh. This provides a separate model instance, not cross-family distillation.
+The existing loss receives the reference prediction, and custom prepare/loss hooks can
+access `ctx.reference_models` by component name.
+
+A third source, the teacher (`--teacher-load`, with `--teacher-lora-adapter-path` for its
+adapters), is reserved for a DMD2-style loss that miles does not ship yet. Until then it
+has no built-in consumer: `--teacher-load` requires a custom prepare/loss hook, which reads
+it from `ctx.teacher_models`, and teacher inference should run inside `torch.no_grad()`.
 
 Each source may load pretrained PEFT LoRA adapters, one plain PEFT directory (what
 `save_pretrained` writes) per `--update-weight-target-module` entry, in the same order:
@@ -45,9 +46,7 @@ Each source may load pretrained PEFT LoRA adapters, one plain PEFT directory (wh
 ```bash
 --use-lora --lora-adapter-path /adapters/student --lora-rank 64 --lora-alpha 128 \
 --ref-mode ref --ref-load /models/reference \
---ref-lora-adapter-path /adapters/reference \
---teacher-load /models/teacher \
---teacher-lora-adapter-path /adapters/teacher
+--ref-lora-adapter-path /adapters/reference
 ```
 
 Wan2.2, for example, takes two directories, one per expert; any other number is rejected:
@@ -128,14 +127,12 @@ teacher weights never change, so waking keeps their pinned host copies and each
 later sleep points the parameters back at them instead of copying them off the GPU.
 The helper lets FSDP rebuild its shard views and padding through `Module._apply`;
 uneven shards remain pinned. This requires a small FSDP-internal adaptation of its
-pinning flag and is covered by the registered CUDA test on supported PyTorch.
+pinning flag.
 
 ## Focused validation
 
 CPU CI covers EMA averaging, DCP resume, model-source selection, loaded LoRA,
-and argument validation. CUDA CI covers real two-rank FSDP sleep/wake with tensor
-identity, uneven shards, reshard settings, frozen/trainable models, native
-CPU offload, EMA residence, and checkpoint state.
+and argument validation.
 
 ```bash
 python -m pytest tests/fast/backends/fsdp_utils/test_ema_optimizer.py \

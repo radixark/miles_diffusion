@@ -20,7 +20,11 @@ training curve.
 - **Packed single-sample forward.** The transformer consumes one packed text+vision sequence per forward — one request
   cannot batch multiple outputs, so recipes run `--rollout-microgroup-size 1` and CFG batching is disabled by
   construction.
-- **Karras flow-sigma grid.** Checkpoints ship a non-uniform sigma grid; SDE candidate steps must be derived from it.
+- **Shifted flow-sigma grid.** sgl-d builds Cosmos3's sigma grid as a linear grid warped by flow shift 3.0 for T2I
+  (through its FlowUniPC serving scheduler, which overrides the checkpoint's scheduler class). Rollout requests do not
+  use UniPC: they take that grid verbatim on a FlowMatchEuler scheduler and step it with Euler (ODE steps) or the SDE
+  kernel (SDE steps). Step sizes are non-uniform, so SDE
+  candidate steps must be derived from the grid.
 
 
 
@@ -42,7 +46,7 @@ From `miles/backends/fsdp_utils/configs/cosmos3.py`:
 
 | Property       | Value                                            | Why                                                                                                 |
 | -------------- | ------------------------------------------------ | --------------------------------------------------------------------------------------------------- |
-| Timestep dtype | fp32, no scaling                                 | The Karras grid is non-integer and sgl-d conditions on exact fp32 values — bf16 rounds 993.25 → 992 |
+| Timestep dtype | fp32, no scaling                                 | Grid timesteps are non-integer and sgl-d conditions on exact fp32 values — bf16 rounds 977.92 → 976 |
 | Cond dtype     | pass-through                                     | cond carries only token ids, the text mask and fps; the packed forward casts its own inputs         |
 | CFG batching   | Off (asserted)                                   | Packed forward is single-sample                                                                     |
 | LoRA targets   | GEN attention (`add_*_proj`, `to_add_out`)       | UND tower and unused sound/action heads stay frozen                                                 |
@@ -69,13 +73,13 @@ samples, so the serving-side guardrail models are skipped.
 
 ## 5. Recipe notes
 
-`epoch_global_random_choice` draws two steps per epoch from
-`--diffusion-sde-candidate-steps 8,9,10,11`.
+`epoch_global_random_choice` draws two steps from
+`--diffusion-sde-candidate-steps 8,9,10,11`, shared by each block of `--rollout-batch-size` consecutive prompt groups (one rollout, unless a dynamic-sampling filter drops groups).
 
-The Cosmos3 checkpoint's Karras flow-sigma grid puts head steps 1–7 at
-`sigma > 0.96` with `|dt| < 0.02`; steps 8–11 are the useful high-noise segment.
-Step numbers are **not transferable across sigma-grid families**: re-derive candidates
-from `|dt|` when changing model or grid.
+On the 16-step rollout grid (linear, T2I flow shift 3.0, taken verbatim from the serving scheduler), steps 0–7 run
+σ ≈ 1.00 → 0.79 with `|dt|` ≈ 0.02–0.04, and the candidates 8–11 sit at σ ≈ 0.75 → 0.58 with `|dt|` ≈ 0.05–0.08.
+Step numbers are **not transferable across grids**: re-derive candidates from σ and `|dt|` when changing the
+model, the step count, or the shift.
 
 
 ## 6. Reference results

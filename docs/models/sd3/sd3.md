@@ -38,11 +38,10 @@ SD3.5 is gated — export your Hugging Face token:
 export HF_TOKEN=<your_hf_token>
 ```
 
-Optional prefetch:
+Optional prefetch (the scripts load the checkpoint by its Hub id, so it goes into the Hugging Face cache):
 
 ```bash
-hf download stabilityai/stable-diffusion-3.5-medium \
-  --local-dir /root/models/stable-diffusion-3.5-medium
+hf download stabilityai/stable-diffusion-3.5-medium
 ```
 
 Prompt datasets live under
@@ -138,8 +137,9 @@ python3 scripts/run_diffusion_grpo_sd3_hps_sglang.py \
   --cuda-visible-devices 6,7
 ```
 
-The recipe uses the SD3 Flow-GRPO SDE, LoRA and precision configuration of the OCR
-recipe, swaps in the deduplicated `hpdv2` prompts and `--rm-type hps`, and colocates one
+The recipe uses the SD3 Flow-GRPO SDE, LoRA rank/alpha, IPC sync and precision settings of the OCR
+recipe (not its `--sglang-lora-merge-mode merge`, `--rollout-fetch-in-parser`,
+`--rollout-parser-num-workers 16`, or `--rollout-return-full-trajectory`), swaps in the deduplicated `hpdv2` prompts and `--rm-type hps`, and colocates one
 HPS reward actor with the train and rollout workers. It keeps Flow-GRPO's own KL weight
 (`--diffusion-kl-beta 0.01`) and group-wise advantage std instead of the OCR recipe's
 `--diffusion-kl-beta 0.04 --globalize-reward-std`.
@@ -162,7 +162,8 @@ python3 scripts/run_diffusion_grpo_sd3_ocr_pickscore_sglang.py \
 The OCR recipe with PickScore mixed in through `weighted_mixture_rm`
 (`--custom-rm-args ocr=0.8,pickscore=0.2 --reward-key weighted`, the weighting Stepwise-Flow-GRPO
 uses for its OCR task) and `--rollout-shuffle`; the PickScore actor is colocated next to the CPU
-OCR pool. Every other flag matches the OCR recipe. See [Rewards](../../user-guide/rewards.md)
+OCR pool. Every other flag matches the OCR recipe, except that it leaves `--sglang-lora-merge-mode` at
+sgl-d's default `auto` instead of `merge`. See [Rewards](../../user-guide/rewards.md)
 § Combining rewards for how the mixture is wired.
 
 ### 5.5 DiffusionNFT + PickScore (3 GPU)

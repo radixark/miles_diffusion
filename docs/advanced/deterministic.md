@@ -93,8 +93,7 @@ noise would also absorb small regressions. Standards are re-recorded by the PR a
 uploads the result as an artifact) and never committed by CI.
 
 Because reward metrics are compared too, the CI recipes also pin the engine side — e.g.
-`--sglang-dit-precision fp16`, plus the batch-invariant-op environment every engine actor is launched with
-(`miles/ray/rollout.py`) — matching the
+`--sglang-dit-precision fp16` — matching the
 "what it does not cover" list: bit-stable curves need both halves.
 
 ## Related

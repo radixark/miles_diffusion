@@ -42,7 +42,7 @@ shortcut that auto-fills several of the train-side paths; see § Training.
 
 Replace the entire train rollout. Diffusion recipes pass
 `miles.rollout.sglang_diffusion_rollout.generate_rollout`; the flag's default
-(`miles.rollout.sglang_rollout.generate_rollout`, the LLM path) is not shipped here.
+(`miles.rollout.sglang_rollout.generate_rollout`, the LLM path) is not shipped in miles-diffusion.
 
 ```python
 def generate_rollout(
@@ -99,7 +99,7 @@ latents the engine ships back for the trainer. Stock implementations live in
 ```python
 def strategy(args, sample, num_steps, seed) -> tuple[list[int] | None, list[int] | None]:
     # returns (sde_step_indices, return_step_indices)
-    # sde None = no SDE steps (pure ODE rollout)
+    # sde None = no per-step filter: every step uses --diffusion-sde-type
     # return None = the engine returns every step's latent
     ...
 ```
@@ -110,15 +110,20 @@ steps for debugging / A-B runs.
 | Stock | Behavior |
 |---|---|
 | `sde_window` | Random contiguous window (`--diffusion-num-sde-steps`, `--diffusion-sde-window-range`); returns all latents its steps touch |
-| `epoch_global_random_choice` | Per-epoch subset of `--diffusion-sde-candidate-steps`; returns all latents its steps touch |
-| `ode_and_return_last` | No SDE steps, return only the final clean `x0` (DiffusionNFT) |
+| `epoch_global_random_choice` | Subset of `--diffusion-sde-candidate-steps`, shared by each block of `--rollout-batch-size` consecutive prompt groups (one rollout, unless a dynamic-sampling filter drops groups); returns all latents its steps touch |
+| `ode_and_return_last` | No step filter (every step uses `--diffusion-sde-type`, which the DiffusionNFT recipes set to `ode`); return only the final clean `x0` |
+
+DiffusionNFT picks the timesteps it trains on with a separate hook,
+`--diffusion-nft-timestep-strategy-path`: `(args, num_steps, generator) -> list[int]`, built in
+`drop_random_steps` (default) and `drop_final_steps` in `miles/ray/data_conversion_hub/nft.py`.
 
 ***
 
 ## Reward
 
 Built-in scorers (`--rm-type pickscore` / `hps` / `ocr` / `custom_api` / `openai_api`) are documented in
-[Rewards](rewards.md). The hooks below replace that dispatch entirely.
+[Rewards](rewards.md). `--custom-rm-path` replaces that dispatch entirely; `--custom-reward-post-process-path`
+replaces the normalization that runs after scoring.
 
 ### `--custom-rm-path`
 
@@ -227,7 +232,8 @@ def buffer_filter(
 | `custom_loss` | your expand (or convert) | your prepare | your formula |
 
 `sft_loss` auto-fills nothing: it requires the convert, rollout-log, prepare and loss
-paths (see `scripts/run_diffusion_sft_wan22.py`). `custom_loss` behaves like `policy_loss`:
+paths, plus `--train-only` and a rollout function that runs no engines (e.g.
+`miles.rollout.sft_rollout.generate_rollout`; see `scripts/run_diffusion_sft_wan22.py`). `custom_loss` behaves like `policy_loss`:
 any hook left unset falls back to the Flow-GRPO built-in.
 
 DiT forward always stays in the FSDP actor; the loss hook only computes the
@@ -324,14 +330,10 @@ Custom reward + post-process on top of the stock SD3 Flow-GRPO recipe:
 ```bash
 python3 scripts/run_diffusion_grpo_sd3_ocr_sglang.py \
   --cuda-visible-devices 6,7 \
-  --extra-args "
-    --custom-rm-path my_project.rewards.api_rm
-    --rm-url http://localhost:8000/score
-    --custom-reward-post-process-path my_project.rewards.normalize
-  "
+  --extra-args "--custom-rm-path my_project.rewards.api_rm --rm-url http://localhost:8000/score --custom-reward-post-process-path my_project.rewards.normalize"
 ```
 
-(`--extra-args` forwarding depends on the launch script; you can also splice the
+(`--extra-args` is spliced verbatim into a `bash -c` command line, so keep it on one line; you can also splice the
 flags into a forked recipe.)
 
 ***

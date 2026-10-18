@@ -11,15 +11,19 @@ places:
 | miles flags | `miles/utils/arguments.py` | Added on top as an `extra_args_provider` |
 | sglang-d passthrough | The rollout engine's own CLI | Re-registered with a `--sglang-` prefix; a short skip list covers what miles sets itself (`model_path`, ports, `base_gpu_id`, `random_seed`, …) |
 
-`--custom-config-path <file.yaml>` loads YAML keys into the namespace after parsing. A key that
-collides with an existing argument **overrides it** (with a logged warning) — the YAML wins over
-the command line.
+`--custom-config-path <file.yaml>` loads YAML keys into the namespace at the very end of argument
+validation. A key that collides with an existing argument **overrides it** (with a logged warning) —
+the YAML wins over the command line, but the override skips every check and derived value computed
+before it (a YAML `global_batch_size`, for example, does not re-derive `num_steps_per_rollout`).
+
+`--config <file.yaml>` is different: it only adds YAML keys that are not arguments at all, so it
+cannot change any flag.
 
 Reading the prefixes:
 
 | Prefix | Marks |
 |---|---|
-| `diffusion-` | The modality — denoising, SDE, CFG, latents, frames. Generic ML/RL concepts (clipping, KL, EMA, LoRA, batching) do not take it |
+| `diffusion-` | Diffusion-specific settings — denoising, SDE, CFG, latents, frames, and the diffusion variants of loss knobs (`--diffusion-clip-range`, `--diffusion-kl-beta`). Shared knobs (EMA, LoRA, batching) do not take it |
 | `fsdp-` | The training side — compare `--fsdp-flow-shift` (SFT training sigma grid) with `--diffusion-flow-shift` (the engine's generation schedule) |
 | `rollout-` / `sglang-` | The engine side |
 
@@ -49,7 +53,7 @@ do not.
 | `--actor-num-nodes` | `1` | Nodes for the training actor. |
 | `--actor-num-gpus-per-node` | `8` | GPUs per actor node. Train world size is the product. |
 | `--rollout-num-gpus` | – | GPUs for rollout-side work. Forced to the train world size under `--colocate`. |
-| `--rollout-num-gpus-per-engine` | `1` | GPUs per sglang-d engine (its TP × SP). |
+| `--rollout-num-gpus-per-engine` | `1` | GPUs per sglang-d engine (its `num_gpus`). By default they all go to TP (`--sglang-tp-size`); SP is opt-in via `--sglang-sp-degree`, with `tp × sp` equal to this value (checked when both are set). CFG-parallel (`--sglang-enable-cfg-parallel`) is not supported for training — the trainer's CFG combine does not match it. |
 | `--num-gpus-per-node` | `8` | Total GPUs the job may use per node. **Set this when using fewer than 8.** |
 | `--colocate` | off | Train and rollout share GPUs and sync weights over CUDA IPC. Without it, rollout runs on its own `--rollout-num-gpus` and weights sync over NCCL (required by `train_diffusion_async.py`). |
 
@@ -66,7 +70,7 @@ do not.
 | `--num-rollout` | – | Total rollout iterations. Set it or `--num-epoch`. |
 | `--num-epoch` | – | Alternative to `--num-rollout`; ignored if both are set. |
 
-To check how these batch-related arguments interact and related to each other — see
+For how these batch arguments relate to each other, see
 [the batch-knob invariant](concepts.md#the-batch-knob-invariant).
 
 ### Diffusion sampling
@@ -86,7 +90,7 @@ To check how these batch-related arguments interact and related to each other �
 
 | Flag | Default | What |
 |---|---|---|
-| `--diffusion-forward-dtype` | `bf16` | DiT forward compute — engine, FSDP `param_dtype`, and the training-side input cast. |
+| `--diffusion-forward-dtype` | `bf16` | Training-side DiT compute — FSDP `param_dtype` and the input cast. It reaches the engine only as the LoRA-merge precision (`fp32` merges in fp32, see [LoRA](../advanced/lora.md)); the engine's DiT precision is `--sglang-dit-precision`, which is not derived from it — set both to the same value. |
 | `--fsdp-master-dtype` | `fp32` | Sharded master weights and optimizer state. |
 | `--fsdp-reduce-dtype` | `fp32` | Gradient reduce-scatter. |
 
@@ -115,7 +119,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--actor-num-nodes` | int | `1` | |
 | `--actor-num-gpus-per-node` | int | `8` | |
 | `--rollout-num-gpus` | int | – | For train-only SFT, unset colocates encoders with training; set it to reserve dedicated encoder GPUs, which also lets encoding overlap training. |
-| `--rollout-num-gpus-per-engine` | int | `1` | Like sglang's `tp_size`. |
+| `--rollout-num-gpus-per-engine` | int | `1` | sgl-d `num_gpus` per engine; defaults to all-TP. |
 | `--num-gpus-per-node` | int | `8` | |
 | `--colocate` | flag | off | Train and rollout share GPUs and sync weights over CUDA IPC; without it, rollout gets its own GPUs and weights sync over NCCL. Async training requires it off. |
 | `--offload` | flag | off | `--offload-train` + `--offload-rollout`. |
@@ -172,7 +176,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--hf-checkpoint` | str | – | **Required.** Pipeline to train and to serve; also the family source. |
 | `--diffusion-model-family` | str | – | Registered family key: `sd3`, `wan2_2`, `ltx`, `qwen_image`, `qwen_image21`, `cosmos3`, `krea2`, `h3`. Overrides name matching. The longest pattern wins, so `Qwen-Image-2.1` resolves to `qwen_image21`. |
 | `--diffusion-task` | str | – | **Required** unless the config declares no `tasks`. The task to train, one of the family config's `tasks`: `t2i` (sd3, krea2, qwen_image, qwen_image21, cosmos3), `t2v` (wan2_2, ltx), `t2va` (h3, the only H3 rollout task) or `ref2va` (h3 joint video/audio SFT with ordered references on `transformer_ref`). |
-| `--rollout-function-path` | str | `miles.rollout.sglang_rollout.generate_rollout` | Generic Miles default. Diffusion recipes explicitly set `miles.rollout.sglang_diffusion_rollout.generate_rollout`. |
+| `--rollout-function-path` | str | `miles.rollout.sglang_rollout.generate_rollout` | Inherited Miles default; that module is not shipped in miles-diffusion, so set it — diffusion recipes pass `miles.rollout.sglang_diffusion_rollout.generate_rollout`. |
 | `--train-pipeline-config-path` | str | – | Your own `TrainPipelineConfig` for an unregistered family. Mutually exclusive with `--diffusion-model-family`. |
 | `--model-backend-path` | str | – | Override the family's model loader. |
 | `--diffusion-num-steps` | int | `10` | |
@@ -180,7 +184,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--rollout-microgroup-size` | int | `1` | |
 | `--diffusion-fps` | float | – | Video only. |
 | `--diffusion-output-num-frames` | int | `1` | |
-| `--rollout-video-dtype` | enum | `keep` | `keep` / `uint8`: dtype of the decoded video in rollout responses. `uint8` quantizes engine-side with the reward path's formula, cutting the response ~4x; keep `keep` for consumers that need the float tensor. |
+| `--rollout-video-dtype` | enum | `keep` | `keep` / `uint8`: dtype of the decoded video in rollout responses. `uint8` quantizes engine-side by truncation (×255, then clamp), cutting the response ~4x. That matches the PickScore reward path; HPS, OCR and the OpenAI-API reward round instead, so keep `keep` for them and for any consumer that needs the float tensor. |
 | `--diffusion-guidance-scale` | float | `4.0` | |
 | `--diffusion-guidance-scale-2` | float | – | Wan2.2 low-noise expert; **required** when training it. |
 | `--diffusion-true-cfg-scale` | float | – | |
@@ -204,9 +208,9 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--update-weight-target-module` | str | `transformer` | Modules to train and sync. Wan2.2: `transformer,transformer_2`. |
 | `--update-weight-buffer-size` | int | 512 MiB | Weight-sync chunk size in bytes. |
 | `--rollout-seed` | int | `42` | |
-| `--rollout-shuffle` | flag | off | Shuffle the prompt order once per epoch (seeded by `--rollout-seed`). Off reads the jsonl in file order. |
+| `--rollout-shuffle` | flag | off | Shuffle the prompt order once per epoch (seeded by `--rollout-seed`). Off reads the jsonl in file order; the SFT rollout (`miles.rollout.sft_rollout`) shuffles every epoch regardless. |
 | `--over-sampling-batch-size` | int | – | Must equal `--rollout-batch-size` today. |
-| `--sglang-server-concurrency` | int | `512` | Per-engine in-flight request cap. |
+| `--sglang-server-concurrency` | int | `512` | In-flight generate requests are capped at this × the number of engines — one global limit, with each request routed to the least-loaded engine. |
 | `--use-distributed-post` | flag | off | Rollout HTTP POSTs go through per-node Ray actors instead of the local client (`--num-gpus-per-node` actors per node). |
 | `--use-miles-router` | flag | off | **Required** — the SGLang router is not supported here. |
 | `--miles-router-timeout` | float | – | |
@@ -221,7 +225,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--input-key` | str | `input` | |
 | `--metadata-key` | str | `metadata` | |
 | `--data-source-path` | str | – | Defaults to `RolloutDataSourceWithBuffer`. |
-| `--disable-rollout-global-dataset` | flag | off | Manage data yourself. |
+| `--disable-rollout-global-dataset` | flag | off | Manage data yourself. The shipped diffusion rollout asserts the global dataset, so this needs a custom `--rollout-function-path`. |
 | `--rollout-batch-size` | int | – | **Required.** |
 | `--n-samples-per-prompt` | int | `1` | |
 | `--global-batch-size` | int | derived | |
@@ -243,7 +247,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 | Flag | Type | Default | Notes |
 |---|---|---|---|
 | `--eval-interval` | int | – | Requires configured eval datasets. |
-| `--eval-prompt-data` | str+ | – | Repeatable `<name> <path>` pairs. |
+| `--eval-prompt-data` | str+ | – | `<name> <path>` pairs, all after one flag (repeating the flag keeps only the last). |
 | `--eval-config` | str | – | OmegaConf YAML/JSON; overrides `--eval-prompt-data`. |
 | `--eval-function-path` | str | – | Defaults to `--rollout-function-path`. |
 | `--eval-input-key` | str | – | |
@@ -258,7 +262,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 |---|---|---|---|
 | `--loss-type` | enum | `policy_loss` | `policy_loss` / `nft` / `sft_loss` / `custom_loss`. |
 | `--advantage-estimator` | enum | `grpo` | |
-| `--disable-grpo-std-normalization` | flag | off | Dr.GRPO. Also forced off when `n_samples_per_prompt == 1`. |
+| `--disable-grpo-std-normalization` | flag | off | Subtract the group mean only; skip dividing by the group std. Std normalization is also skipped when `n_samples_per_prompt == 1`, since a one-sample group has no std. With `--globalize-reward-mean` the batch mean is subtracted instead, and the batch-wide std from `--globalize-reward-std` is skipped too. |
 | `--globalize-reward-mean` | flag | off | Leave **off** for flow_grpo parity. |
 | `--globalize-reward-std` | flag | off | **On** for flow_grpo's PickScore recipe. |
 | `--diffusion-clip-range` | float | `1e-4` | |
@@ -332,7 +336,7 @@ Every one takes a dotted path.
 | `--lora-adapter-path` | str+ | – | PEFT adapter directories the actor continues from, one per `--update-weight-target-module` entry, in order; `--lora-rank` / `--lora-alpha` must match their configs. |
 | `--lora-target-modules` | str+ | – | Defaults per model family. |
 | `--lora-init-weights` | str | `gaussian` | `kaiming-uniform` maps to PEFT's default; other PEFT schemes pass through. |
-| `--lora-ipc-weight-sync` | flag | off | Push only `lora_A`/`lora_B` over CUDA IPC and let the rollout merge them (`weight_update_mode=lora_merge`); without it, the trainer merges LoRA into the base weights and pushes full weights. Requires `--use-lora` and `--colocate`. Without `--colocate`, LoRA always pushes `lora_A`/`lora_B` over NCCL for the rollout to merge. |
+| `--lora-ipc-weight-sync` | flag | off | Push only `lora_A`/`lora_B` over CUDA IPC and let the rollout merge them (`weight_update_mode=lora_merge`); without it, the trainer merges LoRA into the base weights and pushes full weights. Requires `--use-lora`, and `--colocate` whenever weights are synced (not under `--train-only` / `--debug-rollout-only`). Without `--colocate`, LoRA always pushes `lora_A`/`lora_B` over NCCL for the rollout to merge. |
 
 ### EMA
 
@@ -351,7 +355,7 @@ Every one takes a dotted path.
 |---|---|---|---|
 | `--save` | str | – | |
 | `--save-interval` | int | – | Requires `--save`. |
-| `--no-save-optim` | flag | off | Smaller checkpoints, but no resumption. |
+| `--no-save-optim` | flag | off | Skips AdamW and LR-scheduler state; `--load` still resumes the model, EMA, and RNG with a fresh optimizer. |
 | `--load` | str | – | |
 | `--ckpt-step` | int | – | Defaults to `latest_checkpointed_iteration.txt`. |
 | `--no-load-optim` / `--no-load-rng` | flag | off | |
@@ -377,8 +381,8 @@ Every one takes a dotted path.
 
 | Flag | Type | Default | Notes |
 |---|---|---|---|
-| `--use-fault-tolerance` | flag | off | Restart dead engines during rollout. |
-| `--rollout-health-check-interval` | float | `30.0` | Raise it for video models — a request can take minutes. |
+| `--use-fault-tolerance` | flag | off | Health-check rollout engines and kill one that fails a check; restarting it is not wired into the diffusion training loop. |
+| `--rollout-health-check-interval` | float | `30.0` | Seconds between engine probes (`GET /health_generate`, a readiness check that runs no generation); the miles router polls `/health` on the same interval. |
 | `--rollout-health-check-timeout` | float | `30.0` | |
 | `--rollout-health-check-first-wait` | float | `0` | Grace period for compilation/init. |
 

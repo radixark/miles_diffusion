@@ -15,7 +15,8 @@ temporal compression).
 - **Two experts, one boundary.** `boundary_ratio = 0.875` — which expert a train pair updates depends only on its
   timestep. Single- and dual-expert training are both supported: `--update-weight-target-module` names the experts to
   load, train, and sync.
-- **Two guidance scales.** Rollout denoises low-noise steps with `guidance_scale_2` and there is **no fallback** —
+- **Two guidance scales.** Rollout denoises low-noise steps with `guidance_scale_2`. Left unset, the engine silently
+  substitutes its own default (the model's sampling config, else `guidance_scale`), which the trainer cannot see — so
   training asserts `--diffusion-guidance-scale-2` is set explicitly, because a silent mismatch against rollout would
   corrupt the ratio.
 - **USP-ready.** Wan was enabled for Ulysses × Ring sequence parallelism.

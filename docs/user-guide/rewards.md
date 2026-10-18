@@ -145,7 +145,7 @@ quantises it to uint8 on its own terms.
 
 A shipped recipe uses it: `scripts/run_diffusion_grpo_sd3_ocr_pickscore_sglang.py` trains SD3.5 on
 0.8 OCR + 0.2 PickScore with `--rollout-shuffle`; see [SD3](../models/sd3/sd3.md) § 5.4 for the
-curve and numbers. Shuffling matters more than usual there: with 8 prompts per rollout one hard
+recipe and numbers and § 9 for the curves. Shuffling matters more than usual there: with 8 prompts per rollout one hard
 batch moves the per-rollout mean visibly.
 
 ### OCR (`--rm-type ocr`)
@@ -166,7 +166,8 @@ substring hit as perfect (`dist=0`), and caps `dist` at `len(target)` — see
 `miles/rollout/rm_hub/ocr.py`.
 
 OCR runs on **CPU** Ray actors (`--ocr-num-workers`, default 4). Used by the
-SD3 Flow-GRPO recipe (`scripts/run_diffusion_grpo_sd3_ocr_sglang.py`).
+SD3 Flow-GRPO OCR and OCR & PickScore recipes, the three Krea-2 DiffusionNFT recipes, and the
+smoke mode of the SD3 DiffusionNFT recipe.
 
 ### API rewards (`--rm-type openai_api` / `custom_api`)
 
@@ -185,7 +186,8 @@ taken as the `actor_kwargs` of the default actor.
 `OpenAIImageRewardActor` sends the generation prompt and the image (PNG data URL) to an
 OpenAI-compatible Chat Completions endpoint, with the config `prompt` as the system rubric, and asks
 for a JSON `score`. Its kwargs are `model` and `api_key_env` (required), `base_url`, `prompt` or
-`prompt_path`, `score_min` / `score_max` (default 0 / 4), and `timeout_s`; scores outside that range
+`prompt_path` (resolved relative to the config file, not allowed in an inline `base64:` config; with neither, a
+built-in 0–4 rubric is used), `score_min` / `score_max` (default 0 / 4), and `timeout_s`; scores outside that range
 raise. It accepts image outputs only (one frame).
 
 ### Remote RM (`--rm-type remote_rm`)
@@ -208,7 +210,10 @@ generate_and_rm_microgroup()
     → all openai_api?  openai_api_rm (batched, one request per actor call)
     → else             per-sample async_rm → ocr / pickscore / hps / custom_api / openai_api / NotImplementedError
   → sample.reward = score
-  → RolloutManager._post_process_rewards()      # GRPO advantage normalization
+
+# after the rollout, in the RolloutManager Ray actor:
+RolloutManager._convert_samples_to_train_data()
+  → _post_process_rewards()                     # GRPO advantage normalization
 ```
 
 After rollout, `RolloutManager._post_process_rewards` subtracts the mean and
@@ -230,7 +235,7 @@ file order; `--rollout-shuffle` permutes them once per epoch (seeded by `--rollo
 
 | Field | CLI mapping | Notes |
 |---|---|---|
-| Prompt text | `--input-key input` | Required non-empty string |
+| Prompt text | `--input-key input` | Non-empty string; rows without one are skipped |
 | Per-sample metadata | `--metadata-key metadata` | Optional dict; supports `rm_type` override |
 
 ### Dataset subsets

@@ -51,10 +51,10 @@ Data must land exactly on H3's serving grid (the encoder rejects anything off-gr
 |---|---|
 | Canvas | short_edge=768, 16:9 → 1344×768 |
 | Frame rate | constant 24 fps (strictly validated: every frame within 2 ms of its 24 fps slot) |
-| Frame count | 17n+5 lattice, minimum 107 frames ≈ 4.46 s |
+| Frame count | 17n+5 lattice; the recipe uses 107 frames ≈ 4.46 s (`--diffusion-output-num-frames 107`) |
 
-One ffmpeg pass (the same chain the engine uses): `fps=24,
-scale=...:flags=lanczos, crop=1344:768`, cut to 107 frames. The training manifest is a
+One ffmpeg pass: `fps=24, scale=...:flags=lanczos, crop=1344:768, setsar=1`, cut to 107 frames
+(the SFT reader rejects clips with non-square pixels). The training manifest is a
 jsonl, one line per sample:
 
 ```json
@@ -96,7 +96,7 @@ Performance reference (8×H200, 254 windows):
 | Stage | Cost |
 |---|---|
 | Encoding | ~15 s/clip/GPU; the first 8 rollouts (one dataset pass) each stall ~110 s on their own misses, 230 s for rollout 0 which builds the pool; warm from rollout 8 |
-| Cache | content-addressed, ≈2× dataset size, lives in `.sft_cache/` next to the jsonl, reused across runs |
+| Cache | keyed by the prompt, conditions, target, encoder settings, and each media file's path, size, and mtime (editing a clip in place without changing those reuses the stale entry); ≈2× dataset size, lives in `.sft_cache/` next to the jsonl, reused across runs |
 | Rollout overlap | rollout `i+1` is produced while rollout `i` trains. A colocated encode burst still waits for the train step, so a cold epoch stalls on encoding while a warm one hides the cache load entirely; `--rollout-num-gpus` reserves encoder GPUs and overlaps the encoding too |
 | Encoder residency | `--sft-offload-encoder`: the ~70 GB encoder sleeps in host RAM and only occupies the GPU during encode bursts |
 | Training | ~31 s per optimizer step, `--num-steps-per-rollout` 4 of them per encoded batch |
@@ -113,8 +113,7 @@ python3 scripts/export_lora.py --ckpt-dir <run>/ckpt/iter_0000070 \
 ```
 
 This writes the safetensors plus an `adapter_config.json` sidecar; sgl-diffusion loads it
-directly via `--lora-path`. Keep the two files together — the sidecar is looked up in the
-safetensors' own directory, and without it alpha falls back to rank, i.e. half strength.
+directly via `--lora-path`.
 
 Reference loss (8×H200, same figure as the repo docs):
 
@@ -178,5 +177,5 @@ Lower alpha or unload for:
 
 ```bash
 sglang serve --model-path MiniMaxAI/MiniMax-H3 \
-  --lora-path practical_dynamics_fx.safetensors   # alpha is read from the sidecar
+  --lora-path practical_dynamics_fx.safetensors
 ```

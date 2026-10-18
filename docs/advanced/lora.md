@@ -63,8 +63,8 @@ Selection logic in `miles/backends/fsdp_utils/actor.py`:
 | No LoRA, `--colocate` | `DiffusionUpdateWeightFromTensor` | Full base-weight IPC |
 | No LoRA, no `--colocate` | `DiffusionUpdateWeightFromDistributed` | Full base weights over NCCL |
 | `--use-lora --colocate`, no IPC | `DiffusionUpdateWeightFromTensorLoRA` | Merge `W + αBA/r` on train side, push merged weights |
-| `--use-lora --colocate --lora-ipc-weight-sync` | `DiffusionUpdateWeightFromTensorLoRAIPC` | Push only `lora_A`/`lora_B` over IPC; rollout merges via `weight_update_mode=lora_merge` |
-| `--use-lora`, no `--colocate` | `DiffusionUpdateWeightLoRADistributed` | Push only `lora_A`/`lora_B` over NCCL; rollout merges via `weight_update_mode=lora_merge` |
+| `--use-lora --colocate --lora-ipc-weight-sync` | `DiffusionUpdateWeightFromTensorLoRAIPC` | Push only `lora_A`/`lora_B` over IPC (`weight_update_mode=lora_merge`); the rollout merges them or keeps them unmerged per `--sglang-lora-merge-mode` |
+| `--use-lora`, no `--colocate` | `DiffusionUpdateWeightLoRADistributed` | Push only `lora_A`/`lora_B` over NCCL (`weight_update_mode=lora_merge`); the rollout merges them or keeps them unmerged per `--sglang-lora-merge-mode` |
 
 `rollout_merges_lora(args)` in `miles/utils/arguments.py` is the single check
 for the last two rows; the engine's LoRA target modules, the merge precision and
@@ -107,8 +107,9 @@ weight updates for diffusion engines.
    (e.g. `transformer_blocks.0.attn.to_q.lora_A`). Fused families such as H3
    keep these diffusers names; sglang-d `lora_merge` applies
    `param_names_mapping` and the disk-load FFN swap.
-2. FSDP shard all-gather → `pack_units_by_size()` packs units into buckets capped by
-   **`--update-weight-buffer-size`** (most recipes use 2 GB) → CUDA IPC or NCCL
+2. FSDP shard all-gather → `pack_units_by_size()` packs units into buckets of up to
+   **`--update-weight-buffer-size`** (most recipes use 2 GB; a unit is never split, so one larger than that ships
+   as its own bucket) → CUDA IPC or NCCL
    broadcast.
 3. Rollout engine receives `weight_update_mode="lora_merge"` with
    `lora_alpha` and `lora_rank`.
@@ -165,6 +166,7 @@ for `LoRA weight sync` lines and Ray worker stderr under
   `--lora-adapter-path` with rsLoRA or per-layer rank/alpha are rejected for it.
   They need `--colocate` without `--lora-ipc-weight-sync` (train-side merge),
   which has no NCCL path yet.
-- **Single adapter per run** — one set of `--lora-*` flags per job.
+- **One adapter per trained component** — every component in `--update-weight-target-module` gets its own adapter,
+  all from one set of `--lora-*` flags per job.
 - **FSDP backend** — LoRA weight sync is implemented for the FSDP diffusion
   actor; Megatron LLM LoRA (in upstream Miles) uses a separate path.

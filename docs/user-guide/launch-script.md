@@ -95,8 +95,9 @@ live in `rollout_args`, a `--micro-batch-size-*` flag in `perf_args`).
 From lightest to heaviest:
 
 1. **Append flags with `--extra-args`.** The value lands at the end of the command line, and for
-   an argparse flag given twice the later occurrence wins — so it overrides anything the recipe
-   sets:
+   an argparse flag given twice the later occurrence wins — so it overrides any value the recipe
+   sets. A switch the recipe turns on (`--colocate`, `--use-lora`, …) cannot be turned off this
+   way; edit the script for that:
 
    ```bash
    python3 scripts/run_diffusion_grpo_pickscore_5gpu_flowgrpo_aligned.py \
@@ -110,7 +111,8 @@ From lightest to heaviest:
 The Typer flags are also the CI interface: an e2e test names the recipe and passes its knobs
 (`script="scripts/run_diffusion_grpo_sd3_ocr_sglang.py", args=["--num-rollout", "2"]`), so
 launch scripts must stay runnable with no arguments and configurable through `ScriptArgs` — CI
-drives them the same way you do.
+drives them the same way you do. The one exception is the multinode Wan2.2 launcher, which needs
+`--four-gpu-ci` or an external Ray cluster (`MILES_SCRIPT_EXTERNAL_RAY=1`).
 
 ## What execute_train runs on your machine
 
@@ -140,8 +142,9 @@ train pairs           = samples × (number of SDE step indices)
 ```
 
 The trajectory-level knobs are locked by
-[the batch-knob invariant](concepts.md#the-batch-knob-invariant); contradictory values
-abort at parse time. `global_batch_size` counts samples and must divide by `dp_size`
+[the batch-knob invariant](concepts.md#the-batch-knob-invariant): passing both
+`--global-batch-size` and `--num-steps-per-rollout` with values that disagree aborts at parse time, and a product
+that does not divide evenly is not an error — the extra samples of each rollout are trimmed before training. `global_batch_size` counts samples and must divide by `dp_size`
 (= train world size ÷ `--sequence-parallel-size`).
 
 | Knob | Unit | Meaning |
@@ -164,7 +167,8 @@ Worked example (the Qwen-Image recipe):
 512 samples × 2 SDE steps           = 1024 train pairs
 1024 pairs ÷ 4 DP ranks             = 256 pairs per rank
 256 ÷ num_steps_per_rollout(2)      = 128 pairs per optimizer step per rank
-tile = 8 samples × 1 timestep       = 8 pairs per DiT forward → 16 forwards per step
+tile = 8 samples × 1 timestep       = 8 pairs per micro-batch → 16 micro-batches per step
+                                      (each runs the CFG pair as two DiT forwards: the recipe uses CFG)
 ```
 
 Two failure modes to recognize:
@@ -196,8 +200,8 @@ separate node. Multi-node runs submit into a cluster you build yourself; the lau
 
 ### Bring up the cluster
 
-Each node runs ONE of the blocks below, chosen by its role. The two `export` lines must be in
-the environment of the `ray start` daemon itself, which is why every block repeats them.
+Each node runs ONE of the blocks below, chosen by its role. The `ulimit` and `export` lines must be
+in the environment of the `ray start` daemon itself, which is why every block repeats them.
 
 On the head node:
 

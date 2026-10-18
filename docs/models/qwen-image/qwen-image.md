@@ -19,7 +19,7 @@ baseline.
   `noise_pred` mean |Δ| was approximately `2e-2`. `postprocess_model_after_materialize` rebuilds the caches on device
   after FSDP wrapping.
 - **Variable-length text.** Conditioning is padded per batch with the attention mask derived
-  from `txt_seq_lens` — the mask itself is never transmitted from rollout.
+  from `txt_seq_lens`; the trainer rebuilds it and does not use a mask the engine may send for batched requests.
 
 ## 2. Supported variants
 

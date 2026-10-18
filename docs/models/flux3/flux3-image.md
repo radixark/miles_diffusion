@@ -19,7 +19,7 @@ which builds only the text-to-image path.
 | Klein Base (CFG, not step-distilled) | [black-forest-labs/flux-3-image-klein-base](https://huggingface.co/black-forest-labs/flux-3-image-klein-base) (gated: needs `HF_TOKEN`) | Recipes below |
 
 The step-distilled Klein variant samples without CFG through a different denoise loop and is not supported.
-`--model-path` also takes a local package directory.
+The launchers' `--model-path` option also takes a local package directory.
 
 ## 3. Family config
 
@@ -27,10 +27,10 @@ From `miles/backends/fsdp_utils/configs/flux3_image.py`:
 
 | Property | Value | Why |
 | --- | --- | --- |
-| Rollout microgroup | 1 (validated) | The engine serves one sample per request; its dynamic batching is off by default |
+| Rollout microgroup | 1 (validated) | The engine's rollout path accepts one batch with one output per request |
 | Micro-batch | 1 (validated) | Text length varies per prompt and the DiT takes no padding mask |
-| Attention | `--fsdp-attention-backend _flash_3` on Hopper, `_flash_4` on Blackwell | The engine's default flash kernel on each GPU; deterministic backward |
-| CFG off | `--diffusion-guidance-scale 1` requires `--rollout-patch-group flux3_image` | Unpatched, the engine runs the whole CFG pair even at a scale of 1: two forwards per step, not bitwise the conditional velocity |
+| Attention | `--fsdp-attention-backend _flash_3` on Hopper (SM9x), `_flash_4` on SM10x Blackwell; the trainer rejects other GPUs | The engine's default flash kernel on each GPU; its backward is deterministic under `--deterministic-mode` (the Flow-GRPO recipe sets it, the DiffusionNFT recipe does not) |
+| CFG off | `--diffusion-guidance-scale 1` requires `--rollout-patch-group flux3_image` | Unpatched, the engine runs the whole CFG pair even at a scale of 1, packed into one forward over both branches: not bitwise the conditional velocity |
 | CFG combine | `neg + scale · (pos − neg)`, two batch-1 forwards; `true_cfg_scale` wins when set | Same formula as the engine |
 | Full-weight sync | Weight bridge renames `*.{query,key}_norm.scale` to `.weight` | The engine's tensor-update path skips names its module lacks |
 
@@ -43,7 +43,7 @@ hook intact, CFG-on requests unchanged.
 Both recipes put training, rollout and the reward model on the same 8 GPUs (`--colocate` plus
 `--<reward>-reward-colocate`, one reward worker per engine) and decode rollout responses in parallel parser actors
 (`--sglang-server-concurrency 4 --rollout-fetch-in-parser --rollout-parser-num-workers 32`). The recipes target
-Hopper; on Blackwell, append `--extra-args "--fsdp-attention-backend _flash_4"`.
+Hopper; on SM10x Blackwell, append `--extra-args "--fsdp-attention-backend _flash_4"`.
 
 ### 4.1 DiffusionNFT + PickScore, LoRA, 8 GPUs colocated
 

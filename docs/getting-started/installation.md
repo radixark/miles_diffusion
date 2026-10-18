@@ -106,12 +106,9 @@ apt-sourced dists, which the verify step counts under `expected-absent` instead 
 
 The installer has six idempotent steps, and `--from STEP` resumes a failed run. The last step diffs every installed
 package against the snapshot of one image tag (`OFFICIAL_IMAGE` in `snapshot/pins.env`, refreshed by hand with
-`refresh.sh`, so it can lag `latest`) — a clean run ends with:
-
-```
-matched 369   mismatched 0   missing 0   expected-absent 4   extra 0
-environment matches the official image
-```
+`refresh.sh`, so it can lag `latest`) — a clean run reports `mismatched 0   missing 0` and ends with
+`environment matches the official image`; the `matched` and `expected-absent` counts depend on the snapshot
+and on which apt-sourced dists the host provides.
 
 To check an existing machine against the image without installing anything:
 `python3 .claude/skills/install-miles-diffusion/verify_env.py`.
@@ -119,8 +116,8 @@ To check an existing machine against the image without installing anything:
 Plain `pip install -r requirements.txt && pip install -e . --no-deps` is not enough on its own:
 `requirements.txt` has no sglang, and `miles.utils.arguments` imports `sglang.multimodal_gen` at load. Adding
 sglang the way CI's CPU job does (`sglang-miles` installed `--no-deps`, plus `tests/ci/requirements-ci-cpu.txt`
-and the CPU stubs) leaves a **trainer-only** environment: CPU tests and `--train-only` SFT run, RL does not —
-the engine's GPU kernels and FlashAttention-3 are not part of that install. Resolving the full set through
+and the CPU stubs) leaves a **trainer-only** environment: CPU tests run, but RL does not, and neither does MiniMax H3 SFT, whose
+encoder calls sglang's FA3 kernel — the engine's GPU kernels and FlashAttention-3 are not part of that install. Resolving the full set through
 pip is not possible (it is only consistent under `--no-deps` replay), which is what the
 installer handles.
 
@@ -164,7 +161,7 @@ so the floor is set by whichever of the two needs more memory, not by their sum.
 
 | Variable | When you need it |
 |---|---|
-| `HF_TOKEN` | Gated checkpoints. SD3.5 needs it **even when the weights are cached** — sglang still fetches `model_index.json` from the hub at startup. |
+| `HF_TOKEN` | Gated checkpoints (SD3.5): required to download them. Keep it set on cached runs too — the engine re-fetches `model_index.json` from the Hub at startup and, without access, falls back to the cached copy with a warning that it may be out of date. |
 | `WANDB_API_KEY` | Without it the launch scripts drop all wandb flags (`--use-wandb` included) and only print a one-line notice. |
 | `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` | Set by most RL launch scripts (the Wan2.2 and Cosmos3 recipes set `expandable_segments:False`; the SFT scripts leave it unset); reduces fragmentation OOMs. |
 | `MILES_DIFFUSION_MODEL_FAMILY` | Escape hatch when `--diffusion-model-family` is unset. It overrides checkpoint-name auto-detection, but an explicit CLI family takes precedence. |

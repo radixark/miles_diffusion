@@ -24,7 +24,7 @@ flowchart LR
 | **Prompt dataset**                     | Source of prompts (plus optional metadata)                     | JSONL on disk (`--prompt-data`, `--input-key`)                                                      |
 | **Rollout (sglang-diffusion engines)** | Denoises prompts into images/videos and records the trajectory | One engine per `--rollout-num-gpus-per-engine` GPUs; shipped diffusion recipes explicitly enable the miles router with `--use-miles-router` |
 | **Reward workers**                     | Map `(prompt, generated output) → score`                       | Built-in `rm_hub` (`--rm-type ocr / pickscore / hps / ...`) or custom (`--custom-rm-path`) — Ray actor pools    |
-| **Actor (FSDP2 + diffusers)**          | The DiT being trained, usually via LoRA                        | HF checkpoint (`--hf-checkpoint`), family resolved by `TrainPipelineConfig`                         |
+| **Actor (FSDP2 + diffusers or a native package)** | The DiT being trained, usually via LoRA                        | HF checkpoint (`--hf-checkpoint`), family resolved by `TrainPipelineConfig`                         |
 
 
 
@@ -62,7 +62,8 @@ picks the trained timesteps, and micro-batching counts **(`x_t → x_{t+1}`) pai
 **Trajectory level** — the four-knob invariant, resolved in `miles/utils/arguments.py`. `rollout_batch_size` is
 required and `n_samples_per_prompt` defaults to 1; of the right-hand pair, set one and the other is derived by
 integer division (set neither and `global_batch_size` defaults to `dp_size`; passing both with contradicting values
-aborts):
+aborts). When the left side does not divide evenly, each rollout's samples are trimmed to a multiple of
+`global_batch_size` before training:
 
 ```bash
 rollout_batch_size × n_samples_per_prompt

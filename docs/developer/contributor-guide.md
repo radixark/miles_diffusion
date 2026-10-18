@@ -109,7 +109,7 @@ register_cpu_ci(est_time=5, suite="stage-a-cpu", labels=["fsdp"])
 |---|---|
 | `stage-a-cpu`, `stage-b-cpu` | CPU |
 | `stage-b-3-gpu-h200`, `stage-b-5-gpu-h200` | H200, split into 3-GPU and 5-GPU runners via per-runner `CUDA_VISIBLE_DEVICES` |
-| `stage-c-3-gpu-h200`, `stage-c-5-gpu-h200` | Same hardware; stage C holds the long e2e runs |
+| `stage-c-3-gpu-h200`, `stage-c-5-gpu-h200` | Same hardware; stage C holds the long e2e runs, plus the 4-GPU sequence-parallel attention parity test |
 
 ### Labels
 
@@ -128,7 +128,8 @@ them. The canonical registry is `tests/ci/labels.py`:
 | `e2e` | Opt-in full-recipe GPU e2e runs (heavy) |
 | `model-scripts` | `train_diffusion.py` + `scripts/*.py` smoke tests |
 
-Two meta-labels bypass the filter and run everything: `run-ci-all` and `run-ci-image`.
+Two meta-labels bypass the filter and run everything: `run-ci-all` and `run-ci-image`. The filter is also bypassed for
+docs-only PRs (which stop after the CPU stages), manual dispatches, and the nightly schedule.
 
 Adding a label means adding an entry to `tests/ci/labels.py` **and** creating the matching
 `run-ci-<key>` label in GitHub repo settings. The workflow needs no edit — the stage job filters
@@ -188,7 +189,7 @@ YAML / case-conflict / large-file / private-key checks and `requirements-txt-fix
 A PR touching `docker/Dockerfile` or `requirements.txt` triggers an image build; every GPU suite
 then runs inside `radixark/miles_diffusion:pr-<num>` instead of `latest`, and a failed build stops
 the matrix. The fresh build outranks a `ci-image-tag:` directive in the PR body. Fork PRs skip
-the build and stay on `latest`. The tag is deleted when the PR closes.
+the build and run on the `ci-image-tag:` image if their body names one, else on `latest`. The tag is deleted when the PR closes.
 
 ## PR conventions
 
