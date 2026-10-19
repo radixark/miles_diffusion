@@ -33,7 +33,7 @@ signatures they expect, and the defaults they replace — in the same spirit as
 | **Model family** | `--train-pipeline-config-path` | Family `TrainPipelineConfig` |
 | | `--model-backend-path` | Model load / FSDP backend |
 
-`--loss-type` (`policy_loss` / `nft` / `sft_loss` / `custom_loss`) is the
+`--loss-type` (`policy_loss` / `nft` / `sft_loss` / `custom_loss` / `dmd2`) is the
 shortcut that auto-fills several of the train-side paths; see § Training.
 
 ***
@@ -234,11 +234,16 @@ def buffer_filter(
 | `nft` | `data_conversion_hub.nft.expand_samples_to_train_pairs` | `loss_hub.nft.prepare_nft_batch` | `nft_loss_formula` |
 | `sft_loss` | none; convert `sft_rollout.convert_samples_to_train_data` | `loss_hub.sft.prepare_sft_batch` | `sft_loss_formula` |
 | `custom_loss` | your expand (or convert) | your prepare | your formula |
+| `dmd2` | `data_conversion_hub.dmd2.expand_samples_to_train_pairs` | your prepare | your formula |
 
 `sft_loss` auto-fills nothing: it requires the convert, rollout-log, prepare and loss
 paths, plus `--train-only` and a rollout function that runs no engines (e.g.
 `miles.rollout.sft_rollout.generate_rollout`; see `scripts/run_diffusion_sft_wan22.py`). `custom_loss` behaves like `policy_loss`:
-any hook left unset falls back to the Flow-GRPO built-in.
+any hook left unset falls back to the Flow-GRPO built-in. `dmd2` also trains a `critic` group
+before the actor on each rollout: it starts from `--critic-load` (default `--teacher-load`),
+learns the student's samples with the SFT loss at `--critic-lr` (default `--lr`). On its last step
+it keeps its own x0 predictions from that step's forward, before the update, and after training hands
+them with the teacher's x0 at the same noisy inputs to the actor as `ctx.external_data["critic"]`.
 
 DiT forward always stays in the FSDP actor; the loss hook only computes the
 objective.
@@ -308,7 +313,9 @@ def train_output(ctx, train_pairs) -> Any:
 
 Runs without grad after this trainer group's train steps on a rollout. Every trainer group that
 trains later on the same rollout reads the return value of its paired rank (same rank, same
-train pairs) as `ctx.external_data[<role>]`.
+train pairs) as `ctx.external_data[<role>]`. Prepare and loss hooks see the current optimizer step
+as `ctx.optim_step_idx` and can leave inputs for this hook in `ctx.train_output_inputs`, which
+starts empty on each train call.
 
 ### `--sde-step-backend-path`
 
