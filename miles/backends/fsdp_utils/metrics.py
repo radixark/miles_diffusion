@@ -33,6 +33,10 @@ SCHEMA = {
     "nft_adv_mean": MetricReduce.MEAN,
     "nft_t_mean": MetricReduce.MEAN,
     "nft_num_timesteps": MetricReduce.MEAN,
+    "dmd2_grad_abs_mean": MetricReduce.MEAN,
+    "x0_mean_abs_diff": MetricReduce.MEAN,
+    "x0_max_abs_diff": MetricReduce.MAX,
+    "x0_rel_max": MetricReduce.MAX,
 }
 
 
