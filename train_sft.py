@@ -25,7 +25,7 @@ def train(args):
     init_tracking(args)
 
     rollout_manager, num_rollout_per_epoch = create_rollout_manager(args, pgs["rollout"])
-    actor_model = create_training_models(args, pgs, rollout_manager)
+    actor_model = create_training_models(args, pgs, rollout_manager)["actor"]
 
     def is_save_rollout(rollout_id):
         return should_run_periodic_action(rollout_id, args.save_interval, num_rollout_per_epoch, args.num_rollout)
