@@ -46,6 +46,7 @@ def _args(**overrides):
         diffusion_kl_beta=0.0,
         custom_prepare_train_batch_path=None,
         custom_loss_function_path=None,
+        custom_train_output_function_path=None,
     )
     values.update(overrides)
     return Namespace(**values)
@@ -69,6 +70,10 @@ def test_frozen_models_do_not_inherit_actor_training_mode(use_lora, role_has_ada
     original = vars(args).copy()
     validate_reference_model_args(args)
     assert vars(args) == original
+
+
+def test_train_output_hook_consumes_the_teacher():
+    validate_reference_model_args(_args(teacher_load="teacher", custom_train_output_function_path="my_hook.score"))
 
 
 def test_lora_base_needs_no_separate_reference_checkpoint():
