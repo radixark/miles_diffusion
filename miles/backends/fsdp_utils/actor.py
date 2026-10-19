@@ -307,11 +307,15 @@ class FSDPTrainRayActor(TrainRayActor):
             self.weight_updater.update_weights()
         clear_memory()
 
+    def _metric_role_tag(self) -> str:
+        # Upstream miles tags the train metrics of non-actor trainers, e.g. train/critic-loss.
+        return "" if self.role == "actor" else f"{self.role}-"
+
     def _log_metrics(self, rollout_id: int, log_dict: dict[str, float], step: int) -> None:
         """Emit already-reduced metrics; every DP group computed the same values."""
         if dist.get_rank() != 0:
             return
-        log_dict["train/lr"] = float(self.optimizer.param_groups[0]["lr"])
+        log_dict[f"train/{self._metric_role_tag()}lr"] = float(self.optimizer.param_groups[0]["lr"])
         log_dict["train/epoch"] = float(rollout_id)
         log_dict["rollout/step"] = compute_rollout_step(self.args, rollout_id)
         log_dict["train/step"] = float(step)
@@ -430,6 +434,7 @@ class FSDPTrainRayActor(TrainRayActor):
             microbatch_id = 0
             for optim_step_idx, microbatch_ranges in enumerate(microbatch_schedule):
                 self.optimizer.zero_grad(set_to_none=True)
+                loss_ctx.optim_step_idx = optim_step_idx
 
                 old_log_prob_from_new = self.args.diffusion_recompute_old_log_prob and optim_step_idx == 0
 
@@ -476,7 +481,7 @@ class FSDPTrainRayActor(TrainRayActor):
                     self.optimizer.zero_grad(set_to_none=True)
                 self.global_step += 1
 
-                reduced = {f"train/{key}": value for key, value in metrics.reduce().items()}
+                reduced = {f"train/{self._metric_role_tag()}{key}": value for key, value in metrics.reduce().items()}
                 self._log_metrics(rollout_id, reduced, step=self.global_step)
 
         if self.custom_train_output_func is not None:
