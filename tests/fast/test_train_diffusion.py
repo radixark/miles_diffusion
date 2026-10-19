@@ -1,4 +1,4 @@
-"""train_diffusion.py trains every trainer group on each rollout, one after another in declared order."""
+"""train_diffusion.py trains every trainer group on each rollout in declared order, handing each the earlier outputs."""
 
 from tests.ci.ci_register import register_cpu_ci
 
@@ -31,8 +31,9 @@ class _FakeTrainGroup:
         self._role = role
         self._events = events
 
-    def async_train(self, rollout_id, rollout_data_ref):
-        self._events.append(("train_start", self._role, rollout_id, rollout_data_ref))
+    def async_train(self, rollout_id, rollout_data_ref, external_data):
+        received = {role: [(ref.role, ref.rollout_id) for ref in refs] for role, refs in external_data.items()}
+        self._events.append(("train_start", self._role, rollout_id, rollout_data_ref, received))
         return [_Ref(self._role, rollout_id)]
 
     def save_model(self, rollout_id, force_sync=False):
@@ -83,9 +84,10 @@ def test_every_trainer_group_trains_each_rollout_in_order(monkeypatch):
 
     expected = [("update_weights", "actor")]
     for rollout_id in range(2):
-        for role in roles:
+        for i, role in enumerate(roles):
+            received = {earlier: [(earlier, rollout_id)] for earlier in roles[:i]}
             expected += [
-                ("train_start", role, rollout_id, ("rollout_data", rollout_id)),
+                ("train_start", role, rollout_id, ("rollout_data", rollout_id), received),
                 ("train_done", role, rollout_id),
             ]
         expected += [("save_model", role, rollout_id) for role in roles]
