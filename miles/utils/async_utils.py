@@ -1,7 +1,7 @@
 import asyncio
 import threading
 
-__all__ = ["get_async_loop", "run"]
+__all__ = ["get_async_loop", "ray_get_cancellable", "run"]
 
 
 # Create a background event loop thread
@@ -34,3 +34,29 @@ def get_async_loop():
 def run(coro):
     """Run a coroutine in the background event loop."""
     return get_async_loop().run(coro)
+
+
+async def ray_get_cancellable(submit):
+    """Await the ObjectRef from submit() off the event loop, and ray.cancel it if this task is cancelled.
+
+    submit (e.g. lambda: actor.method.remote(...)) runs in a worker thread, since .remote() serializes its
+    arguments in the calling thread. Cancelling the asyncio task alone leaves the Ray call running.
+    """
+    import ray
+
+    def cancel_when_submitted(fut):
+        if not fut.cancelled() and fut.exception() is None:
+            ray.cancel(fut.result())
+
+    submitted = asyncio.ensure_future(asyncio.to_thread(submit))
+    try:
+        ref = await asyncio.shield(submitted)
+    except asyncio.CancelledError:
+        # the .remote() call may still land after we were cancelled; cancel it once it has a ref
+        submitted.add_done_callback(cancel_when_submitted)
+        raise
+    try:
+        return await asyncio.to_thread(ray.get, ref)
+    except asyncio.CancelledError:
+        ray.cancel(ref)
+        raise
