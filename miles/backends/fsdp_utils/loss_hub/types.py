@@ -25,6 +25,7 @@ class DiffusionLossContext:
     dp_rank: int = 0
     reference_models: dict[str, torch.nn.Module] = field(default_factory=dict)
     teacher_models: dict[str, torch.nn.Module] = field(default_factory=dict)
+    external_data: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

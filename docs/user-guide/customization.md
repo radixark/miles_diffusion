@@ -25,6 +25,7 @@ signatures they expect, and the defaults they replace — in the same spirit as
 | | `--custom-convert-samples-to-train-data-path` | Full sample → train_data |
 | | `--custom-prepare-train-batch-path` | DiT batch preparation |
 | | `--custom-loss-function-path` | Loss formula only |
+| | `--custom-train-output-function-path` | Output handed to later trainer groups |
 | | `--sde-step-backend-path` | Train-side SDE dynamics |
 | **Logging** | `--custom-rollout-log-function-path` | Train-rollout logging |
 | | `--custom-eval-rollout-log-function-path` | Eval-rollout logging |
@@ -281,6 +282,17 @@ def loss_formula(ctx, batch, prepared, *, new_pred, old_pred, ref_pred, metrics,
 
 `new_pred`, `old_pred` and `ref_pred` are keyed by the same stream names as `prepared.latents`.
 `old_pred` is `None` unless `--loss-type nft`; `ref_pred` is `None` with `--ref-mode none`.
+
+### `--custom-train-output-function-path`
+
+```python
+def train_output(ctx, train_pairs) -> Any:
+    ...
+```
+
+Runs without grad after this trainer group's train steps on a rollout. Every trainer group that
+trains later on the same rollout reads the return value of its paired rank (same rank, same
+train pairs) as `ctx.external_data[<role>]`.
 
 ### `--sde-step-backend-path`
 
