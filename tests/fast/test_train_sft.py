@@ -92,7 +92,7 @@ def _run(monkeypatch, *, shared_gpus=True, num_rollout=3, save_interval=None):
     monkeypatch.setattr(train_sft, "create_placement_groups", lambda args: pgs)
     monkeypatch.setattr(train_sft, "create_rollout_manager", lambda args, pg: (_FakeRolloutManager(events), None))
     monkeypatch.setattr(
-        train_sft, "create_training_models", lambda args, pgs, rollout_manager: _FakeActorModel(events)
+        train_sft, "create_training_models", lambda args, pgs, rollout_manager: {"actor": _FakeActorModel(events)}
     )
     monkeypatch.setattr(train_sft.ray, "get", _fake_ray_get(events))
     args = Namespace(
