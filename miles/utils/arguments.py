@@ -895,11 +895,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--loss-type",
                 type=str,
-                choices=["policy_loss", "sft_loss", "custom_loss", "nft"],
+                choices=["policy_loss", "sft_loss", "custom_loss", "nft", "dmd2"],
                 default="policy_loss",
                 help=(
                     "Train objective shortcut. Diffusion default policy_loss = Flow-GRPO prepare+formula. "
                     "nft auto-fills prepare / loss-formula paths and selects the NFT train-data converter. "
+                    "dmd2 selects the DMD2 train-data converter and trains a critic group next to the actor. "
                     "DiT forward always stays in the FSDP actor."
                 ),
             )
@@ -970,6 +971,47 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=0,
                 help="Sampling steps the built-in NFT timestep strategies drop: random ones per sample for "
                 "drop_random_steps, the final (lowest-noise) ones for drop_final_steps.",
+            )
+            parser.add_argument(
+                "--dmd2-critic-steps-per-rollout",
+                type=int,
+                default=5,
+                help="DMD2 critic optimizer steps per rollout, taken before the actor's single step (TTUR).",
+            )
+            parser.add_argument(
+                "--dmd2-teacher-guidance-scale",
+                type=float,
+                default=None,
+                help="CFG scale of the frozen teacher when DMD2 scores the student's samples; 1 runs it unguided.",
+            )
+            parser.add_argument(
+                "--dmd2-score-sigma-range",
+                type=float,
+                nargs=2,
+                metavar=("MIN", "MAX"),
+                default=[0.02, 0.98],
+                help="Unshifted sigma range in which DMD2 scores the student's samples: the grid points between MIN "
+                "and MAX, read through the visual --fsdp-flow-shift. Defaults to the reference DMD2's range.",
+            )
+            parser.add_argument(
+                "--dmd2-critic-loss-space",
+                type=str,
+                choices=["velocity", "x0"],
+                default="velocity",
+                help="Space of the DMD2 critic's flow-matching loss: velocity, or x0 = x_sigma - sigma * v, "
+                "which weights the velocity MSE by sigma^2.",
+            )
+            parser.add_argument(
+                "--critic-load",
+                type=str,
+                default=None,
+                help="HF pipeline checkpoint the DMD2 critic starts from. Defaults to --teacher-load.",
+            )
+            parser.add_argument(
+                "--critic-lr",
+                type=float,
+                default=None,
+                help="Learning rate of the DMD2 critic. Defaults to --lr.",
             )
             parser.add_argument(
                 "--advantage-estimator",
@@ -1686,6 +1728,16 @@ def set_default_diffusion_args(args) -> None:
         if args.custom_loss_function_path is None:
             args.custom_loss_function_path = "miles.backends.fsdp_utils.loss_hub.nft.nft_loss_formula"
 
+    if args.loss_type == "dmd2":
+        if args.custom_expand_samples_to_train_pairs_path is None:
+            args.custom_expand_samples_to_train_pairs_path = (
+                "miles.ray.data_conversion_hub.dmd2.expand_samples_to_train_pairs"
+            )
+        if args.critic_load is None:
+            args.critic_load = args.teacher_load
+        if args.critic_lr is None:
+            args.critic_lr = args.lr
+
     if args.ref_mode is None:
         args.ref_mode = "lora_base" if args.diffusion_kl_beta > 0 else "none"
 
@@ -1802,6 +1854,52 @@ def validate_train_sde_backend(args) -> None:
         raise ValueError(
             "--diffusion-sde-type ode is for DiffusionNFT (--loss-type nft) or a custom loss formula; "
             "the Flow-GRPO loss needs an sde or cps rollout"
+        )
+
+
+def validate_dmd2_args(args) -> None:
+    if args.loss_type != "dmd2":
+        if args.critic_load is not None or args.critic_lr is not None:
+            raise ValueError("--critic-load and --critic-lr configure the critic group of --loss-type dmd2")
+        return
+    if args.teacher_load is None:
+        raise ValueError("--loss-type dmd2 requires --teacher-load to score the student's samples")
+    if args.dmd2_teacher_guidance_scale is None or args.dmd2_teacher_guidance_scale < 1:
+        raise ValueError(
+            f"--loss-type dmd2 requires --dmd2-teacher-guidance-scale >= 1, got {args.dmd2_teacher_guidance_scale}"
+        )
+    if args.fsdp_flow_shift is None or "visual" not in args.fsdp_flow_shift:
+        raise ValueError("--loss-type dmd2 requires a visual --fsdp-flow-shift for the critic's sigma grid")
+    min_sigma, max_sigma = args.dmd2_score_sigma_range
+    if not 0 <= min_sigma < max_sigma <= 1:
+        raise ValueError(f"--dmd2-score-sigma-range needs 0 <= MIN < MAX <= 1, got {min_sigma} {max_sigma}")
+    if args.diffusion_guidance_scale != 1.0 or args.diffusion_true_cfg_scale is not None:
+        raise ValueError(
+            "--loss-type dmd2 samples the student unguided; set --diffusion-guidance-scale 1.0 "
+            "and drop --diffusion-true-cfg-scale"
+        )
+    if args.use_lora or args.teacher_lora_adapter_paths is not None:
+        raise ValueError(
+            "--loss-type dmd2 trains the full student and critic; drop --use-lora and --teacher-lora-adapter-path"
+        )
+    if args.ref_mode != "none":
+        raise ValueError("--loss-type dmd2 uses no reference model; drop --ref-mode and --diffusion-kl-beta")
+    if args.custom_prepare_train_batch_path is None or args.custom_loss_function_path is None:
+        raise ValueError(
+            "--loss-type dmd2 has no built-in generator loss yet; pass --custom-prepare-train-batch-path "
+            "and --custom-loss-function-path"
+        )
+    if args.num_steps_per_rollout != 1:
+        raise ValueError(
+            f"--loss-type dmd2 takes one actor step per rollout, got --num-steps-per-rollout "
+            f"{args.num_steps_per_rollout}; the critic scores each rollout once, for that step"
+        )
+    dp_size = args.actor_num_gpus_per_node * args.actor_num_nodes // args.sequence_parallel_size
+    critic_steps = args.dmd2_critic_steps_per_rollout
+    if critic_steps < 1 or args.global_batch_size % (critic_steps * dp_size) != 0:
+        raise ValueError(
+            f"--dmd2-critic-steps-per-rollout {critic_steps} must be >= 1 and split each of the {dp_size} DP "
+            f"shards of the {args.global_batch_size} samples per rollout evenly"
         )
 
 
@@ -2131,6 +2229,8 @@ def miles_validate_args(args):
     if args.num_steps_per_rollout is None:
         samples_per_rollout = args.rollout_batch_size * args.n_samples_per_prompt
         args.num_steps_per_rollout = max(1, samples_per_rollout // args.global_batch_size)
+
+    validate_dmd2_args(args)
 
     if args.n_samples_per_prompt == 1:
         args.grpo_std_normalization = False

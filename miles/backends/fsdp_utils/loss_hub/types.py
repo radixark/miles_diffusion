@@ -22,10 +22,13 @@ class DiffusionLossContext:
     device: torch.device
     rollout_id: int = 0
     microbatch_id: int = 0
+    optim_step_idx: int = 0
     dp_rank: int = 0
     reference_models: dict[str, torch.nn.Module] = field(default_factory=dict)
     teacher_models: dict[str, torch.nn.Module] = field(default_factory=dict)
     external_data: dict[str, Any] = field(default_factory=dict)
+    # Filled by loss hooks during one train call and read by the train-output hook.
+    train_output_inputs: list[Any] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
