@@ -3,7 +3,8 @@ import sys
 
 import ray
 
-from miles.ray.placement_group import create_placement_groups, create_rollout_manager, create_training_models
+import miles.utils.startup_timing as st  # first, so its import time anchors the driver's
+from miles.ray.placement_group import create_placement_groups, start_rollout_and_train
 from miles.utils.arguments import parse_args
 from miles.utils.logging_utils import configure_logger
 from miles.utils.misc import should_run_periodic_action
@@ -19,21 +20,19 @@ def train(args):
     logger.info("train: placement groups ready")
     init_tracking(args)
 
-    # create the rollout manager, with sglang engines inside.
+    # create the rollout manager, with sglang engines inside, and the training model.
     # need to initialize rollout manager first to calculate num_rollout
-    logger.info("train: creating rollout manager")
-    rollout_manager, num_rollout_per_epoch = create_rollout_manager(args, pgs["rollout"])
-    logger.info("train: rollout manager ready")
+    logger.info("train: creating rollout manager and training model")
+    with st.step("driver.startup"):
+        rollout_manager, actor_model, num_rollout_per_epoch, engines_resident = start_rollout_and_train(args, pgs)
+    logger.info("train: rollout manager and training model ready")
 
-    logger.info("train: creating training model")
-    actor_model = create_training_models(args, pgs, rollout_manager)
-    logger.info("train: training model ready")
-
-    if args.offload_rollout:
+    if args.offload_rollout and not engines_resident:
         ray.get(rollout_manager.onload_weights.remote())
 
     # always update weight first so that sglang has the loaded weights from training.
-    actor_model.update_weights()
+    with st.step("driver.first_update_weights"):
+        actor_model.update_weights()
 
     # special case for eval-only
     if args.num_rollout == 0 and args.eval_interval is not None:
@@ -69,6 +68,8 @@ def train(args):
 
         logger.info(f"train: rollout {rollout_id} actor train start")
         ray.get(actor_model.async_train(rollout_id, rollout_data_ref))
+        if rollout_id == args.start_rollout_id:
+            st.mark("driver.first_train_step_done")
         logger.info(f"train: rollout {rollout_id} actor train done")
 
         if should_run_periodic_action(rollout_id, args.save_interval, num_rollout_per_epoch, args.num_rollout):
@@ -88,5 +89,8 @@ def train(args):
 if __name__ == "__main__":
     # Ensure stdout is line-buffered so nohup logs show progress immediately.
     sys.stdout.reconfigure(line_buffering=True)
-    args = parse_args()
+    st.set_role("driver")
+    st.mark("driver.main_enter")
+    with st.step("driver.parse_args"):
+        args = parse_args()
     train(args)
