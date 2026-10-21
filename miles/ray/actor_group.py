@@ -100,9 +100,15 @@ class RayTrainGroup:
         self.args = args
         return [actor.init.remote(args, role, with_ref=with_ref) for actor in self._actor_handlers]
 
-    def async_train(self, rollout_id, rollout_data_ref):
-        """Do one rollout training"""
-        return [actor.train.remote(rollout_id, rollout_data_ref) for actor in self._actor_handlers]
+    def async_train(self, rollout_id, rollout_data_ref, external_data=None):
+        """Do one rollout training; rank i receives rank i's output of each group in ``external_data``."""
+        external_data = external_data or {}
+        return [
+            actor.train.remote(
+                rollout_id, rollout_data_ref, {role: refs[rank] for role, refs in external_data.items()}
+            )
+            for rank, actor in enumerate(self._actor_handlers)
+        ]
 
     def save_model(self, rollout_id, force_sync=False):
         """Save actor model"""
