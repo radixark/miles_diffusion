@@ -284,7 +284,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--diffusion-nft-timestep-strategy-path` | str | `…nft.drop_random_steps` | `(args, num_steps, generator) -> list[int]` returning the denoising steps each sample trains on, in training order; `generator` is seeded per sample. Built in: `drop_random_steps` (random order), `drop_final_steps` (schedule order, noisiest first). The final clean output (σ = 0) is never a training step. |
 | `--diffusion-nft-num-dropped-timesteps` | int | `0` | Steps the built-in strategies drop: random ones per sample for `drop_random_steps`, the final (lowest-noise) ones for `drop_final_steps`. |
 | `--no-diffusion-nft-adaptive-weight` | flag | off | |
-| `--dmd2-critic-steps-per-rollout` | int | `5` | Critic optimizer steps per rollout under `dmd2`, before the actor's single step. Each DP shard must split into this many steps. The last step's samples are scored by the critic before that step's update. |
+| `--dmd2-critic-steps-per-rollout` | int | `5` | Critic optimizer steps per rollout under `dmd2`, before the actor's single step. Each DP shard must split into this many steps. The last step's samples are scored by the critic before that step's update, and the actor trains on them only. |
 | `--dmd2-teacher-guidance-scale` | float | – | Required by `dmd2`: the teacher's CFG scale when scoring the student's samples; `1` runs it unguided. |
 | `--critic-load` | str | `--teacher-load` | `dmd2` only: HF pipeline checkpoint the critic starts from. Its checkpoints go to the sibling `<--save>_critic` dir. |
 | `--critic-lr` | float | `--lr` | `dmd2` only: the critic's learning rate. |

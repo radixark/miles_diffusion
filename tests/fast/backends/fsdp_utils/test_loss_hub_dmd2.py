@@ -1,4 +1,4 @@
-"""DMD2 critic-group hooks: the critic (fake score) and the frozen teacher share this group; the actor holds the student.
+"""DMD2 hooks: the critic (fake score) and the frozen teacher share the critic group; the actor holds the student.
 
     rollout pair: x0 = the student's x0 prediction at its stop step i, denoising_env = the rollout cond
                 │
@@ -13,6 +13,13 @@
     score_last_step_samples, without grad after the critic's steps, per kept micro-batch:
       teacher, CFG --dmd2-teacher-guidance-scale over the rollout's neg cond ──► x0_real = x_s - sigma v_real
       ──► {sample_index: {"x0_real", "x0_fake"}}; the teacher is resharded so sleep moves its shards
+                │  ctx.external_data["critic"] on the paired actor rank
+    select_scored_pairs ──► the actor's train-input hook keeps only the scored pairs, i.e. the critic's last step
+    prepare_generator_batch ──► the student's unguided step i on the rollout input x_i
+    dmd2_loss_formula:
+      x0 = x_i - sigma_i v_student                       (with grad; the rollout's x0_i only feeds a metric)
+      g  = nan_to_num((x0_fake - x0_real) / mean|x0 - x0_real|)  per pair
+      loss = 0.5 mean((x0 - sg(x0 - g))^2)  ──► d/dx0 = g / numel, the reference implementation's gradient
 
 What each test pins:
   test_critic_batch_is_the_sft_batch_on_the_student_x0   earlier steps: inputs and targets == SFT on (x0, pos cond)
@@ -23,6 +30,13 @@ What each test pins:
   test_teacher_runs_cfg_and_the_critic_runs_unguided    CFG combine for the teacher only
   test_teacher_cfg_needs_the_rollout_negative_cond      rejected instead of a forward without text
   test_scoring_reshards_the_teacher                     teacher resharded after its no-grad forwards
+  test_actor_keeps_the_critic_last_step_pairs           same shard ──► the actor trains on the scored 1/K only
+  test_scores_outside_the_shard_are_rejected            a broken rank pairing fails instead of shrinking the batch
+  test_generator_batch_is_the_student_step_on_its_input  x_i, t_i, sigma_i and the positive cond, no CFG
+  test_generator_needs_a_single_component                multi-DiT families are rejected
+  test_surrogate_gradient_matches_the_reference          same gradient as the reference's batch-mean MSE
+  test_critic_matching_the_teacher_gives_no_gradient     x0_fake == x0_real ──► zero loss and gradient
+  test_gaussian_student_moves_toward_the_teacher         analytic scores: sign and normalization move mu
 """
 
 from tests.ci.ci_register import register_cpu_ci
@@ -39,6 +53,8 @@ import miles.backends.fsdp_utils.loss_hub.dmd2 as dmd2
 from miles.backends.fsdp_utils.configs.sd3 import SD3TrainPipelineConfig
 from miles.backends.fsdp_utils.loss_hub.sft import prepare_sft_batch, sft_loss_formula
 from miles.backends.fsdp_utils.loss_hub.types import DiffusionLossContext, FlowNoiseSchedule
+from miles.backends.fsdp_utils.metrics import new_metric_buffer
+from miles.utils.train_data_utils import build_microbatch_schedule
 from miles.utils.types import CondKwargs, DenoisingEnv
 
 FLOW_SHIFT = 3.0
@@ -271,3 +287,164 @@ def test_scoring_reshards_the_teacher(monkeypatch):
     dmd2.score_last_step_samples(ctx, _pairs(2))
 
     assert resharded == [ctx.teacher_models["transformer"]]
+
+
+def test_actor_keeps_the_critic_last_step_pairs():
+    ctx = _ctx()
+    pairs = _pairs(9)
+    schedule = build_microbatch_schedule(
+        num_pairs_per_optim_step=3, num_optim_steps_per_rollout=CRITIC_STEPS, micro_batch_size=3
+    )
+    for optim_step_idx, [(pair_lo, pair_hi)] in enumerate(schedule):
+        _critic_step(ctx, pairs[pair_lo:pair_hi], optim_step_idx)
+
+    actor_ctx = _ctx()
+    actor_ctx.external_data["critic"] = dmd2.score_last_step_samples(ctx, pairs)
+
+    assert dmd2.select_scored_pairs(actor_ctx, pairs) == pairs[6:]
+
+
+def test_scores_outside_the_shard_are_rejected():
+    pairs = _pairs(4)
+    ctx = _ctx()
+    ctx.external_data["critic"] = {pair["sample_index"]: {} for pair in pairs[2:]}
+    with pytest.raises(ValueError, match="only 1 of them"):
+        dmd2.select_scored_pairs(ctx, pairs[:3])
+
+
+def _generator_pairs(num_pairs):
+    return [
+        {
+            "latent": torch.randn(LATENT_SHAPE, generator=torch.Generator().manual_seed(n)).to(torch.bfloat16),
+            "x0": torch.zeros(LATENT_SHAPE),
+            "timestep": 750.0 - 250.0 * n,
+            "sigma": 0.75 - 0.25 * n,
+            "denoising_env": DenoisingEnv(pos_cond_kwargs=_cond(1.0 + n), neg_cond_kwargs=None),
+            "sample_index": 100 + n,
+        }
+        for n in range(num_pairs)
+    ]
+
+
+def _metrics():
+    return new_metric_buffer(None, torch.device("cpu"), ["transformer"])
+
+
+def _loss(ctx, pairs, x0):
+    """dmd2_loss_formula with the student predicting ``x0`` from each pair's rollout input."""
+    prepared = dmd2.prepare_generator_batch(ctx, pairs)
+    sigmas = prepared.extras["sigmas"].view(-1, 1, 1, 1)
+    new_pred = {"visual": (prepared.latents["visual"] - x0) / sigmas}
+    metrics = _metrics()
+    return (
+        dmd2.dmd2_loss_formula(ctx, pairs, prepared, new_pred=new_pred, old_pred=None, ref_pred=None, metrics=metrics),
+        metrics,
+    )
+
+
+def _scores(pairs, x0_real, x0_fake):
+    return {
+        pair["sample_index"]: {"x0_real": real, "x0_fake": fake}
+        for pair, real, fake in zip(pairs, x0_real, x0_fake, strict=True)
+    }
+
+
+def test_generator_batch_is_the_student_step_on_its_input():
+    ctx = _ctx()
+    pairs = _generator_pairs(2)
+
+    prepared = dmd2.prepare_generator_batch(ctx, pairs)
+
+    assert prepared.model is ctx.models["transformer"]
+    assert torch.equal(prepared.latents["visual"], torch.stack([pair["latent"] for pair in pairs]).float())
+    assert prepared.timesteps["visual"].tolist() == [750.0, 500.0]
+    assert prepared.extras["sigmas"].tolist() == [0.75, 0.5]
+    assert prepared.pos_cond["encoder_hidden_states"][:, 0, 0].tolist() == [1.0, 2.0]
+    assert not prepared.use_cfg and prepared.neg_cond is None
+
+
+def test_generator_needs_a_single_component():
+    ctx = _ctx()
+    ctx.models["transformer_2"] = ctx.models["transformer"]
+    with pytest.raises(ValueError, match="single DiT component"):
+        dmd2.prepare_generator_batch(ctx, _generator_pairs(1))
+
+
+def test_surrogate_gradient_matches_the_reference():
+    ctx = _ctx()
+    pairs = _generator_pairs(2)
+    x0 = torch.randn(2, *LATENT_SHAPE, requires_grad=True)
+    x0_real, x0_fake = torch.randn(2, *LATENT_SHAPE), torch.randn(2, *LATENT_SHAPE)
+    ctx.external_data = {"critic": _scores(pairs, x0_real, x0_fake)}
+
+    loss_sum, _ = _loss(ctx, pairs, x0)
+    (loss_sum / len(pairs)).backward()
+
+    # tianweiy/DMD2 compute_distribution_matching_loss, on the same x0 and predictions.
+    reference_x0 = x0.detach().clone().requires_grad_()
+    with torch.no_grad():
+        p_real, p_fake = reference_x0 - x0_real, reference_x0 - x0_fake
+        grad = torch.nan_to_num((p_real - p_fake) / p_real.abs().mean(dim=[1, 2, 3], keepdim=True))
+    torch.nn.functional.mse_loss(reference_x0, (reference_x0 - grad).detach(), reduction="mean").mul(0.5).backward()
+
+    torch.testing.assert_close(x0.grad, reference_x0.grad)
+
+
+def test_critic_matching_the_teacher_gives_no_gradient():
+    ctx = _ctx()
+    pairs = _generator_pairs(2)
+    x0 = torch.randn(2, *LATENT_SHAPE, requires_grad=True)
+    x0_pred = torch.randn(2, *LATENT_SHAPE)
+    ctx.external_data = {"critic": _scores(pairs, x0_pred, x0_pred)}
+
+    loss_sum, metrics = _loss(ctx, pairs, x0)
+    loss_sum.backward()
+
+    assert float(loss_sum) == 0.0
+    assert torch.count_nonzero(x0.grad) == 0
+    assert metrics.reduce()["dmd2_grad_abs_mean"] == 0.0
+
+
+def test_gaussian_student_moves_toward_the_teacher():
+    # Data N(mu, 1) per element, noised as x_s = a x + b eps: E[x | x_s] = mu + a (x_s - a mu) / (a^2 + b^2).
+    def posterior_mean(mu, x_s, a, b):
+        return mu + a * (x_s - a * mu) / (a**2 + b**2)
+
+    ctx = _ctx()
+    pairs = _generator_pairs(2)
+    teacher_mu, student_mu = 1.0, torch.tensor(-1.0, requires_grad=True)
+    optimizer = torch.optim.SGD([student_mu], lr=0.5)
+    generator = torch.Generator().manual_seed(0)
+    gaps = []
+    for _ in range(20):
+        optimizer.zero_grad()
+        x0 = student_mu + torch.randn(2, *LATENT_SHAPE, generator=generator)
+        a, b = 0.5, 0.5
+        x_s = a * x0.detach() + b * torch.randn(x0.shape, generator=generator)
+        ctx.external_data = {
+            "critic": _scores(
+                pairs,
+                posterior_mean(teacher_mu, x_s, a, b),
+                posterior_mean(float(student_mu), x_s, a, b),
+            )
+        }
+        loss_sum, _ = _loss(ctx, pairs, x0)
+        (loss_sum / len(pairs)).backward()
+        optimizer.step()
+        gaps.append(abs(teacher_mu - float(student_mu)))
+
+    assert gaps == sorted(gaps, reverse=True)
+    assert gaps[-1] < 0.5 * gaps[0]
+
+
+def test_trainer_and_rollout_x0_diff_is_recorded():
+    ctx = _ctx()
+    pairs = _generator_pairs(2)
+    x0 = torch.stack([pair["x0"] for pair in pairs]) + 0.25
+    ctx.external_data = {"critic": _scores(pairs, x0, x0)}
+
+    _, metrics = _loss(ctx, pairs, x0)
+
+    reduced = metrics.reduce()
+    assert reduced["x0_mean_abs_diff"] == pytest.approx(0.25)
+    assert reduced["x0_max_abs_diff"] == pytest.approx(0.25)
