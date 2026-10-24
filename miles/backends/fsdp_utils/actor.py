@@ -168,6 +168,11 @@ class FSDPTrainRayActor(TrainRayActor):
         self.custom_loss_formula_func = (
             load_function(args.custom_loss_function_path) if args.custom_loss_function_path is not None else None
         )
+        self.custom_train_input_func = (
+            load_function(args.custom_train_input_function_path)
+            if args.custom_train_input_function_path is not None
+            else None
+        )
         self.custom_train_output_func = (
             load_function(args.custom_train_output_function_path)
             if args.custom_train_output_function_path is not None
@@ -351,6 +356,22 @@ class FSDPTrainRayActor(TrainRayActor):
         if not train_pairs:
             raise ValueError("rollout_data['train_data'] is empty")
 
+        loss_ctx = DiffusionLossContext(
+            models=self.models,
+            reference_models=self.reference_models,
+            teacher_models=self.teacher_models,
+            train_pipeline_config=self.train_pipeline_config,
+            sde_backend=self.sde_backend,
+            args=self.args,
+            forward_dtype=self._forward_dtype,
+            device=device,
+            rollout_id=rollout_id,
+            dp_rank=self.parallel_state.dp_rank,
+            external_data=external_data,
+        )
+        if self.custom_train_input_func is not None:
+            train_pairs = self.custom_train_input_func(loss_ctx, train_pairs)
+
         num_pairs = len(train_pairs)
 
         # ------------- Micro-batch schedule -------------
@@ -377,20 +398,6 @@ class FSDPTrainRayActor(TrainRayActor):
                 train_pairs=train_pairs,
                 microbatch_schedule=microbatch_schedule,
             )
-
-        loss_ctx = DiffusionLossContext(
-            models=self.models,
-            reference_models=self.reference_models,
-            teacher_models=self.teacher_models,
-            train_pipeline_config=self.train_pipeline_config,
-            sde_backend=self.sde_backend,
-            args=self.args,
-            forward_dtype=self._forward_dtype,
-            device=device,
-            rollout_id=rollout_id,
-            dp_rank=self.parallel_state.dp_rank,
-            external_data=external_data,
-        )
 
         # ------------- Recompute old log-probs (impl-consistent PPO ratio) -------------
         if self.args.diffusion_recompute_old_log_prob:
