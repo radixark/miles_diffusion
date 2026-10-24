@@ -24,6 +24,10 @@ async def async_rm(args, sample: Sample, **kwargs):
         from .hps import hps_rm
 
         return (await hps_rm(args, [sample]))[0]
+    elif rm_type == "hpsv3":
+        from .hpsv3 import hpsv3_rm
+
+        return (await hpsv3_rm(args, [sample]))[0]
     elif rm_type == "custom_api":
         from .api import custom_api_rm
 
@@ -47,6 +51,10 @@ def create_colocated_reward_pools(args, placement_group, slots) -> list:
         from .hps import AsyncHPSPool
 
         pools.append(AsyncHPSPool(args, placement_group=placement_group, slots=slots))
+    if args.hpsv3_reward_colocate:
+        from .hpsv3 import AsyncHPSv3Pool
+
+        pools.append(AsyncHPSv3Pool(args, placement_group=placement_group, slots=slots))
     return pools
 
 
@@ -69,6 +77,10 @@ async def batched_async_rm(
             from .hps import hps_rm
 
             return await hps_rm(args, samples)
+        if all(rm_type == "hpsv3" for rm_type in rm_types):
+            from .hpsv3 import hpsv3_rm
+
+            return await hpsv3_rm(args, samples)
         if all(rm_type == "ocr" for rm_type in rm_types):
             from .ocr import ocr_rm
 

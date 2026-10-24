@@ -287,7 +287,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 
 | Flag | Type | Default | Notes |
 |---|---|---|---|
-| `--rm-type` | str | – | `pickscore` / `hps` / `ocr` / `openai_api` / `custom_api`. Overridable per sample via `metadata.rm_type`. Ignored when `--custom-rm-path` is set. |
+| `--rm-type` | str | – | `pickscore` / `hps` / `hpsv3` / `ocr` / `openai_api` / `custom_api`. Overridable per sample via `metadata.rm_type`. Ignored when `--custom-rm-path` is set. |
 | `--custom-api-rm-config` | str | – | Required for `--rm-type custom_api`: a YAML file or inline `base64:<payload>` with `actor_class`, `actor_kwargs`, `max_concurrency`. A flat mapping configures the default OpenAI-compatible image actor. |
 | `--openai-api-rm-config` | str | – | Required for `--rm-type openai_api`; same format as `--custom-api-rm-config`. |
 | `--group-rm` | flag | off | Score a whole prompt group at once. |
@@ -309,6 +309,13 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--hps-batch-size` | int | `8` | |
 | `--hps-version` | enum | `v2.1` | `v2.0` / `v2.1`. |
 | `--hps-checkpoint-path` | str | – | Local checkpoint; unset downloads from Hugging Face. |
+| `--hpsv3-num-workers` | int | `1` | |
+| `--hpsv3-num-gpus-per-worker` | float | `1.0` | Standalone workers only; fractional values allowed. |
+| `--hpsv3-reward-colocate` | flag | off | Seats `--hpsv3-num-workers` actors on the rollout GPUs, one per placement-group bundle, sharing them with the train actor and rollout engine. Requires `--colocate`. Each actor keeps ~14.5 GiB resident there, which Ray does not account for. |
+| `--hpsv3-batch-size` | int | `8` | |
+| `--hpsv3-checkpoint-path` | str | – | Local `HPSv3.safetensors`; unset downloads from `MizzenAI/HPSv3`. |
+| `--hpsv3-base-model-path` | str | `Qwen/Qwen2-VL-7B-Instruct` | Config, tokenizer and processor source; its weights are not loaded. |
+| `--hpsv3-attn-implementation` | enum | `sdpa` | `sdpa` / `flash_attention_2` / `eager`. The alignment test is recorded with `sdpa`. |
 | `--ocr-num-workers` | int | `4` | |
 | `--rollout-parser-num-workers` | int | `1` | Ray actors deserializing rollout responses. Raise when trajectory tensors are large. |
 | `--rollout-fetch-in-parser` | flag | off | Parser actors pick the least-loaded engine through the miles router, then fetch and parse its response in place, skipping the router's data plane and the manager's event loop. Requires `--use-miles-router` and at least as many parser workers as concurrency slots. |

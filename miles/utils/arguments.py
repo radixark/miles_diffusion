@@ -1341,7 +1341,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--rm-type",
                 type=str,
                 default=None,
-                help="Built-in reward (pickscore / hps / ocr / openai_api), or custom_api for a configurable actor. "
+                help="Built-in reward (pickscore / hps / hpsv3 / ocr / openai_api), or custom_api for a configurable actor. "
                 "Ignored when --custom-rm-path is set.",
             )
             for rm_type in ("custom_api", "openai_api"):
@@ -1486,6 +1486,50 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help="Optional local HPS checkpoint path; otherwise download it from Hugging Face.",
+            )
+            parser.add_argument(
+                "--hpsv3-num-workers",
+                type=int,
+                default=1,
+                help="Number of Ray HPSv3 actors used when --rm-type hpsv3.",
+            )
+            parser.add_argument(
+                "--hpsv3-num-gpus-per-worker",
+                type=float,
+                default=1.0,
+                help="GPU resources per HPSv3 actor when reward is not colocated.",
+            )
+            parser.add_argument(
+                "--hpsv3-reward-colocate",
+                action="store_true",
+                default=False,
+                help="Seat HPSv3 actors on the rollout GPUs, one per placement-group bundle. Requires --colocate. "
+                "Each actor keeps the ~16 GB bf16 Qwen2-VL-7B resident there, which Ray does not account for.",
+            )
+            parser.add_argument(
+                "--hpsv3-batch-size",
+                type=int,
+                default=8,
+                help="Batch size per HPSv3 actor call.",
+            )
+            parser.add_argument(
+                "--hpsv3-checkpoint-path",
+                type=str,
+                default=None,
+                help="Optional local HPSv3.safetensors; otherwise download it from MizzenAI/HPSv3.",
+            )
+            parser.add_argument(
+                "--hpsv3-base-model-path",
+                type=str,
+                default="Qwen/Qwen2-VL-7B-Instruct",
+                help="Model whose config, tokenizer and processor HPSv3 is built from (its weights are not loaded).",
+            )
+            parser.add_argument(
+                "--hpsv3-attn-implementation",
+                type=str,
+                default="sdpa",
+                choices=["sdpa", "flash_attention_2", "eager"],
+                help="Attention backend of the HPSv3 Qwen2-VL; sdpa is what the alignment test is recorded against.",
             )
 
             parser.add_argument(
@@ -2032,12 +2076,19 @@ def miles_validate_args(args):
         raise ValueError(f"--hps-batch-size must be positive, got {args.hps_batch_size}")
     if args.hps_num_gpus_per_worker < 0:
         raise ValueError(f"--hps-num-gpus-per-worker must be non-negative, got {args.hps_num_gpus_per_worker}")
+    if args.hpsv3_num_workers <= 0:
+        raise ValueError(f"--hpsv3-num-workers must be positive, got {args.hpsv3_num_workers}")
+    if args.hpsv3_batch_size <= 0:
+        raise ValueError(f"--hpsv3-batch-size must be positive, got {args.hpsv3_batch_size}")
+    if args.hpsv3_num_gpus_per_worker < 0:
+        raise ValueError(f"--hpsv3-num-gpus-per-worker must be non-negative, got {args.hpsv3_num_gpus_per_worker}")
 
     colocated_reward_workers = {
         name: num_workers
         for name, colocate, num_workers in (
             ("pickscore", args.pickscore_reward_colocate, args.pickscore_num_workers),
             ("hps", args.hps_reward_colocate, args.hps_num_workers),
+            ("hpsv3", args.hpsv3_reward_colocate, args.hpsv3_num_workers),
         )
         if colocate
     }
