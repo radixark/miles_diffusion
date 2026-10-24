@@ -924,6 +924,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--custom-train-input-function-path",
+                type=str,
+                default=None,
+                help=(
+                    "Dotted path to `fn(ctx, train_pairs) -> list` that preprocesses this rank's train pairs (the "
+                    "converted rollout output) before they are split into micro-batches and optimizer steps. It "
+                    "returns the pairs to train on; `ctx.external_data` holds earlier trainer groups' outputs."
+                ),
+            )
+            parser.add_argument(
                 "--custom-train-output-function-path",
                 type=str,
                 default=None,
