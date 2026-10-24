@@ -79,12 +79,13 @@ def ulysses_input_all_to_all(x, group):
     b, s_local, h_global, d = x.shape
     if h_global % world_size:
         raise ValueError(f"num_heads({h_global}) is not divisible by ulysses world size({world_size})")
-    h_local, s_global = h_global // world_size, s_local * world_size
+    h_local = h_global // world_size
 
-    x = x.permute(2, 0, 1, 3).contiguous()  # [h_global, b, s_local, d]
-    x = _all_to_all_4d(x, group)
-    x = x.reshape(world_size, h_local, b, s_local, d)
-    return x.permute(2, 0, 3, 1, 4).contiguous().reshape(b, s_global, h_local, d)
+    x = x.reshape(b, s_local, world_size, h_local, d).permute(2, 1, 0, 3, 4).contiguous()
+    # Pack by destination so the receive buffer is sequence-major; return a view.
+    x = _AllToAllSingle.apply(x.flatten(), group)
+    x = x.reshape(world_size * s_local, b, h_local, d)
+    return x.permute(1, 0, 2, 3)
 
 
 def ulysses_output_all_to_all(x, group):
