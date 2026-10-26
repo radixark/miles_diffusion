@@ -40,22 +40,6 @@ def train(args):
     if args.num_rollout == 0 and args.eval_interval is not None:
         ray.get(rollout_manager.eval.remote(rollout_id=0))
 
-    def offload_train():
-        for train_group in train_groups.values():
-            if args.offload_train:
-                train_group.offload()
-            else:
-                train_group.clear_memory()
-
-    def save(rollout_id):
-        for train_group in train_groups.values():
-            train_group.save_model(
-                rollout_id,
-                force_sync=rollout_id == args.num_rollout - 1,
-            )
-        if args.rollout_global_dataset:
-            ray.get(rollout_manager.save.remote(rollout_id))
-
     # train loop.
     # note that for async training, one can change the position of the sync operation(ray.get).
     for rollout_id in range(args.start_rollout_id, args.num_rollout):
@@ -70,17 +54,26 @@ def train(args):
         if args.offload_rollout:
             ray.get(rollout_manager.offload.remote())
 
+        should_save = should_run_periodic_action(
+            rollout_id, args.save_interval, num_rollout_per_epoch, args.num_rollout
+        )
         train_outputs = {}
         for role, train_group in train_groups.items():
             logger.info(f"train: rollout {rollout_id} {role} train start")
             train_outputs[role] = train_group.async_train(rollout_id, rollout_data_ref, train_outputs)
             ray.get(train_outputs[role])
             logger.info(f"train: rollout {rollout_id} {role} train done")
+            if should_save:
+                train_group.save_model(rollout_id, force_sync=rollout_id == args.num_rollout - 1)
+            # Its outputs already sit in the object store, so a group sleeps before the next one wakes.
+            if args.offload_train:
+                train_group.offload()
 
-        if should_run_periodic_action(rollout_id, args.save_interval, num_rollout_per_epoch, args.num_rollout):
-            save(rollout_id)
-
-        offload_train()
+        if should_save and args.rollout_global_dataset:
+            ray.get(rollout_manager.save.remote(rollout_id))
+        if not args.offload_train:
+            for train_group in train_groups.values():
+                train_group.clear_memory()
         if args.offload_rollout:
             ray.get(rollout_manager.onload_weights.remote())
         actor_model.update_weights()
