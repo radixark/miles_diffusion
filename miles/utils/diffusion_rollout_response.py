@@ -224,6 +224,8 @@ def apply_rollout_image_response(
         deserialize_func = _store_deserialize_func(sample.rollout_store_ref, deserialize_func)
 
     sample.generated_output = _normalize_generated_output(deserialize_func(body.get("generated_output")))
+    sample.generated_audio = deserialize_func(body.get("generated_audio"))
+    sample.audio_sample_rate = body.get("audio_sample_rate")
     # Eval-mode rollout (rollout=False) sends no log_probs; train-mode always does.
     sample.rollout_log_probs = deserialize_func(body.get("rollout_log_probs"))
     sample.rollout_debug_tensors = _parse_rollout_debug_tensors(

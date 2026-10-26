@@ -10,7 +10,7 @@ from miles.backends.fsdp_utils.ema import reshard_model
 from miles.backends.fsdp_utils.input_dtype_policy import apply_input_dtype_policy
 from miles.backends.fsdp_utils.loss_hub.sft import prepare_sft_batch, sft_loss_formula
 from miles.backends.fsdp_utils.loss_hub.types import DiffusionLossContext, PreparedBatch
-from miles.backends.fsdp_utils.metrics import record_rollout_train_abs_diff
+from miles.backends.fsdp_utils.metrics import record_rollout_train_abs_diff, step_metric_key
 from miles.utils.metric_buffer import MetricBuffer
 
 
@@ -230,7 +230,19 @@ def dmd2_loss_formula(
     with torch.no_grad():
         bsz = len(batch)
         metrics.emit_mean("loss", total=loss_sum, count=bsz)
-        metrics.emit_mean("dmd2_grad_abs_mean", total=grad.abs().mean(dim=reduce_dims).sum(), count=bsz)
         rollout_x0 = torch.stack([pair["x0"] for pair in batch]).to(device=x0.device, dtype=torch.float32)
         record_rollout_train_abs_diff(metrics, "x0", x0, rollout_x0)
+        per_pair = {
+            "dmd2_grad_abs_mean": grad.abs().mean(dim=reduce_dims),
+            "dmd2_score_gap_abs_mean": (x0_fake - x0_real).abs().mean(dim=reduce_dims),
+            "dmd2_teacher_dist_abs_mean": (x0 - x0_real).abs().mean(dim=reduce_dims),
+            "x0_mean_abs_diff": (x0 - rollout_x0).abs().mean(dim=reduce_dims),
+        }
+        for key in ("dmd2_grad_abs_mean", "dmd2_score_gap_abs_mean", "dmd2_teacher_dist_abs_mean"):
+            metrics.emit_mean(key, total=per_pair[key].sum(), count=bsz)
+        metrics.emit_mean("dmd2_x0_mean", total=x0.flatten(1).mean(dim=1).sum(), count=bsz)
+        metrics.emit_mean("dmd2_x0_std", total=x0.flatten(1).std(dim=1).sum(), count=bsz)
+        for index, pair in enumerate(batch):
+            for key, values in per_pair.items():
+                metrics.emit_mean(step_metric_key(key, pair["step_index"]), total=values[index], count=1)
     return loss_sum
