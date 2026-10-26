@@ -5,7 +5,8 @@ register_cpu_ci(est_time=15, suite="stage-a-cpu", labels=[])
 import pytest
 import torch
 
-from miles.utils.diffusion_rollout_response import _normalize_generated_output
+from miles.utils.diffusion_rollout_response import _normalize_generated_output, apply_rollout_image_response
+from miles.utils.types import Sample
 
 
 @pytest.mark.parametrize(
@@ -38,3 +39,15 @@ def test_normalize_generated_output_rejects_ambiguous_layout():
 def test_normalize_generated_output_rejects_missing_channel_dimension():
     with pytest.raises(ValueError, match="no recognizable channel dimension"):
         _normalize_generated_output(torch.zeros(5, 8, 12))
+
+
+def test_response_audio_fills_the_sample():
+    audio = torch.zeros(2, 480)
+    body = {"generated_audio": audio, "audio_sample_rate": 48000}
+
+    sample = apply_rollout_image_response(Sample(), body, deserialize_func=lambda value: value)
+
+    assert sample.generated_audio is audio
+    assert sample.audio_sample_rate == 48000
+    silent = apply_rollout_image_response(Sample(), {}, deserialize_func=lambda value: value)
+    assert silent.generated_audio is None and silent.audio_sample_rate is None

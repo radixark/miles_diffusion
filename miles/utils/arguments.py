@@ -306,7 +306,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 choices=["keep", "uint8"],
                 default="keep",
                 help=(
-                    "Dtype of the decoded video in rollout responses. 'keep' returns the "
+                    "Dtype of the decoded video in rollout and eval responses. 'keep' returns the "
                     "engine's raw float tensor; 'uint8' quantises engine-side with the same "
                     "formula the reward path applies, cutting the response body ~4x. Use "
                     "'keep' for any consumer that needs the unquantised tensor."
@@ -316,7 +316,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--diffusion-fps",
                 type=float,
                 default=None,
-                help="Video fps for rollout; None for image models.",
+                help="Video fps for rollout, also the fps logged and saved media play at (8 when unset); "
+                "None for image models.",
             )
             parser.add_argument(
                 "--diffusion-output-num-frames",
@@ -1328,6 +1329,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--save-eval-media-dir",
+                type=str,
+                default=None,
+                help="Keep every eval sample's video (with its audio, if the engine returns it) or image under "
+                "<dir>/eval_<rollout_id>/, next to an index.jsonl of prompts, seeds and rewards.",
+            )
+            parser.add_argument(
                 "--load-debug-rollout-data",
                 type=str,
                 default=None,
@@ -1407,8 +1415,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--rm-type",
                 type=str,
                 default=None,
-                help="Built-in reward (pickscore / hps / ocr / openai_api), or custom_api for a configurable actor. "
-                "Ignored when --custom-rm-path is set.",
+                help="Built-in reward (pickscore / hps / ocr / openai_api), custom_api for a configurable actor, "
+                "or none for a constant 0 when the loss reads no reward; none also has the engine skip decoding "
+                "training rollouts, whose media nothing reads. Ignored when --custom-rm-path is set.",
             )
             for rm_type in ("custom_api", "openai_api"):
                 parser.add_argument(

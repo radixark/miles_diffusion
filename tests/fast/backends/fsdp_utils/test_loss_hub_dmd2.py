@@ -41,6 +41,7 @@ What each test pins:
   test_surrogate_gradient_matches_the_reference          same gradient as the reference's batch-mean MSE
   test_critic_matching_the_teacher_gives_no_gradient     x0_fake == x0_real ──► zero loss and gradient
   test_gaussian_student_moves_toward_the_teacher         analytic scores: sign and normalization move mu
+  test_health_metrics_are_recorded_overall_and_per_step  score gap, teacher distance, x0 stats, split by stop step
 """
 
 from tests.ci.ci_register import register_cpu_ci
@@ -358,13 +359,14 @@ def _generator_pairs(num_pairs):
             "sigma": 0.75 - 0.25 * n,
             "denoising_env": DenoisingEnv(pos_cond_kwargs=_cond(1.0 + n), neg_cond_kwargs=None),
             "sample_index": 100 + n,
+            "step_index": n,
         }
         for n in range(num_pairs)
     ]
 
 
 def _metrics():
-    return new_metric_buffer(None, torch.device("cpu"), ["transformer"])
+    return new_metric_buffer(None, torch.device("cpu"), ["transformer"], num_rollout_steps=4)
 
 
 def _loss(ctx, pairs, x0):
@@ -485,3 +487,26 @@ def test_trainer_and_rollout_x0_diff_is_recorded():
     reduced = metrics.reduce()
     assert reduced["x0_mean_abs_diff"] == pytest.approx(0.25)
     assert reduced["x0_max_abs_diff"] == pytest.approx(0.25)
+
+
+def test_health_metrics_are_recorded_overall_and_per_step():
+    ctx = _ctx()
+    pairs = _generator_pairs(2)
+    # Pair n stopped at step n: x0 = 0.5 + n against a teacher x0 of 0 and a critic x0 of 0.25.
+    x0 = torch.stack([pair["x0"] for pair in pairs]) + torch.tensor([0.5, 1.5]).view(2, 1, 1, 1)
+    ctx.external_data = {"critic": _scores(pairs, torch.zeros(2, *LATENT_SHAPE), torch.full((2, *LATENT_SHAPE), 0.25))}
+
+    _, metrics = _loss(ctx, pairs, x0)
+
+    reduced = metrics.reduce()
+    assert reduced["dmd2_score_gap_abs_mean"] == pytest.approx(0.25)
+    assert reduced["dmd2_teacher_dist_abs_mean"] == pytest.approx(1.0)
+    assert reduced["dmd2_x0_mean"] == pytest.approx(1.0)
+    assert reduced["dmd2_x0_std"] == pytest.approx(0.0, abs=1e-6)
+    for step, distance in enumerate([0.5, 1.5]):
+        assert reduced[f"dmd2_teacher_dist_abs_mean_step{step}"] == pytest.approx(distance)
+        assert reduced[f"dmd2_grad_abs_mean_step{step}"] == pytest.approx(0.25 / distance)
+        assert reduced[f"dmd2_score_gap_abs_mean_step{step}"] == pytest.approx(0.25)
+        assert reduced[f"x0_mean_abs_diff_step{step}"] == pytest.approx(distance)
+    # No pair stopped at steps 2 or 3, so they log nothing.
+    assert not any(key.endswith(("_step2", "_step3")) for key in reduced)

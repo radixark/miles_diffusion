@@ -45,6 +45,7 @@ def build_rollout_sampling_params(
         "num_inference_steps": num_steps,
         "guidance_scale": args.diffusion_guidance_scale,
         "true_cfg_scale": args.diffusion_true_cfg_scale,
+        "rollout_video_dtype": args.rollout_video_dtype,
     }
 
     if neg is not None:
@@ -60,11 +61,13 @@ def build_rollout_sampling_params(
                 "rollout_noise_level": args.diffusion_noise_level,
                 "rollout_log_prob_no_const": args.diffusion_log_prob_no_const,
                 "rollout_debug_mode": args.diffusion_debug_mode,
-                "rollout_video_dtype": args.rollout_video_dtype,
                 "rollout_return_denoising_env": True,
                 "rollout_return_dit_trajectory": True,
             }
         )
+        if args.rm_type == "none" and args.custom_rm_path is None:
+            # No reward reads the decoded media, so the engine skips the VAE decode of training rollouts.
+            sampling_params["rollout_return_generated_output"] = False
 
     if args.diffusion_output_num_frames is not None:
         sampling_params["num_frames"] = int(args.diffusion_output_num_frames)
@@ -405,12 +408,13 @@ EVAL_PROMPT_DATASET = {}
 
 
 def release_eval_sample_media(args: Namespace, sample: Sample) -> None:
-    """Drop a scored eval sample's media, which only image logging and debug dumps still read."""
-    if args.save_debug_rollout_data is not None:
+    """Drop a scored eval sample's media, which only image logging, saved eval media and debug dumps still read."""
+    if args.save_debug_rollout_data is not None or args.save_eval_media_dir is not None:
         return
     if sample.index < args.wandb_log_num_images:
         return
     sample.generated_output = None
+    sample.generated_audio = None
 
 
 # eval only

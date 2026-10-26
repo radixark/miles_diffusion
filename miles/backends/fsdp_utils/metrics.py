@@ -34,10 +34,28 @@ SCHEMA = {
     "nft_t_mean": MetricReduce.MEAN,
     "nft_num_timesteps": MetricReduce.MEAN,
     "dmd2_grad_abs_mean": MetricReduce.MEAN,
+    "dmd2_score_gap_abs_mean": MetricReduce.MEAN,
+    "dmd2_teacher_dist_abs_mean": MetricReduce.MEAN,
+    "dmd2_x0_mean": MetricReduce.MEAN,
+    "dmd2_x0_std": MetricReduce.MEAN,
     "x0_mean_abs_diff": MetricReduce.MEAN,
     "x0_max_abs_diff": MetricReduce.MAX,
     "x0_rel_max": MetricReduce.MAX,
+    "peak_memory_allocated_gb": MetricReduce.MAX,
+    "device_memory_used_gb": MetricReduce.MAX,
 }
+
+# Also logged per rollout denoising step, under step_metric_key; a step no pair trained on is not logged.
+STEP_SCHEMA = {
+    "dmd2_grad_abs_mean": MetricReduce.MEAN,
+    "dmd2_score_gap_abs_mean": MetricReduce.MEAN,
+    "dmd2_teacher_dist_abs_mean": MetricReduce.MEAN,
+    "x0_mean_abs_diff": MetricReduce.MEAN,
+}
+
+
+def step_metric_key(key: str, step_index: int) -> str:
+    return f"{key}_step{step_index}"
 
 
 def sigma_bucket_key(stream_name: str, bucket: int, num_buckets: int) -> str:
@@ -50,10 +68,13 @@ def sigma_bucket_key(stream_name: str, bucket: int, num_buckets: int) -> str:
 
 
 def new_metric_buffer(
-    group, device: torch.device, components: Collection[str], sigma_buckets: int = 0
+    group, device: torch.device, components: Collection[str], sigma_buckets: int = 0, num_rollout_steps: int = 0
 ) -> MetricBuffer:
     """Buffer for one optimizer step, reducing over the DP group."""
     schema = dict(SCHEMA)
+    for key, reduce in STEP_SCHEMA.items():
+        for step_index in range(num_rollout_steps):
+            schema[step_metric_key(key, step_index)] = reduce
     # SFT loss by sigma bucket: velocity-MSE magnitude varies strongly with the
     # corruption level, so only bucketed curves are comparable across steps.
     for stream_name in ("visual", "audio"):

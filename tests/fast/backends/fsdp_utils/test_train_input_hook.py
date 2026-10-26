@@ -65,6 +65,7 @@ def _actor(train_input, train_output, forwarded):
             diffusion_recompute_old_log_prob=False,
             debug_skip_optimizer_step=True,
             log_loss_sigma_bucket=0,
+            diffusion_num_steps=4,
         ),
         _forward_dtype=torch.float32,
         parallel_state=SimpleNamespace(dp_rank=0, dp_group=None),

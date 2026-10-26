@@ -12,7 +12,9 @@ def _resolve_rm_type(args, sample: Sample) -> str:
 async def async_rm(args, sample: Sample, **kwargs):
     rm_type = _resolve_rm_type(args, sample)
 
-    if rm_type == "ocr":
+    if rm_type == "none":
+        return 0.0
+    elif rm_type == "ocr":
         from .ocr import ocr_rm
 
         return (await ocr_rm(args, [sample]))[0]
@@ -61,6 +63,8 @@ async def batched_async_rm(
 
     if samples:
         rm_types = [_resolve_rm_type(args, sample) for sample in samples]
+        if all(rm_type == "none" for rm_type in rm_types):
+            return [0.0] * len(samples)
         if all(rm_type == "pickscore" for rm_type in rm_types):
             from .pickscore import pickscore_rm
 
