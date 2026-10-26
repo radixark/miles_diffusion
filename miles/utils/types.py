@@ -83,6 +83,9 @@ class Sample:
     seed: int | None = None
     # Eager tensor on CPU. Image rollout shape: ``[C, T, H, W]`` (``T==1`` typical).
     generated_output: torch.Tensor | None = None
+    # [C, L] waveform at audio_sample_rate, for engines that also return audio (e.g. H3 t2va).
+    generated_audio: torch.Tensor | None = None
+    audio_sample_rate: int | None = None
     rollout_log_probs: torch.Tensor | None = None
     rollout_debug_tensors: RolloutDebugTensors | None = None
     denoising_env: DenoisingEnv | None = None
