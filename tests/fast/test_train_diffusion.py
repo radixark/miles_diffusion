@@ -1,10 +1,15 @@
-"""train_diffusion.py trains every trainer group on each rollout in declared order, handing each the earlier outputs."""
+"""train_diffusion.py trains every trainer group on each rollout in declared order, handing each the earlier outputs.
+
+With --offload-train a group saves and sleeps right after its train, before the next group wakes.
+"""
 
 from tests.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=5, suite="stage-a-cpu", labels=[])
 
 from argparse import Namespace
+
+import pytest
 
 import train_diffusion
 
@@ -42,6 +47,9 @@ class _FakeTrainGroup:
     def offload(self):
         self._events.append(("offload", self._role))
 
+    def clear_memory(self):
+        self._events.append(("clear_memory", self._role))
+
     def update_weights(self):
         self._events.append(("update_weights", self._role))
 
@@ -57,8 +65,9 @@ def _fake_ray_get(events):
     return get
 
 
-def test_every_trainer_group_trains_each_rollout_in_order(monkeypatch):
-    roles = ["critic", "actor"]
+@pytest.mark.parametrize("roles", [["actor"], ["critic", "actor"]])
+@pytest.mark.parametrize("offload_train", [True, False])
+def test_every_trainer_group_trains_each_rollout_in_order(monkeypatch, roles, offload_train):
     events = []
     monkeypatch.setattr(train_diffusion, "configure_logger", lambda: None)
     monkeypatch.setattr(train_diffusion, "init_tracking", lambda args: None)
@@ -74,7 +83,7 @@ def test_every_trainer_group_trains_each_rollout_in_order(monkeypatch):
         start_rollout_id=0,
         num_rollout=2,
         offload_rollout=False,
-        offload_train=True,
+        offload_train=offload_train,
         eval_interval=None,
         save_interval=1,
         rollout_global_dataset=False,
@@ -89,8 +98,11 @@ def test_every_trainer_group_trains_each_rollout_in_order(monkeypatch):
             expected += [
                 ("train_start", role, rollout_id, ("rollout_data", rollout_id), received),
                 ("train_done", role, rollout_id),
+                ("save_model", role, rollout_id),
             ]
-        expected += [("save_model", role, rollout_id) for role in roles]
-        expected += [("offload", role) for role in roles]
+            if offload_train:
+                expected += [("offload", role)]
+        if not offload_train:
+            expected += [("clear_memory", role) for role in roles]
         expected += [("update_weights", "actor")]
     assert events == expected
