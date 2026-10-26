@@ -306,7 +306,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 choices=["keep", "uint8"],
                 default="keep",
                 help=(
-                    "Dtype of the decoded video in rollout responses. 'keep' returns the "
+                    "Dtype of the decoded video in rollout and eval responses. 'keep' returns the "
                     "engine's raw float tensor; 'uint8' quantises engine-side with the same "
                     "formula the reward path applies, cutting the response body ~4x. Use "
                     "'keep' for any consumer that needs the unquantised tensor."
@@ -1416,7 +1416,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help="Built-in reward (pickscore / hps / ocr / openai_api), custom_api for a configurable actor, "
-                "or none for a constant 0 when the loss reads no reward. Ignored when --custom-rm-path is set.",
+                "or none for a constant 0 when the loss reads no reward; none also has the engine skip decoding "
+                "training rollouts, whose media nothing reads. Ignored when --custom-rm-path is set.",
             )
             for rm_type in ("custom_api", "openai_api"):
                 parser.add_argument(

@@ -33,6 +33,8 @@ def _args(**overrides):
         diffusion_debug_mode=False,
         rollout_video_dtype="keep",
         train_pipeline_config_path=None,
+        rm_type="pickscore",
+        custom_rm_path=None,
     )
     values.update(overrides)
     return Namespace(**values)

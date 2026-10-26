@@ -185,13 +185,12 @@ def execute(args: ScriptArgs, prompt_dir: str) -> None:
         f"--save-eval-media-dir {run_dir}/eval_media "
     )
 
-    # Every eval video; training rollouts (x0 predictions from random stop steps) only every 10th rollout.
+    # Every eval video; training rollouts carry no media, since --rm-type none skips their decode.
     wandb_args = U.get_default_wandb_args(
         __file__,
         run_id=run_name,
         project=WANDB_PROJECT,
         wandb_log_num_images=NUM_EVAL_TEST_PROMPTS + len(DEMO_PROMPTS),
-        wandb_log_image_interval=10,
     )
 
     sglang_args = (
