@@ -448,6 +448,7 @@ class FSDPTrainRayActor(TrainRayActor):
                     device,
                     self.models,
                     sigma_buckets=self.args.log_loss_sigma_bucket,
+                    num_rollout_steps=self.args.diffusion_num_steps,
                 )
 
                 for pair_lo, pair_hi in microbatch_ranges:
@@ -477,6 +478,12 @@ class FSDPTrainRayActor(TrainRayActor):
                     self.scaler.step(self.optimizer)
                     self.scaler.update()
                     self.lr_scheduler.step()
+                    # Peak since the last reset, so a rollout's first step also covers scoring and wake-up before it.
+                    metrics.emit_max("peak_memory_allocated_gb", torch.cuda.max_memory_allocated() / 2**30)
+                    # Device-wide, so it also counts the other processes on this GPU (sleeping groups, the engine).
+                    free_bytes, total_bytes = torch.cuda.mem_get_info()
+                    metrics.emit_max("device_memory_used_gb", (total_bytes - free_bytes) / 2**30)
+                    torch.cuda.reset_peak_memory_stats()
                 else:
                     self.optimizer.zero_grad(set_to_none=True)
                 self.global_step += 1

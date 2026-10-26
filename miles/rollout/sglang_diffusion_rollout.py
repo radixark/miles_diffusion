@@ -405,12 +405,13 @@ EVAL_PROMPT_DATASET = {}
 
 
 def release_eval_sample_media(args: Namespace, sample: Sample) -> None:
-    """Drop a scored eval sample's media, which only image logging and debug dumps still read."""
-    if args.save_debug_rollout_data is not None:
+    """Drop a scored eval sample's media, which only image logging, saved eval media and debug dumps still read."""
+    if args.save_debug_rollout_data is not None or args.save_eval_media_dir is not None:
         return
     if sample.index < args.wandb_log_num_images:
         return
     sample.generated_output = None
+    sample.generated_audio = None
 
 
 # eval only

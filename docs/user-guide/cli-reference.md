@@ -182,7 +182,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--diffusion-num-steps` | int | `10` | |
 | `--diffusion-flow-shift` | float | – | Generation-schedule shift, sent to the engine. |
 | `--rollout-microgroup-size` | int | `1` | |
-| `--diffusion-fps` | float | – | Video only. |
+| `--diffusion-fps` | float | – | Video only. Also the fps logged and saved media play at (8 when unset); H3 drops it from the request, so set it to 24 there. |
 | `--diffusion-output-num-frames` | int | `1` | |
 | `--rollout-video-dtype` | enum | `keep` | `keep` / `uint8`: dtype of the decoded video in rollout responses. `uint8` quantizes engine-side by truncation (×255, then clamp), cutting the response ~4x. That matches the PickScore reward path; HPS, OCR and the OpenAI-API reward round instead, so keep `keep` for them and for any consumer that needs the float tensor. |
 | `--diffusion-guidance-scale` | float | `4.0` | |
@@ -295,7 +295,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 
 | Flag | Type | Default | Notes |
 |---|---|---|---|
-| `--rm-type` | str | – | `pickscore` / `hps` / `ocr` / `openai_api` / `custom_api`. Overridable per sample via `metadata.rm_type`. Ignored when `--custom-rm-path` is set. |
+| `--rm-type` | str | – | `pickscore` / `hps` / `ocr` / `openai_api` / `custom_api`, or `none` (constant 0, for a loss that reads no reward such as `dmd2`). Overridable per sample via `metadata.rm_type`. Ignored when `--custom-rm-path` is set. |
 | `--custom-api-rm-config` | str | – | Required for `--rm-type custom_api`: a YAML file or inline `base64:<payload>` with `actor_class`, `actor_kwargs`, `max_concurrency`. A flat mapping configures the default OpenAI-compatible image actor. |
 | `--openai-api-rm-config` | str | – | Required for `--rm-type openai_api`; same format as `--custom-api-rm-config`. |
 | `--group-rm` | flag | off | Score a whole prompt group at once. |
@@ -402,6 +402,7 @@ Every one takes a dotted path.
 | `--train-only` | flag | off | No engines, no weight sync, no eval. (`--debug-train-only` is a legacy alias.) |
 | `--debug-skip-optimizer-step` | flag | off | No backward/step — weights never drift. Use it to measure pure forward divergence from the engine. |
 | `--save-debug-rollout-data` | path template | – | Fills `{rollout_id}`. |
+| `--save-eval-media-dir` | path | – | Keeps every eval sample's video (with its audio when the engine returns it) or image under `<dir>/eval_<rollout_id>/`, with an `index.jsonl` of prompts, seeds and rewards. Independent of `--wandb-log-num-images`. |
 | `--load-debug-rollout-data` | path template | – | Replays a rollout with **no engines started**. |
 | `--load-debug-rollout-data-subsample` | float | – | |
 | `--save-debug-train-data` | path template | – | Fills `{rollout_id}` and `{rank}`. |

@@ -117,6 +117,7 @@ class RolloutManager:
         self.nodes_per_engine = max(1, args.rollout_num_gpus_per_engine // args.num_gpus_per_node)
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
         self.rollout_id = -1
+        self._media_threads: list[threading.Thread] = []
         self._metric_checker = MetricChecker.maybe_create(args)
         self._health_monitor = None
         if self.args.use_fault_tolerance:
@@ -149,6 +150,9 @@ class RolloutManager:
     def dispose(self):
         from miles.dashboard import hooks
 
+        # A media thread still encoding or uploading would lose the last eval's files.
+        for thread in self._media_threads:
+            thread.join()
         hooks.detach_and_flush()
         if self._metric_checker is not None:
             self._metric_checker.dispose()
@@ -221,7 +225,8 @@ class RolloutManager:
         self._save_debug_rollout_data(data, rollout_id=rollout_id, evaluation=True)
         metrics = _log_eval_rollout_data(rollout_id, self.args, data, result.metrics)
         max_images = self.args.wandb_log_num_images
-        if max_images > 0:
+        save_dir = self.args.save_eval_media_dir
+        if max_images > 0 or save_dir is not None:
             self._log_images_async(
                 {
                     f"eval_media/{name}_images": payload["samples"]
@@ -232,6 +237,7 @@ class RolloutManager:
                 step_key="eval/step",
                 step_value=compute_rollout_step(self.args, rollout_id),
                 reward_key=self.args.eval_reward_key,
+                save_dir=None if save_dir is None else f"{save_dir}/eval_{rollout_id}",
             )
         if self._metric_checker is not None:
             self._metric_checker.on_eval(metrics)
@@ -433,7 +439,9 @@ class RolloutManager:
 
     def _log_images_async(self, *args, **kwargs) -> None:
         # mp4 encode + wandb upload take ~1min per log round; keep them off the train barrier
-        threading.Thread(target=self._log_images, args=args, kwargs=kwargs, daemon=True).start()
+        thread = threading.Thread(target=self._log_images, args=args, kwargs=kwargs, daemon=True)
+        thread.start()
+        self._media_threads.append(thread)
 
     def _log_images(
         self,
@@ -443,6 +451,7 @@ class RolloutManager:
         step_key: str,
         step_value: int,
         reward_key: str | None,
+        save_dir: str | None = None,
     ) -> None:
         """Log per-key sample image grids under their own media namespace.
 
@@ -451,39 +460,45 @@ class RolloutManager:
         media panels do not honor ``step_metric`` (they slide on the internal
         commit step), so panels pile up over a run — keeping them in their
         own namespace at least groups them in one UI section.
+
+        With ``save_dir``, every sample's file is kept there, next to an ``index.jsonl`` of captions.
         """
+        import json
         import os
         import tempfile
 
-        import imageio
         import wandb
 
+        fps = self.args.diffusion_fps or 8
         with tempfile.TemporaryDirectory() as tmpdir:
+            media_dir = save_dir or tmpdir
+            os.makedirs(media_dir, exist_ok=True)
             log_dict: dict = {}
+            index_rows = []
             for media_key, samples in media_key_to_samples.items():
                 media = []
-                for sample_index, s in enumerate(samples[:max_images]):
+                for sample_index, s in enumerate(samples if save_dir else samples[:max_images]):
                     t = s.generated_output
                     if t is None or t.ndim != 4:
                         continue
-                    # generated_output is [C, F, H, W]; rescale to uint8 once.
-                    arr = t.float().cpu().numpy()
-                    if arr.max() <= 1.0 + 1e-3:
-                        arr = arr * 255.0
-                    arr = np.clip(arr, 0, 255).astype(np.uint8)
                     reward = s.reward if not reward_key else (s.reward or {}).get(reward_key)
                     caption = f"{str(s.prompt)[:160]} | reward={reward}"
-                    num_frames = arr.shape[1]
-                    if num_frames > 1:
-                        frames = [arr[:, f, :, :].transpose(1, 2, 0) for f in range(num_frames)]
-                        path = os.path.join(tmpdir, f"{media_key.replace('/', '_')}_{sample_index}.mp4")
-                        imageio.mimsave(path, frames, fps=8, codec="libx264", format="FFMPEG")
-                        media.append(wandb.Video(path, caption=caption, format="mp4", fps=8))
+                    stem = os.path.join(media_dir, f"{media_key.replace('/', '_')}_{sample_index}")
+                    path = write_sample_media(s, stem, fps=fps)
+                    index_rows.append(
+                        {"file": os.path.basename(path), "prompt": s.prompt, "seed": s.seed, "reward": reward}
+                    )
+                    if sample_index >= max_images:
+                        continue
+                    if path.endswith(".mp4"):
+                        media.append(wandb.Video(path, caption=caption, format="mp4", fps=fps))
                     else:
-                        frame = arr[:, 0, :, :].transpose(1, 2, 0)
-                        media.append(wandb.Image(frame, caption=caption))
+                        media.append(wandb.Image(path, caption=caption))
                 if media:
                     log_dict[media_key] = media
+            if save_dir is not None:
+                with open(os.path.join(save_dir, "index.jsonl"), "w") as f:
+                    f.writelines(json.dumps(row) + "\n" for row in index_rows)
             if not log_dict:
                 return
             log_dict[step_key] = step_value
@@ -491,6 +506,64 @@ class RolloutManager:
 
     def set_train_parallel_config(self, config: dict):
         self.train_parallel_config = config
+
+
+def write_sample_media(sample: Sample, stem: str, *, fps: float) -> str:
+    """Write ``sample.generated_output`` as ``stem.mp4`` (with its audio track, if any) or ``stem.png``."""
+    import imageio
+
+    # generated_output is [C, F, H, W]; rescale to uint8 once.
+    arr = sample.generated_output.float().cpu().numpy()
+    if arr.max() <= 1.0 + 1e-3:
+        arr = arr * 255.0
+    arr = np.clip(arr, 0, 255).astype(np.uint8)
+    if arr.shape[1] == 1:
+        path = f"{stem}.png"
+        imageio.imwrite(path, arr[:, 0, :, :].transpose(1, 2, 0))
+        return path
+    path = f"{stem}.mp4"
+    frames = [arr[:, f, :, :].transpose(1, 2, 0) for f in range(arr.shape[1])]
+    video_path = path if sample.generated_audio is None else f"{stem}.video.mp4"
+    imageio.mimsave(video_path, frames, fps=fps, codec="libx264", format="FFMPEG")
+    if sample.generated_audio is not None:
+        _mux_audio(video_path, sample.generated_audio, sample.audio_sample_rate, path)
+        Path(video_path).unlink()
+    return path
+
+
+def _mux_audio(video_path: str, audio: torch.Tensor, sample_rate: int, path: str) -> None:
+    import subprocess
+
+    import imageio_ffmpeg
+
+    # [C, L] waveform as interleaved float32 PCM on stdin.
+    pcm = audio.float().clamp(-1, 1).t().contiguous().numpy().tobytes()
+    subprocess.run(
+        [
+            imageio_ffmpeg.get_ffmpeg_exe(),
+            "-y",
+            "-loglevel",
+            "error",
+            "-i",
+            video_path,
+            "-f",
+            "f32le",
+            "-ar",
+            str(sample_rate),
+            "-ac",
+            str(audio.shape[0]),
+            "-i",
+            "pipe:0",
+            "-c:v",
+            "copy",
+            "-c:a",
+            "aac",
+            "-shortest",
+            path,
+        ],
+        input=pcm,
+        check=True,
+    )
 
 
 def init_rollout_engines(args, pg, all_rollout_engines):
