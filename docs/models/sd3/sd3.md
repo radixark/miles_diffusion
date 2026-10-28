@@ -103,6 +103,7 @@ All recipes are Python modules under `scripts/`. Each exposes a Typer CLI
 |---|---|---|---|
 | `run_diffusion_grpo_sd3_ocr_sglang.py` | OCR (CPU) | 2 colocate | Flow-GRPO |
 | `run_diffusion_grpo_sd3_hps_sglang.py` | HPS | 2 colocate | Flow-GRPO |
+| `run_diffusion_grpo_sd3_hpsv3_sglang.py` | HPSv3 | 2 colocate | Flow-GRPO |
 | `run_diffusion_grpo_sd3_ocr_pickscore_sglang.py` | 0.8 OCR + 0.2 PickScore | 2 colocate | Flow-GRPO |
 | `run_diffusion_nft_sd3_pickscore.py` | PickScore | 3 (2+1) | DiffusionNFT |
 

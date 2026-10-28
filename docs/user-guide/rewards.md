@@ -1,6 +1,6 @@
 ---
 title: Rewards
-description: Built-in reward models (PickScore, HPS, OCR, API rewards), rm_hub dispatch, and prompt data format.
+description: Built-in reward models (PickScore, HPS, HPSv3, OCR, API rewards), rm_hub dispatch, and prompt data format.
 ---
 Miles-diffusion scores generated images (or video frames) after each rollout
 microgroup. Reward computation lives in `miles/rollout/rm_hub/` and is invoked
@@ -13,7 +13,7 @@ For `--custom-rm-path`, `--custom-reward-post-process-path`, and other
 
 | Stage | Flag | Role |
 |---|---|---|
-| Reward type | `--rm-type` | Selects built-in scorer (`pickscore`, `hps`, `ocr`, `openai_api`, `custom_api`); ignored when `--custom-rm-path` is set |
+| Reward type | `--rm-type` | Selects built-in scorer (`pickscore`, `hps`, `hpsv3`, `ocr`, `openai_api`, `custom_api`); ignored when `--custom-rm-path` is set |
 | API reward config | `--openai-api-rm-config`, `--custom-api-rm-config` | YAML file or inline `base64:<payload>` for the two API rewards |
 | Per-sample override | `metadata.rm_type` in JSONL | Overrides global `--rm-type` |
 | Custom reward / norm | see [Customization](customization.md) | `--custom-rm-path`, `--custom-reward-post-process-path` |
@@ -104,6 +104,43 @@ Example from `scripts/run_diffusion_grpo_sd3_hps_sglang.py`:
 --hps-reward-colocate
 ```
 
+### HPSv3 (`--rm-type hpsv3`)
+
+Implementation: `miles/rollout/rm_hub/hpsv3.py`.
+
+[HPSv3](https://github.com/MizzenAI/HPSv3) scores human preference with a fine-tuned Qwen2-VL:
+
+- Model: Qwen2-VL-7B-Instruct plus an MLP head on the hidden state of a `<|Reward|>` token that ends a fixed rubric prompt
+- Checkpoint: `--hpsv3-checkpoint-path` (optional; defaults to `HPSv3.safetensors` from `MizzenAI/HPSv3`)
+- Config, tokenizer and processor: `Qwen/Qwen2-VL-7B-Instruct` (its weights are not loaded)
+
+Scoring formula:
+
+```
+(mu, sigma) = rm_head(hidden_state[<|Reward|>]);  score = mu
+```
+
+μ is unbounded, roughly −10 to +16 on SD3.5-medium rollouts. Images are resized to ~256 visual
+tokens. `tests/fast-gpu/test_hpsv3_alignment.py` checks the scores against the official package.
+It accepts image outputs only (one frame).
+
+| Flag | Default | Description |
+|---|---|---|
+| `--hpsv3-num-workers` | 1 | Ray actor count |
+| `--hpsv3-num-gpus-per-worker` | 1.0 | GPU per worker (non-colocate) |
+| `--hpsv3-batch-size` | 8 | Batch size per actor call |
+| `--hpsv3-checkpoint-path` | None | Local `HPSv3.safetensors`; unset downloads from `MizzenAI/HPSv3` |
+| `--hpsv3-reward-colocate` | False | Seat the `--hpsv3-num-workers` actors on rollout GPUs, one per placement-group bundle (requires `--colocate`) |
+
+Example from `scripts/run_diffusion_grpo_sd3_hpsv3_sglang.py`:
+
+```bash
+--rm-type hpsv3 \
+--hpsv3-num-workers 1 \
+--hpsv3-batch-size 8 \
+--hpsv3-reward-colocate
+```
+
 ### Reward placement
 
 Every GPU reward pool is placed one of two ways:
@@ -124,7 +161,7 @@ built on first use.
 directly; `--custom-rm-args` is an opaque string the framework hands to that function
 through `args`, so the function owns its own config grammar. The shipped example
 `miles/rollout/rm_hub/weighted_mixture_rm.py` reads `name=weight,name=weight`, with names
-from `hps`, `pickscore`, `ocr`, `custom_api`, `openai_api`:
+from `hps`, `hpsv3`, `pickscore`, `ocr`, `custom_api`, `openai_api`:
 
 ```bash
 --custom-rm-path miles.rollout.rm_hub.weighted_mixture_rm.weighted_mixture_rm \
@@ -138,8 +175,11 @@ The example returns a dict per sample (`{"hps": ..., "pickscore": ..., "weighted
 `--reward-key` picks the entry GRPO trains on, and every entry of a dict reward gets its own
 `rollout/reward/<name>_mean` panel, so the components stay visible while the sum is optimized.
 
-Weights apply to raw scores (HPSv2.1 ≈ 0.25–0.35, PickScore/26 ≈ 0.8–0.9, OCR ∈ [0, 1], default
-OpenAI API rubric ∈ [0, 4]), so pick them with the scales in mind. Colocated pools share one slot ledger, so several rewards
+Weights apply to raw scores (HPSv2.1 ≈ 0.25–0.35, HPSv3 μ unbounded and roughly −10 to +16,
+PickScore/26 ≈ 0.8–0.9, OCR ∈ [0, 1], default OpenAI API rubric ∈ [0, 4]), so pick them with the
+scales in mind. A zero weight keeps a reward as a monitor only, e.g.
+`--custom-rm-args "hpsv3=1.0,hps=0,pickscore=0" --reward-key hpsv3` trains on HPSv3 and plots the
+other two to catch reward hacking. Colocated pools share one slot ledger, so several rewards
 can colocate without overlapping. Rewards receive `generated_output` itself, and every reward actor
 quantises it to uint8 on its own terms.
 
@@ -205,10 +245,11 @@ generate_and_rm_microgroup()
     → custom_rm_path?  user batched function
     → all pickscore?   pickscore_rm (batched)
     → all hps?         hps_rm (batched)
+    → all hpsv3?       hpsv3_rm (batched)
     → all ocr?         ocr_rm (batched, one image per actor call)
     → all custom_api?  custom_api_rm (batched, one request per actor call)
     → all openai_api?  openai_api_rm (batched, one request per actor call)
-    → else             per-sample async_rm → ocr / pickscore / hps / custom_api / openai_api / NotImplementedError
+    → else             per-sample async_rm → ocr / pickscore / hps / hpsv3 / custom_api / openai_api / NotImplementedError
   → sample.reward = score
 
 # after the rollout, in the RolloutManager Ray actor:
