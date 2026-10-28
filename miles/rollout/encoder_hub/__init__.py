@@ -19,6 +19,10 @@ def get_encoder(family: str | None, task: str | None):
         from miles.rollout.encoder_hub import wan2_2
 
         return wan2_2
+    if family == "flux3_image":
+        from miles.rollout.encoder_hub import flux3_image
+
+        return flux3_image
     if family == "h3" and task == "ref2va":
         from miles.rollout.encoder_hub.h3 import ref2va
 
