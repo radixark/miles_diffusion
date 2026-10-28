@@ -693,6 +693,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help="HF name or path for the frozen SFT encoders (tokenizer/text_encoder/vae subfolders).",
             )
+            parser.add_argument(
+                "--sft-encode-url",
+                type=str,
+                default=None,
+                help="URL of an sglang-diffusion --disagg-encode-only server that encodes SFT cache misses.",
+            )
 
             parser.add_argument(
                 "--start-rollout-id",
@@ -1894,10 +1900,10 @@ def miles_validate_args(args):
         if args.prompt_data is None:
             raise ValueError("--loss-type sft_loss requires --prompt-data (jsonl with prompt + target.visual)")
         if args.rollout_function_path == "miles.rollout.sft_rollout.generate_rollout":
-            if args.sft_encoder_checkpoint is None:
+            if (args.sft_encoder_checkpoint is None) == (args.sft_encode_url is None):
                 raise ValueError(
-                    "--loss-type sft_loss requires --sft-encoder-checkpoint "
-                    "(HF name or path holding the family's tokenizer/text_encoder/vae)"
+                    "--loss-type sft_loss requires exactly one of --sft-encoder-checkpoint "
+                    "(HF name or path holding the family's tokenizer/text_encoder/vae) or --sft-encode-url"
                 )
             from miles.rollout.encoder_hub import get_encoder
 

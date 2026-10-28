@@ -8,7 +8,9 @@ Each family module provides:
   ``{"video": [C, T, H, W] uint8, "fps", "frame_times_seconds", "audio_sample_rate"}`` into the cached train
   sample (clean latents keyed by stream name, e.g. ``{"visual": ...}``, + cond kwargs). Inputs the family cannot
   train on (e.g. conditions) are rejected, never dropped;
-- ``validate_args(args)``: family-specific encode constraints.
+- ``validate_args(args)``: family-specific encode constraints;
+- ``pair_from_encoded(encoded, sample)`` (families served by ``--sft-encode-url``): build the cached train sample
+  from the request extras an sglang-diffusion encode-only server returns for ``sample``.
 """
 
 

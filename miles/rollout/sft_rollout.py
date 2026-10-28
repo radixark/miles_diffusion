@@ -7,13 +7,17 @@ sglang engines play in RL: the GPU data producer behind the rollout function, co
 manager placement group.
 """
 
+import base64
 import hashlib
 import json
 import logging
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import httpx
+import msgpack
 import ray
 import torch
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
@@ -24,11 +28,13 @@ from miles.utils.media import ImageSource, maybe_download_media, media_fingerpri
 from miles.utils.metric_utils import compute_rollout_step
 from miles.utils.misc import SingletonMeta
 from miles.utils.timer import timer
-from miles.utils.types import Sample
+from miles.utils.types import Sample, decode_tensor
 
 logger = logging.getLogger(__name__)
 
 ENCODE_GPU_FRACTION = 0.3
+# Arbitrary; the encode-only head queues requests beyond its encoder slots.
+REMOTE_ENCODE_CONCURRENCY = 32
 
 # Every args field an encoder reads; the cache key and latent seed depend on exactly these.
 SFT_CACHE_KEY_ARGS = (
@@ -56,7 +62,7 @@ def _sha256(payload: dict) -> bytes:
     return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).digest()
 
 
-def sft_sample_key(args, sample: Sample) -> tuple[str, int]:
+def sft_sample_key(args, sample: Sample, service: dict | None = None) -> tuple[str, int]:
     """Cache identity includes the prompt, ordered conditions, target, all media files, and the args encoders read.
 
     The latent seed depends only on the sample and --seed, so an encoder change (and its version bump) keeps every
@@ -71,6 +77,8 @@ def sft_sample_key(args, sample: Sample) -> tuple[str, int]:
         "sample": identity,
         "files": [media_fingerprint(path) for path in sorted(paths)],
     }
+    if service is not None:
+        payload["service"] = service
     seed = int.from_bytes(_sha256({"seed": int(args.seed), "sample": identity})[8:16], "big") % 2**63
     return _sha256(payload).hex() + ".pt", seed
 
@@ -202,6 +210,66 @@ class SftEncodePool(metaclass=SingletonMeta):
             ray.get(self.train_in_flight)
 
 
+def _decode_tensors(obj):
+    if isinstance(obj, dict):
+        if obj.get("__tensor__"):
+            return decode_tensor(obj["data"])
+        return {key: _decode_tensors(value) for key, value in obj.items()}
+    if isinstance(obj, list):
+        return [_decode_tensors(value) for value in obj]
+    return obj
+
+
+class SftEncodeClient(metaclass=SingletonMeta):
+    """Encodes cache misses through an sglang-diffusion encode-only server (--sft-encode-url)."""
+
+    def __init__(self, args) -> None:
+        from miles.rollout.encoder_hub import get_encoder
+
+        self._args = args
+        self._encoder_module = get_encoder(args.diffusion_model_family, args.diffusion_task)
+        # Keep-alive off: a pooled connection reused as the server's idle timeout fires dies mid-read.
+        self._client = httpx.Client(
+            base_url=args.sft_encode_url,
+            limits=httpx.Limits(max_keepalive_connections=0),
+            timeout=httpx.Timeout(None),
+        )
+        self.fingerprint = {
+            "model_path": self._get("/model_info")["model_path"],
+            "version": self._get("/server_info")["version"],
+        }
+
+    def _get(self, path: str) -> dict:
+        response = self._client.get(path)
+        response.raise_for_status()
+        return response.json()
+
+    def _encode_one(self, sample: Sample, cache_dir: Path) -> None:
+        if sample.conditions or set(sample.target) != {"visual"}:
+            raise ValueError("--sft-encode-url encodes a prompt and a visual target only")
+        target = base64.b64encode(Path(sample.target["visual"]).read_bytes()).decode("ascii")
+        response = self._client.post(
+            "/encode",
+            json={
+                "prompt": sample.prompt,
+                "target": {"visual": f"data:application/octet-stream;base64,{target}"},
+                "width": self._args.diffusion_width,
+                "height": self._args.diffusion_height,
+            },
+        )
+        response.raise_for_status()
+        encoded = _decode_tensors(msgpack.unpackb(response.content, raw=False)["encoded"])
+        pair = self._encoder_module.pair_from_encoded(encoded, sample)
+        out_path = cache_dir / sample.metadata["sft_cache_name"]
+        tmp_path = out_path.with_name(out_path.name + ".tmp")
+        torch.save(pair, tmp_path)
+        os.replace(tmp_path, out_path)
+
+    def encode(self, samples: list[Sample], cache_dir: Path) -> None:
+        with ThreadPoolExecutor(REMOTE_ENCODE_CONCURRENCY) as executor:
+            list(executor.map(lambda sample: self._encode_one(sample, cache_dir), samples))
+
+
 def generate_rollout(args, rollout_id, data_source, evaluation: bool = False) -> RolloutFnTrainOutput:
     assert not evaluation, "sft_loss does not support eval rollouts"
     # Deterministic per epoch and idempotent; non-divisible datasets may repeat a few
@@ -211,9 +279,10 @@ def generate_rollout(args, rollout_id, data_source, evaluation: bool = False) ->
     samples = [sample for group in groups for sample in group]
 
     cache_dir = Path(args.prompt_data).parent / ".sft_cache"
+    service = SftEncodeClient(args).fingerprint if args.sft_encode_url is not None else None
     for sample in samples:
         localize_sft_media(sample, cache_dir / "media")
-        sample.metadata["sft_cache_name"], sample.seed = sft_sample_key(args, sample)
+        sample.metadata["sft_cache_name"], sample.seed = sft_sample_key(args, sample, service)
 
     # Keyed by cache name so a sample repeated across an epoch wrap is encoded once.
     missing = {
@@ -222,7 +291,12 @@ def generate_rollout(args, rollout_id, data_source, evaluation: bool = False) ->
         if not (cache_dir / sample.metadata["sft_cache_name"]).exists()
     }
     encode_seconds = 0.0
-    if missing:
+    if missing and args.sft_encode_url is not None:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        start = time.time()
+        SftEncodeClient(args).encode(list(missing.values()), cache_dir)
+        encode_seconds = time.time() - start
+    elif missing:
         cache_dir.mkdir(parents=True, exist_ok=True)
         pool = SftEncodePool(args)
         pool.wait_for_train_step()
