@@ -109,3 +109,15 @@ def test_key_changes_with_model_family(tmp_path):
     name_wan, _ = sft_sample_key(_args(), sample)
     name_other, _ = sft_sample_key(_args(diffusion_model_family="other"), sample)
     assert name_wan != name_other
+
+
+def test_key_follows_the_encode_service(tmp_path):
+    # A remote encoder's model and version key the cache like a local checkpoint; the seed stays per sample.
+    video = tmp_path / "a.png"
+    video.write_bytes(b"x" * 100)
+    sample = _sample(video)
+    base_name, base_seed = sft_sample_key(_args(), sample)
+    name, seed = sft_sample_key(_args(), sample, {"model_path": "m", "version": "1"})
+    assert name != base_name
+    assert seed == base_seed
+    assert sft_sample_key(_args(), sample, {"model_path": "m", "version": "2"})[0] != name
