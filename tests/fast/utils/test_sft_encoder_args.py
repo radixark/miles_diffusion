@@ -101,6 +101,20 @@ def test_builtin_producer_still_requires_checkpoint(args: Namespace) -> None:
         miles_validate_args(args)
 
 
+def test_builtin_producer_takes_an_encode_url_instead_of_a_checkpoint(args: Namespace) -> None:
+    args.rollout_function_path = "miles.rollout.sft_rollout.generate_rollout"
+    args.sft_encode_url = "http://encoder:30000"
+    miles_validate_args(args)
+
+
+def test_builtin_producer_rejects_both_checkpoint_and_encode_url(args: Namespace) -> None:
+    args.rollout_function_path = "miles.rollout.sft_rollout.generate_rollout"
+    args.sft_encoder_checkpoint = "ckpt"
+    args.sft_encode_url = "http://encoder:30000"
+    with pytest.raises(ValueError, match="exactly one"):
+        miles_validate_args(args)
+
+
 def test_external_producer_still_requires_sft_hooks(args: Namespace) -> None:
     args.custom_prepare_train_batch_path = None
     with pytest.raises(ValueError, match="custom-prepare-train-batch-path"):

@@ -234,6 +234,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--num-epoch` | int | – | |
 | `--start-rollout-id` | int | – | Resumed from `--load` when unset. |
 | `--sft-encoder-checkpoint` | str | – | SFT only: tokenizer/text_encoder/vae source. |
+| `--sft-encode-url` | str | – | SFT only: an sglang-diffusion `--disagg-encode-only` server that encodes cache misses; replaces `--sft-encoder-checkpoint`. |
 | `--sft-frame-stride` | int | `1` | SFT encode temporal stride; target videos hold exactly `(num_frames - 1) * stride + 1` frames. |
 | `--sft-offload-encoder` | flag | off | SFT only: keep the frozen encoder in host RAM, on the GPU only during encode bursts. |
 
