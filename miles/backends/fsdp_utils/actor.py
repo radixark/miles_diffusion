@@ -195,8 +195,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 flat_steps=args.ema_decay_flat_steps,
                 keep_previous=args.async_exact_resume,
             )
-        # Staged pi05 SFT must not silently restart with a fresh optimizer/scheduler.
-        checkpoint_payload = checkpoint.load(self, strict=args.diffusion_model_family == "pi05")
+        checkpoint_payload = checkpoint.load(self)
 
         if not self.args.train_only:
             from .diffusion_update_weight_utils import (

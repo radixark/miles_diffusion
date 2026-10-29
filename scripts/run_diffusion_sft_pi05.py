@@ -105,7 +105,7 @@ if __name__ == "__main__":
     print(shlex.join(command), flush=True)
     if not args.dry_run:
         from miles.backends.fsdp_utils.models.pi05.backend import check_openpi_runtime
-        from miles.backends.fsdp_utils.models.pi05.checkpoint import verify_base_initialization
+        from miles.backends.fsdp_utils.models.pi05.bundle import verify_base_initialization
 
         verify_base_initialization(args.bundle)
         with args.manifest.open() as stream:

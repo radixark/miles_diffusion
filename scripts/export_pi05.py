@@ -3,7 +3,7 @@
 import argparse
 from pathlib import Path
 
-from miles.backends.fsdp_utils.models.pi05.checkpoint import export_checkpoint
+from miles.backends.fsdp_utils.models.pi05.bundle import export_checkpoint
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)

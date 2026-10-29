@@ -7,7 +7,7 @@ import sys
 
 import numpy as np
 
-from miles.backends.fsdp_utils.models.pi05.checkpoint import read_bundle
+from miles.backends.fsdp_utils.models.pi05.bundle import read_bundle
 from miles.backends.fsdp_utils.models.pi05.data import policy_transforms
 
 

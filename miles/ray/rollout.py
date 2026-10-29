@@ -70,7 +70,7 @@ class RolloutManager:
         logger.info("RolloutManager: data source loaded, loading rollout functions...")
 
         self.generate_rollout = load_function(self.args.rollout_function_path)
-        self.eval_generate_rollout = None if args.train_only else load_function(self.args.eval_function_path)
+        self.eval_generate_rollout = None
         self.custom_reward_post_process_func = (
             load_function(self.args.custom_reward_post_process_path)
             if self.args.custom_reward_post_process_path is not None
@@ -88,7 +88,6 @@ class RolloutManager:
         )
         self.train_data_dp_splitter = TrainDataDPSplitter()
         logger.info(f"import {self.args.rollout_function_path} as generate_rollout function.")
-        logger.info(f"import {self.args.eval_function_path} as eval_generate_rollout function.")
 
         logger.info("RolloutManager rollout_num_gpus=%s", self.args.rollout_num_gpus)
 
@@ -211,6 +210,9 @@ class RolloutManager:
         if self.args.train_only:
             # if debug train only, we don't generate evaluation data
             return
+        if self.eval_generate_rollout is None:
+            self.eval_generate_rollout = load_function(self.args.eval_function_path)
+            logger.info(f"import {self.args.eval_function_path} as eval_generate_rollout function.")
         self.health_monitoring_resume()
 
         result = call_rollout_fn(self.eval_generate_rollout, self.args, rollout_id, self.data_source, evaluation=True)

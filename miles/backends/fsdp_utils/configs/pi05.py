@@ -44,7 +44,7 @@ class Pi05TrainPipelineConfig(TrainPipelineConfig):
             raise ValueError("π₀.₅ requires --fsdp-supervised-streams action")
 
     def configure(self, args):
-        from miles.backends.fsdp_utils.models.pi05.checkpoint import read_bundle
+        from miles.backends.fsdp_utils.models.pi05.bundle import read_bundle
 
         model = read_bundle(args.hf_checkpoint)["model"]
         self.action_shape = (model["action_horizon"], model["action_dim"])

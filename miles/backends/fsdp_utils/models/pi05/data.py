@@ -6,7 +6,7 @@ import dataclasses
 from pathlib import Path
 
 from .backend import openpi_model_config
-from .checkpoint import read_bundle
+from .bundle import read_bundle
 
 
 def load_data_config(bundle):

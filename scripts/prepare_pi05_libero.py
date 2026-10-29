@@ -7,7 +7,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from miles.backends.fsdp_utils.models.pi05.checkpoint import META_FILE, serving_config, sha256_file
+from miles.backends.fsdp_utils.models.pi05.bundle import META_FILE, serving_config, sha256_file
 
 
 def prepare(

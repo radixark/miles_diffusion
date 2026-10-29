@@ -7,7 +7,7 @@ from pathlib import Path
 
 from miles.backends.fsdp_utils.models.parallel_plan import FSDPParallelPlan
 
-from .checkpoint import read_bundle
+from .bundle import read_bundle
 
 
 def openpi_model_config(bundle):
