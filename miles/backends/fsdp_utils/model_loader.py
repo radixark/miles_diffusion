@@ -11,7 +11,6 @@ import torch.distributed as dist
 from . import checkpoint
 from .device_move import move_model
 from .mixed_precision import compile_param_dtype_maps, parse_dtype_from_str
-from .sequence_parallel.plan import apply_sequence_parallel
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +64,8 @@ def load_fsdp_models(
         del full_state
         train_pipeline_config.postprocess_model_after_materialize(model)
         if parallel_state.get_optional_mesh("sp") is not None:
+            from .sequence_parallel.plan import apply_sequence_parallel
+
             apply_sequence_parallel(
                 model,
                 parallel_state,

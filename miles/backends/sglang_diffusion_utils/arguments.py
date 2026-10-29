@@ -1,4 +1,3 @@
-from sglang.multimodal_gen.runtime.server_args import ServerArgs
 from miles.utils.http_utils import _wrap_ipv6
 
 
@@ -10,12 +9,19 @@ def add_sglang_diffusion_router_arguments(parser):
     return parser
 
 
-def add_sglang_diffusion_arguments(parser):
+def add_sglang_diffusion_arguments(parser, *, include_server=True):
     """
     Add arguments to the parser for the SGLang server.
     """
     parser = add_sglang_diffusion_router_arguments(parser)
     parser.add_argument("--sglang-server-concurrency", type=int, default=512)
+    if not include_server:
+        # Offline π₀.₅ SFT uses OpenPI's patched Transformers 4.x. Importing the
+        # separate SGLang runtime here applies incompatible Transformers 5.x patches.
+        parser.set_defaults(sglang_tp_size=None, sglang_sp_degree=None, sglang_enable_cfg_parallel=False)
+        return parser
+
+    from sglang.multimodal_gen.runtime.server_args import ServerArgs
 
     old_add_argument = parser.add_argument
 

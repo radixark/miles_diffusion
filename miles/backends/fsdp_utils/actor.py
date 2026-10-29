@@ -28,13 +28,6 @@ from miles.utils.train_data_utils import (
 
 from . import checkpoint
 from .device_move import move_model, move_optimizer, sleep_frozen_model, wake_up_frozen_model
-from .diffusion_update_weight_utils import (
-    DiffusionUpdateWeightFromDistributed,
-    DiffusionUpdateWeightFromTensor,
-    DiffusionUpdateWeightFromTensorLoRA,
-    DiffusionUpdateWeightFromTensorLoRAIPC,
-    DiffusionUpdateWeightLoRADistributed,
-)
 from .ema import EMAOptimizer, reshard_model
 from .input_dtype_policy import apply_input_dtype_policy
 from .loss_hub import DiffusionLossContext, flow_grpo_loss_formula, prepare_flow_grpo_batch
@@ -202,7 +195,17 @@ class FSDPTrainRayActor(TrainRayActor):
                 flat_steps=args.ema_decay_flat_steps,
                 keep_previous=args.async_exact_resume,
             )
-        checkpoint_payload = checkpoint.load(self)
+        # Staged pi05 SFT must not silently restart with a fresh optimizer/scheduler.
+        checkpoint_payload = checkpoint.load(self, strict=args.diffusion_model_family == "pi05")
+
+        if not self.args.train_only:
+            from .diffusion_update_weight_utils import (
+                DiffusionUpdateWeightFromDistributed,
+                DiffusionUpdateWeightFromTensor,
+                DiffusionUpdateWeightFromTensorLoRA,
+                DiffusionUpdateWeightFromTensorLoRAIPC,
+                DiffusionUpdateWeightLoRADistributed,
+            )
 
         # sglang-d now supports /update_weights_from_tensor (PR #20464).
         if self.args.train_only:

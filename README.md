@@ -54,6 +54,9 @@ Each model links to its recipe page; every documented recipe is labeled with a [
 
 ## Quick Start
 
+[π₀.₅ / LIBERO SFT](docs/models/pi05.md) uses OpenPI with miles FSDP training,
+checkpoint export and SGLang-backed LIBERO evaluation.
+
 - [Installation](https://miles.radixark.com/docs/diffusion/getting-started/installation)
 - [Launch Training](https://miles.radixark.com/docs/diffusion/getting-started/quick-start#3-launch-training)
 

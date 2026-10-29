@@ -60,7 +60,7 @@ def parse_stream_names(value: str) -> list[str]:
     return [stream_name.strip() for stream_name in value.split(",")]
 
 
-def get_miles_extra_args_provider(add_custom_arguments=None):
+def get_miles_extra_args_provider(add_custom_arguments=None, *, include_serving_args=True):
     def add_miles_arguments(parser):
         # Ray
         def add_cluster_arguments(parser):
@@ -1599,7 +1599,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         parser = add_dashboard_arguments(parser)
         parser = add_router_arguments(parser)
         parser = add_debug_arguments(parser)
-        parser = add_sglang_diffusion_arguments(parser)
+        parser = add_sglang_diffusion_arguments(parser, include_server=include_serving_args)
         parser = add_network_arguments(parser)
         parser = add_reward_model_arguments(parser)
         parser = add_ci_arguments(parser)
@@ -1621,7 +1621,14 @@ def parse_args(add_custom_arguments=None):
     configure_logger()
 
     # TODO: Diffusion FSDP
-    add_miles_arguments = get_miles_extra_args_provider(add_custom_arguments)
+    probe = argparse.ArgumentParser(add_help=False)
+    probe.add_argument("--train-only", action="store_true")
+    probe.add_argument("--diffusion-model-family")
+    mode, _ = probe.parse_known_args()
+    add_miles_arguments = get_miles_extra_args_provider(
+        add_custom_arguments,
+        include_serving_args=not (mode.train_only and mode.diffusion_model_family == "pi05"),
+    )
 
     if os.environ.get("MILES_BACKEND") is not None:
         raise Exception("`MILES_BACKEND` is deprecated, please use --train-backend directly.")
@@ -1957,16 +1964,18 @@ def miles_validate_args(args):
             from miles.rollout.encoder_hub import get_encoder
 
             get_encoder(args.diffusion_model_family, args.diffusion_task).validate_args(args)
-        if args.fsdp_flow_shift is None or "visual" not in args.fsdp_flow_shift:
+        requires_visual_grid = getattr(cfg_cls, "sft_requires_visual_grid", True)
+        allowed_streams = getattr(cfg_cls, "sft_streams", ("visual", "audio"))
+        if requires_visual_grid and (args.fsdp_flow_shift is None or "visual" not in args.fsdp_flow_shift):
             raise ValueError("--loss-type sft_loss requires a visual --fsdp-flow-shift for the training sigma grid")
-        if not set(args.fsdp_supervised_streams) <= {"visual", "audio"}:
+        if not set(args.fsdp_supervised_streams) <= set(allowed_streams):
             raise ValueError(
-                f"--fsdp-supervised-streams names only visual and audio, got {args.fsdp_supervised_streams}"
+                f"--fsdp-supervised-streams names only {' and '.join(allowed_streams)}, got {args.fsdp_supervised_streams}"
             )
-        if "visual" not in args.fsdp_supervised_streams:
+        if requires_visual_grid and "visual" not in args.fsdp_supervised_streams:
             # The visual sigma picks the DiT component and the sigma-bucket metrics.
             raise ValueError("--fsdp-supervised-streams must include visual")
-        if not all(math.isfinite(shift) and shift > 0 for shift in args.fsdp_flow_shift.values()):
+        if not all(math.isfinite(shift) and shift > 0 for shift in (args.fsdp_flow_shift or {}).values()):
             raise ValueError(f"--fsdp-flow-shift values must be finite and positive, got {args.fsdp_flow_shift}")
         if args.n_samples_per_prompt != 1:
             raise ValueError("--loss-type sft_loss requires --n-samples-per-prompt 1")

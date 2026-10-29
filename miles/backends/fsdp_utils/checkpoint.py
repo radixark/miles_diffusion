@@ -178,7 +178,7 @@ def _write_checkpoint_metadata(path: Path, metadata: dict[str, Any]) -> None:
     tmp_path.replace(path)
 
 
-def load(actor: Any) -> dict[str, Any] | None:
+def load(actor: Any, *, strict: bool = False) -> dict[str, Any] | None:
     """Load model and EMA state independently of the optional training optimizer state."""
     load_root = actor.args.load
     if load_root is None:
@@ -186,6 +186,8 @@ def load(actor: Any) -> dict[str, Any] | None:
 
     root_path = Path(load_root).expanduser()
     if not root_path.exists():
+        if strict:
+            raise FileNotFoundError(root_path)
         logger.info(f"[FSDP] Checkpoint directory {root_path} not found; skipping load.")
         return None
 
@@ -193,6 +195,8 @@ def load(actor: Any) -> dict[str, Any] | None:
     if target_step is None:
         tracker_file = root_path / "latest_checkpointed_iteration.txt"
         if not tracker_file.exists():
+            if strict:
+                raise FileNotFoundError(tracker_file)
             logger.info(f"[FSDP] No tracker file at {tracker_file}; skipping load.")
             return None
         tracker_text = tracker_file.read_text().strip()
@@ -203,6 +207,33 @@ def load(actor: Any) -> dict[str, Any] | None:
     optimizer_dir = checkpoint_dir / "optimizer"
     lr_scheduler_dir = checkpoint_dir / "lr_scheduler"
     ema_dir = checkpoint_dir / "ema"
+
+    if strict:
+        required = [model_dir / ".metadata", lr_scheduler_dir / ".metadata", checkpoint_dir / "meta.json"]
+        if not actor.args.no_load_optim:
+            required.append(optimizer_dir / ".metadata")
+        if not actor.args.no_load_rng:
+            required.append(checkpoint_dir / "rng.pt")
+        for path in required:
+            if not path.is_file():
+                raise FileNotFoundError(f"Incomplete training resume: {path}")
+        metadata = json.loads((checkpoint_dir / "meta.json").read_text())
+        if not {"global_step", "micro_step", "next_rollout_id"} <= metadata.keys():
+            raise ValueError("Training resume metadata is missing step/cursor fields")
+        if metadata["next_rollout_id"] != target_step:
+            raise ValueError("Training resume cursor does not match the checkpoint iteration")
+        if getattr(actor.args, "rollout_global_dataset", False):
+            cursor_path = root_path / "rollout" / f"global_dataset_state_dict_{target_step - 1}.pt"
+            if not cursor_path.is_file():
+                raise FileNotFoundError(f"Incomplete training resume: {cursor_path}")
+            cursor = torch.load(cursor_path, map_location="cpu", weights_only=True)
+            counters = ("sample_offset", "epoch_id", "sample_group_index", "sample_index")
+            if not isinstance(cursor, dict) or any(
+                type(cursor.get(key)) is not int or cursor[key] < 0 for key in counters
+            ):
+                raise ValueError("Training resume dataset cursor is missing valid counters")
+            if not isinstance(cursor.get("metadata"), dict):
+                raise ValueError("Training resume dataset cursor is missing metadata")
 
     if not model_dir.exists():
         logger.info(f"[FSDP] Model checkpoint {model_dir} not found; skipping load.")
@@ -217,6 +248,8 @@ def load(actor: Any) -> dict[str, Any] | None:
         dcp.load(state_dict=state_dict, checkpoint_id=str(model_dir))
         logger.info(f"[FSDP] Loaded model from {model_dir}")
     except Exception as e:
+        if strict:
+            raise RuntimeError(f"Failed to resume model from {model_dir}") from e
         logger.error(f"[FSDP] Failed to load model from {model_dir}: {e}")
         return None
 
@@ -250,6 +283,8 @@ def load(actor: Any) -> dict[str, Any] | None:
             dcp.load(state_dict=optim_state_dict, checkpoint_id=str(optimizer_dir))
             logger.info(f"[FSDP] Loaded optimizer from {optimizer_dir}")
         except Exception as e:
+            if strict:
+                raise RuntimeError(f"Failed to resume optimizer from {optimizer_dir}") from e
             logger.warning(f"[FSDP] Failed to load optimizer from {optimizer_dir}: {e}")
     elif load_optimizer:
         logger.info(f"[FSDP] Optimizer checkpoint not found at {optimizer_dir}, skipping optimizer load.")
@@ -263,6 +298,8 @@ def load(actor: Any) -> dict[str, Any] | None:
             dcp.load(state_dict=lr_scheduler_state_dict, checkpoint_id=str(lr_scheduler_dir))
             logger.info(f"[FSDP] Loaded LR scheduler from {lr_scheduler_dir}")
         except Exception as e:
+            if strict:
+                raise RuntimeError(f"Failed to resume LR scheduler from {lr_scheduler_dir}") from e
             logger.warning(f"[FSDP] Failed to load LR scheduler from {lr_scheduler_dir}: {e}")
     else:
         logger.info(f"[FSDP] LR scheduler checkpoint not found at {lr_scheduler_dir}, skipping LR scheduler load.")
