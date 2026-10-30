@@ -52,8 +52,8 @@ jobs:
           import pathlib, sys
           p = pathlib.Path(sys.argv[1]); s = p.read_text()
           s = s.replace("    for i in range(2):\n", "    for i in range(2):\n        print('GAPPROBE', i, round(records[i][1] - events[i + 1][1], 4))\n", 1)
-          s = s.replace("    def train(self, rollout_id, batch):\n", "    def train(self, rollout_id, batch):\n        import gc, sys, time as _t\n        if not getattr(self, '_gccb', False):\n            self._gccb = True; self._gcs = {}\n            def _cb(phase, info):\n                if phase == 'start': self._gcs['t'] = _t.monotonic()\n                else:\n                    d = _t.monotonic() - self._gcs.get('t', _t.monotonic())\n                    if d > 0.01: print('GCPAUSE gen', info['generation'], 'dur', round(d, 4), 'collected', info['collected'], 'objs', len(gc.get_objects()), flush=True)\n            gc.callbacks.append(_cb)\n        self._mods = set(sys.modules); print('TSTAMP trainer_entry', rollout_id, _t.monotonic(), 'gc_count', gc.get_count(), 'thresh', gc.get_threshold(), flush=True)\n", 1)
-          s = s.replace("        start = time.monotonic()\n        with self.ema_optimizer", "        start = time.monotonic()\n        import sys; new = sorted(set(sys.modules) - self._mods); print('TSTAMP train_core', rollout_id, start, 'new_modules', len(new), new[:80], flush=True)\n        with self.ema_optimizer", 1)
+          s = s.replace("    def train(self, rollout_id, batch):\n", "    def train(self, rollout_id, batch):\n        import time as _t; print('TSTAMP trainer_entry', rollout_id, _t.monotonic(), flush=True)\n", 1)
+          s = s.replace("        start = time.monotonic()\n        with self.ema_optimizer", "        start = time.monotonic()\n        print('TSTAMP train_core', rollout_id, start, flush=True)\n        with self.ema_optimizer", 1)
           s = s.replace("    def async_train(self, rollout_id, batch):\n", "    def async_train(self, rollout_id, batch):\n        print('TSTAMP driver_submit', rollout_id, time.monotonic(), flush=True)\n", 1)
           s = s.replace("        start = time.monotonic()\n        sample = self.source", "        start = time.monotonic()\n        print('TSTAMP rollout_start', rollout_id, start, flush=True)\n        sample = self.source", 1)
           p.write_text(s)
@@ -72,6 +72,8 @@ jobs:
           PY
           grep -c "TSTAMP actor" miles/backends/fsdp_utils/actor.py
           T="$F::test_overlap_reference_cursor_and_update_barrier[0.25-0.05]"
-          for k in 1 2 3; do echo "### run $k"; python -m pytest -q -s -p no:cacheprovider "$T" 2>&1 | grep -E "TSTAMP [a-z_]+ 0 |GCPAUSE|GAPPROBE|passed|failed"; done
+          printf 'import gc, os\nif os.environ.get("GC_STATS") == "1":\n    gc.set_debug(gc.DEBUG_STATS)\nif os.environ.get("GC_OFF") == "1":\n    gc.disable()\n' > sitecustomize.py
+          for k in 1 2 3; do echo "### stats run $k"; GC_STATS=1 python -m pytest -q -s -p no:cacheprovider "$T" > run.log 2>&1; grep -E "TSTAMP (trainer_entry|actor_before_timer) 0 |GAPPROBE 0|passed|failed" run.log; grep -B1 -E "done, .*[0-9]\.[0-9]+s elapsed" run.log | grep -E "TrainerProbe" | grep -E "elapsed" | awk '{for(i=1;i<=NF;i++) if($i ~ /s$/ && $(i+1)=="elapsed") {v=substr($i,1,length($i)-1); if (v+0 > 0.05) print}}' | head; grep -E "TrainerProbe.*gc: collecting generation 2" run.log | wc -l; done
+          for k in 1 2 3; do echo "### gc off run $k"; GC_OFF=1 python -m pytest -q -s -p no:cacheprovider "$T" 2>&1 | grep -E "GAPPROBE 0|passed|failed"; done
           echo "### importtime of the trainer import chain"
           python -X importtime -c "import miles.backends.fsdp_utils.actor" 2>&1 | sort -t'|' -k2 -n | tail -15
