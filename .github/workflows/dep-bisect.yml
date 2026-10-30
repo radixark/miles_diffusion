@@ -52,13 +52,25 @@ jobs:
           import pathlib, sys
           p = pathlib.Path(sys.argv[1]); s = p.read_text()
           s = s.replace("    for i in range(2):\n", "    for i in range(2):\n        print('GAPPROBE', i, round(records[i][1] - events[i + 1][1], 4))\n", 1)
-          s = s.replace("    def train(self, rollout_id, batch):\n", "    def train(self, rollout_id, batch):\n        import sys, time as _t; print('TSTAMP trainer_entry', rollout_id, _t.monotonic(), 'tvm_ffi' in sys.modules, flush=True)\n", 1)
-          s = s.replace("        start = time.monotonic()\n        with self.ema_optimizer", "        start = time.monotonic()\n        print('TSTAMP train_core', rollout_id, start, flush=True)\n        with self.ema_optimizer", 1)
+          s = s.replace("    def train(self, rollout_id, batch):\n", "    def train(self, rollout_id, batch):\n        import sys, time as _t; self._mods = set(sys.modules); print('TSTAMP trainer_entry', rollout_id, _t.monotonic(), flush=True)\n", 1)
+          s = s.replace("        start = time.monotonic()\n        with self.ema_optimizer", "        start = time.monotonic()\n        import sys; new = sorted(set(sys.modules) - self._mods); print('TSTAMP train_core', rollout_id, start, 'new_modules', len(new), new[:80], flush=True)\n        with self.ema_optimizer", 1)
           s = s.replace("    def async_train(self, rollout_id, batch):\n", "    def async_train(self, rollout_id, batch):\n        print('TSTAMP driver_submit', rollout_id, time.monotonic(), flush=True)\n", 1)
           s = s.replace("        start = time.monotonic()\n        sample = self.source", "        start = time.monotonic()\n        print('TSTAMP rollout_start', rollout_id, start, flush=True)\n        sample = self.source", 1)
           p.write_text(s)
           PY
           grep -c TSTAMP $F
+          python - <<'PY'
+          import pathlib
+          p = pathlib.Path("miles/backends/fsdp_utils/actor.py"); s = p.read_text()
+          a = '        with inverse_timer("train_wait"), timer("train"):\n            rollout_data = ray.get('
+          assert a in s
+          s = s.replace(a, "        import time as _t; print('TSTAMP actor_before_timer', rollout_id, _t.monotonic(), flush=True)\n" + '        with inverse_timer("train_wait"), timer("train"):\n' + "            print('TSTAMP actor_in_timer', rollout_id, _t.monotonic(), flush=True)\n            rollout_data = ray.get(", 1)
+          b = "            if self.args.debug_rollout_only:\n                return\n            self._train_core("
+          assert b in s
+          s = s.replace(b, "            print('TSTAMP actor_after_get', rollout_id, _t.monotonic(), flush=True)\n" + b, 1)
+          p.write_text(s)
+          PY
+          grep -c "TSTAMP actor" miles/backends/fsdp_utils/actor.py
           T="$F::test_overlap_reference_cursor_and_update_barrier[0.25-0.05]"
           for k in 1 2 3; do echo "### run $k"; python -m pytest -q -s -p no:cacheprovider "$T" 2>&1 | grep -E "TSTAMP|GAPPROBE|passed|failed"; done
           echo "### importtime of the trainer import chain"
