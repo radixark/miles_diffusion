@@ -234,7 +234,7 @@ def buffer_filter(
 | `nft` | `data_conversion_hub.nft.expand_samples_to_train_pairs` | `loss_hub.nft.prepare_nft_batch` | `nft_loss_formula` |
 | `sft_loss` | none; convert `sft_rollout.convert_samples_to_train_data` | `loss_hub.sft.prepare_sft_batch` | `sft_loss_formula` |
 | `custom_loss` | your expand (or convert) | your prepare | your formula |
-| `dmd2` | `data_conversion_hub.dmd2.expand_samples_to_train_pairs` | your prepare | your formula |
+| `dmd2` | `data_conversion_hub.dmd2.expand_samples_to_train_pairs` | `loss_hub.dmd2.prepare_generator_batch` | `dmd2_loss_formula` |
 
 `sft_loss` auto-fills nothing: it requires the convert, rollout-log, prepare and loss
 paths, plus `--train-only` and a rollout function that runs no engines (e.g.
@@ -244,6 +244,9 @@ before the actor on each rollout: it starts from `--critic-load` (default `--tea
 learns the student's samples with the SFT loss at `--critic-lr` (default `--lr`). On its last step
 it keeps its own x0 predictions from that step's forward, before the update, and after training hands
 them with the teacher's x0 at the same noisy inputs to the actor as `ctx.external_data["critic"]`.
+The actor trains on those samples only (its train-input hook defaults to
+`loss_hub.dmd2.select_scored_pairs`): it recomputes the student's x0 at the rollout's step and moves
+it along their difference.
 
 DiT forward always stays in the FSDP actor; the loss hook only computes the
 objective.
