@@ -1,0 +1,68 @@
+name: async-overlap dep bisect
+
+on:
+  push:
+    branches: [debug/async-overlap-dep-bisect]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: new
+            pins: ""
+          - variant: old-all
+            pins: "grpcio==1.85.0 opentelemetry-api==1.45.1 opentelemetry-exporter-prometheus==0.66b1 opentelemetry-proto==1.45.1 opentelemetry-sdk==1.45.1 opentelemetry-semantic-conventions==0.66b1 wrapt==2.5.1 apache-tvm-ffi==0.1.15.post1 cuda-pathfinder==1.8.4 hf-xet==1.7.1 modelscope-hub==0.6.0 smart-open==9.0.0"
+          - variant: old-grpcio
+            pins: "grpcio==1.85.0"
+          - variant: old-otel
+            pins: "opentelemetry-api==1.45.1 opentelemetry-exporter-prometheus==0.66b1 opentelemetry-proto==1.45.1 opentelemetry-sdk==1.45.1 opentelemetry-semantic-conventions==0.66b1"
+          - variant: old-wrapt
+            pins: "wrapt==2.5.1"
+          - variant: old-rest
+            pins: "apache-tvm-ffi==0.1.15.post1 cuda-pathfinder==1.8.4 hf-xet==1.7.1 modelscope-hub==0.6.0 smart-open==9.0.0"
+    env:
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v4
+        with:
+          repository: sgl-project/sglang
+          ref: a5701d958b078fae92f83db8fc94530a18650d04
+          path: sglang
+      - name: Install dependencies (same as _run-ci.yml run-cpu)
+        env:
+          UV_SYSTEM_PYTHON: "1"
+        run: |
+          sudo apt-get update -q -o Acquire::Retries=3 || true
+          sudo apt-get install -y -q protobuf-compiler ffmpeg
+          SGLANG_BUILD_RUST_EXTS=none uv pip install -e sglang/python --no-deps
+          uv pip install -r requirements.txt -r tests/ci/requirements-ci-cpu.txt
+          uv pip install -e . --no-deps
+          uv pip install tests/ci/cpu_stubs
+          if [ -n "${{ matrix.pins }}" ]; then uv pip install ${{ matrix.pins }}; fi
+          uv pip freeze | grep -iE "^(grpcio|opentelemetry|wrapt|apache-tvm-ffi|cuda-pathfinder|hf-xet|modelscope-hub|smart-open|ray)=="
+          nproc; lscpu | grep -E "Model name|^CPU\(s\)"
+      - name: Probe overlap gap (5 runs)
+        run: |
+          sed -i "s/^    for i in range(2):$/    for i in range(2):\n        print('GAPPROBE', i, round(records[i][1] - events[i + 1][1], 4))/" tests/fast/rollout/test_async_training.py
+          pass=0
+          for k in 1 2 3 4 5; do
+            if python -m pytest -q -s -p no:cacheprovider "tests/fast/rollout/test_async_training.py::test_overlap_reference_cursor_and_update_barrier[0.25-0.05]" 2>&1 | tee run.log | grep -E "GAPPROBE|passed|failed"; then :; fi
+            grep -q " 1 passed" run.log && pass=$((pass+1))
+          done
+          echo "RESULT variant=${{ matrix.variant }} passed=$pass/5"
+      - name: Full stage-a-cpu suite, as CI runs it
+        if: always()
+        run: |
+          python tests/ci/run_suite.py --hw cpu --suite stage-a-cpu --labels --match-all-labels --nightly --continue-on-error 2>&1 | grep -E "GAPPROBE|FAILED|[0-9]+ passed" || true
