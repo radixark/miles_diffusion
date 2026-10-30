@@ -186,7 +186,8 @@ def run_loop(
         ray.kill(manager)
 
 
-@pytest.mark.parametrize("train_delay,rollout_delay", [(0.05, 0.25), (0.25, 0.05)])
+# The short side must outlast a one-off full GC in an actor (~0.25s on hosted runners).
+@pytest.mark.parametrize("train_delay,rollout_delay", [(0.5, 1.0), (1.0, 0.5)])
 def test_overlap_reference_cursor_and_update_barrier(tmp_path, monkeypatch, train_delay, rollout_delay):
     records, saves, events, updates, metrics = run_loop(
         tmp_path, monkeypatch, train_delay=train_delay, rollout_delay=rollout_delay
