@@ -437,7 +437,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help="Dotted path to `fn(args, sample, num_steps, seed) -> (sde_step_indices, "
-                "returned_latent_indices)`, called per engine request. The built-ins in "
+                "returned_latent_indices, stop_step_index)`, called per engine request. The built-ins in "
                 "miles.rollout.step_strategy_hub read --diffusion-num-sde-steps.",
             )
             parser.add_argument(

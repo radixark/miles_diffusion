@@ -200,7 +200,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--diffusion-num-sde-steps` | int | `0` | Read by the step strategy. |
 | `--diffusion-sde-window-range` | `"lo,hi"` | – | For `sde_window`. Defaults to `[0, num_inference_steps)`. |
 | `--diffusion-sde-candidate-steps` | `"1,2,3"` | – | Required by `epoch_global_random_choice`. |
-| `--diffusion-step-strategy-path` | str | – | `(args, sample, num_steps, seed) -> (sde, ret)` choosing the SDE and returned steps, e.g. `miles.rollout.step_strategy_hub.sde_window`. Flow-GRPO needs one. |
+| `--diffusion-step-strategy-path` | str | – | `(args, sample, num_steps, seed) -> (sde, ret, stop)` choosing the SDE, returned and last steps, e.g. `miles.rollout.step_strategy_hub.sde_window`. Flow-GRPO needs one. |
 | `--rollout-return-full-trajectory` | flag | off | Ask the engine for the whole denoising trajectory instead of only the steps the step strategy requests. The train tensors are identical; kept for debugging and A/B runs. |
 | `--diffusion-log-prob-no-const` | flag | off | Drop log-prob constants on the engine (pairs with the CPS backend). Forced on for `cps` / `ode`. |
 | `--diffusion-generator-device` | str | `cuda` | |

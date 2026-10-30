@@ -99,10 +99,11 @@ latents the engine ships back for the trainer. Stock implementations live in
 `miles/rollout/step_strategy_hub.py`.
 
 ```python
-def strategy(args, sample, num_steps, seed) -> tuple[list[int] | None, list[int] | None]:
-    # returns (sde_step_indices, return_step_indices)
+def strategy(args, sample, num_steps, seed) -> tuple[list[int] | None, list[int] | None, int | None]:
+    # returns (sde_step_indices, return_step_indices, stop_step_index)
     # sde None = no per-step filter: every step uses --diffusion-sde-type
     # return None = the engine returns every step's latent
+    # stop None = the engine runs every step; otherwise its last step goes straight to sigma 0
     ...
 ```
 
@@ -114,6 +115,7 @@ steps for debugging / A-B runs.
 | `sde_window` | Random contiguous window (`--diffusion-num-sde-steps`, `--diffusion-sde-window-range`); returns all latents its steps touch |
 | `epoch_global_random_choice` | Subset of `--diffusion-sde-candidate-steps`, shared by each block of `--rollout-batch-size` consecutive prompt groups (one rollout, unless a dynamic-sampling filter drops groups); returns all latents its steps touch |
 | `ode_and_return_last` | No step filter (every step uses `--diffusion-sde-type`, which the DiffusionNFT recipes set to `ode`); return only the final clean `x0` |
+| `stop_at_random_step` | DMD2 backward simulation: no step filter; stop at a random step `i` and return `x_i` plus its `x0` prediction |
 
 DiffusionNFT picks the timesteps it trains on with a separate hook,
 `--diffusion-nft-timestep-strategy-path`: `(args, num_steps, generator) -> list[int]`, built in
