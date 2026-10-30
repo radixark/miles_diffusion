@@ -74,7 +74,7 @@ def train(args):
     pgs = create_placement_groups(args)
     init_tracking(args)
     rollout_manager, num_rollout_per_epoch = create_rollout_manager(args, pgs["rollout"])
-    actor_model = create_training_models(args, pgs, rollout_manager)
+    actor_model = create_training_models(args, pgs, rollout_manager)["actor"]
 
     eval_only = args.num_rollout == 0
     eval_before_training = args.start_rollout_id == 0 and not args.skip_eval_before_train
