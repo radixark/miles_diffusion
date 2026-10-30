@@ -13,7 +13,7 @@ import json
 import logging
 import os
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 from pathlib import Path
 
 import httpx
@@ -35,6 +35,10 @@ logger = logging.getLogger(__name__)
 ENCODE_GPU_FRACTION = 0.3
 # Arbitrary; the encode-only head queues requests beyond its encoder slots.
 REMOTE_ENCODE_CONCURRENCY = 32
+# Transport errors, 429 and 5xx are retried with 1 s, 2 s, ... backoff; other statuses fail at once.
+REMOTE_ENCODE_ATTEMPTS = 3
+# Per read: a request may queue behind the head's other requests before an encoder takes it.
+REMOTE_ENCODE_TIMEOUT_S = 600.0
 
 # Every args field an encoder reads; the cache key and latent seed depend on exactly these.
 SFT_CACHE_KEY_ARGS = (
@@ -220,6 +224,18 @@ def _decode_tensors(obj):
     return obj
 
 
+def _is_retryable(error: httpx.HTTPError) -> bool:
+    if isinstance(error, httpx.HTTPStatusError):
+        return error.response.status_code == 429 or error.response.status_code >= 500
+    return isinstance(error, httpx.TransportError)
+
+
+def _describe(error: httpx.HTTPError) -> str:
+    if isinstance(error, httpx.HTTPStatusError):
+        return f"HTTP {error.response.status_code}: {error.response.text[:500]}"
+    return repr(error)
+
+
 class SftEncodeClient(metaclass=SingletonMeta):
     """Encodes cache misses through an sglang-diffusion encode-only server (--sft-encode-url)."""
 
@@ -232,7 +248,7 @@ class SftEncodeClient(metaclass=SingletonMeta):
         self._client = httpx.Client(
             base_url=args.sft_encode_url,
             limits=httpx.Limits(max_keepalive_connections=0),
-            timeout=httpx.Timeout(None),
+            timeout=httpx.Timeout(REMOTE_ENCODE_TIMEOUT_S, connect=10.0),
         )
         self.fingerprint = {
             "model_path": self._get("/model_info")["model_path"],
@@ -240,15 +256,28 @@ class SftEncodeClient(metaclass=SingletonMeta):
         }
 
     def _get(self, path: str) -> dict:
-        response = self._client.get(path)
-        response.raise_for_status()
-        return response.json()
+        return self._request("GET", path).json()
+
+    def _request(self, method: str, path: str, **kwargs) -> httpx.Response:
+        for attempt in range(1, REMOTE_ENCODE_ATTEMPTS + 1):
+            try:
+                response = self._client.request(method, path, **kwargs)
+                response.raise_for_status()
+                return response
+            except httpx.HTTPError as error:
+                if attempt == REMOTE_ENCODE_ATTEMPTS or not _is_retryable(error):
+                    raise RuntimeError(
+                        f"{method} {path} failed after {attempt} attempt(s): {_describe(error)}"
+                    ) from error
+                logger.warning(f"{method} {path} attempt {attempt} failed, retrying: {_describe(error)}")
+                time.sleep(2 ** (attempt - 1))
 
     def _encode_one(self, sample: Sample, cache_dir: Path) -> None:
         if sample.conditions or set(sample.target) != {"visual"}:
             raise ValueError("--sft-encode-url encodes a prompt and a visual target only")
         target = base64.b64encode(Path(sample.target["visual"]).read_bytes()).decode("ascii")
-        response = self._client.post(
+        response = self._request(
+            "POST",
             "/encode",
             json={
                 "prompt": sample.prompt,
@@ -257,7 +286,6 @@ class SftEncodeClient(metaclass=SingletonMeta):
                 "height": self._args.diffusion_height,
             },
         )
-        response.raise_for_status()
         encoded = _decode_tensors(msgpack.unpackb(response.content, raw=False)["encoded"])
         pair = self._encoder_module.pair_from_encoded(encoded, sample)
         out_path = cache_dir / sample.metadata["sft_cache_name"]
@@ -266,8 +294,17 @@ class SftEncodeClient(metaclass=SingletonMeta):
         os.replace(tmp_path, out_path)
 
     def encode(self, samples: list[Sample], cache_dir: Path) -> None:
+        """Encode every sample; one failure does not stop the rest, which stay cached for the next attempt."""
         with ThreadPoolExecutor(REMOTE_ENCODE_CONCURRENCY) as executor:
-            list(executor.map(lambda sample: self._encode_one(sample, cache_dir), samples))
+            futures = {executor.submit(self._encode_one, sample, cache_dir): sample for sample in samples}
+            wait(futures)
+        failures = [(sample, future.exception()) for future, sample in futures.items() if future.exception()]
+        for sample, error in failures:
+            logger.error(f"SFT encode failed for target {sample.target.get('visual')}: {error}")
+        if failures:
+            raise RuntimeError(
+                f"{len(failures)}/{len(samples)} SFT encodes failed; the rest are cached. First: {failures[0][1]}"
+            ) from failures[0][1]
 
 
 def generate_rollout(args, rollout_id, data_source, evaluation: bool = False) -> RolloutFnTrainOutput:
