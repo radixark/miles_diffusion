@@ -47,6 +47,7 @@ jobs:
           nproc; lscpu | grep -E "Model name|^CPU\(s\)"
       - name: Probe where the lag goes
         run: |
+          set +e
           F=tests/fast/rollout/test_async_training.py
           python - "$F" <<'PY'
           import pathlib, sys
