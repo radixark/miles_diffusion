@@ -85,7 +85,7 @@ class TrainerProbe:
             self.actor.FSDPTrainRayActor.update_weights(self, previous_ema=previous_ema)
         return self.published, self.global_step
 
-    def _train_core(self, rollout_id, rollout_data):
+    def _train_core(self, rollout_id, rollout_data, external_data):
         start = time.monotonic()
         with self.ema_optimizer.use_weights(self.model):
             reference = self.param.item()
@@ -100,7 +100,7 @@ class TrainerProbe:
         with patch.object(self.actor.dist, "get_rank", return_value=0), patch.object(
             self.actor.train_metric_utils, "log_perf_data_raw"
         ):
-            self.actor.FSDPTrainRayActor.train(self, rollout_id, batch)
+            self.actor.FSDPTrainRayActor.train(self, rollout_id, batch, {})
 
     def save_model(self, rollout_id, force_sync=False):
         from copy import deepcopy

@@ -1,6 +1,7 @@
 import logging
 from argparse import Namespace
 from contextlib import nullcontext
+from typing import Any
 
 import ray
 import torch
@@ -167,6 +168,11 @@ class FSDPTrainRayActor(TrainRayActor):
         self.custom_loss_formula_func = (
             load_function(args.custom_loss_function_path) if args.custom_loss_function_path is not None else None
         )
+        self.custom_train_output_func = (
+            load_function(args.custom_train_output_function_path)
+            if args.custom_train_output_function_path is not None
+            else None
+        )
 
         if args.optimizer == "adam":
             self.optimizer = torch.optim.AdamW(
@@ -315,7 +321,7 @@ class FSDPTrainRayActor(TrainRayActor):
             )
         )
 
-    def train(self, rollout_id: int, rollout_data_ref) -> None:  # type: ignore[override]
+    def train(self, rollout_id: int, rollout_data_ref, external_data) -> Any:  # type: ignore[override]
         if self.args.offload_train:
             self.wake_up()
 
@@ -323,7 +329,10 @@ class FSDPTrainRayActor(TrainRayActor):
             rollout_data = ray.get(rollout_data_ref[self.parallel_state.get_mesh("dp").get_local_rank()].inner)
             if self.args.debug_rollout_only:
                 return
-            self._train_core(rollout_id=rollout_id, rollout_data=rollout_data)
+            external_data = dict(zip(external_data, ray.get(list(external_data.values())), strict=True))
+            train_output = self._train_core(
+                rollout_id=rollout_id, rollout_data=rollout_data, external_data=external_data
+            )
             if self.ema_optimizer is not None:
                 self.ema_optimizer.step(self.global_step)
 
@@ -332,8 +341,9 @@ class FSDPTrainRayActor(TrainRayActor):
             args=self.args,
             is_primary_rank=dist.get_rank() == 0,
         )
+        return train_output
 
-    def _train_core(self, rollout_id: int, rollout_data) -> None:
+    def _train_core(self, rollout_id: int, rollout_data, external_data: dict[str, Any]) -> Any:
         """Run the shared diffusion training loop."""
         device = torch.device("cuda", torch.cuda.current_device())
 
@@ -379,6 +389,7 @@ class FSDPTrainRayActor(TrainRayActor):
             device=device,
             rollout_id=rollout_id,
             dp_rank=self.parallel_state.dp_rank,
+            external_data=external_data,
         )
 
         # ------------- Recompute old log-probs (impl-consistent PPO ratio) -------------
@@ -460,6 +471,10 @@ class FSDPTrainRayActor(TrainRayActor):
 
                 reduced = {f"train/{key}": value for key, value in metrics.reduce().items()}
                 self._log_metrics(rollout_id, reduced, step=self.global_step)
+
+        if self.custom_train_output_func is not None:
+            with torch.no_grad():
+                return self.custom_train_output_func(loss_ctx, train_pairs)
 
     def _maybe_legacy_window_pad_len(self, train_pairs: list, microbatch_ranges: list) -> int | None:
         """LEGACY 2D parity: the whole-window max cond seq_len (like the legacy tile path), or

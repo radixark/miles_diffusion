@@ -21,6 +21,7 @@ import ast
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 import torch
@@ -146,6 +147,7 @@ def test_actor_train_updates_ema_once_and_publication_only_reads_it():
     for method in methods:
         method.decorator_list = []
     namespace = dict(
+        Any=Any,
         ray=SimpleNamespace(get=lambda value: value),
         dist=SimpleNamespace(get_rank=lambda: 0),
         timer=lambda name: nullcontext(),
@@ -175,7 +177,7 @@ def test_actor_train_updates_ema_once_and_publication_only_reads_it():
         rollout_manager=SimpleNamespace(get_rollout_engines_and_lock=SimpleNamespace(remote=lambda: (None, None, 0))),
         weight_updater=SimpleNamespace(update_weights=lambda: published_weights.append(model.base.detach().clone())),
     )
-    namespace["train"](actor, rollout_id=0, rollout_data_ref=[SimpleNamespace(inner={})])
+    namespace["train"](actor, rollout_id=0, rollout_data_ref=[SimpleNamespace(inner={})], external_data={})
     assert model.base.item() == 4.0
     assert actor.ema_optimizer.state[model.base]["ema"].item() == 3.0
 
