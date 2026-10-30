@@ -44,13 +44,19 @@ class OcrScorer:
         """
         from Levenshtein import distance
 
-        prompts = [prompt.split('"')[1] for prompt in prompts]
-        rewards = []
         # Ensure input lengths are consistent
         assert len(images) == len(
             prompts
         ), f"Images({len(images)}) and prompts({len(prompts)}) must have the same length"
-        for img, prompt in zip(images, prompts, strict=False):
+        rewards = []
+        for img, raw_prompt in zip(images, prompts, strict=False):
+            quoted = raw_prompt.split('"')
+            prompt = quoted[1] if len(quoted) > 1 else ""
+            if not prompt:
+                logger.warning(f"Filtering invalid OCR prompt (missing quoted target): {raw_prompt!r}")
+                rewards.append(0.0)
+                continue
+
             # Convert image format
             if isinstance(img, Image.Image):
                 img = np.array(img)
@@ -77,7 +83,7 @@ class OcrScorer:
                 # Error handling (e.g., OCR parsing failure)
                 logger.warning(f"OCR processing failed: {e}")
                 dist = len(prompt)  # Maximum penalty
-            reward = 1 - dist / (len(prompt))
+            reward = 1 - dist / len(prompt)
             rewards.append(reward)
 
         return rewards
