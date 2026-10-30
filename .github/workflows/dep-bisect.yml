@@ -17,16 +17,16 @@ jobs:
         include:
           - variant: new
             pins: ""
-          - variant: old-all
-            pins: "grpcio==1.85.0 opentelemetry-api==1.45.1 opentelemetry-exporter-prometheus==0.66b1 opentelemetry-proto==1.45.1 opentelemetry-sdk==1.45.1 opentelemetry-semantic-conventions==0.66b1 wrapt==2.5.1 apache-tvm-ffi==0.1.15.post1 cuda-pathfinder==1.8.4 hf-xet==1.7.1 modelscope-hub==0.6.0 smart-open==9.0.0"
-          - variant: old-grpcio
-            pins: "grpcio==1.85.0"
-          - variant: old-otel
-            pins: "opentelemetry-api==1.45.1 opentelemetry-exporter-prometheus==0.66b1 opentelemetry-proto==1.45.1 opentelemetry-sdk==1.45.1 opentelemetry-semantic-conventions==0.66b1"
-          - variant: old-wrapt
-            pins: "wrapt==2.5.1"
-          - variant: old-rest
-            pins: "apache-tvm-ffi==0.1.15.post1 cuda-pathfinder==1.8.4 hf-xet==1.7.1 modelscope-hub==0.6.0 smart-open==9.0.0"
+          - variant: old-tvm-ffi
+            pins: "apache-tvm-ffi==0.1.15.post1"
+          - variant: old-cuda-pathfinder
+            pins: "cuda-pathfinder==1.8.4"
+          - variant: old-hf-xet
+            pins: "hf-xet==1.7.1"
+          - variant: old-modelscope-hub
+            pins: "modelscope-hub==0.6.0"
+          - variant: old-smart-open
+            pins: "smart-open==9.0.0"
     env:
       PYTHONPATH: ${{ github.workspace }}
     steps:
@@ -51,7 +51,7 @@ jobs:
           uv pip install -e . --no-deps
           uv pip install tests/ci/cpu_stubs
           if [ -n "${{ matrix.pins }}" ]; then uv pip install ${{ matrix.pins }}; fi
-          uv pip freeze | grep -iE "^(grpcio|opentelemetry|wrapt|apache-tvm-ffi|cuda-pathfinder|hf-xet|modelscope-hub|smart-open|ray)=="
+          uv pip freeze | grep -iE "^(grpcio|wrapt|apache-tvm-ffi|cuda-pathfinder|hf-xet|modelscope-hub|smart-open|ray)=="
           nproc; lscpu | grep -E "Model name|^CPU\(s\)"
       - name: Probe overlap gap (5 runs)
         run: |
