@@ -1,8 +1,7 @@
-"""The portable OpenPI bundle shared by training, export and LIBERO evaluation."""
+"""The portable OpenPI bundle shared by model loading and weight export."""
 
 from __future__ import annotations
 
-import hashlib
 import json
 import shutil
 import tempfile
@@ -11,30 +10,11 @@ from pathlib import Path
 META_FILE = "miles_pi05.json"
 
 
-def sha256_file(path):
-    with Path(path).open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
-
-
-def verify_base_initialization(bundle):
-    """Check the declared base source and verify a weight checksum when supplied."""
-    metadata = read_bundle(bundle)
-    source = metadata.get("initialization") or {}
-    if source.get("source_uri") != "gs://openpi-assets/checkpoints/pi05_base":
-        raise ValueError("This run requires the official pi05_base initializer, not a LIBERO-finetuned checkpoint")
-    if metadata.get("training_checkpoint"):
-        raise ValueError("Use the original base bundle with --load for resume, not an exported trained bundle")
-    expected = source.get("converted_weights_sha256")
-    if expected and sha256_file(Path(bundle) / "model.safetensors") != expected:
-        raise ValueError("Base bundle weights do not match the recorded conversion SHA256")
-    return source
-
-
 def read_bundle(path):
     root = Path(path)
     metadata = json.loads((root / META_FILE).read_text())
     if metadata.get("version") != 1 or metadata.get("config_name") != "pi05_libero":
-        raise ValueError("Expected a version 1 pi05_libero bundle; run scripts/prepare_pi05_libero.py")
+        raise ValueError("Expected a version 1 pi05_libero bundle; see docs/models/pi05.md")
     if not metadata["model"].get("pi05"):
         raise ValueError("The bundle must describe pi05=True")
     stats = root / "assets" / "physical-intelligence" / "libero" / "norm_stats.json"
@@ -45,7 +25,7 @@ def read_bundle(path):
 
 def serving_config(model):
     # SGLang's native loader reads LeRobot-style config keys even for OpenPI weights.
-    # Return all padded dimensions: the client applies OpenPI Unnormalize/LiberoOutputs.
+    # Return all padded dimensions: downstream clients apply OpenPI output transforms.
     return {
         "model_type": "pi05",
         "paligemma_variant": model["paligemma_variant"],

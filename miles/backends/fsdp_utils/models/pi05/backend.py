@@ -1,4 +1,4 @@
-"""Load the official PI0Pytorch module without copying its architecture or training objective."""
+"""Load the OpenPI model with a velocity-returning training boundary for miles."""
 
 from __future__ import annotations
 
@@ -50,11 +50,12 @@ class Pi05ModelBackend:
         if read_bundle(checkpoint_path).get("validation_profile"):
             raise ValueError("Local smoke-test bundles are not production π₀.₅ checkpoints")
         check_openpi_runtime()
-        from openpi.models_pytorch.pi0_pytorch import PI0Pytorch
         from safetensors.torch import load_model
 
+        from .model import Pi05Policy
+
         config = dataclasses.replace(openpi_model_config(checkpoint_path), dtype="float32", pytorch_compile_mode=None)
-        model = PI0Pytorch(config).to(dtype=master_dtype)
+        model = Pi05Policy(config).to(dtype=master_dtype)
         tie_openpi_embeddings(model)
         # Other ranks are inside init_empty_weights; do not read the multi-GB weights there.
         if materialize_weights:

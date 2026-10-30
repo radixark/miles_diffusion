@@ -32,14 +32,6 @@ class Pi05TrainPipelineConfig(TrainPipelineConfig):
             raise ValueError("π₀.₅ training uses OpenPI eager attention")
         if args.update_weight_target_modules != ["policy"]:
             raise ValueError("π₀.₅ requires --update-weight-target-module policy")
-        hooks = {
-            "rollout_function_path": "miles.rollout.pi05_rollout.generate_rollout",
-            "custom_prepare_train_batch_path": "miles.backends.fsdp_utils.models.pi05.loss.prepare_batch",
-            "custom_loss_function_path": "miles.backends.fsdp_utils.models.pi05.loss.loss_formula",
-        }
-        for name, expected in hooks.items():
-            if getattr(args, name) != expected:
-                raise ValueError(f"π₀.₅ requires --{name.replace('_', '-')} {expected}")
         if args.fsdp_supervised_streams != ["action"]:
             raise ValueError("π₀.₅ requires --fsdp-supervised-streams action")
 
@@ -59,18 +51,16 @@ class Pi05TrainPipelineConfig(TrainPipelineConfig):
             *(prefix + suffix for suffix in ("self_attn.o_proj", "post_attention_layernorm", "mlp")),
         ]
 
-    def compute_noise_pred(self, *, model, latents_input, pos_cond, use_cfg, **kwargs):
+    def compute_noise_pred(self, *, model, latents_input, timesteps_input, pos_cond, use_cfg, **kwargs):
         if use_cfg:
             raise ValueError("π₀.₅ does not use classifier-free guidance")
-        # This hook's generic name is historical. The custom loss consumes OpenPI's
-        # unreduced MSE directly, retaining its noise/time sampling and augmentation.
-        actions = latents_input["action"]
-        devices = [actions.device] if actions.is_cuda else []
-        # Keep OpenPI's exact Beta(1.5, 1)*0.999+0.001 sampling, with distinct,
-        # replayable rank-local noise/augmentation streams, independent of prefetch.
+        noisy_actions = latents_input["action"]
+        devices = [noisy_actions.device] if noisy_actions.is_cuda else []
+        # Augmentation has its own replayable rank-local stream; noise and time
+        # were sampled by the prepare hook. Call __call__ so FSDP hooks execute.
         with torch.random.fork_rng(devices=devices):
             torch.manual_seed(pos_cond["rng_seed"])
-            return {"action_loss": model(pos_cond["observation"], actions)}
+            return {"action": model(pos_cond["observation"], noisy_actions, timesteps_input["action"])}
 
     def prepare_cond_kwargs(self, cond, device):
         raise NotImplementedError("π₀.₅ observations are prepared by the OpenPI SFT data path")

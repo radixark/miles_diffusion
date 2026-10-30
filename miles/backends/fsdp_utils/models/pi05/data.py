@@ -75,25 +75,3 @@ def to_train_pair(item):
         "observation": {key: convert(item[key]) for key in required},
         "actions": convert(item["actions"]).float(),
     }
-
-
-def policy_transforms(bundle):
-    from openpi import transforms
-
-    _, data = load_data_config(bundle)
-    return (
-        transforms.compose(
-            [
-                *data.data_transforms.inputs,
-                transforms.Normalize(data.norm_stats, use_quantiles=data.use_quantile_norm),
-                *data.model_transforms.inputs,
-            ]
-        ),
-        transforms.compose(
-            [
-                *data.model_transforms.outputs,
-                transforms.Unnormalize(data.norm_stats, use_quantiles=data.use_quantile_norm),
-                *data.data_transforms.outputs,
-            ]
-        ),
-    )

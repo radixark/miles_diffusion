@@ -14,7 +14,7 @@ def _dataset(bundle):
 
 def generate_rollout(args, rollout_id, data_source, evaluation=False):
     if evaluation:
-        raise ValueError("Use scripts/eval_pi05_libero.py for simulation evaluation")
+        raise ValueError("Training only; evaluate exported weights with an external simulator")
     dataset = _dataset(args.hf_checkpoint)
     groups = data_source.get_samples(args.rollout_batch_size)
     for group in groups:
