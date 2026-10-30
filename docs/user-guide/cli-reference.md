@@ -278,6 +278,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--teacher-cpu-offload` | flag | off | Keep the teacher shards in pinned CPU memory between forwards. |
 | `--custom-prepare-train-batch-path` | str | – | Builds DiT inputs. |
 | `--custom-loss-function-path` | str | – | Loss **formula** only — the DiT forward stays in the actor. |
+| `--custom-train-input-function-path` | str | – | Preprocesses a rank's train pairs (the converted rollout output) before they are split into micro-batches, and returns the pairs to train on. `ctx.external_data` holds earlier trainer groups' outputs. |
 | `--custom-train-output-function-path` | str | – | Runs without grad after a rollout's train steps; its return value reaches the paired rank of each later trainer group as `ctx.external_data[<role>]`. |
 | `--diffusion-nft-beta` | float | `1.0` | |
 | `--diffusion-nft-timestep-strategy-path` | str | `…nft.drop_random_steps` | `(args, num_steps, generator) -> list[int]` returning the denoising steps each sample trains on, in training order; `generator` is seeded per sample. Built in: `drop_random_steps` (random order), `drop_final_steps` (schedule order, noisiest first). The final clean output (σ = 0) is never a training step. |
