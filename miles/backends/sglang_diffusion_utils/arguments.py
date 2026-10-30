@@ -1,4 +1,3 @@
-from sglang.multimodal_gen.runtime.server_args import ServerArgs
 from miles.utils.http_utils import _wrap_ipv6
 
 
@@ -87,9 +86,19 @@ def add_sglang_diffusion_arguments(parser):
 
         old_add_argument(*new_name_or_flags_list, **final_kwargs)
 
-    parser.add_argument = new_add_argument_wrapper
-    ServerArgs.add_cli_args(parser)
-    parser.add_argument = old_add_argument
+    def register(p):
+        # Imported only on a cache miss: sglang.multimodal_gen pulls in torch, transformers and diffusers.
+        from sglang.multimodal_gen.runtime.server_args import ServerArgs
+
+        p.add_argument = new_add_argument_wrapper
+        try:
+            ServerArgs.add_cli_args(p)
+        finally:
+            p.add_argument = old_add_argument
+
+    from miles.backends.sglang_diffusion_utils.cli_cache import add_cached
+
+    add_cached(parser, register)
 
     return parser
 

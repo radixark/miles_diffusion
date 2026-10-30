@@ -88,3 +88,16 @@ RUN git clone https://github.com/radixark/miles_diffusion.git /root/miles_diffus
 # Pre-download PaddleOCR (en) det+rec+cls models so the OCR-reward actors don't
 # race-download them from bcebos at runtime. 
 RUN python -c "from paddleocr import PaddleOCR; PaddleOCR(use_angle_cls=False, lang='en', use_gpu=False, show_log=False)"
+
+# ====================================== Bytecode ======================================================
+
+# Bake .pyc files. About half of the package dirs ship without __pycache__, so every fresh container
+# (every CI job) recompiles bytecode on its first import. Measured on a fresh container:
+# `import sglang.multimodal_gen.runtime.launch_server` took 65 s without this step and 50 s with it
+# (38 s once warm). Some vendored files are not valid Python 3 source, so compile errors are ignored.
+RUN python -m compileall -q -j0 "$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')" \
+        /sgl-workspace/sglang/python /root/miles_diffusion || true
+
+# Cache sglang-d's CLI argument definitions so parsing miles args does not import sglang (~25 s per
+# launch). The cache is keyed on sglang's server_args.py, so a different sglang just rebuilds it.
+RUN cd /root/miles_diffusion && python -m miles.backends.sglang_diffusion_utils.cli_cache || true

@@ -125,6 +125,35 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--startup-overlap",
+                choices=["off", "spawn", "init"],
+                default="off",
+                help=(
+                    "How much of train start-up overlaps the rollout engines' boot. 'spawn': create the train ranks "
+                    "(process start and imports) while the engines boot. 'init': also run their init; needs "
+                    "--num-rollout and, when colocated, --startup-keep-engines-resident, else it falls back to "
+                    "'spawn'. The order of the steps changes only in the driver."
+                ),
+            )
+            parser.add_argument(
+                "--startup-keep-engines-resident",
+                action="store_true",
+                default=False,
+                help=(
+                    "Skip the engines' offload after boot and the onload before the first weight sync. They stay on "
+                    "the GPU through train init, so it needs room for both."
+                ),
+            )
+            parser.add_argument(
+                "--startup-skip-p2p-check",
+                action="store_true",
+                default=False,
+                help=(
+                    "Set SGLANG_SKIP_P2P_CHECK=1 on the rollout engines: sglang trusts the driver's P2P report "
+                    "instead of timing a copy between every GPU pair (~28 s on a fresh container on 2x H200)."
+                ),
+            )
+            parser.add_argument(
                 "--skip-train-actor-gc-collect",
                 action="store_true",
                 help=(
