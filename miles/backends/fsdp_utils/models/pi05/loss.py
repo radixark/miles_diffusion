@@ -21,15 +21,13 @@ def stack_tree(items, device):
 
 
 def prepare_batch(ctx: DiffusionLossContext, batch: list[dict], *, pad_to_len=None) -> PreparedBatch:
-    from openpi.models.model import Observation
-
     if not batch:
         raise ValueError("π₀.₅ microbatch must not be empty")
     actions = torch.stack([pair["actions"] for pair in batch]).to(device=ctx.device, dtype=torch.float32)
     expected = (len(batch), *ctx.train_pipeline_config.action_shape)
     if tuple(actions.shape) != expected:
         raise ValueError(f"Expected action shape {expected}, got {tuple(actions.shape)}")
-    observation = Observation.from_dict(stack_tree([pair["observation"] for pair in batch], ctx.device))
+    observation = stack_tree([pair["observation"] for pair in batch], ctx.device)
     model = ctx.models["policy"]
     seed = stable_hash("pi05", ctx.args.seed, ctx.rollout_id, ctx.microbatch_id, ctx.dp_rank)
     devices = [actions.device] if actions.is_cuda else []

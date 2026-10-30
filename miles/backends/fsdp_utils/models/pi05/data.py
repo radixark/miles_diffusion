@@ -5,15 +5,42 @@ from __future__ import annotations
 import dataclasses
 from pathlib import Path
 
-from .backend import openpi_model_config
+from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
+
 from .bundle import read_bundle
 
 
+class _ColumnListDataset:
+    """Present datasets 4 lazy columns as the tensor lists expected by LeRobot 2.x."""
+
+    def __init__(self, dataset):
+        self._dataset = dataset
+
+    def __len__(self):
+        return len(self._dataset)
+
+    def __getattr__(self, name):
+        return getattr(object.__getattribute__(self, "_dataset"), name)
+
+    def __getitem__(self, key):
+        value = self._dataset[key]
+        return value[:] if isinstance(key, str) else value
+
+    def select(self, indices, **kwargs):
+        return type(self)(self._dataset.select(indices, **kwargs))
+
+
+class _LeRobotDataset(LeRobotDataset):
+    def load_hf_dataset(self):
+        return _ColumnListDataset(super().load_hf_dataset())
+
+
 def load_data_config(bundle):
+    from openpi.models.pi0_config import Pi0Config
     from openpi.shared import normalize
     from openpi.training import config
 
-    model_config = openpi_model_config(bundle)
+    model_config = Pi0Config(**read_bundle(bundle)["model"])
     train_config = config.get_config("pi05_libero")
     data_config = train_config.data.create(Path(bundle) / "assets", model_config)
     # Bind both train and eval to the stats shipped alongside the weights, never
@@ -28,16 +55,13 @@ def create_raw_dataset(model, data, episodes=None, revision=None):
         not episodes or any(index < 0 for index in episodes) or len(set(episodes)) != len(episodes)
     ):
         raise ValueError("Dataset episodes must be a nonempty list of unique non-negative indices")
+    # OpenPI's factory does not expose LeRobot's episode filter. Use the same
+    # dataset and prompt wrapper, adapting datasets 4 column access locally.
+    from openpi import transforms
     from openpi.training import data_loader
 
-    if episodes is None and revision is None:
-        return data_loader.create_torch_dataset(data, model.action_horizon, model)
-    # OpenPI's factory does not expose LeRobot's episode filter. Use the same
-    # dataset and prompt wrapper, passing only this additional native argument.
-    from openpi import transforms
-
     metadata = data_loader.lerobot_dataset.LeRobotDatasetMetadata(data.repo_id, revision=revision)
-    dataset = data_loader.lerobot_dataset.LeRobotDataset(
+    dataset = _LeRobotDataset(
         data.repo_id,
         episodes=episodes,
         revision=revision,

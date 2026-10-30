@@ -1,31 +1,13 @@
-"""Load the OpenPI model with a velocity-returning training boundary for miles."""
+"""Load the native π₀.₅ model using OpenPI-compatible weight names."""
 
 from __future__ import annotations
 
-import dataclasses
 from pathlib import Path
+from types import SimpleNamespace
 
 from miles.backends.fsdp_utils.models.parallel_plan import FSDPParallelPlan
 
 from .bundle import read_bundle
-
-
-def openpi_model_config(bundle):
-    from openpi.models.pi0_config import Pi0Config
-
-    return Pi0Config(**read_bundle(bundle)["model"])
-
-
-def check_openpi_runtime():
-    try:
-        import transformers
-        from transformers.models.siglip import check
-    except ImportError as exc:
-        raise RuntimeError(
-            "π₀.₅ training needs OpenPI's patched Transformers 4.53.2; see docs/models/pi05.md"
-        ) from exc
-    if transformers.__version__ != "4.53.2" or not check.check_whether_transformers_replace_is_installed_correctly():
-        raise RuntimeError("π₀.₅ training needs OpenPI's patched Transformers 4.53.2; see docs/models/pi05.md")
 
 
 def tie_openpi_embeddings(model):
@@ -49,12 +31,11 @@ class Pi05ModelBackend:
             raise ValueError("π₀.₅ exposes one trainable component: policy")
         if read_bundle(checkpoint_path).get("validation_profile"):
             raise ValueError("Local smoke-test bundles are not production π₀.₅ checkpoints")
-        check_openpi_runtime()
         from safetensors.torch import load_model
 
         from .model import Pi05Policy
 
-        config = dataclasses.replace(openpi_model_config(checkpoint_path), dtype="float32", pytorch_compile_mode=None)
+        config = SimpleNamespace(**read_bundle(checkpoint_path)["model"])
         model = Pi05Policy(config).to(dtype=master_dtype)
         tie_openpi_embeddings(model)
         # Other ranks are inside init_empty_weights; do not read the multi-GB weights there.
@@ -70,11 +51,11 @@ class Pi05ModelBackend:
         # bypassing GemmaDecoderLayer.forward. Wrapping those decoder blocks leaves
         # sharded parameters in the forward. Wrap only children invoked via __call__.
         # Embeddings and tied LM heads stay together in the root FSDP group.
-        return FSDPParallelPlan(no_split_modules=("SiglipEncoderLayer", "GemmaMLP", "GemmaRMSNorm"))
+        return FSDPParallelPlan(no_split_modules=("SiglipEncoderLayer", "GemmaMLP", "Pi05RMSNorm"))
 
     def set_attention_backend(self, model, backend):
         if backend != "eager":
-            raise ValueError("OpenPI's joint training attention supports only eager attention here")
+            raise ValueError("π₀.₅ joint training attention supports only eager attention here")
 
     def enable_deterministic_attention(self, backend):
         if backend not in (None, "eager"):

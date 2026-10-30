@@ -42,9 +42,9 @@ class Pi05TrainPipelineConfig(TrainPipelineConfig):
         self.action_shape = (model["action_horizon"], model["action_dim"])
         # Final prefix-layer outputs have no path to the action loss, although their
         # K/V projections DO. Do not ignore the entire layer's optimizer state.
-        from openpi.models import gemma
+        from miles.backends.fsdp_utils.models.pi05.model import gemma_config
 
-        last = gemma.get_config(model["paligemma_variant"]).depth - 1
+        last = gemma_config(model["paligemma_variant"]).num_hidden_layers - 1
         prefix = f"paligemma_with_expert.paligemma.model.language_model.layers.{last}."
         self.optimizer_state_allowed_missing = [
             *type(self).optimizer_state_allowed_missing,

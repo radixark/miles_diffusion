@@ -16,8 +16,8 @@ def add_sglang_diffusion_arguments(parser, *, include_server=True):
     parser = add_sglang_diffusion_router_arguments(parser)
     parser.add_argument("--sglang-server-concurrency", type=int, default=512)
     if not include_server:
-        # Offline π₀.₅ SFT uses OpenPI's patched Transformers 4.x. Importing the
-        # separate SGLang runtime here applies incompatible Transformers 5.x patches.
+        # Offline π₀.₅ SFT needs no serving runtime. Keep SGLang's optional
+        # dependencies and process-global Transformers patches out of training.
         parser.set_defaults(sglang_tp_size=None, sglang_sp_degree=None, sglang_enable_cfg_parallel=False)
         return parser
 
