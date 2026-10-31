@@ -15,7 +15,6 @@ class Pi05TrainPipelineConfig(TrainPipelineConfig):
     # Start with official full fp32 training; lower precision needs separate numerical validation.
     enable_autocast = False
     model_backend_path = "miles.backends.fsdp_utils.models.pi05.backend.Pi05ModelBackend"
-    prepare_train_batch_path = "miles.backends.fsdp_utils.models.pi05.loss.prepare_batch"
     sft_requires_visual_grid = False
     sft_streams = ("action",)
     # The continuous-action forward never consumes LM logits or the final prefix output.
