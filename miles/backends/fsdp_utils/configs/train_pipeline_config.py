@@ -98,6 +98,8 @@ class TrainPipelineConfig(abc.ABC):
     enable_autocast: bool = True
     # Default component paths (miles custom-function style); CLI args override.
     model_backend_path: str = "miles.backends.fsdp_utils.model_backend.DiffusersModelBackend"
+    # Optional model-specific batch preparation; explicit CLI/algorithm hooks take precedence.
+    prepare_train_batch_path: str | None = None
     # Native model package import path; required when model_backend_path is MilesModelBackend.
     model_package: str | None = None
     # Flow-matching timestep range: timestep = sigma * num_train_timesteps.

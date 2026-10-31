@@ -1621,13 +1621,13 @@ def parse_args(add_custom_arguments=None):
     configure_logger()
 
     # TODO: Diffusion FSDP
-    probe = argparse.ArgumentParser(add_help=False)
-    probe.add_argument("--train-only", action="store_true")
-    probe.add_argument("--diffusion-model-family")
+    probe = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    probe.add_argument("--train-only", "--debug-train-only", action="store_true")
+    probe.add_argument("--load-debug-rollout-data")
     mode, _ = probe.parse_known_args()
     add_miles_arguments = get_miles_extra_args_provider(
         add_custom_arguments,
-        include_serving_args=not (mode.train_only and mode.diffusion_model_family == "pi05"),
+        include_serving_args=not (mode.train_only or mode.load_debug_rollout_data is not None),
     )
 
     if os.environ.get("MILES_BACKEND") is not None:
@@ -1891,6 +1891,8 @@ def miles_validate_args(args):
         args.train_pipeline_config_path = f"{cfg_cls.__module__}.{cfg_cls.__qualname__}"
     if args.model_backend_path is None:
         args.model_backend_path = cfg_cls.model_backend_path
+    if args.custom_prepare_train_batch_path is None:
+        args.custom_prepare_train_batch_path = getattr(cfg_cls, "prepare_train_batch_path", None)
     if not cfg_cls.supports_cfg_training and (
         args.diffusion_guidance_scale != 1.0 or args.diffusion_negative_prompt is not None
     ):
