@@ -63,7 +63,7 @@ class Pi05TrainPipelineConfig(TrainPipelineConfig):
             return {"action": model(pos_cond["observation"], noisy_actions, timesteps_input["action"])}
 
     def prepare_cond_kwargs(self, cond, device):
-        raise NotImplementedError("π₀.₅ observations are prepared by the OpenPI SFT data path")
+        raise NotImplementedError("π₀.₅ observations are supplied as train pairs by an external data hook")
 
     def cfg_combine(self, *args, **kwargs):
         raise NotImplementedError("π₀.₅ does not use classifier-free guidance")

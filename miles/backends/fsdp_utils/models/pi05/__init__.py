@@ -1,1 +1,1 @@
-"""Optional OpenPI π₀.₅ integration; importing this package needs no OpenPI installation."""
+"""Native π₀.₅ training, independent of dataset and simulator packages."""

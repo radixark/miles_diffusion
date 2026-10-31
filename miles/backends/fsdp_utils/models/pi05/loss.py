@@ -9,6 +9,8 @@ from miles.backends.fsdp_utils.loss_hub.sft import sft_loss_formula as loss_form
 from miles.backends.fsdp_utils.loss_hub.types import DiffusionLossContext, PreparedBatch
 from miles.utils.hash_utils import stable_hash
 
+from .inputs import validate_train_pair
+
 __all__ = ["prepare_batch", "loss_formula"]
 
 
@@ -23,12 +25,19 @@ def stack_tree(items, device):
 def prepare_batch(ctx: DiffusionLossContext, batch: list[dict], *, pad_to_len=None) -> PreparedBatch:
     if not batch:
         raise ValueError("π₀.₅ microbatch must not be empty")
-    actions = torch.stack([pair["actions"] for pair in batch]).to(device=ctx.device, dtype=torch.float32)
+    model = ctx.models["policy"]
+    for pair in batch:
+        validate_train_pair(
+            pair,
+            action_shape=ctx.train_pipeline_config.action_shape,
+            max_token_len=model.config.max_token_len,
+            vocab_size=model.prefix_model.embed_tokens.num_embeddings,
+        )
+    actions = torch.stack([torch.as_tensor(pair["actions"]) for pair in batch]).to(device=ctx.device)
     expected = (len(batch), *ctx.train_pipeline_config.action_shape)
     if tuple(actions.shape) != expected:
         raise ValueError(f"Expected action shape {expected}, got {tuple(actions.shape)}")
     observation = stack_tree([pair["observation"] for pair in batch], ctx.device)
-    model = ctx.models["policy"]
     seed = stable_hash("pi05", ctx.args.seed, ctx.rollout_id, ctx.microbatch_id, ctx.dp_rank)
     devices = [actions.device] if actions.is_cuda else []
     # Reuse OpenPI's Gaussian noise and Beta(1.5, 1)*0.999+0.001 time sampling.

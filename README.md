@@ -54,7 +54,7 @@ Each model links to its recipe page; every documented recipe is labeled with a [
 
 ## Quick Start
 
-[π₀.₅ SFT](docs/models/pi05.md) integrates OpenPI with miles FSDP training
+[π₀.₅ SFT](docs/models/pi05.md) supports native action-model FSDP training
 and full-model checkpoint export.
 
 - [Installation](https://miles.radixark.com/docs/diffusion/getting-started/installation)

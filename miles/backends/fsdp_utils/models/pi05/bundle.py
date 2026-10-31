@@ -1,4 +1,4 @@
-"""The portable OpenPI bundle shared by model loading and weight export."""
+"""Portable π₀.₅ weights with opaque, adapter-owned preprocessing assets."""
 
 from __future__ import annotations
 
@@ -13,13 +13,32 @@ META_FILE = "miles_pi05.json"
 def read_bundle(path):
     root = Path(path)
     metadata = json.loads((root / META_FILE).read_text())
-    if metadata.get("version") != 1 or metadata.get("config_name") != "pi05_libero":
-        raise ValueError("Expected a version 1 pi05_libero bundle; see docs/models/pi05.md")
-    if not metadata["model"].get("pi05"):
+    if not isinstance(metadata, dict) or metadata.get("version") != 1:
+        raise ValueError("Expected a version 1 π₀.₅ bundle; see docs/models/pi05.md")
+    model = metadata.get("model")
+    if not isinstance(model, dict) or model.get("pi05") is not True:
         raise ValueError("The bundle must describe pi05=True")
-    stats = root / "assets" / "physical-intelligence" / "libero" / "norm_stats.json"
-    if not stats.is_file():
-        raise FileNotFoundError(f"Missing training normalization statistics: {stats}")
+    for key in ("action_dim", "action_horizon", "max_token_len"):
+        if type(model.get(key)) is not int or model[key] <= 0:
+            raise ValueError(f"model.{key} must be a positive integer")
+    for key in ("paligemma_variant", "action_expert_variant"):
+        if not isinstance(model.get(key), str) or not model[key]:
+            raise ValueError(f"model.{key} must name the checkpoint architecture")
+    if "data_adapter" in metadata and not isinstance(metadata["data_adapter"], dict):
+        raise ValueError("data_adapter must be a metadata object owned by the external adapter")
+    assets = metadata.get("assets", [])
+    if not isinstance(assets, list) or any(not isinstance(name, str) for name in assets):
+        raise ValueError("assets must list required files relative to the bundle's assets directory")
+    assets_root = root.resolve() / "assets"
+    for name in assets:
+        relative = Path(name)
+        if not name or relative.is_absolute() or ".." in relative.parts:
+            raise ValueError(f"Invalid bundle asset path: {name}")
+        path = assets_root / relative
+        if not path.resolve().is_relative_to(assets_root):
+            raise ValueError(f"Bundle asset escapes assets directory: {name}")
+        if not path.is_file():
+            raise FileNotFoundError(f"Missing declared adapter asset: {path}")
     return metadata
 
 
@@ -97,7 +116,14 @@ def export_checkpoint(ckpt_dir, base_bundle, out):
     with tempfile.TemporaryDirectory(dir=out.parent, prefix=".pi05-export-") as tmp:
         stage = Path(tmp) / "bundle"
         stage.mkdir()
-        shutil.copytree(base_bundle / "assets", stage / "assets")
+        assets_root = base_bundle.resolve() / "assets"
+        if assets_root.exists():
+            # Copy the entire directory, including legacy bundles without an asset
+            # manifest. Do not dereference links to files outside the bundle.
+            for path in [assets_root, *assets_root.rglob("*")]:
+                if not path.resolve().is_relative_to(assets_root):
+                    raise ValueError(f"Bundle asset escapes assets directory: {path}")
+            shutil.copytree(assets_root, stage / "assets")
         (stage / META_FILE).write_text(json.dumps(metadata, indent=2) + "\n")
         (stage / "config.json").write_text(json.dumps(serving_config(metadata["model"]), indent=2) + "\n")
         # Clone aliases independently: save_file rejects shared tensor storage.
