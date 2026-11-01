@@ -1,7 +1,7 @@
 """Validate source-independent, unbatched π₀.₅ train pairs before device transfer.
 
 Adapters own tokenization, state encoding, action semantics, normalization and
-padding. See docs/models/pi05.md for the contract; no dataset package is needed.
+padding. See docs/models/pi05/pi05.md for the contract; no dataset package is needed.
 """
 
 import torch

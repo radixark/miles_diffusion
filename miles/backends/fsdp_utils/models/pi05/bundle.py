@@ -14,7 +14,7 @@ def read_bundle(path):
     root = Path(path)
     metadata = json.loads((root / META_FILE).read_text())
     if not isinstance(metadata, dict) or metadata.get("version") != 1:
-        raise ValueError("Expected a version 1 π₀.₅ bundle; see docs/models/pi05.md")
+        raise ValueError("Expected a version 1 π₀.₅ bundle; see docs/models/pi05/pi05.md")
     model = metadata.get("model")
     if not isinstance(model, dict) or model.get("pi05") is not True:
         raise ValueError("The bundle must describe pi05=True")
