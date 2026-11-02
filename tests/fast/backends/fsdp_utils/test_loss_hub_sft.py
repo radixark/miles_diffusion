@@ -11,6 +11,7 @@
                  ──► every stream reads it through its own grid: timesteps[name], extras["sigmas"][name]
       noise      ──► from the stream's generator:
                      latents[name] = (1 - sigma) x0 + sigma noise,  extras["target"][name] = noise - x0
+      --sft-distilled-cfg-scale w != 1 ──► use_cfg, guidance_scale = w, neg_cond = the pairs' shared uncond
                 │
     sft_loss_formula(new_pred keyed like latents): per pair, sum_streams mean((pred - target)^2);
                                                    a stream absent from new_pred or left out of
@@ -22,7 +23,8 @@
 What each test pins:
   TestPrepareSftBatch   corruption identity, select_component's expert routing and served grid points,
                         determinism, known flow-shift grid values,
-                        the visual stream draws exactly what the single-stream seed draws
+                        the visual stream draws exactly what the single-stream seed draws,
+                        a distilled CFG scale adds the shared uncond as neg_cond and leaves corruption alone
   TestSftLossFormula    exact-velocity zero loss, unit offset, sigma buckets partition the loss,
                         --log-loss-sigma-bucket 0 on single-stream pairs emits only the loss
   TestJointStreams      each stream on its own --fsdp-flow-shift grid at the shared index, noise independent
@@ -87,6 +89,7 @@ def _ctx(models, rollout_id=3, microbatch_id=0, dp_rank=0, config=None):
             log_loss_sigma_bucket=5,
             fsdp_flow_shift=FLOW_SHIFTS,
             fsdp_supervised_streams=["visual", "audio"],
+            sft_distilled_cfg_scale=1.0,
         ),
         forward_dtype=torch.float32,
         device=torch.device("cpu"),
@@ -129,7 +132,7 @@ class TestPrepareSftBatch:
         x0 = torch.stack([pair["latent"]["visual"] for pair in batch]).float()
         sigma = (prepared.timesteps["visual"] / NUM_TRAIN_TIMESTEPS).view(-1, 1, 1, 1, 1)
         assert torch.allclose(prepared.latents["visual"], x0 + sigma * _visual_target(prepared), atol=1e-5)
-        assert not prepared.use_cfg
+        assert not prepared.use_cfg and prepared.neg_cond is None
         assert prepared.pos_cond["encoder_hidden_states"].shape == (4, 6, 8)
         # SD3's DiT takes the raw trajectory timestep, so the hook is the identity here.
         assert torch.equal(prepared.timesteps_for_model["visual"], prepared.timesteps["visual"])
@@ -233,6 +236,21 @@ class TestPrepareSftBatch:
         grid = FlowNoiseSchedule.shifted(FLOW_SHIFT, NUM_TRAIN_TIMESTEPS)
         assert set(prepared.extras["sigmas"]["visual"].tolist()) <= set(grid.sigmas[:-1].tolist())
         assert set(prepared.timesteps["visual"].tolist()) <= set(grid.timesteps.tolist())
+
+    def test_distilled_cfg_scale_feeds_the_shared_uncond_as_the_negative_branch(self):
+        uncond = {"encoder_hidden_states": torch.zeros(1, 6, 8)}
+        batch = [{**pair, "uncond_cond_kwargs": uncond} for pair in _batch()]
+        ctx = _ctx({"transformer": nn.Identity()})
+        ctx.args.sft_distilled_cfg_scale = 4.0
+
+        prepared = prepare_sft_batch(ctx, batch)
+
+        assert prepared.use_cfg and prepared.guidance_scale == 4.0
+        assert torch.equal(prepared.neg_cond["encoder_hidden_states"], torch.zeros(4, 6, 8))
+        # The uncond branch changes only what the DiT sees, never the corruption or the target.
+        baseline = prepare_sft_batch(_ctx({"transformer": nn.Identity()}), batch)
+        assert torch.equal(prepared.latents["visual"], baseline.latents["visual"])
+        assert torch.equal(_visual_target(prepared), _visual_target(baseline))
 
 
 class TestSftLossFormula:

@@ -238,6 +238,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--num-rollout` | int | – | Required unless `--num-epoch` is set. |
 | `--num-epoch` | int | – | |
 | `--start-rollout-id` | int | – | Resumed from `--load` when unset. |
+| `--sft-distilled-cfg-scale` | float | `1.0` | SFT only, for a config with CFG distilled in (H3 t2va): the guidance scale the checkpoint distilled in. The prompt branch `c` is inverted against a gradient-free `" "` uncond `u` as `u + (c - u) / w`, so the loss supervises the plain flow-matching velocity. The uncond is encoded once into `.sft_cache/uncond-<sha>.pt`. `1.0` trains the raw prediction. |
 | `--sft-encoder-checkpoint` | str | – | SFT only: tokenizer/text_encoder/vae source. |
 | `--sft-frame-stride` | int | `1` | SFT encode temporal stride; target videos hold exactly `(num_frames - 1) * stride + 1` frames. |
 | `--sft-offload-encoder` | flag | off | SFT only: keep the frozen encoder in host RAM, on the GPU only during encode bursts. |

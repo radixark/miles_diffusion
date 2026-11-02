@@ -1,5 +1,13 @@
 """SFT argument validation: encoder requirements apply only to the built-in producer; flow shifts and supervised
-streams are named per stream."""
+streams are named per stream; a distilled CFG scale needs a config with CFG distilled in.
+
+    --fsdp-flow-shift          keyed by stream; needs a finite positive visual    flow_shift_is_keyed / rejects_missing
+    --diffusion-task           inside the config's tasks                          task_outside_config_tasks
+    --fsdp-supervised-streams  subset of {visual, audio}, includes visual         supervised_streams_*
+    rollout function           external: no encoder, still the four SFT hooks     external_producer_*
+                               built-in: --sft-encoder-checkpoint                 builtin_producer_still_requires_*
+    --sft-distilled-cfg-scale  config with cfg_distilled, positive                distilled_cfg_scale_*
+"""
 
 import shlex
 import sys
@@ -28,6 +36,7 @@ def args(monkeypatch: pytest.MonkeyPatch) -> Namespace:
     class Config:
         model_backend_path = "external.Backend"
         supports_cfg_training = True
+        cfg_distilled = False
         tasks = ("t2v",)
 
         @classmethod
@@ -104,4 +113,21 @@ def test_builtin_producer_still_requires_checkpoint(args: Namespace) -> None:
 def test_external_producer_still_requires_sft_hooks(args: Namespace) -> None:
     args.custom_prepare_train_batch_path = None
     with pytest.raises(ValueError, match="custom-prepare-train-batch-path"):
+        miles_validate_args(args)
+
+
+def test_distilled_cfg_scale_needs_a_cfg_distilled_config(args: Namespace) -> None:
+    args.sft_distilled_cfg_scale = 4.0
+    with pytest.raises(ValueError, match="cfg_distilled=False"):
+        miles_validate_args(args)
+
+
+@pytest.mark.parametrize("scale", [0.0, -2.0, float("nan")], ids=["zero", "negative", "nan"])
+def test_distilled_cfg_scale_must_be_positive(args: Namespace, monkeypatch: pytest.MonkeyPatch, scale) -> None:
+    from miles.backends.fsdp_utils.configs import train_pipeline_config
+
+    # The fixture's lookup returns its Config for any family.
+    monkeypatch.setattr(train_pipeline_config.get_train_pipeline_config_cls("wan2_2"), "cfg_distilled", True)
+    args.sft_distilled_cfg_scale = scale
+    with pytest.raises(ValueError, match="must be positive"):
         miles_validate_args(args)
