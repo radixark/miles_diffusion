@@ -33,17 +33,31 @@ def broadcast_full_state_to_fsdp(
     full_state: dict,
     *,
     cpu_offload: bool,
+    device=None,
+    checkpoint_files: list[str] | None = None,
 ) -> None:
-    """Materialize FSDP2 shards from rank 0's full initial state dict."""
+    """Materialize FSDP2 shards from rank 0's full initial state dict.
+
+    With ``checkpoint_files``, parameters that map cleanly onto the checkpoint are read by every
+    rank straight from the files (its own slice only); only the rest are broadcast from rank 0.
+    """
     from torch.distributed.checkpoint.state_dict import set_model_state_dict
 
-    if dist.get_rank() == 0:
-        # Rank 0 was sharded on real CPU weights; move them (and real buffers) along.
-        model.to(device=torch.cuda.current_device(), non_blocking=True)
-    else:
-        # to_empty creates tensors on device without initializing memory.
-        model.to_empty(device=torch.cuda.current_device())
+    device = torch.cuda.current_device() if device is None else device
+    # Every parameter is overwritten from full_state below, so no rank needs its local values on the
+    # device first. Rank 0 used to move its real CPU shard over (a slow pageable copy of 1/N of the
+    # model); now it allocates like the other ranks and only carries its real buffers across.
+    real_buffers = dict(model.named_buffers()) if dist.get_rank() == 0 else None
+    # to_empty creates tensors on device without initializing memory.
+    model.to_empty(device=device)
+    if real_buffers is not None:
+        with torch.no_grad():
+            for name, buffer in model.named_buffers():
+                buffer.copy_(real_buffers[name], non_blocking=True)
 
+    filled = _fill_from_checkpoint_files(model, full_state, checkpoint_files, device) if checkpoint_files else set()
+    if filled and dist.get_rank() == 0:
+        full_state = {k: v for k, v in full_state.items() if k not in filled}
     set_model_state_dict(
         model,
         full_state,
@@ -51,6 +65,7 @@ def broadcast_full_state_to_fsdp(
             full_state_dict=True,
             cpu_offload=cpu_offload,
             broadcast_from_rank0=True,
+            strict=not filled,
         ),
     )
     # State dict loading does not cover non-persistent buffers (e.g. Wan rope
@@ -63,6 +78,42 @@ def broadcast_full_state_to_fsdp(
         # CPUOffloadPolicy manages params only; buffers must live on GPU for forward.
         for buffer in model.buffers():
             buffer.data = buffer.data.to(torch.cuda.current_device())
+
+
+def _fill_from_checkpoint_files(model, full_state: dict, files: list[str], device) -> set[str]:
+    from . import sharded_checkpoint_fill
+
+    try:
+        filled = sharded_checkpoint_fill.fill_from_checkpoint(model, files, device=device)
+        ok = True
+    except Exception as exc:
+        logger.warning("Checkpoint fill failed on rank %d (%s); broadcasting everything", dist.get_rank(), exc)
+        filled, ok = set(), False
+    # All ranks must agree on what still needs broadcasting; any failure falls back to the full broadcast,
+    # which also overwrites whatever was filled.
+    oks = [None] * dist.get_world_size()
+    dist.all_gather_object(oks, ok)
+    if not all(oks):
+        return set()
+    # Rank 0 holds the loaded weights: spot-check the first and last row of its slice of every filled
+    # parameter, in case a loader converted a tensor without changing its name or shape.
+    bad = []
+    if dist.get_rank() == 0:
+        params = dict(model.named_parameters())
+        for name in sorted(filled):
+            local = params[name].to_local()
+            if local.shape[0] == 0:
+                continue
+            first, _ = sharded_checkpoint_fill._local_rows(params[name])
+            ref = full_state[name]
+            rows = (0, local.shape[0] - 1)
+            if not all(torch.equal(local[r].cpu(), ref[first + r].to(local.dtype)) for r in rows):
+                bad.append(name)
+    payload = [bad]
+    dist.broadcast_object_list(payload, src=0)
+    if payload[0]:
+        logger.warning("Checkpoint fill did not match rank 0 for %d parameters; broadcasting them", len(payload[0]))
+    return filled - set(payload[0])
 
 
 def _is_lora_param_name(name: str) -> bool:

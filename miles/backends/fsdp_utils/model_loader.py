@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import warnings
 from argparse import Namespace
 from contextlib import contextmanager
@@ -61,7 +62,12 @@ def load_fsdp_models(
             cpu_offload=cpu_offload,
             args=args,
         )
-        checkpoint.broadcast_full_state_to_fsdp(model, full_state, cpu_offload=cpu_offload)
+        checkpoint.broadcast_full_state_to_fsdp(
+            model,
+            full_state,
+            cpu_offload=cpu_offload,
+            checkpoint_files=_checkpoint_files(checkpoint_path, component),
+        )
         del full_state
         train_pipeline_config.postprocess_model_after_materialize(model)
         if parallel_state.get_optional_mesh("sp") is not None:
@@ -77,6 +83,29 @@ def load_fsdp_models(
             move_model(model, "cpu")
         models[component] = model
     return models
+
+
+def _checkpoint_files(checkpoint_path: str, component: str) -> list[str] | None:
+    """Files for a sharded fill, or None; every rank gets the same answer."""
+    from . import sharded_checkpoint_fill
+
+    files = None
+    if sharded_checkpoint_fill.enabled():
+        try:
+            files = sharded_checkpoint_fill.resolve_component_files(checkpoint_path, component) or None
+        except Exception as exc:  # no local snapshot, odd layout: fall back to the broadcast
+            logger.info("No checkpoint files for a sharded fill of %s: %s", component, exc)
+    # Ranks decide what to fill on their own, so they must see the same files (e.g. a node without the
+    # snapshot would otherwise leave its ranks expecting a broadcast the others skip).
+    if dist.is_initialized() and dist.get_world_size() > 1:
+        from miles.utils.distributed_utils import get_gloo_group
+
+        mine = [os.path.basename(f) for f in files] if files else None
+        gathered = [None] * dist.get_world_size()
+        dist.all_gather_object(gathered, mine, group=get_gloo_group())
+        if any(g != gathered[0] for g in gathered) or gathered[0] is None:
+            return None
+    return files
 
 
 def finish_fsdp_lazy_init(model: torch.nn.Module) -> None:

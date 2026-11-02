@@ -6,17 +6,11 @@ import logging
 import multiprocessing
 import os
 import time
-from typing import TYPE_CHECKING
-
 import requests
-from sglang.srt.utils.common import kill_process_tree
 
 from miles.ray.ray_actor import RayActor
 from miles.utils.arguments import rollout_merges_lora
 from miles.utils.http_utils import get_host_info
-
-if TYPE_CHECKING:
-    from sglang.multimodal_gen.runtime.server_args import ServerArgs
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +43,14 @@ def _bootstrap_scheduler_process_with_rollout_patches(spec):
     bootstrap_scheduler_process(spec)
 
 
-def _launch_server_target(server_args, apply_rollout_patches: bool = False):
+def _launch_server_target(server_kwargs, sglang_attrs, apply_rollout_patches: bool = False):
+    # ServerArgs is built here, not in the engine actor: this process imports sglang anyway, and keeping
+    # sglang out of the actor takes one full sglang import (~40 s) off the engine startup path.
+    from sglang.multimodal_gen.runtime.server_args import ServerArgs
+
+    server_args = ServerArgs.from_kwargs(**_add_sglang_fields(server_kwargs, sglang_attrs))
+    server_args.host = server_args.host.strip("[]")
+
     # addict.Dict loses its `__frozen` attribute across spawn pickle; rebuild it.
     import addict
 
@@ -68,20 +69,25 @@ def _launch_server_target(server_args, apply_rollout_patches: bool = False):
 
 
 def launch_server_process(
-    server_args: ServerArgs,
+    server_kwargs: dict,
+    sglang_attrs: dict,
     apply_rollout_patches: bool = False,
 ) -> multiprocessing.Process:
+    """Start the sglang-d server in a child process and wait until it is healthy.
+
+    ``server_kwargs`` and ``sglang_attrs`` are plain data (see ``_base_server_kwargs``); the child turns them
+    into ``ServerArgs``.
+    """
     # use spawn to avoid potential risks of fork in terms of subthreads or CUDA.
     multiprocessing.set_start_method("spawn", force=True)
-    server_args.host = server_args.host.strip("[]")
     p = multiprocessing.Process(
         target=_launch_server_target,
-        args=(server_args, apply_rollout_patches),
+        args=(server_kwargs, sglang_attrs, apply_rollout_patches),
     )
     p.start()
 
     _wait_server_healthy(
-        base_url=server_args.url(),
+        base_url=f"http://{server_kwargs['host']}:{server_kwargs['port']}",
         is_process_alive=lambda: p.is_alive(),
     )
 
@@ -105,7 +111,7 @@ def _wait_server_healthy(base_url, is_process_alive):
             if not is_process_alive():
                 raise Exception("Server process terminated unexpectedly.")
 
-            time.sleep(2)
+            time.sleep(0.5)
 
 
 class SGLangDiffusionEngine(RayActor):
@@ -134,22 +140,14 @@ class SGLangDiffusionEngine(RayActor):
 
         host = _format_v6_uri(host)
 
-        server_args_dict = _compute_server_args(
-            self.args,
-            host=host,
-            port=port,
-            nccl_port=nccl_port,
-        )
+        self.node_rank = getattr(self.args, "sglang_node_rank", None) or 0
+        self.server_host = host
+        self.server_port = port
+        self._nccl_port = nccl_port
 
-        self.node_rank = server_args_dict.get("node_rank", 0)
-        self.server_host = server_args_dict["host"]
-        self.server_port = server_args_dict["port"]
+        self._init_normal()
 
-        self._init_normal(server_args_dict)
-
-    def _init_normal(self, server_args_dict):
-        from sglang.multimodal_gen.runtime.server_args import ServerArgs
-
+    def _init_normal(self):
         logger.info(f"Launch HttpServerEngineAdapter at: {self.server_host}:{self.server_port}")
         self._pin_to_assigned_gpu()
         from miles.backends.sglang_diffusion_utils.monkey_patches import ROLLOUT_PATCH_GROUPS_ENV
@@ -159,7 +157,8 @@ class SGLangDiffusionEngine(RayActor):
             os.environ[ROLLOUT_PATCH_GROUPS_ENV] = ",".join(patch_groups)
             logger.info("Launching sglang-d with rollout patch groups: %s", patch_groups)
         self.process = launch_server_process(
-            ServerArgs.from_kwargs(**server_args_dict),
+            _base_server_kwargs(self.args, host=self.server_host, port=self.server_port, nccl_port=self._nccl_port),
+            _sglang_attrs(self.args),
             apply_rollout_patches=bool(patch_groups),
         )
 
@@ -339,6 +338,8 @@ class SGLangDiffusionEngine(RayActor):
 
             if response is not None:
                 response.raise_for_status()
+        from sglang.srt.utils.common import kill_process_tree
+
         kill_process_tree(self.process.pid)
 
     def release_memory_occupation(self):
@@ -357,8 +358,16 @@ class SGLangDiffusionEngine(RayActor):
 
 
 def _compute_server_args(args, host, port, nccl_port):
-    from sglang.multimodal_gen.runtime.server_args import ServerArgs
+    return _add_sglang_fields(_base_server_kwargs(args, host, port, nccl_port), _sglang_attrs(args))
 
+
+def _sglang_attrs(args) -> dict:
+    """The --sglang-* values, by ServerArgs field name."""
+    return {k.removeprefix("sglang_"): v for k, v in vars(args).items() if k.startswith("sglang_")}
+
+
+def _base_server_kwargs(args, host, port, nccl_port) -> dict:
+    """ServerArgs kwargs that need no sglang import (see ``_add_sglang_fields`` for the rest)."""
     # Only set fields SGL-D's ServerArgs actually accepts. GPU pinning is done
     # in `_init_normal` via CUDA_VISIBLE_DEVICES — SGL-D has no base_gpu_id arg.
     kwargs = {
@@ -384,18 +393,25 @@ def _compute_server_args(args, host, port, nccl_port):
     if getattr(args, "diffusion_flow_shift", None) is not None:
         kwargs["flow_shift"] = float(args.diffusion_flow_shift)
 
-    # Forward remaining ServerArgs fields set via --sglang-* CLI (ulysses_degree, ring_degree, dp_size, etc.).
-    for attr in dataclasses.fields(ServerArgs):
-        if hasattr(args, f"sglang_{attr.name}") and attr.name not in kwargs:
-            kwargs[attr.name] = getattr(args, f"sglang_{attr.name}")
-
     if rollout_merges_lora(args):
         kwargs["lora_target_modules"] = args.lora_target_modules
-    # dit_precision / vae_precision are PipelineConfig fields, not ServerArgs, so forward them explicitly (only when changed from the class default, to avoid clobbering a subclass override).
-    from sglang.multimodal_gen.configs.pipeline_configs.base import PipelineConfig
+    return kwargs
 
+
+def _add_sglang_fields(base_kwargs: dict, sglang_attrs: dict) -> dict:
+    """``base_kwargs`` plus the --sglang-* fields ServerArgs accepts; imports sglang."""
+    from sglang.multimodal_gen.configs.pipeline_configs.base import PipelineConfig
+    from sglang.multimodal_gen.runtime.server_args import ServerArgs
+
+    kwargs = dict(base_kwargs)
+    # Forward remaining ServerArgs fields set via --sglang-* CLI (ulysses_degree, ring_degree, dp_size, etc.).
+    for attr in dataclasses.fields(ServerArgs):
+        if attr.name in sglang_attrs and attr.name not in kwargs:
+            kwargs[attr.name] = sglang_attrs[attr.name]
+
+    # dit_precision / vae_precision are PipelineConfig fields, not ServerArgs, so forward them explicitly (only when changed from the class default, to avoid clobbering a subclass override).
     for field_name in ("dit_precision", "vae_precision"):
-        val = getattr(args, f"sglang_{field_name}", None)
+        val = sglang_attrs.get(field_name)
         if val is not None and val != getattr(PipelineConfig, field_name, None):
             kwargs[field_name] = val
 
