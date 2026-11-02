@@ -147,6 +147,7 @@ class FSDPTrainRayActor(TrainRayActor):
         ]
         # Reference and teacher weights never change, so each sleep points them back at the host copies kept at wake.
         self.frozen_parameter_host_copies_by_model = {model: {} for model in self.frozen_models_to_sleep}
+        self.asleep = False
 
         # Force a sync to ensure sharding is complete and old memory is freed.
         torch.cuda.synchronize()
@@ -254,12 +255,14 @@ class FSDPTrainRayActor(TrainRayActor):
         if self.ema_optimizer is not None:
             move_optimizer(self.ema_optimizer, "cpu")
         clear_memory()
+        self.asleep = True
         dist.barrier(group=get_gloo_group())
         print_memory("after sleep DiT")
 
     @timer
     def wake_up(self) -> None:
-        if not self.args.offload_train:
+        # Waking twice would point the frozen models' host copies at their GPU parameters.
+        if not self.args.offload_train or not self.asleep:
             return
 
         for model in self.actor_models_to_sleep:
@@ -270,6 +273,7 @@ class FSDPTrainRayActor(TrainRayActor):
             move_optimizer(self.optimizer, "cuda")
             if self.ema_optimizer is not None:
                 move_optimizer(self.ema_optimizer, "cuda")
+        self.asleep = False
         dist.barrier(group=get_gloo_group())
         print_memory("after wake_up DiT")
 
