@@ -1973,8 +1973,10 @@ def miles_validate_args(args):
                 raise ValueError(
                     f"{cfg_cls.__name__} has no CFG distilled in (cfg_distilled=False); drop --sft-distilled-cfg-scale"
                 )
-            if not args.sft_distilled_cfg_scale > 0:
-                raise ValueError(f"--sft-distilled-cfg-scale must be positive, got {args.sft_distilled_cfg_scale}")
+            if not (math.isfinite(args.sft_distilled_cfg_scale) and args.sft_distilled_cfg_scale > 0):
+                raise ValueError(
+                    f"--sft-distilled-cfg-scale must be finite and positive, got {args.sft_distilled_cfg_scale}"
+                )
         if args.fsdp_flow_shift is None or "visual" not in args.fsdp_flow_shift:
             raise ValueError("--loss-type sft_loss requires a visual --fsdp-flow-shift for the training sigma grid")
         if not set(args.fsdp_supervised_streams) <= {"visual", "audio"}:

@@ -7,7 +7,7 @@ config takes no CFG scale at all.
     --fsdp-supervised-streams  subset of {visual, audio}, includes visual         supervised_streams_*
     rollout function           external: no encoder, still the four SFT hooks     external_producer_*
                                built-in: --sft-encoder-checkpoint                 builtin_producer_still_requires_*
-    --sft-distilled-cfg-scale  config with cfg_distilled, positive                distilled_cfg_scale_*
+    --sft-distilled-cfg-scale  config with cfg_distilled, finite and positive     distilled_cfg_scale_*
     unguided config            no guidance, true CFG scale or negative prompt     unguided_config_*
 """
 
@@ -124,8 +124,8 @@ def test_distilled_cfg_scale_needs_a_cfg_distilled_config(args: Namespace) -> No
         miles_validate_args(args)
 
 
-@pytest.mark.parametrize("scale", [0.0, -2.0, float("nan")], ids=["zero", "negative", "nan"])
-def test_distilled_cfg_scale_must_be_positive(
+@pytest.mark.parametrize("scale", [0.0, -2.0, float("nan"), float("inf")], ids=["zero", "negative", "nan", "inf"])
+def test_distilled_cfg_scale_must_be_finite_and_positive(
     args: Namespace, monkeypatch: pytest.MonkeyPatch, scale
 ) -> None:
     from miles.backends.fsdp_utils.configs import train_pipeline_config
@@ -133,7 +133,7 @@ def test_distilled_cfg_scale_must_be_positive(
     # The fixture's lookup returns its Config for any family.
     monkeypatch.setattr(train_pipeline_config.get_train_pipeline_config_cls("wan2_2"), "cfg_distilled", True)
     args.sft_distilled_cfg_scale = scale
-    with pytest.raises(ValueError, match="must be positive"):
+    with pytest.raises(ValueError, match="must be finite and positive"):
         miles_validate_args(args)
 
 
