@@ -34,7 +34,7 @@ def select_component(
     return component_name, model, torch.tensor(served, device=device)
 
 
-def _top_level_to(cond_kwargs: dict, device: torch.device) -> dict:
+def _move_top_level_tensors(cond_kwargs: dict, device: torch.device) -> dict:
     # A family whose cond values nest tensors inside dicts moves them itself in its collate/forward.
     return {key: value.to(device) if isinstance(value, torch.Tensor) else value for key, value in cond_kwargs.items()}
 
@@ -87,15 +87,17 @@ def prepare_sft_batch(
         targets[stream_name] = noise - x0
 
     pos_cond = config.collate_cond_for_sample_batch(
-        [_top_level_to(pair["cond_kwargs"], device) for pair in batch], device, pad_to_len=pad_to_len
+        [_move_top_level_tensors(pair["cond_kwargs"], device) for pair in batch], device, pad_to_len=pad_to_len
     )
     distilled_cfg_scale = ctx.args.sft_distilled_cfg_scale
     use_cfg = distilled_cfg_scale != 1.0
     neg_cond = None
     if use_cfg:
-        # Every pair references the run's one uncond cond (sft_rollout.load_uncond_cond).
+        # Every pair references the run's one uncond cond kwargs (sft_rollout.load_uncond_cond_kwargs).
         neg_cond = config.collate_cond_for_sample_batch(
-            [_top_level_to(pair["uncond_cond_kwargs"], device) for pair in batch], device, pad_to_len=pad_to_len
+            [_move_top_level_tensors(pair["uncond_cond_kwargs"], device) for pair in batch],
+            device,
+            pad_to_len=pad_to_len,
         )
 
     return PreparedBatch(

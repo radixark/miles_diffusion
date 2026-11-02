@@ -227,7 +227,7 @@ class SftEncodePool(metaclass=SingletonMeta):
             ray.get(self.train_in_flight)
 
 
-def load_uncond_cond(args, cache_dir: Path) -> dict:
+def load_uncond_cond_kwargs(args, cache_dir: Path) -> dict:
     """The uncond cond kwargs every pair of the run shares, encoded once per cache like a sample pair."""
     path = cache_dir / sft_uncond_key(args)
     if not path.exists():
@@ -272,13 +272,13 @@ def generate_rollout(args, rollout_id, data_source, evaluation: bool = False) ->
         )
         encode_seconds = time.time() - start
 
-    uncond_cond = load_uncond_cond(args, cache_dir) if args.sft_distilled_cfg_scale != 1.0 else None
+    uncond_cond_kwargs = load_uncond_cond_kwargs(args, cache_dir) if args.sft_distilled_cfg_scale != 1.0 else None
     for sample in samples:
         cache_name = sample.metadata.pop("sft_cache_name")
         pair = torch.load(cache_dir / cache_name, map_location="cpu")
-        if uncond_cond is not None:
+        if uncond_cond_kwargs is not None:
             # one shared object, so each DP shard's ray.put pickles it once rather than once per pair
-            pair["uncond_cond_kwargs"] = uncond_cond
+            pair["uncond_cond_kwargs"] = uncond_cond_kwargs
         sample.train_metadata = {"sft_pair": pair}
         sample.status = Sample.Status.COMPLETED
 

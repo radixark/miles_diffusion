@@ -141,13 +141,13 @@ class H3TrainPipelineConfig(TrainPipelineConfig):
         predictions = self._packed_forward(model, latents_input, timesteps_input, pos_cond)
         if not use_cfg:
             return predictions
-        # The shared uncond cond carries no target, so the sample decides whether audio is predicted.
+        # The shared uncond cond kwargs carry no target, so the sample decides whether audio is predicted.
         neg_cond = {**neg_cond, "h3_target_has_soundtrack": pos_cond["h3_target_has_soundtrack"]}
         # The uncond guess only anchors the inversion; training it would pull " " toward the data.
         with torch.no_grad():
-            uncond = self._packed_forward(model, latents_input, timesteps_input, neg_cond)
+            uncond_predictions = self._packed_forward(model, latents_input, timesteps_input, neg_cond)
         return {
-            stream: self.cfg_combine(prediction, uncond[stream], guidance_scale)
+            stream: self.cfg_combine(prediction, uncond_predictions[stream], guidance_scale)
             for stream, prediction in predictions.items()
         }
 
