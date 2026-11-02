@@ -1,5 +1,6 @@
 """SFT argument validation: encoder requirements apply only to the built-in producer; flow shifts and supervised
-streams are named per stream; a distilled CFG scale needs a config with CFG distilled in.
+streams are named per stream; a distilled CFG scale needs a config with CFG distilled in, and an unguided
+config takes no CFG scale at all.
 
     --fsdp-flow-shift          keyed by stream; needs a finite positive visual    flow_shift_is_keyed / rejects_missing
     --diffusion-task           inside the config's tasks                          task_outside_config_tasks
@@ -7,6 +8,7 @@ streams are named per stream; a distilled CFG scale needs a config with CFG dist
     rollout function           external: no encoder, still the four SFT hooks     external_producer_*
                                built-in: --sft-encoder-checkpoint                 builtin_producer_still_requires_*
     --sft-distilled-cfg-scale  config with cfg_distilled, positive                distilled_cfg_scale_*
+    unguided config            no guidance, true CFG scale or negative prompt     unguided_config_*
 """
 
 import shlex
@@ -123,11 +125,24 @@ def test_distilled_cfg_scale_needs_a_cfg_distilled_config(args: Namespace) -> No
 
 
 @pytest.mark.parametrize("scale", [0.0, -2.0, float("nan")], ids=["zero", "negative", "nan"])
-def test_distilled_cfg_scale_must_be_positive(args: Namespace, monkeypatch: pytest.MonkeyPatch, scale) -> None:
+def test_distilled_cfg_scale_must_be_positive(
+    args: Namespace, monkeypatch: pytest.MonkeyPatch, scale
+) -> None:
     from miles.backends.fsdp_utils.configs import train_pipeline_config
 
     # The fixture's lookup returns its Config for any family.
     monkeypatch.setattr(train_pipeline_config.get_train_pipeline_config_cls("wan2_2"), "cfg_distilled", True)
     args.sft_distilled_cfg_scale = scale
     with pytest.raises(ValueError, match="must be positive"):
+        miles_validate_args(args)
+
+
+def test_unguided_config_rejects_a_true_cfg_scale(args: Namespace, monkeypatch: pytest.MonkeyPatch) -> None:
+    from miles.backends.fsdp_utils.configs import train_pipeline_config
+
+    # A true CFG scale turns on the trainer's CFG branch, which an unguided config never runs.
+    monkeypatch.setattr(train_pipeline_config.get_train_pipeline_config_cls("wan2_2"), "supports_cfg_training", False)
+    args.diffusion_guidance_scale = 1.0
+    args.diffusion_true_cfg_scale = 4.0
+    with pytest.raises(ValueError, match="trains unguided"):
         miles_validate_args(args)

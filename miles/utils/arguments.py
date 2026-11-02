@@ -1894,11 +1894,13 @@ def miles_validate_args(args):
     if args.model_backend_path is None:
         args.model_backend_path = cfg_cls.model_backend_path
     if not cfg_cls.supports_cfg_training and (
-        args.diffusion_guidance_scale != 1.0 or args.diffusion_negative_prompt is not None
+        args.diffusion_guidance_scale != 1.0
+        or args.diffusion_true_cfg_scale not in (None, 1.0)
+        or args.diffusion_negative_prompt is not None
     ):
         raise ValueError(
             f"{cfg_cls.__name__} trains unguided (supports_cfg_training=False); set "
-            f"--diffusion-guidance-scale 1.0 and drop --diffusion-negative-prompt"
+            f"--diffusion-guidance-scale 1.0 and drop --diffusion-true-cfg-scale and --diffusion-negative-prompt"
         )
     if cfg_cls.tasks and args.diffusion_task not in cfg_cls.tasks:
         raise ValueError(
