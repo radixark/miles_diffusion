@@ -22,23 +22,29 @@ def prepare_critic_batch(
 ) -> PreparedBatch:
     """SFT flow matching on the student's x0 predictions, conditioned on their rollout prompts.
 
-    The last step's samples are scored at their noisy inputs, so its grid points come from the scoring range.
+    Under --dmd2-critic-scoring reuse-critic-step, the last step's samples are scored at their noisy inputs, so its
+    grid points come from the scoring range.
     """
+    grid_index_range = _score_grid_index_range(ctx) if _is_scoring_step(ctx) else None
+    return prepare_sft_batch(ctx, _sft_batch(ctx, batch), pad_to_len=pad_to_len, grid_index_range=grid_index_range)
+
+
+def _sft_batch(ctx: DiffusionLossContext, batch: list[dict]) -> list[dict]:
     config = ctx.train_pipeline_config
-    sft_batch = [
+    return [
         {
             "latent": {"visual": pair["x0"]},
             "cond_kwargs": config.prepare_cond_kwargs(pair["denoising_env"].pos_cond_kwargs, ctx.device),
         }
         for pair in batch
     ]
-    grid_index_range = None
-    if _is_scoring_step(ctx):
-        min_sigma, max_sigma = ctx.args.dmd2_score_sigma_range
-        num_train_timesteps = config.num_train_timesteps
-        # Grid index i carries the unshifted sigma 1 - i / num_train_timesteps.
-        grid_index_range = (round(num_train_timesteps * (1 - max_sigma)), round(num_train_timesteps * (1 - min_sigma)))
-    return prepare_sft_batch(ctx, sft_batch, pad_to_len=pad_to_len, grid_index_range=grid_index_range)
+
+
+def _score_grid_index_range(ctx: DiffusionLossContext) -> tuple[int, int]:
+    min_sigma, max_sigma = ctx.args.dmd2_score_sigma_range
+    num_train_timesteps = ctx.train_pipeline_config.num_train_timesteps
+    # Grid index i carries the unshifted sigma 1 - i / num_train_timesteps.
+    return round(num_train_timesteps * (1 - max_sigma)), round(num_train_timesteps * (1 - min_sigma))
 
 
 def critic_loss_formula(
@@ -84,8 +90,29 @@ def critic_loss_formula(
 
 def score_last_step_samples(ctx: DiffusionLossContext, train_pairs: list[dict]) -> dict[int, dict]:
     """The teacher's x0 at each scored sample's noisy input, next to the critic's x0 kept there, by sample."""
+    return _score_with_teacher(ctx, ctx.train_output_inputs)
+
+
+def score_held_out_samples(ctx: DiffusionLossContext, train_pairs: list[dict]) -> dict[int, dict]:
+    """The critic's and the teacher's x0 at fresh noisy inputs of the last step's samples, before it trains on them."""
+    micro_bs = ctx.args.micro_batch_size
+    pairs = train_pairs[len(train_pairs) - len(train_pairs) // ctx.args.num_steps_per_rollout :]
+    inputs = []
+    for n, start in enumerate(range(0, len(pairs), micro_bs)):
+        batch = pairs[start : start + micro_bs]
+        # Seeded past the training micro-batches, so no training step draws this noise.
+        ctx.microbatch_id = len(train_pairs) // micro_bs + n
+        prepared = prepare_sft_batch(ctx, _sft_batch(ctx, batch), grid_index_range=_score_grid_index_range(ctx))
+        latents, timesteps = prepared.latents["visual"], prepared.timesteps["visual"]
+        sigmas = prepared.extras["sigmas"]["visual"].view(len(batch), *([1] * (latents.ndim - 1)))
+        fake_pred = _predict_velocity(ctx, ctx.models[prepared.component_name], batch, latents, timesteps, 1.0)
+        inputs.append((batch, prepared.component_name, latents, timesteps, sigmas, latents - sigmas * fake_pred))
+    return _score_with_teacher(ctx, inputs)
+
+
+def _score_with_teacher(ctx: DiffusionLossContext, inputs: list[tuple]) -> dict[int, dict]:
     predictions = {}
-    for batch, component_name, latents, timesteps, sigmas, x0_fake in ctx.train_output_inputs:
+    for batch, component_name, latents, timesteps, sigmas, x0_fake in inputs:
         teacher = ctx.teacher_models[component_name]
         real_pred = _predict_velocity(ctx, teacher, batch, latents, timesteps, ctx.args.dmd2_teacher_guidance_scale)
         for pair, x0_real, fake in zip(batch, latents - sigmas * real_pred, x0_fake, strict=True):
@@ -98,7 +125,10 @@ def score_last_step_samples(ctx: DiffusionLossContext, train_pairs: list[dict]) 
 
 
 def _is_scoring_step(ctx: DiffusionLossContext) -> bool:
-    return ctx.optim_step_idx == ctx.args.num_steps_per_rollout - 1
+    return (
+        ctx.args.dmd2_critic_scoring == "reuse-critic-step"
+        and ctx.optim_step_idx == ctx.args.num_steps_per_rollout - 1
+    )
 
 
 def _predict_velocity(
