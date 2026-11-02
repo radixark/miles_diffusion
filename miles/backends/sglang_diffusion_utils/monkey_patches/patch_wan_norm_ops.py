@@ -147,6 +147,9 @@ def apply() -> None:
             mod.apply_flashinfer_rope_qk_inplace = _patched_flashinfer_rope_qk_inplace
         if hasattr(mod, "_apply_rotary_emb"):
             mod._apply_rotary_emb = _patched_apply_rotary_emb
+        # The fused q/k RMSNorm+RoPE kernel would bypass the two patches above.
+        if hasattr(mod, "can_use_fused_rmsnorm_interleaved_rope"):
+            mod.can_use_fused_rmsnorm_interleaved_rope = lambda *args, **kwargs: False
         for cls_name in ("WanTransformer3DModel",):
             cls = getattr(mod, cls_name, None)
             if cls is not None and not getattr(cls, "_wan_head_table_hooked", False):
