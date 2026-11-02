@@ -1007,6 +1007,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "which weights the velocity MSE by sigma^2.",
             )
             parser.add_argument(
+                "--dmd2-critic-scoring",
+                type=str,
+                choices=["reuse-critic-step", "original"],
+                default="reuse-critic-step",
+                help="How the DMD2 critic scores its last step's samples. reuse-critic-step: that step's training "
+                "forward, drawn in --dmd2-score-sigma-range, is the critic's score and only the teacher runs after "
+                "training. original: tianweiy/DMD2's separate draw and critic forward before the critic trains on "
+                "those samples, which costs a critic forward per scored sample and a sleep/wake of each group.",
+            )
+            parser.add_argument(
                 "--critic-load",
                 type=str,
                 default=None,

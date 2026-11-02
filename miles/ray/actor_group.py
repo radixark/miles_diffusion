@@ -100,12 +100,21 @@ class RayTrainGroup:
         self.args = args
         return [actor.init.remote(args, role, with_ref=with_ref) for actor in self._actor_handlers]
 
-    def async_train(self, rollout_id, rollout_data_ref, external_data=None):
-        """Do one rollout training; rank i receives rank i's output of each group in ``external_data``."""
+    def async_train(self, rollout_id, rollout_data_ref, external_data=None, optim_steps=None):
+        """Do one rollout training; rank i receives rank i's output of each earlier phase in ``external_data``."""
         external_data = external_data or {}
         return [
             actor.train.remote(
-                rollout_id, rollout_data_ref, {role: refs[rank] for role, refs in external_data.items()}
+                rollout_id, rollout_data_ref, {key: refs[rank] for key, refs in external_data.items()}, optim_steps
+            )
+            for rank, actor in enumerate(self._actor_handlers)
+        ]
+
+    def async_compute(self, rollout_id, rollout_data_ref, external_data, func_path):
+        """Run ``func_path`` on each rank's train pairs without grad, with ``external_data`` as in ``async_train``."""
+        return [
+            actor.compute.remote(
+                rollout_id, rollout_data_ref, {key: refs[rank] for key, refs in external_data.items()}, func_path
             )
             for rank, actor in enumerate(self._actor_handlers)
         ]

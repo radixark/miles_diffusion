@@ -15,6 +15,9 @@
     score_last_step_samples, without grad after the critic's steps, per kept micro-batch:
       teacher, CFG --dmd2-teacher-guidance-scale over the rollout's neg cond ──► x0_real = x_s - sigma v_real
       ──► {sample_index: {"x0_real", "x0_fake"}}; the teacher is resharded so sleep moves its shards
+    --dmd2-critic-scoring original instead: every step is plain SFT and keeps nothing; score_held_out_samples,
+      a compute phase before the critic's last step, draws fresh x_s in the scoring range for that step's pairs,
+      seeded past the training micro-batches, and runs the critic and the teacher there
                 │  ctx.external_data["critic"] on the paired actor rank
     select_scored_pairs ──► the actor's train-input hook keeps only the scored pairs, i.e. the critic's last step
     prepare_generator_batch ──► the student's unguided step i on the rollout input x_i
@@ -36,6 +39,10 @@ What each test pins:
   test_scoring_reshards_the_teacher                     teacher resharded after its no-grad forwards
   test_actor_keeps_the_critic_last_step_pairs           same shard ──► the actor trains on the scored 1/K only
   test_scores_outside_the_shard_are_rejected            a broken rank pairing fails instead of shrinking the batch
+  test_original_scoring_trains_the_last_step_on_the_full_grid_and_keeps_nothing   original: plain SFT, no kept inputs
+  test_held_out_scores_are_critic_and_teacher_forwards_at_a_fresh_draw_in_the_scoring_range   the last 1/K, apart
+  test_held_out_scoring_draws_past_the_training_micro_batches   its seeds never coincide with a training draw
+  test_held_out_scoring_reshards_the_teacher            teacher resharded; the compute phase reshards the critic
   test_generator_batch_is_the_student_step_on_its_input  x_i, t_i, sigma_i and the positive cond, no CFG
   test_generator_needs_a_single_component                multi-DiT families are rejected
   test_surrogate_gradient_matches_the_reference          same gradient as the reference's batch-mean MSE
@@ -112,7 +119,7 @@ def _pairs(num_pairs, with_neg=True):
     ]
 
 
-def _ctx(teacher_guidance_scale=3.0, critic_scale=1.0, teacher_scale=1.0):
+def _ctx(teacher_guidance_scale=3.0, critic_scale=1.0, teacher_scale=1.0, critic_scoring="reuse-critic-step"):
     return DiffusionLossContext(
         models={"transformer": _CondVelocity(critic_scale)},
         teacher_models={"transformer": _CondVelocity(teacher_scale)},
@@ -128,6 +135,7 @@ def _ctx(teacher_guidance_scale=3.0, critic_scale=1.0, teacher_scale=1.0):
             dmd2_teacher_guidance_scale=teacher_guidance_scale,
             dmd2_score_sigma_range=[0.02, 0.98],
             dmd2_critic_loss_space="velocity",
+            dmd2_critic_scoring=critic_scoring,
         ),
         forward_dtype=torch.float32,
         device=torch.device("cpu"),
@@ -348,6 +356,75 @@ def test_scores_outside_the_shard_are_rejected():
     ctx.external_data["critic"] = {pair["sample_index"]: {} for pair in pairs[2:]}
     with pytest.raises(ValueError, match="only 1 of them"):
         dmd2.select_scored_pairs(ctx, pairs[:3])
+
+
+def test_original_scoring_trains_the_last_step_on_the_full_grid_and_keeps_nothing():
+    ctx = _ctx(critic_scoring="original")
+    pairs = _pairs(256)
+    ctx.optim_step_idx = CRITIC_STEPS - 1
+
+    critic_batch = dmd2.prepare_critic_batch(ctx, pairs)
+    sft_batch = prepare_sft_batch(ctx, _sft_pairs(ctx, pairs))
+    _critic_step(ctx, pairs[:4], CRITIC_STEPS - 1)
+
+    assert torch.equal(critic_batch.latents["visual"], sft_batch.latents["visual"])
+    assert torch.equal(critic_batch.extras["sigmas"]["visual"], sft_batch.extras["sigmas"]["visual"])
+    assert ctx.train_output_inputs == []
+
+
+def test_held_out_scores_are_critic_and_teacher_forwards_at_a_fresh_draw_in_the_scoring_range(monkeypatch):
+    ctx = _ctx(critic_scoring="original")
+    ctx.models["transformer"] = _NoisyInputVelocity()
+    pairs = _pairs(12)
+    draws = []
+    prepare = dmd2.prepare_sft_batch
+
+    def record_draw(ctx, batch, **kwargs):
+        draws.append(prepare(ctx, batch, **kwargs))
+        return draws[-1]
+
+    monkeypatch.setattr(dmd2, "prepare_sft_batch", record_draw)
+
+    scores = dmd2.score_held_out_samples(ctx, pairs)
+
+    assert list(scores) == [108, 109, 110, 111]
+    grid = FlowNoiseSchedule.shifted(FLOW_SHIFT, 1000).sigmas
+    for prepared, batch in zip(draws, (pairs[8:10], pairs[10:]), strict=True):
+        x_s, timesteps = prepared.latents["visual"], prepared.timesteps["visual"]
+        sigma = prepared.extras["sigmas"]["visual"].view(-1, 1, 1, 1)
+        assert set(sigma.flatten().tolist()) <= set(grid[20:981].tolist())
+        fake = dmd2._predict_velocity(ctx, ctx.models["transformer"], batch, x_s, timesteps, 1.0)
+        real = dmd2._predict_velocity(ctx, ctx.teacher_models["transformer"], batch, x_s, timesteps, 3.0)
+        for n, pair in enumerate(batch):
+            assert torch.equal(scores[pair["sample_index"]]["x0_fake"], x_s[n] - sigma[n] * fake[n])
+            assert torch.equal(scores[pair["sample_index"]]["x0_real"], x_s[n] - sigma[n] * real[n])
+
+
+def test_held_out_scoring_draws_past_the_training_micro_batches(monkeypatch):
+    ctx = _ctx(critic_scoring="original")
+    seen = []
+    prepare = dmd2.prepare_sft_batch
+
+    def record_seed(ctx, batch, **kwargs):
+        seen.append((ctx.microbatch_id, kwargs["grid_index_range"]))
+        return prepare(ctx, batch, **kwargs)
+
+    monkeypatch.setattr(dmd2, "prepare_sft_batch", record_seed)
+
+    dmd2.score_held_out_samples(ctx, _pairs(12))
+
+    # 12 pairs in micro-batches of 2 train as micro-batches 0..5, so the scoring draws come after them.
+    assert seen == [(6, (20, 980)), (7, (20, 980))]
+
+
+def test_held_out_scoring_reshards_the_teacher(monkeypatch):
+    resharded = []
+    monkeypatch.setattr(dmd2, "reshard_model", resharded.append)
+    ctx = _ctx(critic_scoring="original")
+
+    dmd2.score_held_out_samples(ctx, _pairs(6))
+
+    assert resharded == [ctx.teacher_models["transformer"]]
 
 
 def _generator_pairs(num_pairs):

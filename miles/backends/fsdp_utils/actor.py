@@ -19,6 +19,7 @@ from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.metric_buffer import MetricBuffer
 from miles.utils.metric_utils import compute_rollout_step
+from miles.utils.misc import load_function
 from miles.utils.timer import Timer, inverse_timer, timer
 from miles.utils.tracking_utils import init_tracking
 from miles.utils.train_data_utils import (
@@ -94,8 +95,6 @@ class FSDPTrainRayActor(TrainRayActor):
             self.args.start_rollout_id = 0
 
         self._forward_dtype = parse_dtype_from_str(args.diffusion_forward_dtype)
-
-        from miles.utils.misc import load_function
 
         self.train_pipeline_config = load_function(args.train_pipeline_config_path)()
         self.train_pipeline_config.configure(args)
@@ -330,7 +329,9 @@ class FSDPTrainRayActor(TrainRayActor):
             )
         )
 
-    def train(self, rollout_id: int, rollout_data_ref, external_data) -> Any:  # type: ignore[override]
+    def train(  # type: ignore[override]
+        self, rollout_id: int, rollout_data_ref, external_data, optim_steps: tuple[int, int] | None = None
+    ) -> Any:
         if self.args.offload_train:
             self.wake_up()
 
@@ -340,7 +341,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 return
             external_data = dict(zip(external_data, ray.get(list(external_data.values())), strict=True))
             train_output = self._train_core(
-                rollout_id=rollout_id, rollout_data=rollout_data, external_data=external_data
+                rollout_id=rollout_id, rollout_data=rollout_data, external_data=external_data, optim_steps=optim_steps
             )
             if self.ema_optimizer is not None:
                 self.ema_optimizer.step(self.global_step)
@@ -352,15 +353,27 @@ class FSDPTrainRayActor(TrainRayActor):
         )
         return train_output
 
-    def _train_core(self, rollout_id: int, rollout_data, external_data: dict[str, Any]) -> Any:
-        """Run the shared diffusion training loop."""
-        device = torch.device("cuda", torch.cuda.current_device())
+    def compute(self, rollout_id: int, rollout_data_ref, external_data, func_path: str) -> Any:
+        """Run ``func_path(ctx, train_pairs)`` without grad on this rank's rollout data; no training state changes."""
+        if self.args.offload_train:
+            self.wake_up()
 
-        train_pairs: list = rollout_data["train_data"]
-        if not train_pairs:
-            raise ValueError("rollout_data['train_data'] is empty")
+        with inverse_timer("train_wait"), timer("compute"):
+            rollout_data = ray.get(rollout_data_ref[self.parallel_state.get_mesh("dp").get_local_rank()].inner)
+            if self.args.debug_rollout_only:
+                return
+            external_data = dict(zip(external_data, ray.get(list(external_data.values())), strict=True))
+            loss_ctx = self._loss_context(rollout_id, external_data)
+            with torch.no_grad():
+                output = load_function(func_path)(loss_ctx, rollout_data["train_data"])
+            # A no-grad forward leaves FSDP's root parameters gathered; sleep must move the shards.
+            for models in (self.models, self.reference_models, self.teacher_models):
+                for model in models.values():
+                    reshard_model(model)
+        return output
 
-        loss_ctx = DiffusionLossContext(
+    def _loss_context(self, rollout_id: int, external_data: dict[str, Any]) -> DiffusionLossContext:
+        return DiffusionLossContext(
             models=self.models,
             reference_models=self.reference_models,
             teacher_models=self.teacher_models,
@@ -368,11 +381,26 @@ class FSDPTrainRayActor(TrainRayActor):
             sde_backend=self.sde_backend,
             args=self.args,
             forward_dtype=self._forward_dtype,
-            device=device,
+            device=torch.device("cuda", torch.cuda.current_device()),
             rollout_id=rollout_id,
             dp_rank=self.parallel_state.dp_rank,
             external_data=external_data,
         )
+
+    def _train_core(
+        self,
+        rollout_id: int,
+        rollout_data,
+        external_data: dict[str, Any],
+        optim_steps: tuple[int, int] | None = None,
+    ) -> Any:
+        """Run the shared diffusion training loop; ``optim_steps`` limits it to a range of the rollout's steps."""
+        train_pairs: list = rollout_data["train_data"]
+        if not train_pairs:
+            raise ValueError("rollout_data['train_data'] is empty")
+
+        loss_ctx = self._loss_context(rollout_id, external_data)
+        device = loss_ctx.device
         if self.custom_train_input_func is not None:
             train_pairs = self.custom_train_input_func(loss_ctx, train_pairs)
 
@@ -430,9 +458,15 @@ class FSDPTrainRayActor(TrainRayActor):
                         )
 
         # ------------- Forward / Backward -------------
+        step_lo, step_hi = (0, num_optim_steps_per_rollout) if optim_steps is None else optim_steps
+        if not 0 <= step_lo < step_hi <= num_optim_steps_per_rollout:
+            raise ValueError(
+                f"optim_steps={optim_steps} is not a range within the {num_optim_steps_per_rollout} steps"
+            )
         with timer("actor_train"):
-            microbatch_id = 0
-            for optim_step_idx, microbatch_ranges in enumerate(microbatch_schedule):
+            microbatch_id = sum(len(microbatch_ranges) for microbatch_ranges in microbatch_schedule[:step_lo])
+            for optim_step_idx in range(step_lo, step_hi):
+                microbatch_ranges = microbatch_schedule[optim_step_idx]
                 self.optimizer.zero_grad(set_to_none=True)
                 loss_ctx.optim_step_idx = optim_step_idx
 

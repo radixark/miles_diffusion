@@ -8,6 +8,7 @@ from miles.utils.arguments import parse_args
 from miles.utils.logging_utils import configure_logger
 from miles.utils.misc import should_run_periodic_action
 from miles.utils.tracking_utils import init_tracking
+from miles.utils.trainer_config import compute_train_schedule
 
 
 def train(args):
@@ -28,6 +29,8 @@ def train(args):
     logger.info("train: creating training model")
     train_groups = create_training_models(args, pgs, rollout_manager)
     actor_model = train_groups["actor"]
+    schedule = compute_train_schedule(args)
+    last_phase_index = {phase.role: index for index, phase in enumerate(schedule)}
     logger.info("train: training model ready")
 
     if args.offload_rollout:
@@ -58,15 +61,20 @@ def train(args):
             rollout_id, args.save_interval, num_rollout_per_epoch, args.num_rollout
         )
         train_outputs = {}
-        for role, train_group in train_groups.items():
-            logger.info(f"train: rollout {rollout_id} {role} train start")
-            train_outputs[role] = train_group.async_train(rollout_id, rollout_data_ref, train_outputs)
-            ray.get(train_outputs[role])
-            logger.info(f"train: rollout {rollout_id} {role} train done")
-            if should_save:
+        for index, phase in enumerate(schedule):
+            train_group = train_groups[phase.role]
+            logger.info(f"train: rollout {rollout_id} {phase.key} start")
+            if phase.compute_path is None:
+                refs = train_group.async_train(rollout_id, rollout_data_ref, train_outputs, phase.optim_steps)
+            else:
+                refs = train_group.async_compute(rollout_id, rollout_data_ref, train_outputs, phase.compute_path)
+            train_outputs[phase.key] = refs
+            ray.get(refs)
+            logger.info(f"train: rollout {rollout_id} {phase.key} done")
+            if should_save and index == last_phase_index[phase.role]:
                 train_group.save_model(rollout_id, force_sync=rollout_id == args.num_rollout - 1)
-            # Its outputs already sit in the object store, so a group sleeps before the next one wakes.
-            if args.offload_train:
+            # Its outputs already sit in the object store, so a group sleeps before another one wakes.
+            if args.offload_train and (index + 1 == len(schedule) or schedule[index + 1].role != phase.role):
                 train_group.offload()
 
         if should_save and args.rollout_global_dataset:

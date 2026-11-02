@@ -244,6 +244,9 @@ before the actor on each rollout: it starts from `--critic-load` (default `--tea
 learns the student's samples with the SFT loss at `--critic-lr` (default `--lr`). On its last step
 it keeps its own x0 predictions from that step's forward, before the update, and after training hands
 them with the teacher's x0 at the same noisy inputs to the actor as `ctx.external_data["critic"]`.
+With `--dmd2-critic-scoring original` the critic instead trains its first K−1 steps, scores the last
+step's samples at a fresh draw with itself and the teacher (`loss_hub.dmd2.score_held_out_samples`, a
+compute phase), and trains its last step after the actor.
 The actor trains on those samples only (its train-input hook defaults to
 `loss_hub.dmd2.select_scored_pairs`): it recomputes the student's x0 at the rollout's step and moves
 it along their difference.
@@ -314,11 +317,16 @@ def train_output(ctx, train_pairs) -> Any:
     ...
 ```
 
-Runs without grad after this trainer group's train steps on a rollout. Every trainer group that
-trains later on the same rollout reads the return value of its paired rank (same rank, same
-train pairs) as `ctx.external_data[<role>]`. Prepare and loss hooks see the current optimizer step
-as `ctx.optim_step_idx` and can leave inputs for this hook in `ctx.train_output_inputs`, which
-starts empty on each train call.
+Runs without grad after this trainer group's train steps on a rollout. Every phase that runs later
+on the same rollout reads the return value of its paired rank (same rank, same train pairs) as
+`ctx.external_data[<phase key>]`, the group's role unless the schedule says otherwise. Prepare and
+loss hooks see the current optimizer step as `ctx.optim_step_idx` and can leave inputs for this hook
+in `ctx.train_output_inputs`, which starts empty on each train call.
+
+A rollout's train schedule (`compute_train_schedule` in `miles/utils/trainer_config.py`) lists the
+phases: a group's train, over all or a range of its optimizer steps, or a compute hook with this same
+signature, which runs without grad and without touching the optimizer, and publishes its return value
+the same way. `--dmd2-critic-scoring original` uses one to score before the critic's last step.
 
 ### `--sde-step-backend-path`
 

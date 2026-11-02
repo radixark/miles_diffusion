@@ -35,9 +35,11 @@ def _load_train_core():
         for node in ast.parse(path.read_text()).body
         if isinstance(node, ast.ClassDef) and node.name == "FSDPTrainRayActor"
     )
-    method = next(
-        node for node in actor_class.body if isinstance(node, ast.FunctionDef) and node.name == "_train_core"
-    )
+    methods = [
+        node
+        for node in actor_class.body
+        if isinstance(node, ast.FunctionDef) and node.name in ("_loss_context", "_train_core")
+    ]
     namespace = dict(
         Any=Any,
         torch=torch,
@@ -47,8 +49,13 @@ def _load_train_core():
         timer=lambda name: nullcontext(),
         new_metric_buffer=lambda *args, **kwargs: SimpleNamespace(reduce=lambda: {}),
     )
-    exec(compile(ast.Module(body=[method], type_ignores=[]), str(path), "exec"), namespace)
-    return namespace["_train_core"]
+    exec(compile(ast.Module(body=methods, type_ignores=[]), str(path), "exec"), namespace)
+
+    def train_core(actor, **kwargs):
+        actor._loss_context = lambda *args: namespace["_loss_context"](actor, *args)
+        return namespace["_train_core"](actor, **kwargs)
+
+    return train_core
 
 
 def _actor(train_input, train_output, forwarded):
