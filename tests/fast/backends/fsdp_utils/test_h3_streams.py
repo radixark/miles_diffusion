@@ -259,7 +259,7 @@ class _PromptSensitiveHeads(_TwoHeads):
         return Namespace(sample=heads.sample + shift, audio_sample=heads.audio_sample + shift)
 
 
-@pytest.mark.parametrize("has_soundtrack", [True, False])
+@pytest.mark.parametrize("has_soundtrack", [True, False], ids=["soundtrack", "silent"])
 def test_distilled_cfg_inverts_the_guided_prompt_branch_against_a_frozen_uncond(has_soundtrack):
     # Packed rows: [text 0-1 | video 2-4 | audio 5-6 | pad 7]; both branches share the layout here.
     layout = {
