@@ -16,8 +16,9 @@ SDE kernel, and, like MiniMax H3, it is trained **unguided**.
   `BasicAVTransformerBlock`. Requires `ltx-core` (pinned in `requirements.txt`, baked into the
   Docker image).
 - **Unguided training.** `supports_cfg_training = False`: any `--diffusion-guidance-scale` or
-  `--diffusion-true-cfg-scale` other than `1.0`, or a `--diffusion-negative-prompt`, is a parse-time error. The training forward is
-  a single velocity pass — there is no negative branch to combine.
+  `--diffusion-true-cfg-scale` other than `1.0`, or a `--diffusion-negative-prompt`, is a
+  parse-time error. The training forward is a single velocity pass — there is no negative
+  branch to combine.
 - **Video branch only.** The audio stream is loaded but never trained
   (`optimizer_state_allowed_missing = ["audio"]`), and `--rollout-patch-group ltx` disables
   audio-video cross-attention on the engine to match.
