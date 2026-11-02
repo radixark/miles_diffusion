@@ -93,7 +93,7 @@ def prepare_sft_batch(
     use_cfg = distilled_cfg_scale != 1.0
     neg_cond = None
     if use_cfg:
-        # Every pair references the run's one uncond cond kwargs (sft_rollout.load_uncond_cond_kwargs).
+        # Every pair carries the same uncond cond kwargs, so neg_cond repeats one encoding per sample.
         neg_cond = config.collate_cond_for_sample_batch(
             [_move_top_level_tensors(pair["uncond_cond_kwargs"], device) for pair in batch],
             device,
