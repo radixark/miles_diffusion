@@ -53,7 +53,7 @@ class H3TrainPipelineConfig(TrainPipelineConfig):
             raise ValueError("H3 SFT requires --fsdp-flow-shift visual=...,audio=...")
         if args.diffusion_task == "ref2va":
             if args.sft_distilled_cfg_scale != 1.0:
-                raise ValueError("--sft-distilled-cfg-scale trains H3 t2va only; Ref2VA has no defined uncond")
+                raise ValueError("--sft-distilled-cfg-scale trains H3 t2va only: Ref2VA has no defined uncond; drop the flag")
             if args.loss_type != "sft_loss":
                 raise ValueError("H3 rollout serves only the t2va task")
             if args.update_weight_target_modules != ["transformer_ref"]:
