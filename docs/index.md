@@ -52,7 +52,7 @@ LTX-2.3, Cosmos3-Nano, and MiniMax H3 also appear in the
 | [Krea-2](models/krea/krea2.md)                             | T2I       | DiffusionNFT + OCR (2- and 8-GPU sync, 6 + 2 async) |
 | [FLUX 3 Image Klein](models/flux3/flux3-image.md)          | T2I       | DiffusionNFT + PickScore (LoRA), Flow-GRPO + HPSv2.1 (full finetune) |
 | [MiniMax H3](models/h3/h3.md)                             | T2VA      | Flow-GRPO + PickScore (t2va, video branch, 2 GPUs), LoRA SFT (t2va, 8 GPUs) |
-| [π₀.₅](models/pi05/pi05.md) | VLA | Full-parameter SFT, checkpoint export (external data adapter) |
+| [π₀.₅](models/pi05/pi05.md) | VLA | Full-parameter SFT, checkpoint export, optional LIBERO plugin |
 
 
 

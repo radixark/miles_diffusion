@@ -48,7 +48,7 @@ Each model links to its recipe page; every documented recipe is labeled with a [
 | **[LTX-2.3](https://miles.radixark.com/docs/diffusion/models/ltx/ltx2)**                             | T2V  | Flow-GRPO + PickScore                                                                                                   |
 | **[Cosmos3 (Edge / Nano / Super)](https://miles.radixark.com/docs/diffusion/models/cosmos/cosmos3)** | T2I  | Flow-GRPO + PickScore                                                                                                   |
 | **[MiniMax H3](https://miles.radixark.com/docs/diffusion/models/h3/h3)**                             | T2VA | Flow-GRPO + PickScore, LoRA SFT                                                      |
-| **[π₀.₅](docs/models/pi05/pi05.md)** | VLA | Full-parameter SFT, checkpoint export (external data adapter) |
+| **[π₀.₅](docs/models/pi05/pi05.md)** | VLA | Full-parameter SFT, checkpoint export, optional LIBERO plugin |
 
 
 ---
