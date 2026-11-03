@@ -207,18 +207,8 @@ def load(actor: Any) -> dict[str, Any] | None:
         raise ValueError("Training resume metadata is missing step/cursor fields")
     if metadata["next_rollout_id"] != target_step:
         raise ValueError("Training resume cursor does not match the checkpoint iteration")
-    if getattr(actor.args, "rollout_global_dataset", False):
-        cursor_path = root_path / "rollout" / f"global_dataset_state_dict_{target_step - 1}.pt"
-        if not cursor_path.is_file():
-            raise FileNotFoundError(f"Incomplete training resume: {cursor_path}")
-        cursor = torch.load(cursor_path, map_location="cpu", weights_only=True)
-        counters = ("sample_offset", "epoch_id", "sample_group_index", "sample_index")
-        if not isinstance(cursor, dict) or any(
-            type(cursor.get(key)) is not int or cursor[key] < 0 for key in counters
-        ):
-            raise ValueError("Training resume dataset cursor is missing valid counters")
-        if not isinstance(cursor.get("metadata"), dict):
-            raise ValueError("Training resume dataset cursor is missing metadata")
+    # RolloutManager restores the cursor through the selected data source's load().
+    # Its storage format is owned by that data source, not the model checkpoint.
 
     # Load model weights (always)
     lora_only = actor.args.use_lora

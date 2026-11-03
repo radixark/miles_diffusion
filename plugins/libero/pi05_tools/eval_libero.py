@@ -42,16 +42,11 @@ def evaluate(args):
         raise ValueError("Trials/replan steps must be positive; wait steps must be non-negative")
     if args.output.exists():
         raise FileExistsError(args.output)
-    if args.video_dir is not None:
-        args.video_dir.mkdir(parents=True, exist_ok=False)
     if args.max_steps is not None and args.max_steps < 1:
         raise ValueError("--max-steps must be positive")
-    np.random.seed(args.seed)
-    policy = SGLangLiberoPolicy(args.bundle, args.endpoint, seed=args.seed, num_steps=args.num_steps)
-    if args.replan_steps > policy.model["action_horizon"]:
-        policy.close()
-        raise ValueError("--replan-steps exceeds the checkpoint's action horizon")
     metadata = read_bundle(args.bundle)
+    if args.replan_steps > metadata["model"]["action_horizon"]:
+        raise ValueError("--replan-steps exceeds the checkpoint's action horizon")
     protocol = {
         "suite": args.suite,
         "task_id": args.task_id,
@@ -65,14 +60,24 @@ def evaluate(args):
     }
     progress_path = args.output.with_suffix(".progress.json")
     episodes = []
-    if progress_path.exists():
+    resuming = progress_path.exists()
+    if resuming:
         if not args.resume:
             raise FileExistsError(f"Use --resume for {progress_path}")
         saved = json.loads(progress_path.read_text())
         if saved["protocol"] != protocol or saved["bundle_metadata"] != metadata:
             raise ValueError("Cannot resume evaluation with different protocol or weights")
         episodes = saved["episodes"]
+    if args.video_dir is not None:
+        # Reuse videos only after validating the matching resume record. Completed
+        # episodes are skipped below; an interrupted episode's partial video is replaced.
+        args.video_dir.mkdir(parents=True, exist_ok=args.resume and resuming)
+    # Record the protocol even before the first episode completes, so an early
+    # interruption can resume with the already-created video directory.
+    save_json(progress_path, {"protocol": protocol, "bundle_metadata": metadata, "episodes": episodes})
     completed = {(item["task_id"], item["trial"]) for item in episodes}
+    np.random.seed(args.seed)
+    policy = SGLangLiberoPolicy(args.bundle, args.endpoint, seed=args.seed, num_steps=args.num_steps)
     try:
         suite = benchmark.get_benchmark_dict()[args.suite]()
         task_ids = range(suite.n_tasks) if args.task_id is None else [args.task_id]
@@ -213,5 +218,5 @@ if __name__ == "__main__":
         action="store_true",
         help="Resume completed episodes from matching progress JSON",
     )
-    parser.add_argument("--video-dir", type=Path, help="Save each episode as an MP4 in a new directory")
+    parser.add_argument("--video-dir", type=Path, help="Save episode MP4s; --resume can reuse the matching run's directory")
     evaluate(parser.parse_args())
