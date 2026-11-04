@@ -24,7 +24,7 @@ From `miles/backends/fsdp_utils/configs/krea2.py`:
 | Cond collation | Pad text to the batch max; one latent grid per batch | Position ids of the grid depend only on resolution |
 | Text mask | Dropped when every token is valid | Matches the rollout DiT's maskless fast path |
 | CFG combine | `neg + scale · (pos − neg)`, `true_cfg_scale` wins when set | Same formula as the engine |
-| FSDP param dtypes | RMSNorm weights (`norm`, `norm1`, `norm2`, `norm_q`, `norm_k`) all-gathered in fp32 | `Krea2RMSNorm` scales by `weight + 1.0` in the weight's dtype; bf16 rounds small offsets away. Same set as diffusers' `_keep_in_fp32_modules`, see [Dtype Control §3](../../advanced/dtype-control.md#3-per-parameter-dtype-overrides) |
+| FSDP param dtypes | RMSNorm weights in fp32 | `weight + 1.0` loses small offsets in bf16 |
 
 ## 4. Launch
 
