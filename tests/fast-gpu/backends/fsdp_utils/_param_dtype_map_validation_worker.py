@@ -41,6 +41,7 @@ import torch
 import torch.distributed as dist
 from torch import nn
 from torch.distributed.fsdp import MixedPrecisionPolicy, fully_shard
+from torch.distributed.fsdp._fully_shard import _fsdp_collectives
 from torch.distributed.tensor import DTensor
 
 from miles.backends.fsdp_utils.monkey_patches import fsdp_param_dtype_patch
@@ -395,7 +396,7 @@ def test_empty_map_delegates_to_standard_policy():
 
 
 def test_reduce_scatter_copy_in_with_empty_grad():
-    copy_in = fsdp_param_dtype_patch._fsdp_collectives.foreach_reduce_scatter_copy_in
+    copy_in = _fsdp_collectives.foreach_reduce_scatter_copy_in
     empty_grad = torch.empty((0, 2), device="cuda", dtype=torch.bfloat16)
     fp32_grad = torch.arange(
         6,
