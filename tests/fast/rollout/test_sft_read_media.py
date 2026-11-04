@@ -48,6 +48,7 @@ import os
 import shutil
 import subprocess
 from fractions import Fraction
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -424,11 +425,9 @@ def _real_video() -> str:
     )
 
 
-def _real_rotated_video(tmp_path) -> str:
-    from urllib.request import urlopen
-
-    path = tmp_path / "displaymatrix.mov"
-    path.write_bytes(urlopen("https://fate-suite.ffmpeg.org/mov/displaymatrix.mov").read())
+def _real_rotated_video() -> str:
+    # FFmpeg FATE sample mov/displaymatrix.mov, vendored: the FATE host is too flaky for CI.
+    path = Path(__file__).parents[2] / "fixtures" / "media" / "displaymatrix.mov"
     assert hashlib.sha256(path.read_bytes()).hexdigest() == (
         "02ad3fcdc28a1c8d9d81384829f60c5c28cd23a5a8570cbb56d0f90647ba92b4"
     )
@@ -469,7 +468,7 @@ def test_video_source_probes_and_windows_a_real_h264_clip():
     assert torch.equal(source.decode(100, 3), reference.permute(0, 3, 1, 2))
 
 
-def test_video_source_turns_a_real_rotated_clip_upright(tmp_path):
+def test_video_source_turns_a_real_rotated_clip_upright():
     _require_ffmpeg("ffmpeg", "ffprobe")
     from miles.utils.media import VideoSource
 
@@ -477,7 +476,7 @@ def test_video_source_turns_a_real_rotated_clip_upright(tmp_path):
     # the frames decode turned, 240x160, and each turned pixel is twice as wide as tall. FATE cut the file short,
     # so only its first 33 frames decode:
     #   decode(10, 3)  ==  np.rot90(stored frames 10..12, clockwise), the stored frames read with -noautorotate
-    path = _real_rotated_video(tmp_path)
+    path = _real_rotated_video()
     source = VideoSource(path)
     info = source.info
     assert (info.num_frames, info.width, info.height, info.sample_aspect_ratio) == (33, 240, 160, Fraction(2))
