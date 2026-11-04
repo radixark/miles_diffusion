@@ -15,11 +15,6 @@ def _stack_pair_field(batch: list[dict], key: str, device: torch.device) -> torc
     return torch.stack([pair[key] for pair in batch]).to(device=device, dtype=torch.float32)
 
 
-def _stack_rollout_prev_mean(batch: list[dict], device: torch.device) -> torch.Tensor | None:
-    rollout_prev_mean = stack_train_pair_rollout_debug(batch, "rollout_step_prev_sample_mean")
-    return None if rollout_prev_mean is None else rollout_prev_mean.to(device=device, dtype=torch.float32)
-
-
 def prepare_flow_grpo_batch(
     ctx: DiffusionLossContext,
     batch: list[dict],
@@ -157,7 +152,9 @@ def flow_grpo_loss_formula(
     clipped = -prepared.advantage * torch.clamp(ratio, 1.0 - clip_range, 1.0 + clip_range)
     per_pair_loss = torch.maximum(unclipped, clipped)
 
-    rollout_prev_mean = _stack_rollout_prev_mean(batch, score.prev_mean.device)
+    rollout_prev_mean = stack_train_pair_rollout_debug(batch, "rollout_step_prev_sample_mean")
+    if rollout_prev_mean is not None:
+        rollout_prev_mean = rollout_prev_mean.to(device=score.prev_mean.device, dtype=torch.float32)
     centering_metrics = {}
     if args.diffusion_score_centering:
         rollout_noise_std = stack_train_pair_rollout_debug(batch, "rollout_step_noise_std_dev")
