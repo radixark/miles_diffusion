@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import torch
 
+from miles.backends.fsdp_utils.loss_hub.score_centering import gaussian_score_center
 from miles.backends.fsdp_utils.loss_hub.types import DiffusionLossContext, PreparedBatch
 from miles.backends.fsdp_utils.metrics import record_rollout_train_abs_diff
 from miles.utils.metric_buffer import MetricBuffer
@@ -157,24 +158,26 @@ def flow_grpo_loss_formula(
     per_pair_loss = torch.maximum(unclipped, clipped)
 
     rollout_prev_mean = _stack_rollout_prev_mean(batch, score.prev_mean.device)
+    centering_metrics = {}
     if args.diffusion_score_centering:
-        if rollout_prev_mean is None:
+        rollout_noise_std = stack_train_pair_rollout_debug(batch, "rollout_step_noise_std_dev")
+        if rollout_prev_mean is None or rollout_noise_std is None:
             raise ValueError(
-                "--diffusion-score-centering needs the rollout's per-step prev-sample means; "
+                "--diffusion-score-centering needs the rollout's per-step prev-sample means and noise stds; "
                 "these rollouts carry none (run with --diffusion-debug-mode)"
             )
-        if rollout_prev_mean.shape != score.prev_mean.shape:
-            raise ValueError(
-                f"Rollout prev-sample means {tuple(rollout_prev_mean.shape)} are laid out unlike the trainer's "
-                f"{tuple(score.prev_mean.shape)}; score centering does not support this model family"
-            )
-        # score centering (arXiv:2609.20807): subtract E[score] under the rollout, scaled by the
-        # PPO gradient weight (0 where the clip binds); value zeroed so the logged loss is unchanged
-        expected_log_prob = ctx.sde_backend.expected_log_prob(rollout_prev_mean, score.prev_mean, score.noise_std)
-        ppo_weight = torch.where(unclipped >= clipped, ratio, torch.zeros_like(ratio)).detach()
-        per_pair_loss = per_pair_loss + prepared.advantage * ppo_weight * (
-            expected_log_prob - expected_log_prob.detach()
+        center, centering_metrics = gaussian_score_center(
+            prev_mean=score.prev_mean,
+            rollout_prev_mean=rollout_prev_mean,
+            noise_std=score.noise_std,
+            rollout_noise_std=rollout_noise_std.to(score.prev_mean.device),
+            next_latents=next_latents,
+            log_ratio=log_prob_new - log_prob_old,
+            advantage=prepared.advantage,
+            clip_range=clip_range,
         )
+        # Gradient-only term: the logged PPO loss keeps its value and its clip mask.
+        per_pair_loss = per_pair_loss + prepared.advantage * (center - center.detach()).to(per_pair_loss.dtype)
     loss_sum = per_pair_loss.sum()
     bsz = len(batch)
 
@@ -197,6 +200,8 @@ def flow_grpo_loss_formula(
         kl_sum = kl_per_pair.sum()
 
     with torch.no_grad():
+        for key, values in centering_metrics.items():
+            metrics.emit_mean(key, total=values.sum(), count=bsz)
         metrics.emit_mean("loss", total=loss_sum, count=bsz)
         metrics.emit_mean("policy_loss", total=per_pair_loss.sum(), count=bsz)
         metrics.emit_mean("kl_loss", total=kl_sum, count=bsz)

@@ -25,6 +25,8 @@ SCHEMA = {
     "model_output_max_abs_diff": MetricReduce.MAX,
     "model_output_rel_max": MetricReduce.MAX,
     "prev_mean_diff_over_noise_std": MetricReduce.MEAN,
+    "score_center_expected_clipped_ratio": MetricReduce.MEAN,
+    "score_center_density_abs_diff": MetricReduce.MEAN,
     "grad_norm": MetricReduce.REPLICATED,
     "nft_loss": MetricReduce.MEAN,
     "nft_loss_per_pair": MetricReduce.MEAN,

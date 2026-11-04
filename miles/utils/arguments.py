@@ -1014,10 +1014,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--diffusion-score-centering",
                 action="store_true",
                 help=(
-                    "Flow-GRPO score centering (arXiv:2609.20807): subtract the expected score under "
-                    "the rollout's transition, cancelling the drift that train/rollout numeric mismatch "
-                    "adds to the policy gradient. Exact for Gaussian SDE steps and a no-op when trainer "
-                    "and rollout agree. Needs the rollout's per-step means, so requires --diffusion-debug-mode."
+                    "Flow-GRPO only: subtract the expected clipped-ratio score under the rollout step's "
+                    "Gaussian from the PPO gradient, so train/rollout drift stops acting as a reward. "
+                    "Needs --diffusion-debug-mode for the rollout's per-step means and noise stds."
                 ),
             )
             parser.add_argument(
@@ -1748,17 +1747,26 @@ def rollout_merges_lora(args) -> bool:
 
 
 def validate_score_centering_args(args) -> None:
+    """Score centering closes the Gaussian integral the stock flow-SDE step and its recorded log-probs define."""
     if not args.diffusion_score_centering:
         return
     if args.loss_type != "policy_loss":
+        raise ValueError("--diffusion-score-centering is only supported for policy_loss / Flow-GRPO")
+    if args.diffusion_sde_type != "sde" or args.sde_step_backend_path is not None:
         raise ValueError(
-            f"--diffusion-score-centering corrects the Flow-GRPO policy gradient; "
-            f"--loss-type {args.loss_type} has no SDE log-prob to center"
+            "--diffusion-score-centering requires --diffusion-sde-type sde with the default SDE step backend"
         )
     if not args.diffusion_debug_mode:
         raise ValueError(
-            "--diffusion-score-centering needs the rollout's per-step prev-sample means, which "
-            "sglang-diffusion returns only under --diffusion-debug-mode"
+            "--diffusion-score-centering requires --diffusion-debug-mode (rollout prev-sample means and noise stds)"
+        )
+    if args.diffusion_recompute_old_log_prob:
+        raise ValueError(
+            "--diffusion-score-centering centers against the rollout's own log-probs; drop --diffusion-recompute-old-log-prob"
+        )
+    if not 0.0 < args.diffusion_clip_range < 1.0:
+        raise ValueError(
+            f"--diffusion-score-centering requires 0 < --diffusion-clip-range < 1, got {args.diffusion_clip_range}"
         )
 
 
