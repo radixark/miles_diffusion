@@ -13,6 +13,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 _DIR = Path(__file__).parent
 
@@ -52,3 +54,7 @@ def test_fully_shard_collective_ops():
 
 def test_fully_shard_frozen():
     _run_ported_test("ported_fully_shard_frozen.py")
+
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, "-v"]))

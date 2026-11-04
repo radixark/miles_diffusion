@@ -91,3 +91,7 @@ def test_param_dtype_map_validation(case):
 def test_param_dtype_map_uniform_map_matches_stock(topology):
     """A map assigning every param one dtype must be bitwise-equal to plain param_dtype."""
     _run_worker(_EQUIVALENCE_WORKER, topology)
+
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, "-v"]))
