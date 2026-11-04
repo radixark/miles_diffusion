@@ -1,6 +1,6 @@
 ---
 title: Krea-2
-description: Krea-2-Raw DiffusionNFT with OCR, synchronous on 2 or 8 colocated GPUs and asynchronous on 6 + 2 GPUs.
+description: Krea-2-Raw DiffusionNFT with OCR, synchronous on 2 or 8 colocated GPUs and asynchronous on 6 + 2 GPUs; async Flow-GRPO with score centering on the same 6 + 2 pools.
 ---
 
 ## 1. Model introduction
@@ -27,8 +27,8 @@ From `miles/backends/fsdp_utils/configs/krea2.py`:
 
 ## 4. Launch
 
-All recipes train DiffusionNFT with the OCR reward (no reward GPU), LoRA rank 32, an EMA rollout policy and
-deterministic ODE rollouts (10 steps, no CFG).
+§4.1–4.3 train DiffusionNFT with the OCR reward (no reward GPU), LoRA rank 32, an EMA rollout policy and
+deterministic ODE rollouts (10 steps, no CFG). §4.4 trains Flow-GRPO on the same data and LoRA with SDE rollouts.
 
 ### 4.1 Synchronous, 2 GPUs colocated
 
@@ -65,6 +65,22 @@ the batch (3 training + 1 rollout GPUs, 3 × 8 per step), so every training GPU 
 
 ```bash
 python3 scripts/run_diffusion_nft_krea2_async.py
+```
+
+### 4.4 Asynchronous Flow-GRPO with score centering, 6 training + 2 rollout GPUs
+
+`scripts/run_diffusion_grpo_krea2_async.py` — the §4.3 pools and batch, with the Flow-GRPO loss instead of NFT:
+SDE rollouts (noise level 0.7, no CFG), two SDE steps per sample (steps 3–4 of 10), PPO clip `1e-4`, no KL, no EMA,
+micro-batch 2. The engines sample each batch with the previous step's actor weights, so the trainer re-scores
+transitions drawn around a mean it no longer owns; `--diffusion-score-centering` (with `--diffusion-debug-mode`)
+removes the drift that puts into the PPO gradient, see [SDE Step Backend §5](../../advanced/sde-backend.md#5-score-centering).
+`--no-score-centering` runs the plain one-step-async baseline with everything else unchanged.
+
+**Status:** [○ NV — Not verified](../../user-guide/recipe-verification.md#nv): no complete curve has been run on this
+code yet.
+
+```bash
+python3 scripts/run_diffusion_grpo_krea2_async.py
 ```
 
 ## 5. Reference results
