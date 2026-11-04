@@ -71,12 +71,15 @@ def sft_sample_key(args, sample: Sample) -> tuple[str, int]:
         "sample": identity,
         "files": [media_fingerprint(path) for path in sorted(paths)],
     }
+    if args.sft_distilled_cfg_scale != 1.0 and sample.conditions:
+        # A conditioned sample's references shape its uncond, so its pair carries its own; other keys stay put.
+        payload["uncond"] = True
     seed = int.from_bytes(_sha256({"seed": int(args.seed), "sample": identity})[8:16], "big") % 2**63
     return _sha256(payload).hex() + ".pt", seed
 
 
 def sft_uncond_key(args) -> str:
-    """Cache name of the uncond cond kwargs every pair of the run shares."""
+    """Cache name of the uncond cond kwargs the run's unconditioned pairs share."""
     payload = {
         # Bump the version whenever the cached uncond changes.
         "version": 1,
@@ -228,7 +231,7 @@ class SftEncodePool(metaclass=SingletonMeta):
 
 
 def load_uncond_cond_kwargs(args, cache_dir: Path) -> dict:
-    """The uncond cond kwargs every pair of the run shares, encoded once per cache like a sample pair."""
+    """The uncond cond kwargs the run's unconditioned pairs share, encoded once per cache like a sample pair."""
     path = cache_dir / sft_uncond_key(args)
     if not path.exists():
         pool = SftEncodePool(args)
@@ -272,13 +275,13 @@ def generate_rollout(args, rollout_id, data_source, evaluation: bool = False) ->
         )
         encode_seconds = time.time() - start
 
-    uncond_cond_kwargs = load_uncond_cond_kwargs(args, cache_dir) if args.sft_distilled_cfg_scale != 1.0 else None
-    for sample in samples:
-        cache_name = sample.metadata.pop("sft_cache_name")
-        pair = torch.load(cache_dir / cache_name, map_location="cpu")
-        if uncond_cond_kwargs is not None:
+    pairs = [torch.load(cache_dir / sample.metadata.pop("sft_cache_name"), map_location="cpu") for sample in samples]
+    if args.sft_distilled_cfg_scale != 1.0 and any("uncond_cond_kwargs" not in pair for pair in pairs):
+        uncond_cond_kwargs = load_uncond_cond_kwargs(args, cache_dir)
+        for pair in pairs:
             # one shared object, so each DP shard's ray.put pickles it once rather than once per pair
-            pair["uncond_cond_kwargs"] = uncond_cond_kwargs
+            pair.setdefault("uncond_cond_kwargs", uncond_cond_kwargs)
+    for sample, pair in zip(samples, pairs, strict=True):
         sample.train_metadata = {"sft_pair": pair}
         sample.status = Sample.Status.COMPLETED
 

@@ -52,10 +52,6 @@ class H3TrainPipelineConfig(TrainPipelineConfig):
         if args.loss_type == "sft_loss" and "audio" not in (args.fsdp_flow_shift or {}):
             raise ValueError("H3 SFT requires --fsdp-flow-shift visual=...,audio=...")
         if args.diffusion_task == "ref2va":
-            if args.sft_distilled_cfg_scale != 1.0:
-                raise ValueError(
-                    "--sft-distilled-cfg-scale trains H3 t2va only: Ref2VA has no defined uncond; drop the flag"
-                )
             if args.loss_type != "sft_loss":
                 raise ValueError("H3 rollout serves only the t2va task")
             if args.update_weight_target_modules != ["transformer_ref"]:
@@ -143,8 +139,8 @@ class H3TrainPipelineConfig(TrainPipelineConfig):
         predictions = self._packed_forward(model, latents_input, timesteps_input, pos_cond)
         if not use_cfg:
             return predictions
-        # The shared uncond cond kwargs carry no target, so the sample decides whether audio is predicted.
-        neg_cond = {**neg_cond, "h3_target_has_soundtrack": pos_cond["h3_target_has_soundtrack"]}
+        # The uncond replaces only the text side; the sample's references and soundtrack flag stay its own.
+        neg_cond = {**pos_cond, **neg_cond}
         # The uncond guess only anchors the inversion; training it would pull " " toward the data.
         with torch.no_grad():
             uncond_predictions = self._packed_forward(model, latents_input, timesteps_input, neg_cond)

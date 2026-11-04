@@ -33,7 +33,8 @@ references.
 
     distilled CFG (use_cfg, guidance_scale = w): the prompt branch is already guided
     prompt branch  c = forward(pos_cond)                    with grad
-    uncond branch  u = forward(neg_cond + the sample's h3_target_has_soundtrack)   under no_grad
+    uncond branch  u = forward(neg_cond over the sample's cond)   under no_grad
+                   neg_cond replaces the text side; references, their times and the soundtrack flag stay
          ▼
     u + (c - u) / w per stream   (the plain flow-matching velocity the SFT target is)
 
@@ -46,9 +47,10 @@ What each test pins:
   silent target       audio rows still reach the DiT at the audio time; only the visual prediction returns
   reference times     taken from conditioning, and clamped to max(target t, reference t) as native H3 does
   distilled CFG       c and u combine as u + (c - u) / w on both streams; only c carries gradient;
-                      a silent target predicts video alone on both branches
+                      a silent target predicts video alone on both branches; a ref2va uncond keeps the
+                      sample's reference rows at their reference times
   ref2va validation   SFT only (rollout serves t2va); transformer_ref, micro-batch-size 1 and an audio
-                      --fsdp-flow-shift (every H3 SFT) are required; no distilled CFG scale
+                      --fsdp-flow-shift (every H3 SFT) are required
   tiny diffusers H3   real forward/backward through prepare + loss, fp32 and bf16
   mixed precision     the FSDP plan pins exactly the checkpoint's fp32 params, and H3 disables autocast
 """
@@ -307,6 +309,40 @@ def test_distilled_cfg_inverts_the_guided_prompt_branch_against_a_frozen_uncond(
     assert torch.allclose(model.visual_scale.grad, -latents["visual"].sum() / scale)
 
 
+def test_distilled_cfg_ref2va_uncond_keeps_the_reference_rows():
+    latents, timesteps, cond = _case()
+    layout = cond["h3_packed_layout"]
+    # The uncond carries only the text side; the references live in the sample's cond.
+    uncond = {
+        "encoder_hidden_states": torch.zeros(1, 2, 8),
+        "h3_packed_layout": layout,
+        "h3_token_tags": cond["h3_token_tags"],
+    }
+    model = _PromptSensitiveHeads()
+
+    H3TrainPipelineConfig().compute_noise_pred(
+        model=model,
+        latents_input=latents,
+        timesteps_input=timesteps,
+        pos_cond=cond,
+        neg_cond=uncond,
+        joint_cond=None,
+        use_cfg=True,
+        cfg_batching=False,
+        guidance_scale=4.0,
+        true_cfg_scale=None,
+    )
+
+    # model.inputs holds the last forward, the uncond one.
+    assert torch.equal(model.inputs["encoder_hidden_states"], torch.zeros(1, 2, 8))
+    assert torch.equal(model.inputs["hidden_states"][0, ~layout["update_mask"]], cond["h3_reference_visual"])
+    assert torch.equal(
+        model.inputs["audio_hidden_states"][0, ~layout["audio_update_mask"]], cond["h3_reference_audio"]
+    )
+    reference_video_rows = layout["img_pos"][~layout["update_mask"]]
+    assert torch.allclose(_row_timesteps(model)[reference_video_rows], torch.full((2,), 0.999))
+
+
 @pytest.mark.parametrize("as_tuple", [False, True])
 def test_ref2va_scatter_independent_timesteps_and_velocity_direction(as_tuple):
     latents, timesteps, cond = _case()
@@ -417,7 +453,6 @@ def _sft_args(**overrides):
         ({"micro_batch_size": 2}, "micro-batch-size 1"),
         ({"fsdp_flow_shift": {"visual": 8.0}}, "audio"),
         ({"fsdp_flow_shift": None}, "audio"),
-        ({"sft_distilled_cfg_scale": 4.0}, "t2va only"),
     ],
 )
 def test_ref2va_validation_rejects_incompatible_training_settings(overrides, message):

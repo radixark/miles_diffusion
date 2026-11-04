@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import torch
 
 from miles.rollout.encoder_hub.h3 import common
-from miles.rollout.encoder_hub.h3.common import H3_FPS, H3_TEXT_HIDDEN_DIM
+from miles.rollout.encoder_hub.h3.common import H3_FPS, H3_TEXT_HIDDEN_DIM, H3_UNCOND_PROMPT
 from miles.utils.types import Sample
 
 # ---------------------------------------------------------------------------
@@ -282,21 +282,17 @@ def encode_sample(
     text_payload = _encode_text_and_fill_reference_rows(encoder, batch, plan)
     references = _ordered_reference_rows(plan, batch.extra)
     keyframes = references["keyframes"]
-    keyframe_kwargs = {}
+    layout_kwargs = {
+        "latent_t": latent_t,
+        "latent_h": latent_h,
+        "latent_w": latent_w,
+        "audio_t": target_audio_rows.shape[0] // 2,
+        "ref_blocks": references["blocks"],
+    }
     if keyframes is not None:
-        keyframe_kwargs = {
-            "keyframe_frame_indices": keyframes["semantic_frame_indices"],
-            "frame_count": keyframes["frame_count"],
-        }
-    packed_layout = minimax_h3_packed_sequence_ref2va_blocks(
-        text_len=int(text_payload["text_len"]),
-        latent_t=latent_t,
-        latent_h=latent_h,
-        latent_w=latent_w,
-        audio_t=target_audio_rows.shape[0] // 2,
-        ref_blocks=references["blocks"],
-        **keyframe_kwargs,
-    )
+        layout_kwargs["keyframe_frame_indices"] = keyframes["semantic_frame_indices"]
+        layout_kwargs["frame_count"] = keyframes["frame_count"]
+    packed_layout = minimax_h3_packed_sequence_ref2va_blocks(text_len=int(text_payload["text_len"]), **layout_kwargs)
     token_tags = packed_layout["token_tags"].clone()
     token_tags[packed_layout["text_pos"]] = text_payload["text_token_tags"].to(dtype=torch.long, device="cpu")
     reference_visual_rows, reference_audio_rows = _augment_references(references, latent_t=latent_t, seed=seed)
@@ -308,7 +304,7 @@ def encode_sample(
     ]
     if layout_rows != encoded_rows:
         raise ValueError(f"H3 packed layout expects {layout_rows} target/reference rows, encoded {encoded_rows}")
-    return common.train_pair(
+    pair = common.train_pair(
         sample,
         {"visual": target_visual_rows, "audio": target_audio_rows},
         text_payload["hidden_states"][None],
@@ -320,3 +316,28 @@ def encode_sample(
         h3_reference_audio_timestep=MINIMAX_H3_AUDIO_REF_COND_TIMESTEP,
         h3_target_has_soundtrack=media_clip["audio_sample_rate"] is not None,
     )
+    if args.sft_distilled_cfg_scale != 1.0:
+        pair["uncond_cond_kwargs"] = _uncond_cond_kwargs(encoder, layout_kwargs)
+    return pair
+
+
+def _uncond_cond_kwargs(encoder: dict, layout_kwargs: dict) -> dict:
+    """The uncond's text side: ``H3_UNCOND_PROMPT`` replaces the whole Qwen3-VL stream, caption and vision blocks.
+
+    The sample's VAE reference rows and their timesteps stay in its own cond kwargs, so the uncond still sees the
+    references through them.
+    """
+    from sglang.multimodal_gen.runtime.pipelines_core.stages.model_specific_stages.minimax_h3.packed_sequence import (
+        minimax_h3_packed_sequence_ref2va_blocks,
+    )
+    from sglang.multimodal_gen.runtime.pipelines_core.stages.model_specific_stages.minimax_h3.presentation import (
+        minimax_h3_text_only_ids,
+    )
+
+    text_ids = minimax_h3_text_only_ids(encoder["tokenizer"], H3_UNCOND_PROMPT)
+    layout = minimax_h3_packed_sequence_ref2va_blocks(text_len=int(text_ids.numel()), **layout_kwargs)
+    return {
+        "encoder_hidden_states": _encode_ids(encoder, text_ids)[None].to(device="cpu"),
+        "h3_packed_layout": layout,
+        "h3_token_tags": layout["token_tags"],
+    }

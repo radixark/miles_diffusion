@@ -1,12 +1,14 @@
-"""SFT uncond cond: encoded once per cache, and shared by every pair of a --sft-distilled-cfg-scale run.
+"""SFT uncond cond under --sft-distilled-cfg-scale: shared by unconditioned pairs, carried by pairs with references.
 
     SFT_CACHE_KEY_ARGS ──sha256──► .sft_cache/uncond-<sha>.pt   (encoded by encode_uncond on the first miss)
-                                        │ torch.load once per rollout
+                                        │ torch.load once per rollout, only if some pair lacks its own
                                         ▼
-    every pair["uncond_cond_kwargs"] is that one dict      (scale 1.0: no key, nothing encoded)
+    every pair without "uncond_cond_kwargs" gets that one dict   (scale 1.0: no key, nothing encoded)
+    a pair with references (Ref2VA) keeps the uncond its encode_sample attached
 
-What each test pins: the key follows the encode args; generate_rollout encodes the uncond once across rollouts and
-hands every pair the same object; scale 1.0 leaves pairs exactly as cached.
+What each test pins: the key follows the encode args; generate_rollout encodes the shared uncond once across
+rollouts and hands every unconditioned pair the same object; pairs carrying their own uncond keep it and trigger no
+shared encode; scale 1.0 leaves pairs exactly as cached.
 """
 
 from tests.ci.ci_register import register_cpu_ci
@@ -86,7 +88,7 @@ def pool(monkeypatch):
     return _Pool
 
 
-def _cached_samples(args, tmp_path, count):
+def _cached_samples(args, tmp_path, count, with_references=False):
     cache_dir = tmp_path / ".sft_cache"
     cache_dir.mkdir()
     samples = []
@@ -98,6 +100,11 @@ def _cached_samples(args, tmp_path, count):
             "latent": {"visual": torch.full((2,), float(i))},
             "cond_kwargs": {"encoder_hidden_states": torch.ones(1, 3, 4)},
         }
+        if with_references:
+            reference = tmp_path / f"{i}.png"
+            reference.write_bytes(b"y" * (i + 1))
+            sample.conditions = [{"type": "image", "uri": str(reference)}]
+            pair["uncond_cond_kwargs"] = {"encoder_hidden_states": torch.full((1, 1, 4), float(i))}
         torch.save(pair, cache_dir / sft_sample_key(args, sample)[0])
         samples.append(sample)
     return samples
@@ -114,6 +121,18 @@ def test_every_pair_shares_one_uncond_encoded_once(tmp_path, pool):
     assert torch.equal(unconds[0]["encoder_hidden_states"], torch.zeros(1, 1, 4))
     generate_rollout(args, 1, _DataSource(samples))
     assert pool.encodes == 1
+
+
+def test_pairs_with_references_keep_their_own_uncond(tmp_path, pool):
+    args = _args(tmp_path, diffusion_task="ref2va")
+    samples = _cached_samples(args, tmp_path, 3, with_references=True)
+
+    out = generate_rollout(args, 0, _DataSource(samples))
+
+    assert pool.encodes == 0
+    for i, group in enumerate(out.samples):
+        uncond = group[0].train_metadata["sft_pair"]["uncond_cond_kwargs"]
+        assert torch.equal(uncond["encoder_hidden_states"], torch.full((1, 1, 4), float(i)))
 
 
 def test_scale_one_leaves_pairs_as_cached(tmp_path, pool):

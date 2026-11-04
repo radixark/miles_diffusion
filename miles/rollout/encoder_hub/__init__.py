@@ -10,7 +10,8 @@ Each family module provides:
   train on (e.g. conditions) are rejected, never dropped;
 - ``validate_args(args)``: family-specific encode constraints;
 - ``encode_uncond(encoder, args)`` (families trained with ``--sft-distilled-cfg-scale``): the uncond cond kwargs
-  every pair of the run shares.
+  the run's unconditioned pairs share. A sample with conditions has its references shape its uncond, so
+  ``encode_sample`` attaches that pair's own ``uncond_cond_kwargs`` instead.
 """
 
 

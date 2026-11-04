@@ -17,13 +17,11 @@ from argparse import Namespace
 import torch
 
 from miles.rollout.encoder_hub.h3 import common
-from miles.rollout.encoder_hub.h3.common import H3_TEXT_HIDDEN_DIM
+from miles.rollout.encoder_hub.h3.common import H3_TEXT_HIDDEN_DIM, H3_UNCOND_PROMPT
 from miles.utils.types import Sample
 
 H3_SHORT_EDGE = 768
 H3_VAE_SPATIAL_STRIDE = 16
-# The uncond the CFG distilled into H3 is guessed as a single space prompt.
-H3_UNCOND_PROMPT = " "
 
 
 # ---------------------------------------------------------------------------
