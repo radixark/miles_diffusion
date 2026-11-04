@@ -3,14 +3,14 @@
 Same recipe, topology and --deterministic-mode as test_sd3_ocr_grpo_2xGPU (FSDP
 DP=2 + 2 sglang rollout engines, 2 rollouts), plus:
 
-    --diffusion-score-centering         subtract the expected score under the rollout's transition
-    --diffusion-debug-mode              the rollout returns its per-step transition means
-    --diffusion-recompute-old-log-prob  keep the PPO ratio about policy movement only
+    --diffusion-score-centering   add A * (center - center.detach()), center = E_q[clip_A(r)] in closed form
+    --diffusion-debug-mode        the rollout returns its per-step transition means and noise stds
 
-so the run covers the rollout -> trainer path for rollout_prev_sample_means and the
-correction term end to end. train/prev_mean_diff_over_noise_std is how far the rollout's
-transition mean sits from the trainer's; the other series pin the training trajectory
-bit for bit against the registered standard.
+so the run covers the rollout -> trainer path for rollout_prev_sample_means /
+rollout_noise_std_devs and the correction term end to end. train/prev_mean_diff_over_noise_std
+is how far the rollout's transition mean sits from the trainer's, train/score_center_expected_clipped_ratio
+is the center itself (1.0 means no drift); the other series pin the training trajectory bit
+for bit against the registered standard.
 """
 
 from tests.ci.e2e_metrics_registry import register_e2e_ci
@@ -23,7 +23,7 @@ register_e2e_ci(
         "--num-rollout",
         "2",
         "--extra-args",
-        "--diffusion-score-centering --diffusion-debug-mode --diffusion-recompute-old-log-prob",
+        "--diffusion-score-centering --diffusion-debug-mode",
     ],
     labels=["e2e"],
     metrics=[
@@ -35,6 +35,8 @@ register_e2e_ci(
         "train/log_prob_new_idx_0",
         "train/log_prob_mean_abs_diff",
         "train/prev_mean_diff_over_noise_std",
+        "train/score_center_expected_clipped_ratio",
+        "train/score_center_density_abs_diff",
         "train/model_output_mean_abs_diff",
         "train/grad_norm",
     ],
