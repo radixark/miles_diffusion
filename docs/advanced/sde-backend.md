@@ -85,35 +85,35 @@ Checklist:
 ## 5. Score centering
 
 Even when the kernels agree, the engine and the trainer rarely compute the exact same
-transition mean. The engine samples `x' ~ N(μ_q, s²)`, while the trainer scores it under
-`N(μ_θ, s²)`. Once `μ_q ≠ μ_θ`, the expected score under the engine is no longer zero, and
-the policy gradient picks up a drift term: the expected advantage times that expected score.
-Drift distills the trainer toward the engine. The engine is then re-synced from the trainer,
-so the bias compounds over training
-([Score Centering](https://arxiv.org/abs/2609.20807)).
+transition mean, and a one-step-stale rollout under `train_diffusion_async.py` never does.
+The engine samples `x' ~ N(μ_q, s²)` while the trainer scores it under `N(μ_θ, s²)`, so the
+PPO gradient carries a drift term, `E[A] · ∇θ E_q[clip_A(r)]`, that pulls the actor toward
+the engine instead of toward reward
+([Score Centering Stabilizes Off-policy RL](https://arxiv.org/abs/2609.20807)).
 
-`--diffusion-score-centering` subtracts the expected score from every pair's gradient. For a
-Gaussian step with a θ-independent std, `∇θ E_q[log p_θ(x')] = ∇θ log p_θ(μ_q)`, so the
-correction is exact and needs only the engine's mean `μ_q`, with no top-k approximation as
-in the LLM case. It is a no-op when `μ_q = μ_θ`, scales with each pair's PPO gradient weight
-(zero where the clip binds), and leaves the logged loss unchanged. Both built-in backends
-satisfy the Gaussian form. A custom backend whose `log_prob` is not quadratic in
-`prev_sample − prev_mean` must override `SdeStepBackend.expected_log_prob`.
+`--diffusion-score-centering` subtracts that term exactly. Flow-GRPO's per-element mean
+log-prob makes `r = (p_θ/q)^(1/D)`, so under the engine `log r` is normal with mean
+`−κ/(2D)` and variance `κ/D²`, where `κ = |μ_θ − μ_q|² / s²`. The expected clipped ratio
+`E_q[clip_A(r)]` therefore has a closed form in `κ`, and the loss adds
+`A · (center − center.detach())`: the logged loss and the clip mask are unchanged, only the
+gradient moves, and it is an exact no-op when `μ_q = μ_θ`. The clip is integrated rather than
+applied per sample, which is what makes the correction exact for the clipped objective.
 
 ```bash
---diffusion-score-centering --diffusion-debug-mode --diffusion-recompute-old-log-prob
+--diffusion-score-centering --diffusion-debug-mode
 ```
 
-- The engine returns `μ_q` (`rollout_prev_sample_means`) only under `--diffusion-debug-mode`,
-  so the flag requires it. Debug mode ships every per-step debug tensor, which is heavier
-  than score centering needs.
-- Pair it with `--diffusion-recompute-old-log-prob`. The PPO log-prob is a per-element mean,
-  so the rollout ratio `exp(log p_θ − log q)` is not an importance weight and does not cancel
-  drift. A train/rollout mismatch near `--diffusion-clip-range` instead makes the clip mask a
-  mismatch-correlated subset of pairs. Recomputing keeps the ratio about policy movement and
-  leaves the mismatch to score centering.
-- `train/prev_mean_diff_over_noise_std` reports `|μ_q − μ_θ|` in units of the step's noise std (RMS over
-  latent elements). Drift grows with it; a value of 0 means score centering has nothing to do.
+- Requires `--loss-type policy_loss`, `--diffusion-sde-type sde` with the default backend,
+  `0 < --diffusion-clip-range < 1`, and `--diffusion-debug-mode`: the engine returns `μ_q`
+  (`rollout_prev_sample_means`) and the step's noise std (`rollout_noise_std_devs`) only there.
+- The PPO denominator must be the engine's own log-prob, so `--diffusion-recompute-old-log-prob`
+  is rejected. The loss also raises if the two sides' transition stds differ or if the stored
+  log-probs are not the Gaussian density of the recorded means at the sampled latents.
+- `train/prev_mean_diff_over_noise_std` reports `|μ_q − μ_θ|` in units of the step's noise std
+  (RMS over latent elements) whenever debug tensors are present; drift grows with it.
+- `train/score_center_expected_clipped_ratio` is the center itself: `1.0` means nothing to
+  remove, below `1` for positive advantages and above for negative ones under drift.
+  `train/score_center_density_abs_diff` must stay near `0` (hard limit `5e-5`).
 
 DiffusionNFT has no SDE log-prob, so score centering does not apply to it.
 
