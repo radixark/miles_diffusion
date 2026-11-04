@@ -5,6 +5,8 @@ import ray
 from ray.util.placement_group import placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
+from miles.utils.trainer_config import compute_trainer_args, compute_trainer_configs
+
 from .actor_group import RayTrainGroup
 from .rollout import RolloutManager
 from .utils import TRAIN_ACTOR_GPU
@@ -130,14 +132,16 @@ def allocate_train_group(args, num_nodes, num_gpus_per_node, pg):
 
 
 def create_training_models(args, pgs, rollout_manager):
+    [actor_config] = compute_trainer_configs(args)
+    actor_args = compute_trainer_args(args, actor_config)
     logger.info("Initializing actor model...")
     actor_model = allocate_train_group(
-        args=args,
+        args=actor_args,
         num_nodes=args.actor_num_nodes,
         num_gpus_per_node=args.actor_num_gpus_per_node,
         pg=pgs["actor"],
     )
-    start_rollout_ids = ray.get(actor_model.async_init(args, role="actor", with_ref=False))
+    start_rollout_ids = ray.get(actor_model.async_init(actor_args, role=actor_config.role, with_ref=False))
     logger.info("Actor model initialized.")
 
     assert len(set(start_rollout_ids)) == 1
