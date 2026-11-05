@@ -24,6 +24,8 @@ def _run_ported_test(filename, *selectors):
     env["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
     env["PYTHONPATH"] = os.pathsep.join((str(_DIR), env.get("PYTHONPATH", "")))
     env["PYTHONUNBUFFERED"] = "1"
+    # CI=true makes torch's run_tests write XML reports, which needs the absent xmlrunner
+    env.pop("CI", None)
     result = subprocess.run(
         [sys.executable, str(_DIR / filename), *selectors],
         env=env,
