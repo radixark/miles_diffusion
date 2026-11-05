@@ -1,3 +1,4 @@
+import importlib
 import sys
 
 from tests.ci.ci_register import register_cpu_ci
@@ -11,21 +12,26 @@ from torch import nn
 from miles.backends.fsdp_utils.monkey_patches import fsdp_param_dtype_patch
 
 
-def test_patch_rejects_unpinned_torch(monkeypatch):
-    implementation_module = "miles.backends.fsdp_utils.monkey_patches._fsdp_param_dtype_patch_2_11"
-    monkeypatch.delitem(sys.modules, implementation_module, raising=False)
+@pytest.fixture
+def installed_implementation():
+    torch_minor_version = ".".join(torch.__version__.split(".")[:2])
+    return importlib.import_module(fsdp_param_dtype_patch._IMPLEMENTATION_MODULES[torch_minor_version])
+
+
+def test_patch_rejects_unsupported_torch(monkeypatch):
+    implementation_modules = set(fsdp_param_dtype_patch._IMPLEMENTATION_MODULES.values())
+    for implementation_module in implementation_modules:
+        monkeypatch.delitem(sys.modules, implementation_module, raising=False)
     monkeypatch.setattr(torch, "__version__", "2.12.0+cu130")
 
-    with pytest.raises(RuntimeError, match="supports torch==2.11.0"):
+    with pytest.raises(RuntimeError, match="supports torch 2.11, 2.14"):
         fsdp_param_dtype_patch.apply_param_dtype_map_patch()
-    assert implementation_module not in sys.modules
+    assert implementation_modules.isdisjoint(sys.modules)
 
 
-def test_patch_rejects_source_drift(monkeypatch):
-    from miles.backends.fsdp_utils.monkey_patches import _fsdp_param_dtype_patch_2_11
-
+def test_patch_rejects_source_drift(monkeypatch, installed_implementation):
     monkeypatch.setitem(
-        _fsdp_param_dtype_patch_2_11._SOURCE_HASHES,
+        installed_implementation._SOURCE_HASHES,
         "FSDPParamGroup.__init__",
         "0" * 64,
     )
@@ -34,9 +40,9 @@ def test_patch_rejects_source_drift(monkeypatch):
         RuntimeError,
         match="source hash for FSDPParamGroup.__init__ changed",
     ):
-        _fsdp_param_dtype_patch_2_11._verify_source(
+        installed_implementation._verify_source(
             "FSDPParamGroup.__init__",
-            _fsdp_param_dtype_patch_2_11._ORIGINAL_PARAM_GROUP_INIT,
+            installed_implementation._ORIGINAL_PARAM_GROUP_INIT,
         )
 
 
@@ -53,9 +59,7 @@ def test_param_dtype_policy_keeps_exact_sparse_map():
     assert policy.param_dtype_map == param_dtype_map
 
 
-def test_resolve_param_dtype_map_broadcasts_duplicate_fqns():
-    from miles.backends.fsdp_utils.monkey_patches import _fsdp_param_dtype_patch_2_11
-
+def test_resolve_param_dtype_map_broadcasts_duplicate_fqns(installed_implementation):
     modules = tuple(nn.LayerNorm(8) for _ in range(2))
     params = [param for module in modules for param in module.parameters()]
     policy = fsdp_param_dtype_patch.ParamDtypeMixedPrecisionPolicy(
@@ -67,7 +71,7 @@ def test_resolve_param_dtype_map_broadcasts_duplicate_fqns():
         },
     )
 
-    resolved_map = _fsdp_param_dtype_patch_2_11._resolve_param_dtype_map(
+    resolved_map = installed_implementation._resolve_param_dtype_map(
         policy,
         modules,
         params,
