@@ -48,3 +48,7 @@ def test_independent_fsdp_references(tmp_path):
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "OK" in result.stdout
+
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, "-v"]))
