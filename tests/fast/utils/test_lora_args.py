@@ -1,11 +1,8 @@
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cpu_ci
 
-register_cuda_ci(est_time=15, suite="stage-b-3-gpu-h200", labels=[])
+register_cpu_ci(est_time=15, suite="stage-a-cpu", labels=[])
 
-import sys
 from argparse import Namespace
-
-import pytest
 
 from miles.backends.sglang_diffusion_utils.sglang_diffusion_engine import _compute_server_args
 
@@ -43,7 +40,3 @@ class TestLoRATargetModulesServerArgs:
         args = _server_args(lora_ipc_weight_sync=False, colocate=False)
         kwargs = _compute_server_args(args, "127.0.0.1", 15000, 15001)
         assert kwargs["lora_target_modules"] == ["to_q", "to_k"]
-
-
-if __name__ == "__main__":
-    sys.exit(pytest.main([__file__, "-v"]))
