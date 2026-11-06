@@ -94,3 +94,20 @@ def test_submit_logs_only_selected_env_values_redacted(monkeypatch, capsys, reda
     assert logged_env["NCCL_DEBUG"] == "INFO"
     assert logged_env["OTHER_API_KEY"] == "unselected-test-value"
     assert "overridden-secret" not in output
+
+
+@pytest.mark.parametrize(
+    "train_args, port",
+    [
+        ("--num-rollout 1", None),
+        ("--use-output-store --output-store-mooncake-master 10.0.0.1:50051", 50051),
+        ("--output-store-mooncake-master [fd00::1]:50052 --use-output-store", 50052),
+    ],
+)
+def test_output_store_master_port_comes_from_the_train_args(train_args, port):
+    assert commands._output_store_master_port(train_args) == port
+
+
+def test_output_store_without_a_master_is_rejected_before_the_job():
+    with pytest.raises(ValueError, match="needs --output-store-mooncake-master"):
+        commands._output_store_master_port("--use-output-store")

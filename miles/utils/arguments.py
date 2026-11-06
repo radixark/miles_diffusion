@@ -15,6 +15,7 @@ import json
 import logging
 import math
 import os
+import uuid
 from typing import Any
 
 import yaml
@@ -580,6 +581,43 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "`def filter(args, data: list[list[Sample]]) -> None`. Nothing downstream reads a "
                     "per-sample drop flag, so it cannot exclude samples from the loss."
                 ),
+            )
+            parser.add_argument(
+                "--use-output-store",
+                action="store_true",
+                default=False,
+                help=(
+                    "Rollout requests put their latents, debug and cond tensors in the run's Mooncake "
+                    "(sglang-d --output-store-backend) and return a ref; the trainer reads them from there."
+                ),
+            )
+            parser.add_argument(
+                "--output-store-mooncake-master",
+                type=str,
+                default=None,
+                help=(
+                    "host:port of the Mooncake master every output store client connects to; the launcher "
+                    "starts one on the head node. Required with --use-output-store."
+                ),
+            )
+            parser.add_argument(
+                "--output-store-local-buffer-size",
+                type=str,
+                default="2gb",
+                help="Mooncake local buffer of each sglang-d engine; bounds the bytes of its puts in flight.",
+            )
+            parser.add_argument(
+                "--output-store-protocol",
+                type=str,
+                choices=("rdma", "tcp"),
+                default="rdma",
+                help="Mooncake transfer protocol of every output store client.",
+            )
+            parser.add_argument(
+                "--output-store-device-name",
+                type=str,
+                default="",
+                help="RDMA device Mooncake uses on every node; empty lets Mooncake choose.",
             )
             # update weight
             parser.add_argument(
@@ -1629,6 +1667,7 @@ def parse_args(add_custom_arguments=None):
     from miles.backends.fsdp_utils.arguments import load_fsdp_args
 
     args = load_fsdp_args(extra_args_provider=add_miles_arguments)
+    args.run_uuid = uuid.uuid4().hex
     args.rank = 0  # Primary process rank for wandb initialization
     args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
 
@@ -1698,6 +1737,21 @@ def set_default_diffusion_args(args) -> None:
 
     if args.ref_mode is None:
         args.ref_mode = "lora_base" if args.diffusion_kl_beta > 0 else "none"
+
+
+def validate_output_store_args(args) -> None:
+    if not args.use_output_store:
+        if args.output_store_mooncake_master is not None:
+            raise ValueError("--output-store-mooncake-master requires --use-output-store")
+        return
+    if args.output_store_mooncake_master is None:
+        raise ValueError("--use-output-store requires --output-store-mooncake-master")
+    for flag, value in (
+        ("--save-debug-rollout-data", args.save_debug_rollout_data),
+        ("--load-debug-rollout-data", args.load_debug_rollout_data),
+    ):
+        if value is not None:
+            raise ValueError(f"--use-output-store does not support {flag}: output store refs do not outlive their run")
 
 
 def validate_reference_model_args(args) -> None:
@@ -2014,6 +2068,8 @@ def miles_validate_args(args):
             "will not instantiate sglang servers and will only run the training process."
         )
         args.train_only = True
+
+    validate_output_store_args(args)
 
     if args.offload:
         args.offload_train = True
