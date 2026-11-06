@@ -10,6 +10,17 @@ if TYPE_CHECKING:
     from radix_transfer_plugins import OutputStore
 
 BACKEND = "mooncake"
+_SIZE_UNITS = {"kb": 1024, "mb": 1024**2, "gb": 1024**3, "k": 1024, "m": 1024**2, "g": 1024**3}
+
+
+def parse_size(value: int | str) -> int:
+    if isinstance(value, int):
+        return value
+    text = value.strip().lower()
+    for suffix, multiplier in _SIZE_UNITS.items():
+        if text.endswith(suffix):
+            return int(float(text[: -len(suffix)]) * multiplier)
+    return int(text)
 
 
 def key_prefix(args: Namespace) -> str:
@@ -40,3 +51,25 @@ def connect_output_store(args: Namespace) -> OutputStore:
 
     config = output_store_backend_config(args, local_hostname=ray.util.get_node_ip_address(), puts=False)
     return OutputStore(backend=create_backend(name=BACKEND, extra_config=json.dumps(config)))
+
+
+def mooncake_client(args: Namespace, *, global_segment_size: int | str, local_buffer_size: int | str) -> Any:
+    """A raw Mooncake client of the run's store; a positive ``global_segment_size`` lends the store that memory."""
+    import ray
+    from mooncake.store import MooncakeDistributedStore
+
+    store = MooncakeDistributedStore()
+    error = store.setup(
+        {
+            "local_hostname": ray.util.get_node_ip_address(),
+            "metadata_server": "P2PHANDSHAKE",
+            "global_segment_size": parse_size(global_segment_size),
+            "local_buffer_size": parse_size(local_buffer_size),
+            "protocol": args.output_store_protocol,
+            "rdma_devices": args.output_store_device_name,
+            "master_server_addr": args.output_store_mooncake_master,
+        }
+    )
+    if error:
+        raise RuntimeError(f"Mooncake store setup failed: {error}")
+    return store
