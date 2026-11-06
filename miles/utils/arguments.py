@@ -25,6 +25,7 @@ from miles.backends.sglang_diffusion_utils.arguments import validate_args as sgl
 from miles.utils.api_rm_config import resolve_api_rm_configs
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
 from miles.utils.logging_utils import configure_logger
+from miles.utils.output_store import parse_size
 
 logger = logging.getLogger(__name__)
 
@@ -605,6 +606,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default="2gb",
                 help="Mooncake local buffer of each sglang-d engine; bounds the bytes of its puts in flight.",
+            )
+            parser.add_argument(
+                "--output-store-global-segment-size",
+                type=str,
+                default="16gb",
+                help=(
+                    "Memory each training node lends the store, mounted by its first trainer actor; the run's "
+                    "stored objects live in these segments, so their sum bounds what a rollout can store."
+                ),
             )
             parser.add_argument(
                 "--output-store-protocol",
@@ -1746,6 +1756,14 @@ def validate_output_store_args(args) -> None:
         return
     if args.output_store_mooncake_master is None:
         raise ValueError("--use-output-store requires --output-store-mooncake-master")
+    for flag, value in (
+        ("--output-store-global-segment-size", args.output_store_global_segment_size),
+        ("--output-store-local-buffer-size", args.output_store_local_buffer_size),
+    ):
+        try:
+            parse_size(value)
+        except ValueError:
+            raise ValueError(f"{flag} {value!r} is not a size such as 16gb") from None
     for flag, value in (
         ("--save-debug-rollout-data", args.save_debug_rollout_data),
         ("--load-debug-rollout-data", args.load_debug_rollout_data),
