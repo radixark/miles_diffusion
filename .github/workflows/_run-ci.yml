@@ -168,7 +168,7 @@ jobs:
           # explicit URL so
           # `ci-sglang-repo:` overrides work regardless of the checkout's
           # configured remote.
-          cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch "https://github.com/${SGLANG_REPO}.git" "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && SGLANG_BUILD_RUST_EXTS=none pip install -e python --no-deps --break-system-packages
+          cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch "https://github.com/${SGLANG_REPO}.git" "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && SGLANG_BUILD_RUST_EXTS=none pip install -e python --no-deps --break-system-packages && pip install -e radix_transfer_plugins --no-deps --break-system-packages
           cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
 
       - name: Install (miles-diffusion only)
@@ -279,6 +279,7 @@ jobs:
           UV_SYSTEM_PYTHON: "1"
         run: |
           SGLANG_BUILD_RUST_EXTS=none uv pip install -e sglang/python --no-deps
+          uv pip install -e sglang/radix_transfer_plugins --no-deps
           # sglang is installed --no-deps; its pinned pure-python runtime deps
           # live in requirements-ci-cpu.txt (same pattern as radixark/miles).
           # One resolve for both files so neither can move the other's pins.
