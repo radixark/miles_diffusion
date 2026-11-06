@@ -20,6 +20,7 @@ def _server_args(**overrides):
         colocate=True,
         train_only=False,
         lora_target_modules=["to_q", "to_k"],
+        use_output_store=False,
     )
     base.update(overrides)
     return Namespace(**base)
