@@ -1,4 +1,4 @@
-"""train_diffusion.py trains every trainer group on each rollout, one after another in declared order."""
+"""train_diffusion.py trains every trainer group on each rollout in declared order, then releases the rollout."""
 
 from tests.ci.ci_register import register_cpu_ci
 
@@ -21,8 +21,9 @@ class _Remote:
 
 
 class _FakeRolloutManager:
-    def __init__(self):
+    def __init__(self, events):
         self.generate = _Remote(lambda rollout_id: ("rollout_data", rollout_id))
+        self.release = _Remote(lambda rollout_id: events.append(("release", rollout_id)))
         self.dispose = _Remote(lambda: None)
 
 
@@ -62,7 +63,7 @@ def test_every_trainer_group_trains_each_rollout_in_order(monkeypatch):
     monkeypatch.setattr(train_diffusion, "configure_logger", lambda: None)
     monkeypatch.setattr(train_diffusion, "init_tracking", lambda args: None)
     monkeypatch.setattr(train_diffusion, "create_placement_groups", lambda args: {"rollout": None})
-    monkeypatch.setattr(train_diffusion, "create_rollout_manager", lambda args, pg: (_FakeRolloutManager(), None))
+    monkeypatch.setattr(train_diffusion, "create_rollout_manager", lambda args, pg: (_FakeRolloutManager(events), None))
     monkeypatch.setattr(
         train_diffusion,
         "create_training_models",
@@ -88,6 +89,7 @@ def test_every_trainer_group_trains_each_rollout_in_order(monkeypatch):
                 ("train_start", role, rollout_id, ("rollout_data", rollout_id)),
                 ("train_done", role, rollout_id),
             ]
+        expected += [("release", rollout_id)]
         expected += [("save_model", role, rollout_id) for role in roles]
         expected += [("offload", role) for role in roles]
         expected += [("update_weights", "actor")]

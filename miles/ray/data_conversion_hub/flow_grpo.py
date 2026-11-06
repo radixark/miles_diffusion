@@ -41,7 +41,7 @@ def expand_samples_to_train_pairs(
         for t in range(sample_t_steps):
             pair: dict[str, Any] = {
                 **per_sample_features,
-                **{key: tensor[t].detach().cpu() for key, tensor in per_timestep_features.items()},
+                **{key: _to_cpu(tensor[t]) for key, tensor in per_timestep_features.items()},
             }
             if pair_debug_steps is not None:
                 pair["rollout_debug_tensors"] = pair_debug_steps[t]
@@ -51,6 +51,10 @@ def expand_samples_to_train_pairs(
         raise ValueError("No train pairs were produced from rollout samples")
 
     return {"train_data": train_data}
+
+
+def _to_cpu(value):
+    return value.detach().cpu() if isinstance(value, torch.Tensor) else value
 
 
 def _sample_required_inputs(sample: Sample):
@@ -151,7 +155,7 @@ def _slice_rollout_debug_for_train_pairs(
         tensor = getattr(dbg, rollout_key, None)
         if tensor is None:
             continue
-        tensor = tensor.detach().cpu()
+        tensor = _to_cpu(tensor)
         if sde_idx is not None:
             tensor = tensor[sde_idx]
         indexed[train_pair_key] = tensor
