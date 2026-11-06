@@ -5,8 +5,8 @@ description: Get a working miles-diffusion environment — Docker (recommended) 
 miles-diffusion trains a diffusion DiT with FSDP2 while
 [sglang-diffusion](https://github.com/sgl-project/sglang/tree/main/python/sglang/multimodal_gen) serves the rollout.
 The two halves must agree numerically, so the pinned versions matter more than usual: the rollout engine tracks
-sglang's **`sglang-miles`** branch, not a release tag, and the training side pins **torch 2.11.0** (an FSDP monkey patch is version-gated
-on it). A future update will upgrade the training stack to **torch 2.13**.
+sglang's **`sglang-miles`** branch, not a release tag, and the training side pins **torch 2.11.0**. The FSDP monkey patch is version-gated and also
+supports torch 2.14, so a future update can upgrade the training stack.
 
 Use Docker unless you have a reason not to.
 
