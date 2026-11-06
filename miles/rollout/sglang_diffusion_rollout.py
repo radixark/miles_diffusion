@@ -176,7 +176,7 @@ async def generate_microgroup(
     # SGL-D TODO: support seed list for multiple samples in one request
     # currently only support assigning the first seed, SGL-D generates samples with seed, seed+1, seed+2, ...
     if not evaluation and state.step_strategy_fn is not None:
-        sde_indices, return_indices = state.step_strategy_fn(
+        sde_indices, return_indices, stop_index = state.step_strategy_fn(
             args,
             microgroup[0],
             int(sampling_params["num_inference_steps"]),
@@ -186,6 +186,7 @@ async def generate_microgroup(
             return_indices = None  # None asks the engine for every step
         sampling_params["rollout_sde_step_indices"] = sde_indices
         sampling_params["rollout_return_step_indices"] = return_indices
+        sampling_params["rollout_stop_step_index"] = stop_index
     else:
         sde_indices = None
 
