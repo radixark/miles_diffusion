@@ -14,6 +14,7 @@ from sglang.srt.utils.common import kill_process_tree
 from miles.ray.ray_actor import RayActor
 from miles.utils.arguments import rollout_merges_lora
 from miles.utils.http_utils import get_host_info
+from miles.utils.output_store import sglang_output_store_server_args
 
 if TYPE_CHECKING:
     from sglang.multimodal_gen.runtime.server_args import ServerArgs
@@ -389,6 +390,8 @@ def _compute_server_args(args, host, port, nccl_port):
         if hasattr(args, f"sglang_{attr.name}") and attr.name not in kwargs:
             kwargs[attr.name] = getattr(args, f"sglang_{attr.name}")
 
+    if args.use_output_store:
+        kwargs.update(sglang_output_store_server_args(args, local_hostname=host.strip("[]")))
     if rollout_merges_lora(args):
         kwargs["lora_target_modules"] = args.lora_target_modules
     # dit_precision / vae_precision are PipelineConfig fields, not ServerArgs, so forward them explicitly (only when changed from the class default, to avoid clobbering a subclass override).
