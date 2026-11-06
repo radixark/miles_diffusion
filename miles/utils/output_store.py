@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from argparse import Namespace
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
@@ -148,3 +149,59 @@ def take_dropped_refs() -> dict[str, StoreRef]:
     refs = dict(_dropped_refs)
     _dropped_refs.clear()
     return refs
+
+
+def materialize_store_slices(train_pairs: list[dict[str, Any]], *, store: OutputStore) -> None:
+    """Replace every StoreSlice in the pairs with its rows of the stored tensor; each object is read once."""
+    from radix_transfer_plugins.stashes.tensor_stash import TensorStash
+
+    wanted: dict[str, tuple[StoreRef, set[str]]] = {}
+    for store_slice in _slices(train_pairs):
+        wanted.setdefault(store_slice.ref.key, (store_slice.ref, set()))[1].add(store_slice.field)
+    if not wanted:
+        return
+    requests = [(ref, sorted(fields)) for ref, fields in wanted.values()]
+    stashes = store.read_many(requests, stash_type=TensorStash)
+    tensors = {
+        (ref.key, name): tensor
+        for (ref, _), stash in zip(requests, stashes, strict=True)
+        for name, tensor in stash.tensors.items()
+    }
+    _map_slices(train_pairs, lambda store_slice: _rows(tensors[(store_slice.ref.key, store_slice.field)], store_slice))
+
+
+def _rows(tensor: Any, store_slice: StoreSlice) -> Any:
+    for row in store_slice.rows:
+        tensor = tensor[row]
+    return tensor if store_slice.select is None else tensor[list(store_slice.select)]
+
+
+def _slices(obj: Any) -> Iterator[StoreSlice]:
+    if isinstance(obj, StoreSlice):
+        yield obj
+    elif isinstance(obj, dict):
+        for value in obj.values():
+            yield from _slices(value)
+    elif isinstance(obj, list):
+        for value in obj:
+            yield from _slices(value)
+    elif dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        for value in vars(obj).values():
+            yield from _slices(value)
+
+
+def _map_slices(obj: Any, fn: Callable[[StoreSlice], Any]) -> Any:
+    """Replace the slices under ``obj`` in place; dicts, lists and dataclasses are shared by the pairs of a sample."""
+    if isinstance(obj, StoreSlice):
+        return fn(obj)
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            obj[key] = _map_slices(value, fn)
+    elif isinstance(obj, list):
+        for i, value in enumerate(obj):
+            obj[i] = _map_slices(value, fn)
+    elif dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        fields = vars(obj)
+        for name, value in fields.items():
+            fields[name] = _map_slices(value, fn)
+    return obj
