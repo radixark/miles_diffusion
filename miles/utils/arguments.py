@@ -900,7 +900,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "Train objective shortcut. Diffusion default policy_loss = Flow-GRPO prepare+formula. "
                     "nft auto-fills prepare / loss-formula paths and selects the NFT train-data converter. "
-                    "dmd2 selects the DMD2 train-data converter and trains a critic group next to the actor. "
+                    "dmd2 auto-fills the DMD2 converter / prepare / loss-formula / train-input paths and trains a "
+                    "critic group before the actor. "
                     "DiT forward always stays in the FSDP actor."
                 ),
             )
@@ -976,7 +977,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--dmd2-critic-steps-per-rollout",
                 type=int,
                 default=5,
-                help="DMD2 critic optimizer steps per rollout, taken before the actor's single step (TTUR).",
+                help=(
+                    "DMD2 critic optimizer steps per rollout, taken before the actor's single step (TTUR); "
+                    "the critic scores its last step's samples and the actor trains on those only."
+                ),
             )
             parser.add_argument(
                 "--dmd2-teacher-guidance-scale",
@@ -1767,6 +1771,12 @@ def set_default_diffusion_args(args) -> None:
             args.critic_load = args.teacher_load
         if args.critic_lr is None:
             args.critic_lr = args.lr
+        if args.custom_prepare_train_batch_path is None:
+            args.custom_prepare_train_batch_path = "miles.backends.fsdp_utils.loss_hub.dmd2.prepare_generator_batch"
+        if args.custom_loss_function_path is None:
+            args.custom_loss_function_path = "miles.backends.fsdp_utils.loss_hub.dmd2.dmd2_loss_formula"
+        if args.custom_train_input_function_path is None:
+            args.custom_train_input_function_path = "miles.backends.fsdp_utils.loss_hub.dmd2.select_scored_pairs"
 
     if args.ref_mode is None:
         args.ref_mode = "lora_base" if args.diffusion_kl_beta > 0 else "none"
@@ -1914,11 +1924,6 @@ def validate_dmd2_args(args) -> None:
         )
     if args.ref_mode != "none":
         raise ValueError("--loss-type dmd2 uses no reference model; drop --ref-mode and --diffusion-kl-beta")
-    if args.custom_prepare_train_batch_path is None or args.custom_loss_function_path is None:
-        raise ValueError(
-            "--loss-type dmd2 has no built-in generator loss yet; pass --custom-prepare-train-batch-path "
-            "and --custom-loss-function-path"
-        )
     if args.num_steps_per_rollout != 1:
         raise ValueError(
             f"--loss-type dmd2 takes one actor step per rollout, got --num-steps-per-rollout "
