@@ -87,6 +87,8 @@ class Sample:
     rollout_debug_tensors: RolloutDebugTensors | None = None
     denoising_env: DenoisingEnv | None = None
     dit_trajectory: DiTTrajectory | None = None
+    # The output store object holding this sample's stored tensors (a radix_transfer_plugins StoreRef).
+    rollout_store_ref: Any | None = None
 
     inference_time_s: float | None = None
     # dispatch-time backlog observed when this sample's parse / reward was submitted

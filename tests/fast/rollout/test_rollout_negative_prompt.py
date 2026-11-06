@@ -33,6 +33,7 @@ def _args(**overrides):
         diffusion_debug_mode=False,
         rollout_video_dtype="keep",
         train_pipeline_config_path=None,
+        use_output_store=False,
     )
     values.update(overrides)
     return Namespace(**values)
@@ -46,3 +47,11 @@ def test_unset_negative_prompt_is_omitted():
 def test_explicit_negative_prompt_passes_through():
     payload = build_rollout_generate_payload(build_rollout_sampling_params(_args(diffusion_negative_prompt=" ")), "p")
     assert payload["negative_prompt"] == " "
+
+
+def test_output_store_asks_the_engine_to_store_the_outputs():
+    assert "rollout_return_outputs_via_store" not in build_rollout_sampling_params(_args())
+    assert build_rollout_sampling_params(_args(use_output_store=True))["rollout_return_outputs_via_store"] is True
+    assert "rollout_return_outputs_via_store" not in build_rollout_sampling_params(
+        _args(use_output_store=True), evaluation=True
+    )
