@@ -48,7 +48,9 @@ RUN cd /sgl-workspace/sglang && \
         git fetch --depth=1 "${SGLANG_DIFFUSION_REPO}" "${SGLANG_DIFFUSION_COMMIT}"; \
     fi && \
     git checkout --detach FETCH_HEAD && \
-    SGLANG_BUILD_RUST_EXTS=none pip install -e python --no-deps
+    SGLANG_BUILD_RUST_EXTS=none pip install -e python --no-deps && \
+    pip install -e radix_transfer_plugins --no-deps && \
+    python3 -c "import radix_transfer_plugins.stashes.token_output"
 # sgl main's FA3 wrappers need sglang-kernel 0.4.5 (only_qv kwarg); the base image ships 0.4.2.
 RUN pip install --no-deps "sglang-kernel==0.4.5+cu129" --extra-index-url https://docs.sglang.io/whl/cu129
 # Bake the kernels lockfile like upstream so the FA3 hub loader never resolves a stale snapshot.
