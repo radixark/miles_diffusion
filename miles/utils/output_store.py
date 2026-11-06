@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import json
 from argparse import Namespace
+from collections.abc import Iterable
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
+from miles.utils.types import Sample
+
 if TYPE_CHECKING:
-    from radix_transfer_plugins import OutputStore
+    from radix_transfer_plugins import OutputStore, StoreRef
 
 BACKEND = "mooncake"
 _SIZE_UNITS = {"kb": 1024, "mb": 1024**2, "gb": 1024**3, "k": 1024, "m": 1024**2, "g": 1024**3}
@@ -73,3 +77,73 @@ def mooncake_client(args: Namespace, *, global_segment_size: int | str, local_bu
     if error:
         raise RuntimeError(f"Mooncake store setup failed: {error}")
     return store
+
+def sweep_output_store(args: Namespace) -> int:
+    """Remove every object of this run still in the store; only for the end of the run."""
+    store = mooncake_client(args, global_segment_size=0, local_buffer_size=0)
+    try:
+        removed = store.remove_by_regex(f"^{key_prefix(args)}/", True)
+    finally:
+        store.close()
+    if removed < 0:
+        raise RuntimeError(f"Mooncake remove_by_regex failed: {removed}")
+    return removed
+
+
+@dataclass(frozen=True)
+class StoreSlice:
+    """Rows of one stored tensor; indexes like the tensor along its leading axis until a pair's row is fixed."""
+
+    ref: StoreRef
+    field: str
+    rows: tuple[int, ...] = ()
+    select: tuple[int, ...] | None = None
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        shape = next(spec.shape for spec in self.ref.fields if spec.name == self.field)[len(self.rows) :]
+        return shape if self.select is None else (len(self.select),) + shape[1:]
+
+    def __getitem__(self, index) -> StoreSlice:
+        size = self.shape[0]
+        if isinstance(index, int):
+            index = _row_index(index, size)
+            if self.select is None:
+                return replace(self, rows=self.rows + (index,))
+            return replace(self, rows=self.rows + (self.select[index],), select=None)
+        selected = tuple(_row_index(int(i), size) for i in index)
+        if self.select is not None:
+            selected = tuple(self.select[i] for i in selected)
+        return replace(self, select=selected)
+
+
+def _row_index(index: int, size: int) -> int:
+    if not -size <= index < size:
+        raise IndexError(f"row {index} is out of range for {size} rows")
+    return index + size if index < 0 else index
+
+
+def store_refs_of(samples: Iterable[Any]) -> dict[str, StoreRef]:
+    """Every output store ref the samples hold, by key; groups may nest samples in lists."""
+    refs = {}
+    for item in samples:
+        if isinstance(item, Sample):
+            if item.rollout_store_ref is not None:
+                refs[item.rollout_store_ref.key] = item.rollout_store_ref
+        else:
+            refs.update(store_refs_of(item))
+    return refs
+
+
+_dropped_refs: dict[str, StoreRef] = {}
+
+
+def record_dropped_samples(samples: Iterable[Any]) -> None:
+    """Hand the refs of samples that will never train to the rollout manager, which deletes them with the rollout."""
+    _dropped_refs.update(store_refs_of(samples))
+
+
+def take_dropped_refs() -> dict[str, StoreRef]:
+    refs = dict(_dropped_refs)
+    _dropped_refs.clear()
+    return refs

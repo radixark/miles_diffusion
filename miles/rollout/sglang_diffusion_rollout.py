@@ -21,6 +21,7 @@ from miles.utils.diffusion_rollout_response import RolloutImageResponseParserAct
 from miles.utils.eval_config import EvalDatasetConfig
 from miles.utils.http_utils import post
 from miles.utils.misc import SingletonMeta, load_function
+from miles.utils.output_store import record_dropped_samples
 from miles.utils.types import Sample
 
 from .rm_hub import batched_async_rm
@@ -65,6 +66,8 @@ def build_rollout_sampling_params(
                 "rollout_return_dit_trajectory": True,
             }
         )
+        if args.use_output_store:
+            sampling_params["rollout_return_outputs_via_store"] = True
 
     if args.diffusion_output_num_frames is not None:
         sampling_params["num_frames"] = int(args.diffusion_output_num_frames)
@@ -369,6 +372,7 @@ async def generate_rollout_async(
             dynamic_filter_output = call_dynamic_filter(dynamic_filter, args, group)
             if not dynamic_filter_output.keep:
                 metric_gatherer.on_dynamic_filter_drop(reason=dynamic_filter_output.reason)
+                record_dropped_samples(group)
                 state.remaining_batch_size -= 1
                 continue
 
