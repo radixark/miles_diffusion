@@ -78,6 +78,7 @@ def mooncake_client(args: Namespace, *, global_segment_size: int | str, local_bu
         raise RuntimeError(f"Mooncake store setup failed: {error}")
     return store
 
+
 def sweep_output_store(args: Namespace) -> int:
     """Remove every object of this run still in the store; only for the end of the run."""
     store = mooncake_client(args, global_segment_size=0, local_buffer_size=0)

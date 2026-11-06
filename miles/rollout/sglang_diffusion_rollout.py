@@ -381,6 +381,8 @@ async def generate_rollout_async(
             if len(data) < target_data_size:
                 data.append(group)
                 pbar.update(args.n_samples_per_prompt)
+            else:
+                record_dropped_samples(group)
 
     pbar.close()
     sample = data[-1][0][0] if isinstance(data[-1][0], list) else data[-1][0]
@@ -395,6 +397,10 @@ async def generate_rollout_async(
     assert len(data) == args.rollout_batch_size, f"Got {len(data)} samples, expected {args.rollout_batch_size}"
     data = sorted(data, key=lambda group: group[0][0].index if isinstance(group[0], list) else group[0].index)
 
+    # Groups still generating were fetched to replace dropped ones; their objects are released with the rollout.
+    if state.pendings:
+        for group in await asyncio.gather(*state.pendings):
+            record_dropped_samples(group)
     # reset the global state to prevent effects on the next rollout or eval.
     state.reset()
     if args.rollout_sample_filter_path is not None:
