@@ -3,10 +3,12 @@ from tests.ci.ci_register import register_cpu_ci
 register_cpu_ci(est_time=5, suite="stage-a-cpu", labels=[])
 
 from argparse import Namespace
+from types import SimpleNamespace
 
 import pytest
 
 import miles.ray.placement_group as placement_module
+from miles.ray.actor_group import RayTrainGroup
 from miles.ray.utils import TRAIN_ACTOR_GPU
 from miles.utils.trainer_config import TrainerConfig
 
@@ -107,3 +109,19 @@ def test_trainer_groups_split_the_train_gpu_share(monkeypatch, roles):
 def test_trainers_restored_to_different_rollouts_are_rejected(monkeypatch):
     with pytest.raises(AssertionError, match="trainers restored different rollouts"):
         _create_training_models(monkeypatch, {"critic": 2, "actor": 3})
+
+
+def test_each_rank_receives_the_same_rank_output_of_earlier_groups():
+    class _Handle:
+        def __init__(self, rank):
+            self.train = SimpleNamespace(remote=lambda *args: (rank, *args))
+
+    group = object.__new__(RayTrainGroup)
+    group._actor_handlers = [_Handle(rank) for rank in range(2)]
+    external_data = {"critic": ["critic_0", "critic_1"], "reward": ["reward_0", "reward_1"]}
+
+    assert group.async_train(7, "data", external_data) == [
+        (0, 7, "data", {"critic": "critic_0", "reward": "reward_0"}),
+        (1, 7, "data", {"critic": "critic_1", "reward": "reward_1"}),
+    ]
+    assert group.async_train(7, "data") == [(0, 7, "data", {}), (1, 7, "data", {})]

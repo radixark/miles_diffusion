@@ -70,9 +70,11 @@ def train(args):
         if args.offload_rollout:
             ray.get(rollout_manager.offload.remote())
 
+        train_outputs = {}
         for role, train_group in train_groups.items():
             logger.info(f"train: rollout {rollout_id} {role} train start")
-            ray.get(train_group.async_train(rollout_id, rollout_data_ref))
+            train_outputs[role] = train_group.async_train(rollout_id, rollout_data_ref, train_outputs)
+            ray.get(train_outputs[role])
             logger.info(f"train: rollout {rollout_id} {role} train done")
 
         if should_run_periodic_action(rollout_id, args.save_interval, num_rollout_per_epoch, args.num_rollout):
