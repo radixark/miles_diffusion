@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import torch
 
+from miles.backends.fsdp_utils.loss_hub.score_centering import gaussian_score_center
 from miles.backends.fsdp_utils.loss_hub.types import DiffusionLossContext, PreparedBatch
 from miles.backends.fsdp_utils.metrics import record_rollout_train_abs_diff
 from miles.utils.metric_buffer import MetricBuffer
@@ -131,13 +132,14 @@ def flow_grpo_loss_formula(
         "sigma_max": prepared.extras["sigma_max"],
     }
 
-    _, log_prob_new, prev_sample_mean_new, std_dev_t_new = ctx.sde_backend.sde_step_logprob(
+    score = ctx.sde_backend.sde_step_logprob(
         new_pred["visual"].float(),
         prepared.latents["visual"].float(),
         prev_sample=next_latents.float(),
         noise_level=noise_level,
         **sde_step_sigmas,
     )
+    log_prob_new = score.log_prob
 
     if write_old_log_prob:
         for pair, log_prob in zip(batch, log_prob_new, strict=True):
@@ -149,6 +151,30 @@ def flow_grpo_loss_formula(
     unclipped = -prepared.advantage * ratio
     clipped = -prepared.advantage * torch.clamp(ratio, 1.0 - clip_range, 1.0 + clip_range)
     per_pair_loss = torch.maximum(unclipped, clipped)
+
+    rollout_prev_mean = stack_train_pair_rollout_debug(batch, "rollout_step_prev_sample_mean")
+    if rollout_prev_mean is not None:
+        rollout_prev_mean = rollout_prev_mean.to(device=score.prev_mean.device, dtype=torch.float32)
+    centering_metrics = {}
+    if args.diffusion_score_centering:
+        rollout_noise_std = stack_train_pair_rollout_debug(batch, "rollout_step_noise_std_dev")
+        if rollout_prev_mean is None or rollout_noise_std is None:
+            raise ValueError(
+                "--diffusion-score-centering needs the rollout's per-step prev-sample means and noise stds; "
+                "these rollouts carry none (run with --diffusion-debug-mode)"
+            )
+        center, centering_metrics = gaussian_score_center(
+            prev_mean=score.prev_mean,
+            rollout_prev_mean=rollout_prev_mean,
+            noise_std=score.noise_std,
+            rollout_noise_std=rollout_noise_std.to(score.prev_mean.device),
+            next_latents=next_latents,
+            log_ratio=log_prob_new - log_prob_old,
+            advantage=prepared.advantage,
+            clip_range=clip_range,
+        )
+        # Gradient-only term: the logged PPO loss keeps its value and its clip mask.
+        per_pair_loss = per_pair_loss + prepared.advantage * (center - center.detach()).to(per_pair_loss.dtype)
     loss_sum = per_pair_loss.sum()
     bsz = len(batch)
 
@@ -156,21 +182,23 @@ def flow_grpo_loss_formula(
     if kl_beta > 0:
         if ref_pred is None:
             raise ValueError("Flow-GRPO KL requires a reference DiT forward; set --ref-mode lora_base or ref")
-        _, _, prev_sample_mean_ref, _ = ctx.sde_backend.sde_step_logprob(
+        ref_score = ctx.sde_backend.sde_step_logprob(
             ref_pred["visual"].float(),
             prepared.latents["visual"].float(),
             prev_sample=next_latents.float(),
             noise_level=noise_level,
             **sde_step_sigmas,
         )
-        kl_per_pair = ((prev_sample_mean_new - prev_sample_mean_ref) ** 2).mean(
-            dim=tuple(range(1, prev_sample_mean_new.ndim)),
+        kl_per_pair = ((score.prev_mean - ref_score.prev_mean) ** 2).mean(
+            dim=tuple(range(1, score.prev_mean.ndim)),
             keepdim=True,
-        ) / (2 * std_dev_t_new**2)
+        ) / (2 * score.std_dev_t**2)
         loss_sum = loss_sum + kl_beta * kl_per_pair.sum()
         kl_sum = kl_per_pair.sum()
 
     with torch.no_grad():
+        for key, values in centering_metrics.items():
+            metrics.emit_mean(key, total=values.sum(), count=bsz)
         metrics.emit_mean("loss", total=loss_sum, count=bsz)
         metrics.emit_mean("policy_loss", total=per_pair_loss.sum(), count=bsz)
         metrics.emit_mean("kl_loss", total=kl_sum, count=bsz)
@@ -188,6 +216,15 @@ def flow_grpo_loss_formula(
                 f"log_prob_mean_abs_diff_{prepared.component_name}",
                 total=log_prob_abs_diff_sum,
                 count=bsz,
+            )
+
+        if rollout_prev_mean is not None:
+            # flattened per pair like model_output, so logging never depends on the debug layout
+            noise_std = score.noise_std.reshape(bsz, -1)
+            mean_diff = rollout_prev_mean.reshape(bsz, -1) - score.prev_mean.reshape(bsz, -1)
+            diff_over_std = torch.where(noise_std > 0, mean_diff / noise_std, 0.0)
+            metrics.emit_mean(
+                "prev_mean_diff_over_noise_std", total=diff_over_std.pow(2).mean(dim=1).sqrt().sum(), count=bsz
             )
 
         rollout_model_output = stack_train_pair_rollout_debug(batch, "rollout_step_model_output")

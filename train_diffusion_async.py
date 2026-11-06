@@ -1,9 +1,9 @@
 """One-rollout overlap.
 
-Each batch is sampled while the previous one trains, so it comes from the EMA before the latest step
-(NFT samples with --rollout-weights ema). Resume discards the prefetch. With --async-exact-resume it
-resamples its first batch from the checkpointed previous EMA, matching an uninterrupted run; otherwise
-it samples that batch from the loaded EMA.
+Each batch is sampled while the previous one trains, so it comes from the rollout weights before the
+latest step: the EMA under NFT (--rollout-weights ema), the actor under Flow-GRPO policy_loss. Resume
+discards the prefetch. With --async-exact-resume it resamples its first batch from the checkpointed
+previous EMA, matching an uninterrupted run; otherwise it samples that batch from the loaded EMA.
 """
 
 import sys
@@ -68,8 +68,8 @@ def train(args):
     configure_logger()
     if args.colocate or args.offload_train or args.offload_rollout:
         raise ValueError("async training requires separate resident train/rollout GPU pools")
-    if args.loss_type != "nft":
-        raise ValueError("async training supports only --loss-type nft")
+    if args.loss_type not in ("nft", "policy_loss"):
+        raise ValueError("async training supports NFT and Flow-GRPO policy_loss")
 
     pgs = create_placement_groups(args)
     init_tracking(args)
