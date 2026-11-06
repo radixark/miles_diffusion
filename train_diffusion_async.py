@@ -43,6 +43,7 @@ def train_loop(args, actor_model, rollout_manager, num_rollout_per_epoch):
         if next_batch_future is not None:
             current_batch = ray.get(next_batch_future)
         drain_wait = time.monotonic() - drain_start
+        ray.get(rollout_manager.release.remote(rollout_id))
 
         if save_checkpoint:
             if cursor_save is not None:

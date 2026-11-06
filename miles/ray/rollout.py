@@ -30,6 +30,7 @@ from miles.utils.logging_utils import configure_logger
 from miles.utils.metric_checker import MetricChecker
 from miles.utils.metric_utils import compute_rollout_step, compute_statistics, dict_add_prefix
 from miles.utils.misc import load_function
+from miles.utils.output_store import connect_output_store, store_refs_of, sweep_output_store, take_dropped_refs
 from miles.utils.ray_utils import Box
 from miles.utils.timer import timer
 from miles.utils.tracking_utils import init_tracking
@@ -66,6 +67,9 @@ class RolloutManager:
         init_tracking(args, primary=False, router_addr=f"http://{args.sglang_router_ip}:{args.sglang_router_port}")
         logger.info("RolloutManager: init http client...")
         init_http_client(args)
+        self._output_store = connect_output_store(args) if args.use_output_store else None
+        # Each rollout's stored objects, trained or dropped, until its release.
+        self._unreleased_store_refs: dict[int, dict[str, Any]] = {}
         logger.info("RolloutManager: loading data source...")
 
         data_source_cls = load_function(self.args.data_source_path)
@@ -154,6 +158,16 @@ class RolloutManager:
             self._metric_checker.dispose()
         if self._health_monitor is not None:
             self._health_monitor.stop()
+        if self._output_store is not None:
+            self._output_store.close()
+            if left := sweep_output_store(self.args):
+                logger.warning("Swept %s output store keys the run left behind", left)
+
+    def release(self, rollout_id: int) -> None:
+        """Delete the stored objects of ``rollout_id`` once its train, their only reader, is done."""
+        refs = self._unreleased_store_refs.pop(rollout_id, {})
+        if refs:
+            self._output_store.delete_many(list(refs.values()))
 
     # TODO maybe rename "rollout_engines" and "all_rollout_engines" later
     @property
@@ -316,6 +330,7 @@ class RolloutManager:
             # flatten the data if it is a list of lists
             while isinstance(data[0], list):
                 data = list(itertools.chain.from_iterable(data))
+            self._unreleased_store_refs[rollout_id] = store_refs_of(data) | take_dropped_refs()
 
             global_batch_size = self.args.global_batch_size
             if len(data) % global_batch_size != 0:

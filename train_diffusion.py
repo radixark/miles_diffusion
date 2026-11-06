@@ -70,6 +70,7 @@ def train(args):
         logger.info(f"train: rollout {rollout_id} actor train start")
         ray.get(actor_model.async_train(rollout_id, rollout_data_ref))
         logger.info(f"train: rollout {rollout_id} actor train done")
+        ray.get(rollout_manager.release.remote(rollout_id))
 
         if should_run_periodic_action(rollout_id, args.save_interval, num_rollout_per_epoch, args.num_rollout):
             save(rollout_id)

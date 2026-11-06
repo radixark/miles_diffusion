@@ -40,6 +40,9 @@ class RolloutProbe:
     def save(self, rollout_id):
         self.source.save(rollout_id)
 
+    def release(self, rollout_id):
+        pass
+
     def install(self, weight):
         self.weight = weight
 

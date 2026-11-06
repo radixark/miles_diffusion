@@ -38,3 +38,68 @@ def test_normalize_generated_output_rejects_ambiguous_layout():
 def test_normalize_generated_output_rejects_missing_channel_dimension():
     with pytest.raises(ValueError, match="no recognizable channel dimension"):
         _normalize_generated_output(torch.zeros(5, 8, 12))
+
+
+def test_store_markers_become_slices_of_the_response_ref():
+    from miles.utils.diffusion_rollout_response import apply_rollout_image_response
+    from miles.utils.output_store import StoreSlice
+    from miles.utils.types import Sample
+
+    ref = {
+        "backend": "mooncake",
+        "key": "prefix/uuid",
+        "fields": [
+            {
+                "name": "dit_trajectory.latents",
+                "dtype": "bfloat16",
+                "shape": [2, 4, 3],
+                "codec": "identity",
+                "nbytes": 96,
+            },
+            {
+                "name": "denoising_env.pos_cond_kwargs.pooled",
+                "dtype": "float32",
+                "shape": [3],
+                "codec": "identity",
+                "nbytes": 12,
+            },
+        ],
+    }
+    body = {
+        "request_id": "r",
+        "output_store_ref": ref,
+        "dit_trajectory": {
+            "latents": {"__store__": "dit_trajectory.latents", "row": 1},
+            "timesteps": {"__tensor__": True, "data": _tensor_bytes(torch.tensor([1.0, 0.0]))},
+            "sigmas": None,
+            "latent_step_indices": None,
+        },
+        "denoising_env": {
+            "pos_cond_kwargs": {
+                "encoder_hidden_states": [
+                    {"__store__": "denoising_env.pos_cond_kwargs.encoder_hidden_states.0", "row": 1}
+                ],
+                "pooled_projections": {"__store__": "denoising_env.pos_cond_kwargs.pooled"},
+                "h3_packed_layout": {
+                    "ids": {"__store__": "denoising_env.pos_cond_kwargs.h3_packed_layout.ids", "row": 1}
+                },
+                "txt_seq_lens": [7],
+            },
+        },
+    }
+    sample = apply_rollout_image_response(Sample(index=0), body)
+    assert sample.rollout_store_ref.key == "prefix/uuid"
+    latents = sample.dit_trajectory.latents
+    assert isinstance(latents, StoreSlice) and latents.rows == (1,) and latents.shape == (4, 3)
+    assert torch.equal(sample.dit_trajectory.timesteps, torch.tensor([1.0, 0.0]))
+    cond = sample.denoising_env.pos_cond_kwargs
+    assert cond.encoder_hidden_states[0].rows == (1,)
+    assert cond.pooled_projections[0].rows == ()
+    assert cond.h3_packed_layout["ids"].rows == (1,)
+    assert cond.txt_seq_lens == [7]
+
+
+def _tensor_bytes(tensor: torch.Tensor) -> bytes:
+    from safetensors.torch import save
+
+    return save({"t": tensor})

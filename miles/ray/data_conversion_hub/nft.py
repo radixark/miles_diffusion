@@ -26,7 +26,8 @@ def _clean_x0_from_sample(sample: Sample) -> torch.Tensor:
                 f"sample {sample.index} trajectory ends at step {final_step}, not the final "
                 f"step {num_steps}; NFT needs x0"
             )
-    return traj.latents[-1].detach().cpu().float()
+    x0 = traj.latents[-1]
+    return x0.detach().cpu().float() if isinstance(x0, torch.Tensor) else x0
 
 
 # ---- Timestep strategies: (args, num_steps, generator) -> the sampling-step indices to train on, in training
