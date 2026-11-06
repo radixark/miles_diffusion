@@ -36,9 +36,10 @@ The existing loss receives the reference prediction, and custom prepare/loss hoo
 access `ctx.reference_models` by component name.
 
 A third source, the teacher (`--teacher-load`, with `--teacher-lora-adapter-path` for its
-adapters), is reserved for a DMD2-style loss that miles does not ship yet. Until then it
-has no built-in consumer: `--teacher-load` requires a custom prepare/loss hook, which reads
-it from `ctx.teacher_models`, and teacher inference should run inside `torch.no_grad()`.
+adapters), is loaded by `--loss-type dmd2`, without adapters, into its critic group, which
+scores the student's samples with it. Otherwise it has no built-in consumer: `--teacher-load` requires a custom
+prepare/loss hook, which reads it from `ctx.teacher_models`, and teacher inference should run
+inside `torch.no_grad()`.
 
 Each source may load pretrained PEFT LoRA adapters, one plain PEFT directory (what
 `save_pretrained` writes) per `--update-weight-target-module` entry, in the same order:

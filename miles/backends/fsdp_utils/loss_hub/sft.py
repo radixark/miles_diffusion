@@ -39,11 +39,13 @@ def prepare_sft_batch(
     batch: list[dict],
     *,
     pad_to_len: int | None = None,
+    grid_index_range: tuple[int, int] | None = None,
 ) -> PreparedBatch:
     """Corrupt every latent stream at one shared grid index, each through its own shifted grid; CFG-free cached cond.
 
-    The visual grid picks the DiT component and the index is drawn uniformly from the points it serves. Sharing the
-    index pairs the streams' sigmas as inference steps them, one step index read through each stream's shift.
+    The visual grid picks the DiT component and the index is drawn uniformly from the points it serves, within
+    ``grid_index_range`` (inclusive) when given. Sharing the index pairs the streams' sigmas as inference steps them,
+    one step index read through each stream's shift.
     """
     device = ctx.device
     config = ctx.train_pipeline_config
@@ -57,6 +59,8 @@ def prepare_sft_batch(
         for stream_name in stream_names
     }
     component_name, model, visual_pool = select_component(ctx, noise_schedules["visual"], device)
+    if grid_index_range is not None:
+        visual_pool = visual_pool[(visual_pool >= grid_index_range[0]) & (visual_pool <= grid_index_range[1])]
 
     # The visual stream keeps the single-stream seed, so single-stream runs draw as before; other streams add their
     # name, so adding a stream never changes another stream's noise.
