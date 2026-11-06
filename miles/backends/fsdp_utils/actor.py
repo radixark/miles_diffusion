@@ -18,7 +18,7 @@ from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.metric_buffer import MetricBuffer
 from miles.utils.metric_utils import compute_rollout_step
-from miles.utils.output_store import mooncake_client
+from miles.utils.output_store import connect_output_store, materialize_store_slices, mooncake_client
 from miles.utils.timer import Timer, inverse_timer, timer
 from miles.utils.tracking_utils import init_tracking
 from miles.utils.train_data_utils import (
@@ -99,6 +99,7 @@ class FSDPTrainRayActor(TrainRayActor):
             if args.use_output_store and self._rank % args.num_gpus_per_node == 0
             else None
         )
+        self._output_store = connect_output_store(args) if args.use_output_store else None
         self._forward_dtype = parse_dtype_from_str(args.diffusion_forward_dtype)
 
         from miles.utils.misc import load_function
@@ -330,6 +331,8 @@ class FSDPTrainRayActor(TrainRayActor):
             rollout_data = ray.get(rollout_data_ref[self.parallel_state.get_mesh("dp").get_local_rank()].inner)
             if self.args.debug_rollout_only:
                 return
+            if self.args.use_output_store:
+                materialize_store_slices(rollout_data["train_data"], store=self._output_store)
             self._train_core(rollout_id=rollout_id, rollout_data=rollout_data)
             if self.ema_optimizer is not None:
                 self.ema_optimizer.step(self.global_step)
