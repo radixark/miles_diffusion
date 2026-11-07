@@ -71,8 +71,28 @@ def sft_sample_key(args, sample: Sample) -> tuple[str, int]:
         "sample": identity,
         "files": [media_fingerprint(path) for path in sorted(paths)],
     }
+    if args.sft_distilled_cfg_scale != 1.0 and sample.conditions:
+        # A conditioned sample's references shape its uncond, so its pair carries its own; other keys stay put.
+        payload["uncond"] = True
     seed = int.from_bytes(_sha256({"seed": int(args.seed), "sample": identity})[8:16], "big") % 2**63
     return _sha256(payload).hex() + ".pt", seed
+
+
+def sft_uncond_key(args) -> str:
+    """Cache name of the uncond cond kwargs the run's unconditioned pairs share."""
+    payload = {
+        # Bump the version whenever the cached uncond changes.
+        "version": 1,
+        "config": {key: vars(args)[key] for key in SFT_CACHE_KEY_ARGS},
+    }
+    return "uncond-" + _sha256(payload).hex() + ".pt"
+
+
+def _save_atomic(obj, path: Path) -> None:
+    # Temp-then-rename so an interrupted write never leaves a loadable-looking cache entry.
+    tmp_path = path.with_name(path.name + ".tmp")
+    torch.save(obj, tmp_path)
+    os.replace(tmp_path, path)
 
 
 def read_media_clip(path: str, *, height: int, width: int, num_frames: int, frame_stride: int) -> dict:
@@ -136,11 +156,25 @@ class SftEncodeActor:
             self.encoder = _relocate(self.encoder, torch.device("cpu"))
             torch.cuda.empty_cache()
 
+    def _wake_encoder(self):
+        if self.args.sft_offload_encoder:
+            return _relocate(self.encoder, torch.device("cuda"))
+        return self.encoder
+
+    def _sleep_encoder(self, encoder) -> None:
+        if self.args.sft_offload_encoder:
+            self.encoder = _relocate(encoder, torch.device("cpu"))
+            torch.cuda.empty_cache()
+
+    def encode_uncond(self) -> dict:
+        encoder = self._wake_encoder()
+        cond_kwargs = self.encoder_module.encode_uncond(encoder, self.args)
+        self._sleep_encoder(encoder)
+        return cond_kwargs
+
     def encode(self, samples: list[Sample], cache_dir: str) -> int:
         args = self.args
-        encoder = self.encoder
-        if args.sft_offload_encoder:
-            encoder = _relocate(encoder, torch.device("cuda"))
+        encoder = self._wake_encoder()
         for sample in samples:
             media_clip = read_media_clip(
                 sample.target["visual"],
@@ -151,14 +185,8 @@ class SftEncodeActor:
             )
             generator = torch.Generator().manual_seed(sample.seed)
             pair = self.encoder_module.encode_sample(encoder, sample, media_clip, generator, args)
-            out_path = Path(cache_dir) / sample.metadata["sft_cache_name"]
-            # Temp-then-rename so an interrupted write never leaves a loadable-looking cache entry.
-            tmp_path = out_path.with_name(out_path.name + ".tmp")
-            torch.save(pair, tmp_path)
-            os.replace(tmp_path, out_path)
-        if args.sft_offload_encoder:
-            self.encoder = _relocate(encoder, torch.device("cpu"))
-            torch.cuda.empty_cache()
+            _save_atomic(pair, Path(cache_dir) / sample.metadata["sft_cache_name"])
+        self._sleep_encoder(encoder)
         return len(samples)
 
 
@@ -202,6 +230,18 @@ class SftEncodePool(metaclass=SingletonMeta):
             ray.get(self.train_in_flight)
 
 
+def load_uncond_cond_kwargs(args, cache_dir: Path) -> dict:
+    """The uncond cond kwargs the run's unconditioned pairs share, encoded once per cache like a sample pair."""
+    path = cache_dir / sft_uncond_key(args)
+    if not path.exists():
+        pool = SftEncodePool(args)
+        pool.wait_for_train_step()
+        cond_kwargs = ray.get(pool.actors[0].encode_uncond.remote())
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        _save_atomic(cond_kwargs, path)
+    return torch.load(path, map_location="cpu")
+
+
 def generate_rollout(args, rollout_id, data_source, evaluation: bool = False) -> RolloutFnTrainOutput:
     assert not evaluation, "sft_loss does not support eval rollouts"
     # Deterministic per epoch and idempotent; non-divisible datasets may repeat a few
@@ -235,9 +275,14 @@ def generate_rollout(args, rollout_id, data_source, evaluation: bool = False) ->
         )
         encode_seconds = time.time() - start
 
-    for sample in samples:
-        cache_name = sample.metadata.pop("sft_cache_name")
-        sample.train_metadata = {"sft_pair": torch.load(cache_dir / cache_name, map_location="cpu")}
+    pairs = [torch.load(cache_dir / sample.metadata.pop("sft_cache_name"), map_location="cpu") for sample in samples]
+    if args.sft_distilled_cfg_scale != 1.0 and any("uncond_cond_kwargs" not in pair for pair in pairs):
+        uncond_cond_kwargs = load_uncond_cond_kwargs(args, cache_dir)
+        for pair in pairs:
+            # one shared object, so each DP shard's ray.put pickles it once rather than once per pair
+            pair.setdefault("uncond_cond_kwargs", uncond_cond_kwargs)
+    for sample, pair in zip(samples, pairs, strict=True):
+        sample.train_metadata = {"sft_pair": pair}
         sample.status = Sample.Status.COMPLETED
 
     metrics = {

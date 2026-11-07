@@ -29,6 +29,7 @@ class H3TrainPipelineConfig(TrainPipelineConfig):
     tasks = ("t2va", "ref2va")
     hf_ckpt_name_patterns = ("minimax-h3", "minimax_h3", "/h3")
     supports_cfg_training = False
+    cfg_distilled = True
     # No loss reaches the audio head when audio is unsupervised (GRPO, or SFT with --fsdp-supervised-streams visual),
     # so its LoRA may hold no optimizer state.
     optimizer_state_allowed_missing = ["audio"]
@@ -133,6 +134,28 @@ class H3TrainPipelineConfig(TrainPipelineConfig):
         guidance_scale: float,
         true_cfg_scale: float | None,
     ) -> dict[str, torch.Tensor]:
+        """The prompt branch's prediction; with ``use_cfg``, inverted against the uncond branch by ``cfg_combine``."""
+        del joint_cond, cfg_batching, true_cfg_scale
+        predictions = self._packed_forward(model, latents_input, timesteps_input, pos_cond)
+        if not use_cfg:
+            return predictions
+        # The uncond replaces only the text side; the sample's references and soundtrack flag stay its own.
+        neg_cond = {**pos_cond, **neg_cond}
+        # The uncond guess only anchors the inversion; training it would pull " " toward the data.
+        with torch.no_grad():
+            uncond_predictions = self._packed_forward(model, latents_input, timesteps_input, neg_cond)
+        return {
+            stream: self.cfg_combine(prediction, uncond_predictions[stream], guidance_scale)
+            for stream, prediction in predictions.items()
+        }
+
+    def _packed_forward(
+        self,
+        model: torch.nn.Module,
+        latents_input: dict[str, torch.Tensor],
+        timesteps_input: dict[str, torch.Tensor],
+        cond: dict,
+    ) -> dict[str, torch.Tensor]:
         """Pack the target rows of each stream, plus any reference rows, and run one joint H3 forward.
 
         Each row group gets its own time through ``timestep_indices``; text keeps the target video time:
@@ -140,13 +163,11 @@ class H3TrainPipelineConfig(TrainPipelineConfig):
             row group         rows                 time                             when
             target video      update_mask          visual                           always
             target audio      audio_update_mask    audio                            latents_input has audio (SFT)
-            reference video   ~update_mask         max(visual, reference visual)    pos_cond has references (Ref2VA)
-            reference audio   ~audio_update_mask   max(audio, reference audio)      pos_cond has references (Ref2VA)
+            reference video   ~update_mask         max(visual, reference visual)    cond has references (Ref2VA)
+            reference audio   ~audio_update_mask   max(audio, reference audio)      cond has references (Ref2VA)
 
         RL feeds the visual stream alone, so its audio rows stay zero at the video time.
         """
-        del neg_cond, joint_cond, use_cfg, cfg_batching, guidance_scale, true_cfg_scale
-        cond = pos_cond
         visual = latents_input["visual"]
         device, dtype = visual.device, visual.dtype
         if visual.shape[0] != 1:
@@ -211,4 +232,6 @@ class H3TrainPipelineConfig(TrainPipelineConfig):
         guidance_scale: float,
         true_cfg_scale: float | None = None,
     ) -> torch.Tensor:
-        raise NotImplementedError("H3 distilled CFG into the checkpoint; the forward is unguided")
+        """Undo the CFG distilled into the checkpoint: the prompt branch is already guided by ``guidance_scale``."""
+        del true_cfg_scale
+        return noise_pred_neg + (noise_pred_pos - noise_pred_neg) / guidance_scale

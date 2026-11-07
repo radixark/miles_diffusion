@@ -164,7 +164,7 @@ class TestProcessSigmaAsTimestepsInput:
 
 class TestCfgCombinePrefersTrueCfgScale:
     # true_cfg_scale, when set, must win over guidance_scale for every family whose
-    # forward is guided (H3 opts out entirely -- it raises instead).
+    # forward is guided (H3 opts out: its cfg_combine inverts the CFG distilled into it).
     POS = torch.tensor([2.0])
     NEG = torch.tensor([0.0])
     GUIDANCE_SCALE = 3.0
