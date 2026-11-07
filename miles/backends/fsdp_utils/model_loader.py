@@ -29,6 +29,9 @@ def load_fsdp_models(
 ) -> dict[str, torch.nn.Module]:
     materialize_weights = dist.get_rank() == 0
     master_dtype = parse_dtype_from_str(args.fsdp_master_dtype)
+    is_pdd = getattr(args, "loss_type", None) == "pdd"
+    if is_pdd and not trainable:
+        master_dtype = torch.bfloat16
     models = {}
     for component_index, component in enumerate(args.update_weight_target_modules):
         with model_init_context(materialize_weights=materialize_weights):
@@ -38,6 +41,10 @@ def load_fsdp_models(
                 master_dtype=master_dtype,
                 materialize_weights=materialize_weights,
             )
+        if is_pdd and trainable:
+            from miles.distillation.integration import install_student
+
+            install_student(model, args)
         if args.fsdp_attention_backend is not None:
             model_backend.set_attention_backend(model, args.fsdp_attention_backend)
         if trainable and args.gradient_checkpointing:
@@ -163,13 +170,18 @@ def apply_fsdp2(
     modules = [module for name, module in model.named_modules() if module.__class__.__name__ in layer_cls_to_wrap]
 
     param_dtype = parse_dtype_from_str(args.diffusion_forward_dtype)
+    is_pdd = getattr(args, "loss_type", None) == "pdd"
+    if is_pdd:
+        # Match the independent experiment: gathered student weights stay FP32,
+        # including head biases and normalization; autocast handles matmuls.
+        param_dtype = next(model.parameters()).dtype
     reduce_dtype = parse_dtype_from_str(args.fsdp_reduce_dtype)
     # A wrap entry may also be a module LIST — fully_shard can group several modules into one wrap
     # (one shared all-gather); today every wrap holds a single block.
     param_dtype_maps = compile_param_dtype_maps(
         model,
         modules,
-        parallel_plan.param_dtype_patterns,
+        {} if is_pdd else parallel_plan.param_dtype_patterns,
         param_dtype,
     )
     has_param_dtype_overrides = bool(any(param_dtype_maps.wrap_maps) or param_dtype_maps.root_map)

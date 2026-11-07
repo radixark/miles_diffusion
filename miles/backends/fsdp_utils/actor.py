@@ -191,6 +191,11 @@ class FSDPTrainRayActor(TrainRayActor):
         self.lr_scheduler = get_lr_scheduler(args, self.optimizer)
         self.global_step = 0
         self.micro_step = 0
+        self.pdd_signature = None
+        if args.loss_type == "pdd":
+            from miles.distillation.integration import resume_signature
+
+            self.pdd_signature = resume_signature(args)
 
         self.ema_optimizer = None
         if args.use_ema:
@@ -340,6 +345,12 @@ class FSDPTrainRayActor(TrainRayActor):
         train_pairs: list = rollout_data["train_data"]
         if not train_pairs:
             raise ValueError("rollout_data['train_data'] is empty")
+        if self.args.loss_type == "pdd":
+            from miles.distillation.integration import expand_trajectories
+
+            train_pairs = expand_trajectories(
+                train_pairs, intervals=self.args.pdd_num_intervals, block_size=self.args.pdd_block_size
+            )
 
         num_pairs = len(train_pairs)
 

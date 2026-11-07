@@ -185,7 +185,10 @@ def load(actor: Any) -> dict[str, Any] | None:
         return None
 
     root_path = Path(load_root).expanduser()
+    is_pdd = getattr(actor.args, "loss_type", None) == "pdd"
     if not root_path.exists():
+        if is_pdd:
+            raise FileNotFoundError(root_path)
         logger.info(f"[FSDP] Checkpoint directory {root_path} not found; skipping load.")
         return None
 
@@ -193,6 +196,8 @@ def load(actor: Any) -> dict[str, Any] | None:
     if target_step is None:
         tracker_file = root_path / "latest_checkpointed_iteration.txt"
         if not tracker_file.exists():
+            if is_pdd:
+                raise FileNotFoundError(tracker_file)
             logger.info(f"[FSDP] No tracker file at {tracker_file}; skipping load.")
             return None
         tracker_text = tracker_file.read_text().strip()
@@ -203,6 +208,19 @@ def load(actor: Any) -> dict[str, Any] | None:
     optimizer_dir = checkpoint_dir / "optimizer"
     lr_scheduler_dir = checkpoint_dir / "lr_scheduler"
     ema_dir = checkpoint_dir / "ema"
+    if is_pdd:
+        metadata = _read_checkpoint_metadata(checkpoint_dir / "meta.json")
+        if metadata.get("pdd_signature") != actor.pdd_signature:
+            raise ValueError("PDD resume protocol, data or topology changed")
+        for required in (
+            model_dir / ".metadata",
+            optimizer_dir / ".metadata",
+            lr_scheduler_dir / ".metadata",
+            checkpoint_dir / f"rng-rank{dist.get_rank()}.pt",
+            root_path / f"rollout/global_dataset_state_dict_{target_step - 1}.pt",
+        ):
+            if not required.exists():
+                raise FileNotFoundError(f"Incomplete PDD resume checkpoint: {required}")
 
     if not model_dir.exists():
         logger.info(f"[FSDP] Model checkpoint {model_dir} not found; skipping load.")
@@ -218,6 +236,8 @@ def load(actor: Any) -> dict[str, Any] | None:
         logger.info(f"[FSDP] Loaded model from {model_dir}")
     except Exception as e:
         logger.error(f"[FSDP] Failed to load model from {model_dir}: {e}")
+        if is_pdd:
+            raise
         return None
 
     if actor.ema_optimizer is not None:
@@ -251,6 +271,8 @@ def load(actor: Any) -> dict[str, Any] | None:
             logger.info(f"[FSDP] Loaded optimizer from {optimizer_dir}")
         except Exception as e:
             logger.warning(f"[FSDP] Failed to load optimizer from {optimizer_dir}: {e}")
+            if is_pdd:
+                raise
     elif load_optimizer:
         logger.info(f"[FSDP] Optimizer checkpoint not found at {optimizer_dir}, skipping optimizer load.")
 
@@ -264,11 +286,15 @@ def load(actor: Any) -> dict[str, Any] | None:
             logger.info(f"[FSDP] Loaded LR scheduler from {lr_scheduler_dir}")
         except Exception as e:
             logger.warning(f"[FSDP] Failed to load LR scheduler from {lr_scheduler_dir}: {e}")
+            if is_pdd:
+                raise
     else:
         logger.info(f"[FSDP] LR scheduler checkpoint not found at {lr_scheduler_dir}, skipping LR scheduler load.")
 
     rng_state = None
     rng_path = checkpoint_dir / "rng.pt"
+    if is_pdd:
+        rng_path = checkpoint_dir / f"rng-rank{dist.get_rank()}.pt"
     if rng_path.exists():
         rng_state = torch.load(rng_path, map_location="cpu")
 
@@ -348,6 +374,14 @@ def save(actor: Any, iteration: int) -> None:
         lr_scheduler_state = LRSchedulerState(actor.lr_scheduler)
         dcp.save({"lr_scheduler_state": lr_scheduler_state}, checkpoint_id=str(lr_scheduler_dir))
 
+    if getattr(actor.args, "loss_type", None) == "pdd":
+        rng_path = checkpoint_dir / f"rng-rank{dist.get_rank()}.pt"
+        temporary = rng_path.with_suffix(".tmp")
+        torch.save({"torch": torch.get_rng_state(), "cuda": torch.cuda.get_rng_state_all()}, temporary)
+        temporary.replace(rng_path)
+        # The tracker must not publish until every rank's resume state is durable.
+        dist.barrier()
+
     if dist.get_rank() == 0:
         rng_state = {"torch": torch.get_rng_state()}
         rng_state["cuda"] = torch.cuda.get_rng_state_all()
@@ -362,6 +396,8 @@ def save(actor: Any, iteration: int) -> None:
             "world_size": dist.get_world_size(),
             "timestamp": time.time(),
         }
+        if getattr(actor.args, "loss_type", None) == "pdd":
+            metadata["pdd_signature"] = actor.pdd_signature
         _write_checkpoint_metadata(checkpoint_dir / "meta.json", metadata)
 
         tracker_file = base_dir / "latest_checkpointed_iteration.txt"
