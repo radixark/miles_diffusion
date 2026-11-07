@@ -57,6 +57,13 @@ def apply_wan_rollout_patches() -> None:
     patch_wan_norm_ops.apply()
 
 
+@register_rollout_patch_group("pdd_qwen_image21")
+def apply_pdd_qwen_image21_rollout_patches() -> None:
+    from . import patch_pdd_qwen_image21
+
+    patch_pdd_qwen_image21.apply()
+
+
 @register_rollout_patch_group("ltx")
 def apply_ltx2_rollout_patches() -> None:
     from miles.backends.sglang_diffusion_utils.monkey_patches import (

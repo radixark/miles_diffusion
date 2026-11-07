@@ -895,7 +895,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--loss-type",
                 type=str,
-                choices=["policy_loss", "sft_loss", "custom_loss", "nft"],
+                choices=["policy_loss", "sft_loss", "custom_loss", "nft", "pdd"],
                 default="policy_loss",
                 help=(
                     "Train objective shortcut. Diffusion default policy_loss = Flow-GRPO prepare+formula. "
@@ -903,6 +903,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "DiT forward always stays in the FSDP actor."
                 ),
             )
+            parser.add_argument("--pdd-num-intervals", type=int, default=32)
+            parser.add_argument("--pdd-block-size", type=int, default=4)
             parser.add_argument(
                 "--custom-prepare-train-batch-path",
                 type=str,
@@ -1724,6 +1726,7 @@ def validate_reference_model_args(args) -> None:
         raise ValueError("--teacher-cpu-offload requires --teacher-load")
     if (
         args.teacher_load is not None
+        and getattr(args, "loss_type", None) != "pdd"
         and args.custom_prepare_train_batch_path is None
         and args.custom_loss_function_path is None
     ):
@@ -1896,6 +1899,10 @@ def miles_validate_args(args):
             f"{cfg_cls.__name__} trains --diffusion-task {list(cfg_cls.tasks)}, got {args.diffusion_task!r}"
         )
     cfg_cls.validate_args(args)
+    if args.loss_type == "pdd":
+        from miles.distillation.integration import configure_args
+
+        configure_args(args)
     if args.use_lora and args.lora_target_modules is None:
         args.lora_target_modules = list(cfg_cls.lora_target_modules)
 
@@ -2123,7 +2130,10 @@ def miles_validate_args(args):
 
     if args.num_steps_per_rollout is not None:
         samples_per_rollout = args.rollout_batch_size * args.n_samples_per_prompt
-        derived_gbs = samples_per_rollout // args.num_steps_per_rollout
+        # PDD reuses each trajectory lane across every optimizer window.
+        derived_gbs = (
+            samples_per_rollout if args.loss_type == "pdd" else samples_per_rollout // args.num_steps_per_rollout
+        )
         if args.global_batch_size is not None and args.global_batch_size != derived_gbs:
             raise ValueError(
                 f"global_batch_size={args.global_batch_size} contradicts "
