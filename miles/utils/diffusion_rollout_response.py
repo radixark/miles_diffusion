@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "apply_rollout_image_response",
+    "check_generated_resolution",
     "RolloutImageResponseParserActor",
 ]
 
@@ -215,6 +216,26 @@ def _parse_rollout_debug_tensors(
     )
 
 
+def check_generated_resolution(sample: Sample) -> None:
+    """Fail when the engine rendered a resolution other than the one this sample asked for.
+
+    Only a resolution strategy sets ``sample.height`` / ``width`` (a fixed-resolution run
+    leaves them None). A mismatch means the trainer would replay RoPE on a grid the engine
+    never used -- silent at a constant token count -- so it is worth one shape compare.
+
+    Not yet a tensor (an output still held as a ``StoredTensor``) means the read site calls
+    this again once it is one.
+    """
+    if not isinstance(sample.generated_output, torch.Tensor) or sample.height is None or sample.width is None:
+        return
+    height, width = (int(dim) for dim in sample.generated_output.shape[-2:])
+    if (height, width) != (int(sample.height), int(sample.width)):
+        raise ValueError(
+            f"rollout returned a {height}x{width} sample for a {sample.height}x{sample.width} "
+            f"request (prompt {sample.prompt[:60]!r}); the resolution strategy and the engine disagree"
+        )
+
+
 def apply_rollout_image_response(
     sample: Sample,
     body: dict[str, Any],
@@ -240,6 +261,8 @@ def apply_rollout_image_response(
         if isinstance(generated_output, StoredTensor)
         else _normalize_generated_output(generated_output)
     )
+    # A stored output is still a ref here; the read site checks it once it is a tensor.
+    check_generated_resolution(sample)
     sample.generated_audio = deserialize_func(body.get("generated_audio"))
     sample.audio_sample_rate = body.get("audio_sample_rate")
     # Eval-mode rollout (rollout=False) sends no log_probs; train-mode always does.

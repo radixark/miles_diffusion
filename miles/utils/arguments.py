@@ -445,6 +445,30 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "miles.rollout.step_strategy_hub read --diffusion-num-sde-steps.",
             )
             parser.add_argument(
+                "--diffusion-resolution-strategy-path",
+                type=str,
+                default=None,
+                help="Dotted path to `fn(args, sample, seed) -> (height, width)`, called once per "
+                "prompt group so every request of that group renders at one resolution. Unset, the "
+                "run stays at --diffusion-height / --diffusion-width. The built-ins live in "
+                "miles.rollout.resolution_strategy_hub; eval keeps the fixed resolution.",
+            )
+            parser.add_argument(
+                "--diffusion-resolution-buckets",
+                type=str,
+                default=None,
+                help="Candidate resolutions for miles.rollout.resolution_strategy_hub.weighted_buckets, "
+                "'HxW[,HxW...]' with height first, e.g. '512x512,672x384,384x672'. Each side must be a "
+                "positive multiple of 16 (8x VAE downsample x 2x2 patch packing).",
+            )
+            parser.add_argument(
+                "--diffusion-resolution-weights",
+                type=str,
+                default=None,
+                help="Optional draw weights for --diffusion-resolution-buckets, e.g. '2,1,1'; "
+                "one per bucket, normalized to probabilities. Unset draws uniformly.",
+            )
+            parser.add_argument(
                 "--diffusion-log-prob-no-const",
                 action="store_true",
                 default=False,
@@ -2064,6 +2088,50 @@ def validate_dmd2_args(args) -> None:
         )
 
 
+def validate_resolution_strategy(args, cfg_cls) -> None:
+    """Reject a mixed-resolution rollout the training side cannot replay."""
+    if args.diffusion_resolution_strategy_path is None:
+        return
+
+    from miles.rollout.resolution_strategy_hub import (
+        parse_resolution_buckets,
+        parse_resolution_weights,
+        weighted_buckets,
+    )
+    from miles.utils.misc import load_function
+
+    if not cfg_cls.supports_mixed_resolution:
+        raise ValueError(
+            f"{cfg_cls.__name__} trains at one resolution (supports_mixed_resolution=False); "
+            "drop --diffusion-resolution-strategy-path and set --diffusion-height / --diffusion-width. "
+            "A family qualifies once its train forward takes the grid from each sample's own "
+            "rollout cond instead of the global height and width."
+        )
+    # The microbatch stacks train pairs of whichever samples land next to each other, and
+    # a family's ability to batch across resolutions is its own question (some cannot batch
+    # at all, some only within one resolution, some could pad). Until TrainPipelineConfig
+    # declares that, one pair per forward is the only safe width.
+    if args.micro_batch_size != 1:
+        raise ValueError(
+            f"--diffusion-resolution-strategy-path needs --micro-batch-size 1, got {args.micro_batch_size}"
+            + (
+                " (from --micro-batch-size-sample x --micro-batch-size-tstep)"
+                if args.micro_batch_size_sample is not None
+                else ""
+            )
+        )
+
+    # Fail at startup rather than in the first rollout actor.
+    if args.diffusion_resolution_buckets is not None:
+        parse_resolution_weights(
+            args.diffusion_resolution_weights, len(parse_resolution_buckets(args.diffusion_resolution_buckets))
+        )
+    elif load_function(args.diffusion_resolution_strategy_path) is weighted_buckets:
+        raise ValueError("miles.rollout.resolution_strategy_hub.weighted_buckets needs --diffusion-resolution-buckets")
+    elif args.diffusion_resolution_weights is not None:
+        raise ValueError("--diffusion-resolution-weights weights --diffusion-resolution-buckets, which is unset")
+
+
 def miles_validate_args(args):
     args.eval_datasets = _resolve_eval_datasets(args)
 
@@ -2145,6 +2213,7 @@ def miles_validate_args(args):
             f"{cfg_cls.__name__} trains unguided (supports_cfg_training=False); set "
             f"--diffusion-guidance-scale 1.0 and drop --diffusion-negative-prompt"
         )
+    validate_resolution_strategy(args, cfg_cls)
     if cfg_cls.tasks and args.diffusion_task not in cfg_cls.tasks:
         raise ValueError(
             f"{cfg_cls.__name__} trains --diffusion-task {list(cfg_cls.tasks)}, got {args.diffusion_task!r}"

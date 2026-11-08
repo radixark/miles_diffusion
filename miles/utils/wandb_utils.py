@@ -147,6 +147,7 @@ def _init_wandb_common():
     wandb.define_metric("rollout/step")
     wandb.define_metric("rollout/*", step_metric="rollout/step")
     wandb.define_metric("rollout/reward/*", step_metric="rollout/step")
+    wandb.define_metric("rollout/resolution/*", step_metric="rollout/step")
     wandb.define_metric("rollout_media/*", step_metric="rollout/step")
     wandb.define_metric("eval/step")
     wandb.define_metric("eval/*", step_metric="eval/step")

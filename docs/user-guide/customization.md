@@ -126,6 +126,47 @@ DiffusionNFT picks the timesteps it trains on with a separate hook,
 `--diffusion-nft-timestep-strategy-path`: `(args, num_steps, generator) -> list[int]`, built in
 `drop_random_steps` (default) and `drop_final_steps` in `miles/ray/data_conversion_hub/nft.py`.
 
+### `--diffusion-resolution-strategy-path`
+
+Pick the output resolution of one prompt group. Stock implementations live in
+`miles/rollout/resolution_strategy_hub.py`.
+
+```python
+def strategy(args, sample, seed) -> tuple[int, int]:
+    # returns (height, width) for every request of this prompt group
+    ...
+```
+
+The rollout calls it once per prompt group, with the group's own `seed_base`, and sends the
+result as the request's `height` / `width` — so a run reproduces, and every microgroup of the
+group agrees. GRPO normalizes rewards inside a group: a group that mixed resolutions would push
+a reward model's resolution preference into the advantage instead of the sample's own quality.
+The drawn resolution lands on each `Sample` (`height` / `width`), is cross-checked against the
+media the engine returns, and is reported per bucket as
+`rollout/resolution/<HxW>_reward_mean`. Eval keeps `--diffusion-height` / `--diffusion-width`.
+
+| Stock | Behavior |
+|---|---|
+| `weighted_buckets` | Draw from `--diffusion-resolution-buckets`, weighted by `--diffusion-resolution-weights` (uniform when unset) |
+
+The strategy receives the group's first `Sample`, so a custom one can read the resolution off
+the prompt or its dataset metadata rather than drawing it.
+
+Two guards, both at arg validation:
+
+- the family must set `supports_mixed_resolution` (today `qwen_image`, whose train forward takes
+  each sample's grid from the rollout's `img_shapes`). A family that builds positions from the
+  global height and width would not raise — 1024x768 and 768x1024 hold the same token count, so
+  the latents still stack while every token's position is wrong.
+- `--micro-batch-size 1`, until `TrainPipelineConfig` declares how a family batches across
+  resolutions.
+
+Engine side, two things are worth knowing. Concurrent requests at different sizes never merge
+into one denoising schedule — height and width are part of sgl-d's dynamic-batch signature. And
+sgl-d checks only that a t2i height and width are positive, then floors them to the 16px latent
+grid, so a 1000px request renders 992px and says nothing; `--diffusion-resolution-buckets` is
+where that gets rejected instead.
+
 ***
 
 ## Reward

@@ -120,6 +120,9 @@ class GenerateState(metaclass=SingletonMeta):
         self.step_strategy_fn = (
             load_function(args.diffusion_step_strategy_path) if args.diffusion_step_strategy_path else None
         )
+        self.resolution_strategy_fn = (
+            load_function(args.diffusion_resolution_strategy_path) if args.diffusion_resolution_strategy_path else None
+        )
         self.dp_counts = [0] * args.sglang_dp_size
         self.dp_rank = 0
         self.node_id = ray.get_runtime_context().get_node_id()
@@ -317,16 +320,56 @@ async def generate_and_rm_microgroup(
     return microgroup
 
 
+def apply_resolution_strategy(
+    args: Namespace,
+    group: list[Sample],
+    sampling_params: dict[str, Any],
+    *,
+    resolution_strategy_fn: Callable[[Namespace, Sample, int], tuple[int, int]],
+    seed: int,
+) -> tuple[int, int]:
+    """Draw one resolution for a whole prompt group, onto the request and onto every sample.
+
+    Called once per group rather than once per request: GRPO normalizes rewards inside a
+    prompt group, so a group that mixed resolutions would push a reward model's resolution
+    preference into the advantage. It also keeps one group's latents a single shape.
+
+    Concurrent requests at different sizes stay separate engine-side: height and width are
+    part of sgl-d's dynamic-batch signature (``Scheduler._can_dynamic_batch``), so they
+    never merge into one denoising schedule.
+    """
+    height, width = resolution_strategy_fn(args, group[0], seed)
+    height, width = int(height), int(width)
+    sampling_params["height"] = height
+    sampling_params["width"] = width
+    # The response parser cross-checks these against the media the engine returns.
+    for sample in group:
+        sample.height = height
+        sample.width = width
+    return height, width
+
+
 async def generate_and_rm_group(
     args: Namespace, group: list[Sample], sampling_params: dict[str, Any], evaluation: bool = False
 ) -> list[Sample]:
-    GenerateState(args)
+    state = GenerateState(args)
 
     # N-spaced base so sgl-d's seed→[seed+0..seed+N-1] expansion stays disjoint
     # per (rollout, prompt-group); group_index is monotonic across the run.
     n_per_prompt = args.n_samples_per_prompt
     group_index = int(group[0].group_index or 0)
     seed_base = (args.rollout_seed + group_index * n_per_prompt) % (2**31)
+
+    # Before the per-microgroup copies below, so every microgroup of this group agrees.
+    # Eval holds --diffusion-height / --diffusion-width fixed (it never reaches here).
+    if not evaluation and state.resolution_strategy_fn is not None:
+        apply_resolution_strategy(
+            args,
+            group,
+            sampling_params,
+            resolution_strategy_fn=state.resolution_strategy_fn,
+            seed=seed_base,
+        )
 
     tasks = []
     for idx in range(0, len(group), args.rollout_microgroup_size):
