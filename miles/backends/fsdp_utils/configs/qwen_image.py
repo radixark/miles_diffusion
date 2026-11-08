@@ -59,6 +59,9 @@ class QwenImageTrainPipelineConfig(TrainPipelineConfig):
     tasks = ("t2i",)
     hf_ckpt_name_patterns = ("qwen-image",)
     cfg_batching = False
+    # prepare_cond_kwargs forwards the rollout's own img_shapes, so the train-side RoPE is
+    # rebuilt from each sample's grid; nothing here reads --diffusion-height / --diffusion-width.
+    supports_mixed_resolution = True
 
     # 1000 is the model's normalizer, not the scheduler range: sglang-d's DiT divides by the same
     # literal. Reading num_train_timesteps here would diverge from the rollout at any other range.

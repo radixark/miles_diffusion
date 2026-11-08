@@ -816,6 +816,24 @@ def _log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_
 def compute_metrics_from_samples(args, samples):
     log_dict = {}
     log_dict |= _compute_zero_std_metrics(args, samples)
+    log_dict |= _compute_resolution_metrics(args, samples)
+    return log_dict
+
+
+def _compute_resolution_metrics(args, all_samples: list[Sample]):
+    """Reward per rollout resolution, so one bad bucket cannot hide in the average.
+
+    Empty unless --diffusion-resolution-strategy-path is drawing resolutions, which is
+    what sets ``sample.height`` / ``sample.width``.
+    """
+    sized = [sample for sample in all_samples if sample.height is not None and sample.width is not None]
+    log_dict = {}
+    for resolution, samples in group_by(sized, lambda s: f"{s.height}x{s.width}").items():
+        rewards = [sample.get_reward_value(args) for sample in samples]
+        # 3 levels under the "rollout/" the caller adds, like rollout/reward/*, so the
+        # wandb step_metric entry for this prefix binds it to rollout/step.
+        log_dict[f"resolution/{resolution}_reward_mean"] = sum(rewards) / len(rewards)
+        log_dict[f"resolution/{resolution}_num_samples"] = len(rewards)
     return log_dict
 
 

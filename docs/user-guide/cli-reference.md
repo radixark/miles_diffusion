@@ -83,6 +83,7 @@ For how these batch arguments relate to each other, see
 | `--diffusion-noise-level` | `0.7` | SDE noise injected during rollout. |
 | `--diffusion-guidance-scale` | `4.0` | CFG scale. |
 | `--diffusion-height` / `--diffusion-width` | `512` | Output resolution. |
+| `--diffusion-resolution-strategy-path` | – | Draw a resolution per prompt group instead, e.g. `weighted_buckets`. |
 | `--diffusion-output-num-frames` | `1` | Frames — `1` for images. |
 | `--rollout-microgroup-size` | `1` | Samples per prompt sent in one `POST /rollout/generate`. |
 
@@ -200,7 +201,14 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--diffusion-num-sde-steps` | int | `0` | Read by the step strategy. |
 | `--diffusion-sde-window-range` | `"lo,hi"` | – | For `sde_window`. Defaults to `[0, num_inference_steps)`. |
 | `--diffusion-sde-candidate-steps` | `"1,2,3"` | – | Required by `epoch_global_random_choice`. |
+<<<<<<< HEAD
 | `--diffusion-step-strategy-path` | str | – | `(args, sample, num_steps, seed) -> (sde, ret, stop)` choosing the SDE, returned and last steps, e.g. `miles.rollout.step_strategy_hub.sde_window`. Flow-GRPO needs one. |
+=======
+| `--diffusion-step-strategy-path` | str | – | `(args, sample, num_steps, seed) -> (sde, ret)` choosing the SDE and returned steps, e.g. `miles.rollout.step_strategy_hub.sde_window`. Flow-GRPO needs one. |
+| `--diffusion-resolution-strategy-path` | str | – | `(args, sample, seed) -> (height, width)`, called once per prompt group so the whole group renders at one resolution, e.g. `miles.rollout.resolution_strategy_hub.weighted_buckets`. Unset, the run stays at `--diffusion-height` / `--diffusion-width`, which eval keeps either way. Requires a family with `supports_mixed_resolution` (today: `qwen_image`) and `--micro-batch-size 1`. |
+| `--diffusion-resolution-buckets` | `"HxW,HxW"` | – | Candidates for `weighted_buckets`, height first, e.g. `512x512,672x384,384x672`. Each side must be a positive multiple of 16 (8x VAE downsample x 2x2 patch packing). Parsed and validated at startup. |
+| `--diffusion-resolution-weights` | `"2,1,1"` | – | Draw weights for `--diffusion-resolution-buckets`, one per bucket, normalized. Unset draws uniformly. |
+>>>>>>> f4f15eb3 (feat(rollout): sample one resolution per prompt group)
 | `--rollout-return-full-trajectory` | flag | off | Ask the engine for the whole denoising trajectory instead of only the steps the step strategy requests. The train tensors are identical; kept for debugging and A/B runs. |
 | `--diffusion-log-prob-no-const` | flag | off | Drop log-prob constants on the engine (pairs with the CPS backend). Forced on for `cps` / `ode`. |
 | `--diffusion-generator-device` | str | `cuda` | |

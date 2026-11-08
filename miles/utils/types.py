@@ -81,6 +81,11 @@ class Sample:
     target: dict[str, Any] = field(default_factory=dict)
     # reproducibility
     seed: int | None = None
+    # Rollout output resolution of this sample, set only when
+    # --diffusion-resolution-strategy-path draws one per prompt group; otherwise the
+    # resolution is --diffusion-height / --diffusion-width for the whole run.
+    height: int | None = None
+    width: int | None = None
     # Eager tensor on CPU. Image rollout shape: ``[C, T, H, W]`` (``T==1`` typical).
     # With --use-output-store, a StoredTensor from generation until its reward, then None (or a tensor kept for media).
     generated_output: torch.Tensor | None = None
