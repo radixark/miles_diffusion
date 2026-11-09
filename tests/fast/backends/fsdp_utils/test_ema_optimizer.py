@@ -30,6 +30,7 @@ from torch.distributed.checkpoint.state_dict import get_optimizer_state_dict
 
 from miles.backends.fsdp_utils import checkpoint
 from miles.backends.fsdp_utils.ema import EMAOptimizer
+from miles.utils.ray_utils import Box
 
 
 class Model(nn.Module):
@@ -148,7 +149,8 @@ def test_actor_train_updates_ema_once_and_publication_only_reads_it():
         method.decorator_list = []
     namespace = dict(
         Any=Any,
-        ray=SimpleNamespace(get=lambda value: value),
+        Box=Box,
+        ray=SimpleNamespace(get=lambda value: value, put=lambda value: value),
         dist=SimpleNamespace(get_rank=lambda: 0),
         timer=lambda name: nullcontext(),
         inverse_timer=lambda name: nullcontext(),

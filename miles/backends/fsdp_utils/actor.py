@@ -20,6 +20,7 @@ from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.metric_buffer import MetricBuffer
 from miles.utils.metric_utils import compute_rollout_step
 from miles.utils.output_store import connect_output_store, materialize_stored_tensors, mooncake_client
+from miles.utils.ray_utils import Box
 from miles.utils.timer import Timer, inverse_timer, timer
 from miles.utils.tracking_utils import init_tracking
 from miles.utils.train_data_utils import (
@@ -339,7 +340,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 return
             if self.args.use_output_store:
                 materialize_stored_tensors(rollout_data["train_data"], store=self._output_store)
-            external_data = dict(zip(external_data, ray.get(list(external_data.values())), strict=True))
+            external_data = {role: ray.get(box.inner) for role, box in external_data.items()}
             train_output = self._train_core(
                 rollout_id=rollout_id, rollout_data=rollout_data, external_data=external_data
             )
@@ -351,7 +352,9 @@ class FSDPTrainRayActor(TrainRayActor):
             args=self.args,
             is_primary_rank=dist.get_rank() == 0,
         )
-        return train_output
+        # Boxed like the rollout shards: the driver's ray.get on this task only waits, the payload stays in the
+        # object store until the paired rank of a later group reads it.
+        return Box(ray.put(train_output))
 
     def _train_core(self, rollout_id: int, rollout_data, external_data: dict[str, Any]) -> Any:
         """Run the shared diffusion training loop."""
