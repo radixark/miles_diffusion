@@ -177,9 +177,9 @@ class FSDPTrainRayActor(TrainRayActor):
         self.custom_loss_formula_func = (
             load_function(args.custom_loss_function_path) if args.custom_loss_function_path is not None else None
         )
-        self.custom_train_input_func = (
-            load_function(args.custom_train_input_function_path)
-            if args.custom_train_input_function_path is not None
+        self.custom_train_input_postprocess_func = (
+            load_function(args.custom_train_input_postprocess_path)
+            if args.custom_train_input_postprocess_path is not None
             else None
         )
         self.custom_train_output_func = (
@@ -382,8 +382,8 @@ class FSDPTrainRayActor(TrainRayActor):
             dp_rank=self.parallel_state.dp_rank,
             external_data=external_data,
         )
-        if self.custom_train_input_func is not None:
-            train_pairs = self.custom_train_input_func(loss_ctx, train_pairs)
+        if self.custom_train_input_postprocess_func is not None:
+            train_pairs = self.custom_train_input_postprocess_func(loss_ctx, train_pairs)
 
         num_pairs = len(train_pairs)
 

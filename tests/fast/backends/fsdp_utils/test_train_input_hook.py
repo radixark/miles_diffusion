@@ -68,7 +68,7 @@ def _actor(train_input, train_output, forwarded):
         ),
         _forward_dtype=torch.float32,
         parallel_state=SimpleNamespace(dp_rank=0, dp_group=None),
-        custom_train_input_func=train_input,
+        custom_train_input_postprocess_func=train_input,
         custom_train_output_func=train_output,
         optimizer=SimpleNamespace(zero_grad=lambda set_to_none: None),
         global_step=0,

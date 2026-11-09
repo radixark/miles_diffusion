@@ -972,7 +972,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
-                "--custom-train-input-function-path",
+                "--custom-train-input-postprocess-path",
                 type=str,
                 default=None,
                 help=(
