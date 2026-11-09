@@ -168,11 +168,10 @@ def _output_store_master_port(train_args: str) -> int | None:
 
 def start_mooncake_master(port: int, timeout_s: float = 30) -> None:
     """Start a Mooncake master on this node in place of any on the same port, and wait until it listens."""
-    pattern = shlex.quote(f"^mooncake_master --rpc_port {port} ")
-    exec_command(
-        f"pkill -f {pattern} >/dev/null 2>&1 || true; "
-        f"(setsid mooncake_master --rpc_port {port} --metrics_port 0 > {MOONCAKE_MASTER_LOG} 2>&1 &)"
-    )
+    # The bracket keeps pkill off this shell; the master's command line may start with a launcher's path.
+    pattern = shlex.quote(f"mooncake_maste[r] --rpc_port {port} ")
+    exec_command(f"pkill -f {pattern}; for _ in $(seq 50); do pgrep -f {pattern} >/dev/null || break; sleep 0.2; done")
+    exec_command(f"(setsid mooncake_master --rpc_port {port} --metrics_port 0 > {MOONCAKE_MASTER_LOG} 2>&1 &)")
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         with socket.socket() as sock:
