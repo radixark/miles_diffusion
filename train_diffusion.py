@@ -26,7 +26,8 @@ def train(args):
     logger.info("train: rollout manager ready")
 
     logger.info("train: creating training model")
-    actor_model = create_training_models(args, pgs, rollout_manager)
+    train_groups = create_training_models(args, pgs, rollout_manager)
+    actor_model = train_groups["actor"]
     logger.info("train: training model ready")
 
     if args.offload_rollout:
@@ -40,16 +41,18 @@ def train(args):
         ray.get(rollout_manager.eval.remote(rollout_id=0))
 
     def offload_train():
-        if args.offload_train:
-            actor_model.offload()
-        else:
-            actor_model.clear_memory()
+        for train_group in train_groups.values():
+            if args.offload_train:
+                train_group.offload()
+            else:
+                train_group.clear_memory()
 
     def save(rollout_id):
-        actor_model.save_model(
-            rollout_id,
-            force_sync=rollout_id == args.num_rollout - 1,
-        )
+        for train_group in train_groups.values():
+            train_group.save_model(
+                rollout_id,
+                force_sync=rollout_id == args.num_rollout - 1,
+            )
         if args.rollout_global_dataset:
             ray.get(rollout_manager.save.remote(rollout_id))
 
@@ -67,9 +70,10 @@ def train(args):
         if args.offload_rollout:
             ray.get(rollout_manager.offload.remote())
 
-        logger.info(f"train: rollout {rollout_id} actor train start")
-        ray.get(actor_model.async_train(rollout_id, rollout_data_ref))
-        logger.info(f"train: rollout {rollout_id} actor train done")
+        for role, train_group in train_groups.items():
+            logger.info(f"train: rollout {rollout_id} {role} train start")
+            ray.get(train_group.async_train(rollout_id, rollout_data_ref))
+            logger.info(f"train: rollout {rollout_id} {role} train done")
 
         if should_run_periodic_action(rollout_id, args.save_interval, num_rollout_per_epoch, args.num_rollout):
             save(rollout_id)

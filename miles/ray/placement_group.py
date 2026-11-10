@@ -121,38 +121,44 @@ def create_placement_groups(args):
     }
 
 
-def allocate_train_group(args, num_nodes, num_gpus_per_node, pg):
+def allocate_train_group(args, num_nodes, num_gpus_per_node, pg, num_gpus_per_actor, role):
     return RayTrainGroup(
         args=args,
         num_nodes=num_nodes,
         num_gpus_per_node=num_gpus_per_node,
         pg=pg,
-        num_gpus_per_actor=TRAIN_ACTOR_GPU,
+        num_gpus_per_actor=num_gpus_per_actor,
+        role=role,
     )
 
 
 def create_training_models(args, pgs, rollout_manager):
-    [actor_config] = compute_trainer_configs(args)
-    actor_args = compute_trainer_args(args, actor_config)
-    logger.info("Initializing actor model...")
-    actor_model = allocate_train_group(
-        args=actor_args,
-        num_nodes=args.actor_num_nodes,
-        num_gpus_per_node=args.actor_num_gpus_per_node,
-        pg=pgs["actor"],
-    )
-    start_rollout_ids = ray.get(actor_model.async_init(actor_args, role=actor_config.role, with_ref=False))
-    logger.info("Actor model initialized.")
+    trainer_configs = compute_trainer_configs(args)
+    train_groups = {}
+    start_rollout_ids = set()
+    for config in trainer_configs:
+        role, role_args = config.role, compute_trainer_args(args, config)
+        logger.info(f"Initializing {role} model...")
+        train_groups[role] = allocate_train_group(
+            args=role_args,
+            num_nodes=args.actor_num_nodes,
+            num_gpus_per_node=args.actor_num_gpus_per_node,
+            pg=pgs["actor"],
+            num_gpus_per_actor=TRAIN_ACTOR_GPU / len(trainer_configs),
+            role=role,
+        )
+        start_rollout_ids.update(ray.get(train_groups[role].async_init(role_args, role=role, with_ref=False)))
+        logger.info(f"{role} model initialized.")
 
-    assert len(set(start_rollout_ids)) == 1
+    assert len(start_rollout_ids) == 1, f"trainers restored different rollouts: {sorted(start_rollout_ids)}"
     if args.start_rollout_id is None:
-        args.start_rollout_id = start_rollout_ids[0]
+        args.start_rollout_id = start_rollout_ids.pop()
 
-    actor_model.set_rollout_manager(rollout_manager)
+    train_groups["actor"].set_rollout_manager(rollout_manager)
     if args.rollout_global_dataset:
         ray.get(rollout_manager.load.remote(args.start_rollout_id - 1))
 
-    return actor_model
+    return train_groups
 
 
 def create_rollout_manager(args, pg):
