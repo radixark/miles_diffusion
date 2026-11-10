@@ -55,6 +55,13 @@ def main() -> int:
         )
         return 1
 
+    # The workflow sources these lines: accept only the exact digest / SHA shapes.
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", newest_tag["digest"] or ""):
+        print(f"unexpected digest for {newest_tag['name']}: {newest_tag['digest']!r}", file=sys.stderr)
+        return 1
+    if not re.fullmatch(r"[0-9a-f]{40}", run["headSha"]):
+        print(f"unexpected headSha: {run['headSha']!r}", file=sys.stderr)
+        return 1
     print(f"dev_image_tag={newest_tag['name']}")
     print(f"dev_image_digest={newest_tag['digest']}")
     print(f"image_build_sha={run['headSha']}")
