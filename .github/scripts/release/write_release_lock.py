@@ -27,30 +27,25 @@ def main() -> int:
     assert args.sglang_image_digest.startswith("sha256:"), "failed to resolve sglang_image_digest"
     assert args.fa3_wheels_fingerprint, "failed to fingerprint the FA3 wheels release"
 
-    json.dump(
-        {
-            "release_branch": args.release_branch,
-            # Restored inputs: CI re-installs sglang at this commit and
-            # release-docker.yml bakes it.
-            "sglang_repo": "sgl-project/sglang",
-            "sglang_branch": "sglang-miles",
-            "sglang_commit": args.sglang_commit,
-            # Restored input for release CI; the digest records what the tag
-            # pointed at when it was frozen.
-            "ci_image_tag": args.ci_image_tag,
-            "ci_image_digest": args.ci_image_digest,
-            # Restored input for release-docker.yml: FROM <tag>@<digest>.
-            "sglang_image_tag": args.sglang_image_tag,
-            "sglang_image_digest": args.sglang_image_digest,
-            # Audit only: a rolling wheels release can have assets replaced in
-            # place, so it cannot be pinned by name.
-            "fa3_wheels_repo": args.fa3_wheels_repo,
-            "fa3_wheels_tag": args.fa3_wheels_tag,
-            "fa3_wheels_fingerprint": args.fa3_wheels_fingerprint,
-        },
-        open("release-lock.json", "w"),
-        indent=2,
-    )
+    # Restored inputs: release CI re-installs sglang at sglang_commit and runs
+    # inside ci_image_tag; release-docker.yml bakes sglang_commit and builds
+    # FROM sglang_image_tag@sglang_image_digest. ci_image_digest and the
+    # fa3_wheels_* fields are audit records: a rolling wheels release can have
+    # its assets replaced in place, so it cannot be pinned by name.
+    lock = {
+        "release_branch": args.release_branch,
+        "sglang_repo": "sgl-project/sglang",
+        "sglang_branch": "sglang-miles",
+        "sglang_commit": args.sglang_commit,
+        "ci_image_tag": args.ci_image_tag,
+        "ci_image_digest": args.ci_image_digest,
+        "sglang_image_tag": args.sglang_image_tag,
+        "sglang_image_digest": args.sglang_image_digest,
+        "fa3_wheels_repo": args.fa3_wheels_repo,
+        "fa3_wheels_tag": args.fa3_wheels_tag,
+        "fa3_wheels_fingerprint": args.fa3_wheels_fingerprint,
+    }
+    json.dump(lock, open("release-lock.json", "w"), indent=2)
     return 0
 
 
