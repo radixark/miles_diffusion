@@ -104,8 +104,6 @@ jobs:
             "$RUNNER_TEMP/docker-build-run.json" "$RUNNER_TEMP/tags.json" > "$RUNNER_TEMP/picked.env"
           cat "$RUNNER_TEMP/picked.env"
           source "$RUNNER_TEMP/picked.env"
-          # The frozen image must represent the cut point's image layers; a
-          # Dockerfile or requirements change in between needs a fresh build.
           if ! git diff --quiet "$image_build_sha" "$COMMIT_SHA" -- docker/Dockerfile requirements.txt; then
             echo "::error::docker/Dockerfile or requirements.txt differ between the image build ($image_build_sha) and the cut point ($COMMIT_SHA); dispatch docker-build.yml on main and re-run"
             git diff --stat "$image_build_sha" "$COMMIT_SHA" -- docker/Dockerfile requirements.txt

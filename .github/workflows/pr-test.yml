@@ -33,8 +33,7 @@ on:
     - cron: '30 16 * * *'
   workflow_dispatch:
     inputs:
-      # Empty so a release branch's release-lock.json can apply; without a
-      # lockfile the resolve steps fall back to the values named below.
+      # empty defaults let a release branch's release-lock.json apply
       ci_sglang_pr:
         description: 'SGLang branch/commit (empty: release-lock.json if present, else sglang-miles)'
         required: false
@@ -292,8 +291,8 @@ jobs:
             PR_CI_IMAGE_TAG=$(echo "$PR_BODY" | grep -m1 -oP '^ci-image-tag:\s+\K\S+' || true)
             [ -z "$CI_IMAGE_TAG" ] && [ -n "$PR_CI_IMAGE_TAG" ] && CI_IMAGE_TAG="$PR_CI_IMAGE_TAG"
           fi
-          # Release branches freeze their CI image in release-lock.json; `latest`
-          # moves on every main push touching docker files and is the last resort.
+          # release-lock.json pins a release branch's CI image; `latest` moves on
+          # every main push touching docker files.
           if [ -z "$CI_IMAGE_TAG" ] && [ -f release-lock.json ]; then
             CI_IMAGE_TAG=$(python3 -c "import json; print(json.load(open('release-lock.json'))['ci_image_tag'])")
             echo "release-lock.json present: image tag ${CI_IMAGE_TAG}"
