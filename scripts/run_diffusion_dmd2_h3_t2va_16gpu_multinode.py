@@ -34,6 +34,15 @@ teacher = MiniMax-H3 at its default 50 steps; fasth3 = the FastH3 Dense / Data-F
 
 Usage (after the multi-node bring-up, on the head node):
     MILES_SCRIPT_EXTERNAL_RAY=1 python3 scripts/run_diffusion_dmd2_h3_t2va_16gpu_multinode.py
+
+Single node, for smoke runs and the e2e CI: the script starts its own ray cluster. Two GPUs hold the
+rollout engine (tp2) and FSDP DP=2 over the student, the critic and the teacher only with their
+parameters, gradients and optimizer states in host memory (--fsdp-cpu-offload; about 1.1 TB). The
+master stays fp32: H3 keeps proj_in / time_embedder / proj_out in fp32, and FSDP2 wants one original
+dtype across a group's trainable parameters, which a bf16 master would break for full-parameter training.
+    python3 scripts/run_diffusion_dmd2_h3_t2va_16gpu_multinode.py --num-nodes 1 --num-gpus-per-node 2 \
+        --rollout-batch-size 4 --critic-steps-per-rollout 2 --num-rollout 2 --eval-interval 0 \
+        --save-interval 0 --fsdp-cpu-offload
 """
 
 import hashlib
@@ -80,10 +89,18 @@ SPLIT_SHA256 = {
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
     num_rollout: int = 200
-    # 5 critic steps x 64 samples; the student steps on the last 64.
+    # critic_steps_per_rollout critic steps x 64 samples; the student steps on the last 64.
     rollout_batch_size: int = 320
+    critic_steps_per_rollout: int = 5
+    # 0 disables eval / checkpoints.
     eval_interval: int = 5
     save_interval: int = 50
+    # Colocated train + rollout GPUs; one node starts its own ray cluster.
+    num_nodes: int = 2
+    num_gpus_per_node: int = 8
+    # Below 16 GPUs the two 31B optimizers do not fit: keep params, grads and optimizer states in
+    # host memory (the optimizer steps on the CPU).
+    fsdp_cpu_offload: bool = False
     duration_seconds: float = 5.0
     data_dir: str = "/root/datasets"
     # "teacher" or "fasth3": render the eval prompts with that model instead of training.
@@ -169,6 +186,8 @@ def execute(args: ScriptArgs, prompt_dir: str) -> None:
         "--n-samples-per-eval-prompt 1 "
         f"--save-eval-media-dir {run_dir}/eval_media "
     )
+    if not args.reference and args.eval_interval <= 0:
+        eval_args = ""
 
     # Every eval video; training rollouts carry no media, since --rm-type none skips their decode.
     wandb_args = U.get_default_wandb_args(
@@ -189,13 +208,14 @@ def execute(args: ScriptArgs, prompt_dir: str) -> None:
         "--update-weight-buffer-size 4294967296 "
     )
 
+    num_gpus = args.num_nodes * args.num_gpus_per_node
     topology_args = (
-        "--actor-num-nodes 2 "
-        "--actor-num-gpus-per-node 8 "
-        "--num-gpus-per-node 8 "
-        "--rollout-num-gpus 16 "
+        f"--actor-num-nodes {args.num_nodes} "
+        f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
+        f"--num-gpus-per-node {args.num_gpus_per_node} "
+        f"--rollout-num-gpus {num_gpus} "
         "--rollout-num-gpus-per-engine 2 "
-        "--rollout-parser-num-workers 16 "
+        f"--rollout-parser-num-workers {num_gpus} "
         "--colocate "
         # H3 denoising blocks the engine's event loop for tens of seconds per sample.
         "--rollout-health-check-interval 60 "
@@ -219,16 +239,17 @@ def execute(args: ScriptArgs, prompt_dir: str) -> None:
             f"--diffusion-eval-num-steps {eval_steps} "
         )
     else:
+        save_args = f"--save {run_dir}/ckpt --save-interval {args.save_interval} " if args.save_interval > 0 else ""
+        offload_args = "--fsdp-cpu-offload --teacher-cpu-offload " if args.fsdp_cpu_offload else ""
         mode_args = (
             f"--hf-checkpoint {MODEL} "
-            f"--save {run_dir}/ckpt "
-            f"--save-interval {args.save_interval} "
+            f"{save_args}"
             f"--num-rollout {args.num_rollout} "
-            f"--eval-interval {args.eval_interval} "
+            f"{f'--eval-interval {args.eval_interval} ' if args.eval_interval > 0 else ''}"
             "--loss-type dmd2 "
             f"--teacher-load {MODEL} "
             "--dmd2-teacher-guidance-scale 1.0 "
-            "--dmd2-critic-steps-per-rollout 5 "
+            f"--dmd2-critic-steps-per-rollout {args.critic_steps_per_rollout} "
             "--dmd2-score-sigma-range 0.001 0.999 "
             "--dmd2-critic-loss-space x0 "
             "--fsdp-flow-shift visual=5.0 "
@@ -242,6 +263,7 @@ def execute(args: ScriptArgs, prompt_dir: str) -> None:
             "--fsdp-reduce-dtype fp32 "
             "--diffusion-forward-dtype bf16 "
             "--gradient-checkpointing "
+            f"{offload_args}"
         )
 
     U.execute_train(
@@ -249,7 +271,7 @@ def execute(args: ScriptArgs, prompt_dir: str) -> None:
             f"{mode_args} {rollout_args} {diffusion_args} {eval_args} {wandb_args} {sglang_args} "
             f"{topology_args} {args.extra_args}"
         ),
-        num_gpus_per_node=8,
+        num_gpus_per_node=args.num_gpus_per_node,
         config=args,
         extra_env_vars={"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"},
     )
