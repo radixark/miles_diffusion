@@ -92,7 +92,7 @@ jobs:
       - name: Preflight the CI image
         if: steps.check_exists.outputs.branch_exists != 'true'
         id: preflight
-        # bash with pipefail: the pipelines below must not hide a failing producer.
+        # Explicit bash (-eo pipefail) on both scripted steps, so they behave alike.
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -122,6 +122,8 @@ jobs:
 
       - name: Create branch and freeze release-lock.json
         id: freeze
+        # pipefail: the ls-remote | cut and curl | python3 pipelines below must
+        # not hide a failing producer.
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
