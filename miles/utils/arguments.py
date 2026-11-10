@@ -991,8 +991,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help=(
-                    "Dotted path to `fn(ctx, train_pairs) -> Any`, run without grad after the train steps of "
-                    "a rollout. Its return value reaches the paired rank of every trainer group that trains "
+                    "Dotted path to `fn(ctx, train_pairs, train_output_inputs) -> Any`, run without grad after the "
+                    "train steps of a rollout with the list the loss formula filled. Its return value reaches the paired rank of every trainer group that trains "
                     "later on the same rollout as `ctx.external_data[<role>]`. --loss-type custom_loss only."
                 ),
             )

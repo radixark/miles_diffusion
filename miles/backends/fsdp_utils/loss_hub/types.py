@@ -25,8 +25,6 @@ class DiffusionLossContext:
     reference_models: dict[str, torch.nn.Module] = field(default_factory=dict)
     teacher_models: dict[str, torch.nn.Module] = field(default_factory=dict)
     external_data: dict[str, Any] = field(default_factory=dict)
-    # Filled by loss hooks during one train call and read by the train-output hook.
-    train_output_inputs: list[Any] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

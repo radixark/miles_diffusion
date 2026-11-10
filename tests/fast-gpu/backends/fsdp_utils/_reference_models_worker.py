@@ -98,6 +98,7 @@ def check_roles(mesh, adapter_paths, reference_has_adapter, cpu_offload):
             [],
             microbatch_id=0,
             optim_step_idx=0,
+            train_output_inputs=[],
             metrics=None,
         ).backward()
         expected_actor_output = oracle(inputs)
@@ -129,6 +130,7 @@ def check_roles(mesh, adapter_paths, reference_has_adapter, cpu_offload):
             [],
             microbatch_id=0,
             optim_step_idx=0,
+            train_output_inputs=[],
             metrics=None,
         ).backward()
         expected_actor_output = oracle(inputs)

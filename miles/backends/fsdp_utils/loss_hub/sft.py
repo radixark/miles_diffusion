@@ -129,6 +129,7 @@ def sft_loss_formula(
     ref_pred: dict[str, torch.Tensor] | None,
     metrics: MetricBuffer,
     optim_step_idx: int,
+    train_output_inputs: list,
     write_old_log_prob: bool = False,
     old_log_prob_from_new: bool = False,
 ) -> torch.Tensor:

@@ -60,6 +60,7 @@ def critic_loss_formula(
     ref_pred: dict[str, torch.Tensor] | None,
     metrics: MetricBuffer,
     optim_step_idx: int,
+    train_output_inputs: list,
     write_old_log_prob: bool = False,
     old_log_prob_from_new: bool = False,
 ) -> torch.Tensor:
@@ -71,7 +72,7 @@ def critic_loss_formula(
     sigmas = prepared.extras["sigmas"]["visual"].view(len(batch), *([1] * (latents.ndim - 1)))
     if _is_scoring_step(ctx, optim_step_idx):
         x0_fake = latents - sigmas * new_pred["visual"].detach().float()
-        ctx.train_output_inputs.append(
+        train_output_inputs.append(
             (batch, prepared.component_name, latents, prepared.timesteps["visual"], sigmas, x0_fake)
         )
     if ctx.args.dmd2_critic_loss_space == "x0":
@@ -88,15 +89,18 @@ def critic_loss_formula(
         ref_pred=ref_pred,
         metrics=metrics,
         optim_step_idx=optim_step_idx,
+        train_output_inputs=train_output_inputs,
         write_old_log_prob=write_old_log_prob,
         old_log_prob_from_new=old_log_prob_from_new,
     )
 
 
-def score_last_step_samples(ctx: DiffusionLossContext, train_pairs: list[dict]) -> dict[int, dict]:
+def score_last_step_samples(
+    ctx: DiffusionLossContext, train_pairs: list[dict], train_output_inputs: list
+) -> dict[int, dict]:
     """The teacher's x0 at each scored sample's noisy input, next to the critic's x0 kept there, by sample."""
     predictions = {}
-    for batch, component_name, latents, timesteps, sigmas, x0_fake in ctx.train_output_inputs:
+    for batch, component_name, latents, timesteps, sigmas, x0_fake in train_output_inputs:
         teacher = ctx.teacher_models[component_name]
         real_pred = _predict_velocity(ctx, teacher, batch, latents, timesteps, ctx.args.dmd2_teacher_guidance_scale)
         for pair, x0_real, fake in zip(batch, latents - sigmas * real_pred, x0_fake, strict=True):
@@ -229,6 +233,7 @@ def dmd2_loss_formula(
     ref_pred: dict[str, torch.Tensor] | None,
     metrics: MetricBuffer,
     optim_step_idx: int,
+    train_output_inputs: list,
     write_old_log_prob: bool = False,
     old_log_prob_from_new: bool = False,
 ) -> torch.Tensor:

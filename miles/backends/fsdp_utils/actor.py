@@ -370,6 +370,7 @@ class FSDPTrainRayActor(TrainRayActor):
         )
         if self.loss_hooks.train_input is not None:
             train_pairs = self.loss_hooks.train_input(loss_ctx, train_pairs)
+        train_output_inputs: list = []  # one list per train call
 
         num_pairs = len(train_pairs)
 
@@ -419,6 +420,7 @@ class FSDPTrainRayActor(TrainRayActor):
                             train_pairs[pair_lo:pair_hi],
                             microbatch_id=microbatch_id,
                             optim_step_idx=optim_step_idx,
+                            train_output_inputs=train_output_inputs,
                             metrics=unused_metrics,
                             pad_to_len=legacy_pad_to_len,
                             write_old_log_prob=True,
@@ -453,6 +455,7 @@ class FSDPTrainRayActor(TrainRayActor):
                         chunk,
                         microbatch_id=microbatch_id,
                         optim_step_idx=optim_step_idx,
+                        train_output_inputs=train_output_inputs,
                         metrics=metrics,
                         pad_to_len=legacy_pad_to_len,
                         old_log_prob_from_new=old_log_prob_from_new,
@@ -489,7 +492,7 @@ class FSDPTrainRayActor(TrainRayActor):
 
         if self.loss_hooks.train_output is not None:
             with torch.no_grad():
-                return self.loss_hooks.train_output(loss_ctx, train_pairs)
+                return self.loss_hooks.train_output(loss_ctx, train_pairs, train_output_inputs)
 
     def _maybe_legacy_window_pad_len(self, train_pairs: list, microbatch_ranges: list) -> int | None:
         """LEGACY 2D parity: the whole-window max cond seq_len (like the legacy tile path), or
@@ -512,6 +515,7 @@ class FSDPTrainRayActor(TrainRayActor):
         *,
         microbatch_id: int,
         optim_step_idx: int,
+        train_output_inputs: list,
         metrics: MetricBuffer,
         pad_to_len: int | None = None,
         write_old_log_prob: bool = False,
@@ -581,6 +585,7 @@ class FSDPTrainRayActor(TrainRayActor):
             ref_pred=ref_pred,
             metrics=metrics,
             optim_step_idx=optim_step_idx,
+            train_output_inputs=train_output_inputs,
             write_old_log_prob=write_old_log_prob,
             old_log_prob_from_new=old_log_prob_from_new,
         )

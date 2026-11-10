@@ -133,6 +133,7 @@ def test_t2va_prediction_matches_the_sft_target_and_skips_padding_rows():
         ref_pred=None,
         metrics=metrics,
         optim_step_idx=0,
+        train_output_inputs=[],
     )
     assert torch.isfinite(loss) and loss.item() > 0
 
@@ -441,6 +442,7 @@ def test_real_tiny_diffusers_h3_joint_sft_forward_and_backward(forward_dtype):
         ref_pred=None,
         metrics=metrics,
         optim_step_idx=0,
+        train_output_inputs=[],
     )
     assert torch.isfinite(loss) and loss.item() > 0
     assert prepared.extras["target"]["visual"].dtype == torch.float32

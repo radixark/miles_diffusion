@@ -89,7 +89,7 @@ def test_custom_loss_loads_every_path():
     def train_input(ctx, train_pairs):
         pass
 
-    def train_output(ctx, train_pairs):
+    def train_output(ctx, train_pairs, train_output_inputs):
         pass
 
     args = _custom_args(

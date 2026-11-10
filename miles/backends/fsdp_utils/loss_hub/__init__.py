@@ -30,15 +30,18 @@ __all__ = ["LOSS_HOOKS", "DiffusionLossContext", "LossHooks", "PreparedBatch", "
 class LossHooks:
     """The hooks one trainer group runs on a rollout.
 
-    ``prepare`` builds a micro-batch's DiT inputs, ``formula`` turns the predictions into its loss, ``train_input``
-    preprocesses the rank's train pairs before micro-batching, and ``train_output`` runs after the train steps and
-    hands its return value to the groups that train later.
+    ``prepare(ctx, batch, *, microbatch_id, optim_step_idx, pad_to_len=None)`` builds a micro-batch's DiT inputs,
+    ``formula(ctx, batch, prepared, *, new_pred, old_pred, ref_pred, metrics, optim_step_idx, train_output_inputs,
+    ...)`` turns the predictions into its loss, ``train_input`` preprocesses the rank's train pairs before
+    micro-batching, and ``train_output(ctx, train_pairs, train_output_inputs)`` runs after the train steps and hands
+    its return value to the groups that train later; ``train_output_inputs`` is the list the formulas filled during
+    this train call.
     """
 
     prepare: Callable[..., PreparedBatch]
     formula: Callable[..., torch.Tensor | None]
     train_input: Callable[[DiffusionLossContext, list], list] | None = None
-    train_output: Callable[[DiffusionLossContext, list], Any] | None = None
+    train_output: Callable[[DiffusionLossContext, list, list], Any] | None = None
 
 
 LOSS_HOOKS: dict[tuple[str, str], LossHooks] = {

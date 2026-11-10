@@ -255,6 +255,7 @@ class TestSftLossFormula:
             ref_pred=None,
             metrics=metrics,
             optim_step_idx=0,
+            train_output_inputs=[],
         )
 
     def test_zero_loss_on_exact_velocity(self):
@@ -360,6 +361,7 @@ class TestJointStreams:
             ref_pred=None,
             metrics=metrics,
             optim_step_idx=0,
+            train_output_inputs=[],
         )
         assert loss.item() == pytest.approx(10.0)
         loss.backward()
@@ -381,7 +383,15 @@ class TestJointStreams:
         }
         metrics = _Metrics()
         sft_loss_formula(
-            ctx, batch, prepared, new_pred=predictions, old_pred=None, ref_pred=None, metrics=metrics, optim_step_idx=0
+            ctx,
+            batch,
+            prepared,
+            new_pred=predictions,
+            old_pred=None,
+            ref_pred=None,
+            metrics=metrics,
+            optim_step_idx=0,
+            train_output_inputs=[],
         )
         assert metrics.seen["loss"] == (10.0, 2)
         assert metrics.seen["loss_visual"] == (2.0, 2)
@@ -412,6 +422,7 @@ class TestJointStreams:
             ref_pred=None,
             metrics=_Metrics(),
             optim_step_idx=0,
+            train_output_inputs=[],
         )
         assert loss.item() == pytest.approx(2.0)
 
@@ -434,6 +445,7 @@ class TestJointStreams:
             ref_pred=None,
             metrics=metrics,
             optim_step_idx=0,
+            train_output_inputs=[],
         )
         assert loss.item() == pytest.approx(2.0)
         # One supervised stream: its loss is the total, and only its own buckets appear.
@@ -469,6 +481,7 @@ class TestJointStreams:
                 ref_pred=None,
                 metrics=_Metrics(),
                 optim_step_idx=0,
+                train_output_inputs=[],
             )
 
     def test_rejects_different_stream_sets_in_one_microbatch(self):

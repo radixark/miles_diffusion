@@ -136,7 +136,7 @@ def _ctx(teacher_guidance_scale=3.0, critic_scale=1.0, teacher_scale=1.0):
     )
 
 
-def _critic_step(ctx, pairs, optim_step_idx, metrics=None):
+def _critic_step(ctx, pairs, optim_step_idx, train_output_inputs, metrics=None):
     """One critic optimizer step as _train_core runs it: prepare, the critic's training forward, the loss hook."""
     steps = []
     for start in range(0, len(pairs), ctx.args.micro_batch_size):
@@ -165,6 +165,7 @@ def _critic_step(ctx, pairs, optim_step_idx, metrics=None):
             ref_pred=None,
             metrics=metrics or _Metrics(),
             optim_step_idx=optim_step_idx,
+            train_output_inputs=train_output_inputs,
         )
         steps.append((batch, prepared, new_pred, loss))
     return steps
@@ -240,7 +241,7 @@ def test_critic_loss_is_the_sft_loss():
         ctx = _ctx()
         metrics = _Metrics()
         sft_metrics = _Metrics()
-        for batch, prepared, new_pred, loss in _critic_step(ctx, _pairs(3), optim_step_idx, metrics):
+        for batch, prepared, new_pred, loss in _critic_step(ctx, _pairs(3), optim_step_idx, [], metrics):
             sft_loss = sft_loss_formula(
                 ctx,
                 batch,
@@ -250,6 +251,7 @@ def test_critic_loss_is_the_sft_loss():
                 ref_pred=None,
                 metrics=sft_metrics,
                 optim_step_idx=optim_step_idx,
+                train_output_inputs=[],
             )
             assert torch.equal(loss, sft_loss)
         assert metrics.seen == sft_metrics.seen
@@ -260,7 +262,7 @@ def test_x0_critic_loss_weights_the_velocity_mse():
         ctx = _ctx()
         ctx.models["transformer"] = _NoisyInputVelocity()
         ctx.args.dmd2_critic_loss_space = "x0"
-        for batch, prepared, new_pred, loss in _critic_step(ctx, _pairs(3), optim_step_idx):
+        for batch, prepared, new_pred, loss in _critic_step(ctx, _pairs(3), optim_step_idx, []):
             x_s = prepared.latents["visual"]
             sigma = prepared.extras["sigmas"]["visual"].view(-1, 1, 1, 1)
             x0 = torch.stack([pair["x0"] for pair in batch])
@@ -274,12 +276,14 @@ def test_only_the_last_step_keeps_scoring_inputs():
     ctx = _ctx()
     pairs = _pairs(9)
 
+    inputs = []
     for optim_step_idx in range(CRITIC_STEPS - 1):
-        _critic_step(ctx, pairs[optim_step_idx * 3 : optim_step_idx * 3 + 3], optim_step_idx)
-    assert ctx.train_output_inputs == []
+        _critic_step(ctx, pairs[optim_step_idx * 3 : optim_step_idx * 3 + 3], optim_step_idx, inputs)
+    assert inputs == []
 
-    _critic_step(ctx, pairs[6:], CRITIC_STEPS - 1)
-    scores = dmd2.score_last_step_samples(ctx, pairs)
+    _critic_step(ctx, pairs[6:], CRITIC_STEPS - 1, inputs)
+    assert len(inputs) == 2  # one entry per micro-batch of the last step
+    scores = dmd2.score_last_step_samples(ctx, pairs, inputs)
 
     assert list(scores) == [106, 107, 108]
 
@@ -289,8 +293,9 @@ def test_scores_match_separate_forwards_at_the_kept_input():
     ctx.models["transformer"] = _NoisyInputVelocity()
     pairs = _pairs(5)
 
-    steps = _critic_step(ctx, pairs, CRITIC_STEPS - 1)
-    scores = dmd2.score_last_step_samples(ctx, pairs)
+    inputs = []
+    steps = _critic_step(ctx, pairs, CRITIC_STEPS - 1, inputs)
+    scores = dmd2.score_last_step_samples(ctx, pairs, inputs)
 
     assert list(scores) == [100, 101, 102, 103, 104]
     for batch, prepared, _, _ in steps:
@@ -308,8 +313,9 @@ def test_teacher_runs_cfg_and_the_critic_runs_unguided():
     ctx = _ctx(teacher_guidance_scale=3.0, teacher_scale=1.0, critic_scale=2.0)
     pairs = _pairs(2)
 
-    [(_, prepared, _, _)] = _critic_step(ctx, pairs, CRITIC_STEPS - 1)
-    scores = dmd2.score_last_step_samples(ctx, pairs)
+    inputs = []
+    [(_, prepared, _, _)] = _critic_step(ctx, pairs, CRITIC_STEPS - 1, inputs)
+    scores = dmd2.score_last_step_samples(ctx, pairs, inputs)
 
     x_s = prepared.latents["visual"]
     sigma = prepared.extras["sigmas"]["visual"].view(-1, 1, 1, 1)
@@ -323,22 +329,25 @@ def test_teacher_runs_cfg_and_the_critic_runs_unguided():
 
 def test_teacher_cfg_needs_the_rollout_negative_cond():
     ctx = _ctx(teacher_guidance_scale=3.0)
-    _critic_step(ctx, _pairs(2, with_neg=False), CRITIC_STEPS - 1)
+    inputs = []
+    _critic_step(ctx, _pairs(2, with_neg=False), CRITIC_STEPS - 1, inputs)
     with pytest.raises(ValueError, match="needs the rollout's negative cond"):
-        dmd2.score_last_step_samples(ctx, _pairs(2, with_neg=False))
+        dmd2.score_last_step_samples(ctx, _pairs(2, with_neg=False), inputs)
     # Unguided, the teacher reads only the positive cond.
     ctx = _ctx(teacher_guidance_scale=1.0)
-    _critic_step(ctx, _pairs(2, with_neg=False), CRITIC_STEPS - 1)
-    dmd2.score_last_step_samples(ctx, _pairs(2, with_neg=False))
+    inputs = []
+    _critic_step(ctx, _pairs(2, with_neg=False), CRITIC_STEPS - 1, inputs)
+    dmd2.score_last_step_samples(ctx, _pairs(2, with_neg=False), inputs)
 
 
 def test_scoring_reshards_the_teacher(monkeypatch):
     resharded = []
     monkeypatch.setattr(dmd2, "reshard_model", resharded.append)
     ctx = _ctx()
-    _critic_step(ctx, _pairs(2), CRITIC_STEPS - 1)
+    inputs = []
+    _critic_step(ctx, _pairs(2), CRITIC_STEPS - 1, inputs)
 
-    dmd2.score_last_step_samples(ctx, _pairs(2))
+    dmd2.score_last_step_samples(ctx, _pairs(2), inputs)
 
     assert resharded == [ctx.teacher_models["transformer"]]
 
@@ -349,11 +358,12 @@ def test_actor_keeps_the_critic_last_step_pairs():
     schedule = build_microbatch_schedule(
         num_pairs_per_optim_step=3, num_optim_steps_per_rollout=CRITIC_STEPS, micro_batch_size=3
     )
+    inputs = []
     for optim_step_idx, [(pair_lo, pair_hi)] in enumerate(schedule):
-        _critic_step(ctx, pairs[pair_lo:pair_hi], optim_step_idx)
+        _critic_step(ctx, pairs[pair_lo:pair_hi], optim_step_idx, inputs)
 
     actor_ctx = _ctx()
-    actor_ctx.external_data["critic"] = dmd2.score_last_step_samples(ctx, pairs)
+    actor_ctx.external_data["critic"] = dmd2.score_last_step_samples(ctx, pairs, inputs)
 
     assert dmd2.select_scored_pairs(actor_ctx, pairs) == pairs[6:]
 
@@ -401,6 +411,7 @@ def _loss(ctx, pairs, x0):
             ref_pred=None,
             metrics=metrics,
             optim_step_idx=0,
+            train_output_inputs=[],
         ),
         metrics,
     )

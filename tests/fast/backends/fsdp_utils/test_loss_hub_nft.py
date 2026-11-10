@@ -90,6 +90,7 @@ class TestNftMath:
                 ref_pred={"visual": new_pred["visual"] - 1.0},
                 metrics=metrics,
                 optim_step_idx=0,
+                train_output_inputs=[],
             )
 
         torch.testing.assert_close(loss(0.5) - loss(0.0), torch.tensor(0.5 * 2))

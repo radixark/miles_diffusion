@@ -294,11 +294,15 @@ counts from 0; the old-log-prob recompute of windows 1.. passes their training f
 ### `--custom-loss-function-path`
 
 ```python
-def loss_formula(ctx, batch, prepared, *, new_pred, old_pred, ref_pred, metrics, **kwargs):
+def loss_formula(
+    ctx, batch, prepared, *, new_pred, old_pred, ref_pred, metrics, optim_step_idx, train_output_inputs, **kwargs
+):
     ...
 ```
 
-Read only under `--loss-type custom_loss`. `new_pred`, `old_pred` and `ref_pred` are keyed by the same stream
+Read only under `--loss-type custom_loss`. `optim_step_idx` is the micro-batch's optimizer step within the rollout;
+`train_output_inputs` is the list the formula may fill for the train-output hook, empty at the start of each train
+call. `new_pred`, `old_pred` and `ref_pred` are keyed by the same stream
 names as `prepared.latents`. `old_pred` (the EMA forward) is `None` for a custom formula, since the trunk runs it
 only under `--loss-type nft`; `ref_pred` is `None` with `--ref-mode none`.
 
@@ -319,16 +323,14 @@ and the train-output hook see the returned pairs.
 ### `--custom-train-output-function-path`
 
 ```python
-def train_output(ctx, train_pairs) -> Any:
+def train_output(ctx, train_pairs, train_output_inputs) -> Any:
     ...
 ```
 
 Read only under `--loss-type custom_loss`. Runs without grad after this trainer group's train steps on a
-rollout. Every trainer group that
+rollout, with the list the loss formula filled. Every trainer group that
 trains later on the same rollout reads the return value of its paired rank (same rank, same
-train pairs) as `ctx.external_data[<role>]`. Prepare and loss hooks see the current optimizer step
-as `ctx.optim_step_idx` and can leave inputs for this hook in `ctx.train_output_inputs`, which
-starts empty on each train call.
+train pairs) as `ctx.external_data[<role>]`.
 
 ### `--sde-step-backend-path`
 
