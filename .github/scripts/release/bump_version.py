@@ -1,4 +1,4 @@
-"""Bump the miles_diffusion version in setup.py.
+"""Bump the miles_diffusion base version in setup.py.
 
 Usage: python .github/scripts/release/bump_version.py 0.3.0
 
@@ -9,7 +9,7 @@ import re
 import sys
 from pathlib import Path
 
-VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:(?:rc|\.post)\d+)?$")
+VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 
 
 def main() -> int:
@@ -18,7 +18,8 @@ def main() -> int:
         return 1
     new_version = sys.argv[1]
     if not VERSION_RE.fullmatch(new_version):
-        print(f"Invalid version {new_version!r}; expected X.Y.Z, X.Y.ZrcN, or X.Y.Z.postN", file=sys.stderr)
+        # setup.py carries the base version only; rcN / .postN belong to the tag.
+        print(f"Invalid version {new_version!r}; expected the base version X.Y.Z", file=sys.stderr)
         return 1
 
     setup_py = Path(__file__).resolve().parents[3] / "setup.py"
