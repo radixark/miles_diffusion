@@ -2,6 +2,7 @@
 
 import asyncio
 from argparse import Namespace
+from types import SimpleNamespace
 
 import pytest
 
@@ -11,6 +12,9 @@ register_cpu_ci(est_time=10, suite="stage-a-cpu", labels=[])
 
 from radix_transfer_plugins import StoreRef
 
+from miles.ray.rollout import RolloutManager
+
+_RolloutManager = RolloutManager.__ray_metadata__.modified_class
 from miles.rollout import sglang_diffusion_rollout as rollout
 from miles.rollout.filter_hub.base_types import DynamicFilterOutput
 from miles.utils.output_store import take_dropped_refs
@@ -80,3 +84,30 @@ async def test_filtered_surplus_and_in_flight_groups_are_recorded(monkeypatch, f
     assert "1" in dropped and len(dropped) == 2
     assert dropped | {str(index) for index in kept} == {"1", "2", "3", "4"}
     assert state.pendings == set()
+
+
+def test_release_keeps_refs_a_failed_delete_left_behind():
+    deleted = []
+
+    class FlakyStore:
+        def __init__(self):
+            self.fail_next = True
+
+        def delete_many(self, refs):
+            if self.fail_next:
+                self.fail_next = False
+                raise RuntimeError("master down")
+            deleted.extend(refs)
+
+    manager = SimpleNamespace(
+        _output_store=FlakyStore(),
+        _unreleased_store_refs={0: {"a": "ref-a"}, 1: {"b": "ref-b"}},
+        _undeleted_store_refs={},
+    )
+
+    _RolloutManager.release(manager, 0)
+    assert deleted == [] and manager._undeleted_store_refs == {"a": "ref-a"}
+    assert manager._unreleased_store_refs == {1: {"b": "ref-b"}}
+
+    _RolloutManager.release(manager, 1)
+    assert sorted(deleted) == ["ref-a", "ref-b"] and manager._undeleted_store_refs == {}

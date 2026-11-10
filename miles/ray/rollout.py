@@ -70,6 +70,7 @@ class RolloutManager:
         self._output_store = connect_output_store(args) if args.use_output_store else None
         # Each rollout's stored objects, trained or dropped, until its release.
         self._unreleased_store_refs: dict[int, dict[str, Any]] = {}
+        self._undeleted_store_refs: dict[str, Any] = {}
         logger.info("RolloutManager: loading data source...")
 
         data_source_cls = load_function(self.args.data_source_path)
@@ -165,9 +166,20 @@ class RolloutManager:
 
     def release(self, rollout_id: int) -> None:
         """Delete the stored objects of ``rollout_id`` once its train, their only reader, is done."""
-        refs = self._unreleased_store_refs.pop(rollout_id, {})
-        if refs:
-            self._output_store.delete_many(list(refs.values()))
+        self._undeleted_store_refs.update(self._unreleased_store_refs.pop(rollout_id, {}))
+        if not self._undeleted_store_refs:
+            return
+        try:
+            self._output_store.delete_many(list(self._undeleted_store_refs.values()))
+        except Exception:
+            logger.warning(
+                "Output store delete failed after rollout %s; keeping %d objects for the next release",
+                rollout_id,
+                len(self._undeleted_store_refs),
+                exc_info=True,
+            )
+            return
+        self._undeleted_store_refs.clear()
 
     # TODO maybe rename "rollout_engines" and "all_rollout_engines" later
     @property
