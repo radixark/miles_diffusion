@@ -5,6 +5,9 @@ datasets==4.4.2
 diffusers==0.41.0
 fastapi==0.128.8
 httpx[http2]==0.28.1
+# miles/ray/rollout.py muxes eval audio through imageio_ffmpeg's bundled ffmpeg; the GPU image only had it
+# transitively (cosmos-guardrail, moviepy) and the hosted CPU suite not at all.
+imageio-ffmpeg==0.5.1
 ltx-core @ git+https://github.com/Lightricks/LTX-2.git@780984275fd47128b02bef9b5c085404276866ee#subdirectory=packages/ltx-core
 mcp[cli]==1.25.0
 memray==1.19.1
