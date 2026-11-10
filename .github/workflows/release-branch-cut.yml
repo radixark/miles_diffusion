@@ -202,7 +202,7 @@ jobs:
     uses: ./.github/workflows/pr-test.yml
     with:
       ref: ${{ needs.cut-release-branch.outputs.tested_sha }}
-      image_tag: ${{ needs.cut-release-branch.outputs.ci_image_tag }}
+      ci_image_tag: ${{ needs.cut-release-branch.outputs.ci_image_tag }}
     secrets: inherit
 
   # Finalizer: stamps the verdict onto the exact tested commit so

@@ -19,7 +19,7 @@ name: PR Test
 #   * `workflow_call` from release-branch-cut.yml: tests an exact commit inside
 #     a frozen image. The caller is always a workflow_dispatch, and the called
 #     run inherits that event name, so every job below takes the trusted,
-#     full-scope manual-dispatch path; `inputs.ref` / `inputs.image_tag` only
+#     full-scope manual-dispatch path; `inputs.ref` / `inputs.ci_image_tag` only
 #     redirect what is checked out and which image the suites run in.
 
 on:
@@ -60,7 +60,7 @@ on:
         description: 'Exact commit to test (e.g. the release branch tip the lockfile was committed on).'
         required: true
         type: string
-      image_tag:
+      ci_image_tag:
         description: 'miles-diffusion Docker image tag to run the GPU suites in (the frozen release-vX.Y.Z-ci tag).'
         required: true
         type: string
@@ -279,8 +279,8 @@ jobs:
         env:
           PR_BODY: ${{ github.event.pull_request.body || '' }}
           # In a workflow_call chain github.event.inputs are the caller's, so the
-          # frozen release tag arrives as inputs.image_tag.
-          INPUT_CI_IMAGE_TAG: ${{ inputs.image_tag || github.event.inputs.ci_image_tag || '' }}
+          # frozen release tag arrives as inputs.ci_image_tag.
+          INPUT_CI_IMAGE_TAG: ${{ inputs.ci_image_tag || github.event.inputs.ci_image_tag || '' }}
           DOCKER_BUILT: ${{ needs.docker-build.result == 'success' }}
           PR_NUMBER: ${{ github.event.pull_request.number || '' }}
         run: |
