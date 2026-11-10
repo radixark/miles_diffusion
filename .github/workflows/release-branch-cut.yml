@@ -141,7 +141,7 @@ jobs:
           git config user.email "miles-bot@users.noreply.github.com"
           git checkout -b "$BRANCH_NAME" "${{ steps.validate.outputs.commit_sha }}"
 
-          SGLANG_SHA=$(git ls-remote https://github.com/sgl-project/sglang refs/heads/sglang-miles | cut -f1)
+          SGLANG_COMMIT=$(git ls-remote https://github.com/sgl-project/sglang refs/heads/sglang-miles | cut -f1)
 
           # Retag by digest, not by name: the dated tag can be overwritten
           # within its day, and the release-scoped name never moves.
@@ -165,7 +165,7 @@ jobs:
 
           python3 .github/scripts/release/write_release_lock.py \
             --release-branch "$BRANCH_NAME" \
-            --sglang-commit "$SGLANG_SHA" \
+            --sglang-commit "$SGLANG_COMMIT" \
             --ci-image-tag "$CI_IMAGE_TAG" \
             --ci-image-digest "$DEV_IMAGE_DIGEST" \
             --sglang-image-tag "$SGLANG_IMAGE_TAG" \
@@ -178,7 +178,7 @@ jobs:
           git push origin "$BRANCH_NAME"
           echo "ci_image_tag=$CI_IMAGE_TAG" >> "$GITHUB_OUTPUT"
           echo "tested_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          echo "Froze: sglang=$SGLANG_SHA image=$CI_IMAGE_TAG base=${SGLANG_IMAGE_TAG}@${SGLANG_IMAGE_DIGEST}"
+          echo "Froze: sglang=$SGLANG_COMMIT image=$CI_IMAGE_TAG base=${SGLANG_IMAGE_TAG}@${SGLANG_IMAGE_DIGEST}"
 
       - name: Summary
         run: |
