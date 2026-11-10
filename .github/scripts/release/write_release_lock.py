@@ -23,8 +23,8 @@ def main() -> int:
     args = parser.parse_args()
 
     assert len(args.sglang_commit) == 40, "failed to resolve the sglang commit"
-    for name in ("ci_image_digest", "sglang_image_digest"):
-        assert getattr(args, name).startswith("sha256:"), f"failed to resolve {name}"
+    assert args.ci_image_digest.startswith("sha256:"), "failed to resolve ci_image_digest"
+    assert args.sglang_image_digest.startswith("sha256:"), "failed to resolve sglang_image_digest"
     assert args.fa3_wheels_fingerprint, "failed to fingerprint the FA3 wheels release"
 
     json.dump(
