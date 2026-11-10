@@ -61,7 +61,7 @@ def test_dmd2_critic_defaults_to_the_teacher_and_the_actor_lr(user, expected):
         custom_expand_samples_to_train_pairs_path=None,
         custom_prepare_train_batch_path=None,
         custom_loss_function_path=None,
-        custom_train_input_function_path=None,
+        custom_train_input_postprocess_path=None,
         ref_mode=None,
         diffusion_kl_beta=0.0,
         teacher_load="teacher",
@@ -90,7 +90,7 @@ def test_dmd2_fills_only_unset_hook_paths(custom_loss):
         custom_expand_samples_to_train_pairs_path=None,
         custom_prepare_train_batch_path=None,
         custom_loss_function_path=custom_loss,
-        custom_train_input_function_path=None,
+        custom_train_input_postprocess_path=None,
         ref_mode=None,
         diffusion_kl_beta=0.0,
         teacher_load="teacher",
@@ -106,7 +106,7 @@ def test_dmd2_fills_only_unset_hook_paths(custom_loss):
     assert args.custom_loss_function_path == (
         custom_loss or "miles.backends.fsdp_utils.loss_hub.dmd2.dmd2_loss_formula"
     )
-    assert args.custom_train_input_function_path.endswith("loss_hub.dmd2.select_scored_pairs")
+    assert args.custom_train_input_postprocess_path.endswith("loss_hub.dmd2.select_scored_pairs")
     assert args.ref_mode == "none"
 
 

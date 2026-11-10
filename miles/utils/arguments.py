@@ -1833,8 +1833,8 @@ def set_default_diffusion_args(args) -> None:
             args.custom_prepare_train_batch_path = "miles.backends.fsdp_utils.loss_hub.dmd2.prepare_generator_batch"
         if args.custom_loss_function_path is None:
             args.custom_loss_function_path = "miles.backends.fsdp_utils.loss_hub.dmd2.dmd2_loss_formula"
-        if args.custom_train_input_function_path is None:
-            args.custom_train_input_function_path = "miles.backends.fsdp_utils.loss_hub.dmd2.select_scored_pairs"
+        if args.custom_train_input_postprocess_path is None:
+            args.custom_train_input_postprocess_path = "miles.backends.fsdp_utils.loss_hub.dmd2.select_scored_pairs"
 
     if args.ref_mode is None:
         args.ref_mode = "lora_base" if args.diffusion_kl_beta > 0 else "none"
