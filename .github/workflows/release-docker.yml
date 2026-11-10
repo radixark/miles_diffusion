@@ -1,0 +1,123 @@
+name: Release Docker Image
+
+# Ported from radixark/miles (.github/workflows/release-docker.yml) with
+# docker-build.yml's build body; runbook: docs/developer/release.md.
+#
+# release-tag.yml dispatches this workflow explicitly after its GITHUB_TOKEN
+# tag push; independently pushed matching tags and manual retries also run it.
+# Builds and publishes radixark/miles_diffusion:v{version} (cu129, x86_64)
+# from the tagged commit with release-lock.json's inputs: the sglang commit,
+# and the base image pinned by digest. MILES_DIFFUSION_COMMIT is the
+# checked-out SHA. The FA3 wheels release stays a rolling input whose lockfile
+# fingerprint is an audit record, not a restored build input. `latest` never
+# moves here.
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build, without v prefix (e.g., 0.3.0)'
+        required: true
+        type: string
+      ref:
+        description: 'Tag or branch to build from (defaults to v{version})'
+        required: false
+        type: string
+        default: ''
+
+# Publishing uses DOCKERHUB_* secrets, not GITHUB_TOKEN — checkout read is all it needs.
+permissions:
+  contents: read
+
+jobs:
+  build-and-publish:
+    if: github.repository == 'radixark/miles_diffusion'
+    runs-on: self-hosted
+    timeout-minutes: 180
+    steps:
+      - name: Resolve version and ref
+        id: resolve
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+            REF="${{ github.event.inputs.ref }}"
+            [ -z "$REF" ] && REF="v${VERSION}"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+            REF="${GITHUB_REF_NAME}"
+          fi
+          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+'; then
+            echo "::error::Invalid version: $VERSION"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+
+      # Container CI jobs leave root-owned files in the shared workspace; reclaim it before checkout cleans.
+      - name: Fix workspace ownership
+        run: docker run --rm -v "${{ github.workspace }}:/ws" alpine:3 chown -R "$(id -u):$(id -g)" /ws
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.resolve.outputs.ref }}
+
+      - name: Read release lockfile
+        id: lock
+        shell: bash
+        run: |
+          if [ ! -f release-lock.json ]; then
+            echo "::error::release-lock.json not found at ${{ steps.resolve.outputs.ref }} — was this tag cut via release-branch-cut.yml?"
+            exit 1
+          fi
+          for key in sglang_commit sglang_image_tag sglang_image_digest; do
+            echo "$key=$(python3 -c "import json; print(json.load(open('release-lock.json'))['$key'])")" >> "$GITHUB_OUTPUT"
+          done
+          # github.sha is the default-branch HEAD on workflow_dispatch; the
+          # image must bake the checked-out release commit.
+          echo "md_commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push v${{ steps.resolve.outputs.version }}
+        shell: bash
+        env:
+          IMAGE: radixark/miles_diffusion:v${{ steps.resolve.outputs.version }}
+          SGLANG_IMAGE_TAG: ${{ steps.lock.outputs.sglang_image_tag }}
+          SGLANG_IMAGE_DIGEST: ${{ steps.lock.outputs.sglang_image_digest }}
+          SGLANG_COMMIT: ${{ steps.lock.outputs.sglang_commit }}
+          MD_COMMIT: ${{ steps.lock.outputs.md_commit }}
+        run: |
+          # --no-cache --pull as in docker-build.yml: cached layers would pin
+          # stale sources; the base image is pinned by digest so --pull cannot
+          # move it.
+          docker build --no-cache --pull -f docker/Dockerfile . \
+            --build-arg "SGLANG_IMAGE_TAG=${SGLANG_IMAGE_TAG}@${SGLANG_IMAGE_DIGEST}" \
+            --build-arg "SGLANG_DIFFUSION_COMMIT=${SGLANG_COMMIT}" \
+            --build-arg "MILES_DIFFUSION_COMMIT=${MD_COMMIT}" \
+            -t "${IMAGE}"
+          docker push "${IMAGE}"
+
+      # Each no-cache build leaves a full new layer set locally; keep the runner disk from filling up.
+      - name: Prune local build leftovers
+        if: always()
+        run: docker image prune -f
+
+      - name: Summary
+        shell: bash
+        run: |
+          {
+            echo "## Released radixark/miles_diffusion v${{ steps.resolve.outputs.version }}"
+            echo "- \`radixark/miles_diffusion:v${{ steps.resolve.outputs.version }}\` (cu129, x86_64)"
+            echo "- base image: \`lmsysorg/sglang:${{ steps.lock.outputs.sglang_image_tag }}@${{ steps.lock.outputs.sglang_image_digest }}\`"
+            echo "- sglang: \`${{ steps.lock.outputs.sglang_commit }}\`"
+            echo "- miles_diffusion: \`${{ steps.lock.outputs.md_commit }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
