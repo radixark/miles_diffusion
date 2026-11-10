@@ -27,21 +27,23 @@ on:
     - cron: '30 16 * * *'
   workflow_dispatch:
     inputs:
+      # Empty defaults: on a release branch the values come from its
+      # release-lock.json; anywhere else the old defaults still apply.
       ci_sglang_pr:
-        description: 'SGLang branch/commit (default: sglang-miles)'
+        description: 'SGLang branch/commit (empty: release-lock.json if present, else sglang-miles)'
         required: false
         type: string
-        default: 'sglang-miles'
+        default: ''
       ci_sglang_repo:
-        description: 'SGLang repository owner/name (default: sgl-project/sglang)'
+        description: 'SGLang repository owner/name (empty: release-lock.json if present, else sgl-project/sglang)'
         required: false
         type: string
-        default: 'sgl-project/sglang'
+        default: ''
       ci_image_tag:
-        description: 'miles-diffusion Docker image tag (default: latest)'
+        description: 'miles-diffusion Docker image tag (empty: release-lock.json if present, else latest)'
         required: false
         type: string
-        default: 'latest'
+        default: ''
       continue_on_error:
         description: 'Keep running a suite after a test fails, as nightly does'
         required: false
@@ -237,6 +239,15 @@ jobs:
     outputs:
       container_image: ${{ steps.resolve.outputs.container_image }}
     steps:
+      # Only the lockfile is needed: a release branch pins its CI image there.
+      - name: Checkout release lockfile
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
+          sparse-checkout: release-lock.json
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
       - name: Resolve CI image
         id: resolve
         shell: bash
@@ -252,6 +263,12 @@ jobs:
           if [ -n "$PR_BODY" ]; then
             PR_CI_IMAGE_TAG=$(echo "$PR_BODY" | grep -m1 -oP '^ci-image-tag:\s+\K\S+' || true)
             [ -z "$CI_IMAGE_TAG" ] && [ -n "$PR_CI_IMAGE_TAG" ] && CI_IMAGE_TAG="$PR_CI_IMAGE_TAG"
+          fi
+          # Release branches freeze their CI image in release-lock.json; `latest`
+          # moves on every main push touching docker files and is the last resort.
+          if [ -z "$CI_IMAGE_TAG" ] && [ -f release-lock.json ]; then
+            CI_IMAGE_TAG=$(python3 -c "import json; print(json.load(open('release-lock.json'))['ci_image_tag'])")
+            echo "release-lock.json present: image tag ${CI_IMAGE_TAG}"
           fi
           [ -z "$CI_IMAGE_TAG" ] && CI_IMAGE_TAG="latest"
           if [[ ! "$CI_IMAGE_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then

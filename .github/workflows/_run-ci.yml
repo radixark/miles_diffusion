@@ -142,6 +142,15 @@ jobs:
             PR_SGLANG_REPO=$(echo "$PR_BODY" | grep -m1 -oP '^ci-sglang-repo:\s+\K\S+' || true)
             [ -z "$SGLANG_REPO" ] && [ -n "$PR_SGLANG_REPO" ] && SGLANG_REPO="$PR_SGLANG_REPO"
           fi
+          # A release branch carries release-lock.json (written by
+          # release-branch-cut.yml) naming the sglang commit the release was
+          # frozen with. Explicit overrides above still win; the moving branch
+          # head is only the last resort. Repo and commit apply as a pair.
+          if [ -z "$SGLANG_PR" ] && [ -f release-lock.json ]; then
+            SGLANG_PR=$(python3 -c "import json; print(json.load(open('release-lock.json'))['sglang_commit'])")
+            SGLANG_REPO=$(python3 -c "import json; print(json.load(open('release-lock.json'))['sglang_repo'])")
+            echo "release-lock.json present: sglang=${SGLANG_REPO}@${SGLANG_PR}"
+          fi
           [ -z "$SGLANG_PR" ] && SGLANG_PR="$DEFAULT_SGLANG_REF"
           [ -z "$SGLANG_REPO" ] && SGLANG_REPO="$DEFAULT_SGLANG_REPO"
           resolve_fetch_ref() {
@@ -250,6 +259,15 @@ jobs:
             [ -z "$SGLANG_PR" ] && [ -n "$PR_SGLANG_PR" ] && SGLANG_PR="$PR_SGLANG_PR"
             PR_SGLANG_REPO=$(echo "$PR_BODY" | grep -m1 -oP '^ci-sglang-repo:\s+\K\S+' || true)
             [ -z "$SGLANG_REPO" ] && [ -n "$PR_SGLANG_REPO" ] && SGLANG_REPO="$PR_SGLANG_REPO"
+          fi
+          # A release branch carries release-lock.json (written by
+          # release-branch-cut.yml) naming the sglang commit the release was
+          # frozen with. Explicit overrides above still win; the moving branch
+          # head is only the last resort. Repo and commit apply as a pair.
+          if [ -z "$SGLANG_PR" ] && [ -f release-lock.json ]; then
+            SGLANG_PR=$(python3 -c "import json; print(json.load(open('release-lock.json'))['sglang_commit'])")
+            SGLANG_REPO=$(python3 -c "import json; print(json.load(open('release-lock.json'))['sglang_repo'])")
+            echo "release-lock.json present: sglang=${SGLANG_REPO}@${SGLANG_PR}"
           fi
           [ -z "$SGLANG_PR" ] && SGLANG_PR="$DEFAULT_SGLANG_REF"
           [ -z "$SGLANG_REPO" ] && SGLANG_REPO="$DEFAULT_SGLANG_REPO"
