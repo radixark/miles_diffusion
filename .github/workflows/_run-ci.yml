@@ -42,6 +42,11 @@ on:
         required: false
         default: false
         description: 'Upload tests/ci/fixtures/e2e_standards/ as a build artifact for the author to review and commit (record-e2e-standards.yml)'
+      ref:
+        type: string
+        required: false
+        default: ''
+        description: 'Exact commit to test (release CI). Empty: the PR merge ref, else github.sha.'
 
 env:
   # Unless you know the consequences, change this together with docker/Dockerfile's
@@ -80,7 +85,7 @@ jobs:
         working-directory: ${{ github.workspace }}
     env:
       PYTHONPATH: ${{ github.workspace }}
-      GITHUB_COMMIT_NAME: ${{ github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
+      GITHUB_COMMIT_NAME: ${{ inputs.ref || github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
       # Gated models (e.g. stabilityai/stable-diffusion-3.5-medium for the SD3
       # e2e) need an HF token with repo access; unset for public-model tests.
@@ -90,7 +95,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           # Review-triggered callers otherwise check out the default branch.
-          ref: ${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
+          # Release CI passes the exact commit; github.sha would be the main tip
+          # the cut workflow was dispatched on.
+          ref: ${{ inputs.ref || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha) }}
 
       - name: Cleanup Ray processes
         shell: bash
@@ -226,7 +233,9 @@ jobs:
       - name: Checkout miles-diffusion
         uses: actions/checkout@v4
         with:
-          ref: ${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
+          # Release CI passes the exact commit; github.sha would be the main tip
+          # the cut workflow was dispatched on.
+          ref: ${{ inputs.ref || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha) }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
