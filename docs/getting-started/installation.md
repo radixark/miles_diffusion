@@ -18,7 +18,9 @@ docker pull radixark/miles_diffusion:latest
 
 `latest` carries the `sglang-miles` tip as of its last build, and is rebuilt when `docker/Dockerfile` or
 `requirements.txt` changes on main (or on a manual dispatch); dated tags
-(`dev-cu129-sglang-main-YYYYMMDD`) pin a specific build. CUDA 12.9 is the only supported
+(`dev-cu129-sglang-main-YYYYMMDD`) pin a specific build. Versioned tags (`v<version>`, e.g.
+`v0.2.0`) are built from a git tag of the same name with every dependency pinned in that tag's
+`release-lock.json`, and never move. CUDA 12.9 is the only supported
 build — the Dockerfile carries a CUDA 13 recipe in a comment, but its `sglang-kernel` pin is
 hardcoded to cu129 and no CI covers it.
 
