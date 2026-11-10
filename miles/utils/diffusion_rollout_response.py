@@ -37,7 +37,7 @@ def _is_serialized_tensor(value: Any) -> bool:
 def _store_deserialize_func(ref, deserialize_func: Callable[[Any], torch.Tensor | None]):
     def deserialize(value: Any) -> torch.Tensor | StoreSlice | None:
         if isinstance(value, dict) and "__store__" in value:
-            return StoreSlice(ref, value["__store__"], (value["row"],) if "row" in value else ())
+            return StoreSlice(ref, value["__store__"])
         return deserialize_func(value)
 
     return deserialize
