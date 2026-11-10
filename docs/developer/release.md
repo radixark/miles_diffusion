@@ -21,9 +21,10 @@ with this repository's inputs: one source dependency (sglang's `sglang-miles` br
 | miles-diffusion code | the tagged commit | `MILES_DIFFUSION_COMMIT` of the release build |
 
 `release-lock.json` is written once, by the first dispatch of `release-branch-cut.yml`, and
-committed on the release branch. Everything a release branch runs in CI reads it: the sglang ref
-and the image tag resolve from it whenever no explicit input or PR-body directive names a value,
-so a plain `pr-test.yml` dispatch on the branch is pinned too.
+committed on the release branch. `pr-test.yml` reads it whenever no explicit input or PR-body
+directive names a value, so a plain dispatch on the branch gets the locked sglang ref and the
+frozen image too. `record-e2e-standards.yml` passes no image and gets the sglang pin only; do
+not record standards on a release branch (they are re-recorded on `main` through the fix's PR).
 
 The exact version may be `X.Y.Z`, `X.Y.ZrcN` or `X.Y.Z.postN`; the branch and `setup.py` always
 carry the base version. `v0.2.0rc1`, `v0.2.0` and `v0.2.0.post1` all come from `release/v0.2.0`
