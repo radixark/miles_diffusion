@@ -138,12 +138,12 @@ def _ctx(teacher_guidance_scale=3.0, critic_scale=1.0, teacher_scale=1.0):
 
 def _critic_step(ctx, pairs, optim_step_idx, metrics=None):
     """One critic optimizer step as _train_core runs it: prepare, the critic's training forward, the loss hook."""
-    ctx.optim_step_idx = optim_step_idx
     steps = []
     for start in range(0, len(pairs), ctx.args.micro_batch_size):
         batch = pairs[start : start + ctx.args.micro_batch_size]
-        ctx.microbatch_id = optim_step_idx * 10 + start
-        prepared = dmd2.prepare_critic_batch(ctx, batch)
+        prepared = dmd2.prepare_critic_batch(
+            ctx, batch, microbatch_id=optim_step_idx * 10 + start, optim_step_idx=optim_step_idx
+        )
         new_pred = ctx.train_pipeline_config.compute_noise_pred(
             model=prepared.model,
             latents_input=prepared.latents,
@@ -157,7 +157,14 @@ def _critic_step(ctx, pairs, optim_step_idx, metrics=None):
             true_cfg_scale=None,
         )
         loss = dmd2.critic_loss_formula(
-            ctx, batch, prepared, new_pred=new_pred, old_pred=None, ref_pred=None, metrics=metrics or _Metrics()
+            ctx,
+            batch,
+            prepared,
+            new_pred=new_pred,
+            old_pred=None,
+            ref_pred=None,
+            metrics=metrics or _Metrics(),
+            optim_step_idx=optim_step_idx,
         )
         steps.append((batch, prepared, new_pred, loss))
     return steps
@@ -179,9 +186,8 @@ def test_critic_batch_is_the_sft_batch_on_the_student_x0():
     pairs = _pairs(3)
 
     for optim_step_idx in range(CRITIC_STEPS - 1):
-        ctx.optim_step_idx = optim_step_idx
-        critic_batch = dmd2.prepare_critic_batch(ctx, pairs)
-        sft_batch = prepare_sft_batch(ctx, _sft_pairs(ctx, pairs))
+        critic_batch = dmd2.prepare_critic_batch(ctx, pairs, microbatch_id=0, optim_step_idx=optim_step_idx)
+        sft_batch = prepare_sft_batch(ctx, _sft_pairs(ctx, pairs), microbatch_id=0, optim_step_idx=optim_step_idx)
 
         assert critic_batch.model is ctx.models["transformer"]
         for field in ("latents", "timesteps", "timesteps_for_model"):
@@ -194,10 +200,12 @@ def test_critic_batch_is_the_sft_batch_on_the_student_x0():
 def test_last_step_draws_from_the_scoring_range():
     ctx = _ctx()
     pairs = _pairs(256)
-    ctx.optim_step_idx = CRITIC_STEPS - 1
+    last_step = CRITIC_STEPS - 1
 
-    critic_batch = dmd2.prepare_critic_batch(ctx, pairs)
-    sft_batch = prepare_sft_batch(ctx, _sft_pairs(ctx, pairs), grid_index_range=(20, 980))
+    critic_batch = dmd2.prepare_critic_batch(ctx, pairs, microbatch_id=0, optim_step_idx=last_step)
+    sft_batch = prepare_sft_batch(
+        ctx, _sft_pairs(ctx, pairs), microbatch_id=0, optim_step_idx=last_step, grid_index_range=(20, 980)
+    )
 
     assert torch.equal(critic_batch.latents["visual"], sft_batch.latents["visual"])
     assert torch.equal(critic_batch.extras["target"]["visual"], sft_batch.extras["target"]["visual"])
@@ -205,20 +213,21 @@ def test_last_step_draws_from_the_scoring_range():
     sigmas = critic_batch.extras["sigmas"]["visual"]
     assert set(sigmas.tolist()) <= set(grid[20:981].tolist())
     # The same draw without the range leaves it, so the restriction is exercised.
-    assert not set(prepare_sft_batch(ctx, _sft_pairs(ctx, pairs)).extras["sigmas"]["visual"].tolist()) <= set(
-        grid[20:981].tolist()
-    )
+    unrestricted = prepare_sft_batch(ctx, _sft_pairs(ctx, pairs), microbatch_id=0, optim_step_idx=last_step)
+    assert not set(unrestricted.extras["sigmas"]["visual"].tolist()) <= set(grid[20:981].tolist())
 
 
 def test_score_sigma_range_bounds_the_unshifted_sigma():
     ctx = _ctx()
     ctx.args.dmd2_score_sigma_range = [0.1, 0.5]
     pairs = _pairs(256)
-    ctx.optim_step_idx = CRITIC_STEPS - 1
+    last_step = CRITIC_STEPS - 1
 
-    critic_batch = dmd2.prepare_critic_batch(ctx, pairs)
+    critic_batch = dmd2.prepare_critic_batch(ctx, pairs, microbatch_id=0, optim_step_idx=last_step)
     # Grid index i carries the unshifted sigma 1 - i / 1000, so [0.1, 0.5] is grid points [500, 900].
-    sft_batch = prepare_sft_batch(ctx, _sft_pairs(ctx, pairs), grid_index_range=(500, 900))
+    sft_batch = prepare_sft_batch(
+        ctx, _sft_pairs(ctx, pairs), microbatch_id=0, optim_step_idx=last_step, grid_index_range=(500, 900)
+    )
 
     sigmas = critic_batch.extras["sigmas"]["visual"]
     assert torch.equal(sigmas, sft_batch.extras["sigmas"]["visual"])
@@ -233,7 +242,14 @@ def test_critic_loss_is_the_sft_loss():
         sft_metrics = _Metrics()
         for batch, prepared, new_pred, loss in _critic_step(ctx, _pairs(3), optim_step_idx, metrics):
             sft_loss = sft_loss_formula(
-                ctx, batch, prepared, new_pred=new_pred, old_pred=None, ref_pred=None, metrics=sft_metrics
+                ctx,
+                batch,
+                prepared,
+                new_pred=new_pred,
+                old_pred=None,
+                ref_pred=None,
+                metrics=sft_metrics,
+                optim_step_idx=optim_step_idx,
             )
             assert torch.equal(loss, sft_loss)
         assert metrics.seen == sft_metrics.seen
@@ -371,12 +387,21 @@ def _metrics():
 
 def _loss(ctx, pairs, x0):
     """dmd2_loss_formula with the student predicting ``x0`` from each pair's rollout input."""
-    prepared = dmd2.prepare_generator_batch(ctx, pairs)
+    prepared = dmd2.prepare_generator_batch(ctx, pairs, microbatch_id=0, optim_step_idx=0)
     sigmas = prepared.extras["sigmas"].view(-1, 1, 1, 1)
     new_pred = {"visual": (prepared.latents["visual"] - x0) / sigmas}
     metrics = _metrics()
     return (
-        dmd2.dmd2_loss_formula(ctx, pairs, prepared, new_pred=new_pred, old_pred=None, ref_pred=None, metrics=metrics),
+        dmd2.dmd2_loss_formula(
+            ctx,
+            pairs,
+            prepared,
+            new_pred=new_pred,
+            old_pred=None,
+            ref_pred=None,
+            metrics=metrics,
+            optim_step_idx=0,
+        ),
         metrics,
     )
 
@@ -392,7 +417,7 @@ def test_generator_batch_is_the_student_step_on_its_input():
     ctx = _ctx()
     pairs = _generator_pairs(2)
 
-    prepared = dmd2.prepare_generator_batch(ctx, pairs)
+    prepared = dmd2.prepare_generator_batch(ctx, pairs, microbatch_id=0, optim_step_idx=0)
 
     assert prepared.model is ctx.models["transformer"]
     assert torch.equal(prepared.latents["visual"], torch.stack([pair["latent"] for pair in pairs]).float())
@@ -406,7 +431,7 @@ def test_generator_needs_a_single_component():
     ctx = _ctx()
     ctx.models["transformer_2"] = ctx.models["transformer"]
     with pytest.raises(ValueError, match="single DiT component"):
-        dmd2.prepare_generator_batch(ctx, _generator_pairs(1))
+        dmd2.prepare_generator_batch(ctx, _generator_pairs(1), microbatch_id=0, optim_step_idx=0)
 
 
 def test_surrogate_gradient_matches_the_reference():

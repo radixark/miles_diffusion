@@ -89,6 +89,7 @@ class TestNftMath:
                 old_pred=old_pred,
                 ref_pred={"visual": new_pred["visual"] - 1.0},
                 metrics=metrics,
+                optim_step_idx=0,
             )
 
         torch.testing.assert_close(loss(0.5) - loss(0.0), torch.tensor(0.5 * 2))
@@ -240,7 +241,7 @@ class TestPrepareNftBatch:
         pos_cond_kwargs = None
         neg_cond_kwargs = None
 
-    def _ctx(self, config, microbatch_id=0):
+    def _ctx(self, config):
         return DiffusionLossContext(
             models={"transformer": torch.nn.Identity()},
             train_pipeline_config=config,
@@ -248,7 +249,6 @@ class TestPrepareNftBatch:
             args=Namespace(seed=42),
             forward_dtype=torch.float32,
             device=torch.device("cpu"),
-            microbatch_id=microbatch_id,
         )
 
     def _batch(self):
@@ -271,18 +271,18 @@ class TestPrepareNftBatch:
                 seen["sigmas"] = sigmas.clone()
                 return sigmas
 
-        prepare_nft_batch(self._ctx(_Recording()), self._batch())
+        prepare_nft_batch(self._ctx(_Recording()), self._batch(), microbatch_id=0, optim_step_idx=0)
         assert torch.equal(seen["sigmas"], torch.tensor(self.SIGMAS))
 
     def test_sd3_style_family_gets_sigma_times_num_train_timesteps(self):
-        prepared = prepare_nft_batch(self._ctx(_Sd3StyleConfig()), self._batch())
+        prepared = prepare_nft_batch(self._ctx(_Sd3StyleConfig()), self._batch(), microbatch_id=0, optim_step_idx=0)
         assert torch.equal(prepared.timesteps["visual"], torch.tensor(self.SIGMAS))
         assert torch.equal(
             prepared.timesteps_for_model["visual"], torch.tensor(self.SIGMAS) * float(_StubConfig.num_train_timesteps)
         )
 
     def test_qwen_style_family_gets_the_sigma_bit_exactly(self):
-        prepared = prepare_nft_batch(self._ctx(_QwenStyleConfig()), self._batch())
+        prepared = prepare_nft_batch(self._ctx(_QwenStyleConfig()), self._batch(), microbatch_id=0, optim_step_idx=0)
         # equal, not allclose: the wrong hook would still pass allclose.
         assert torch.equal(prepared.timesteps_for_model["visual"], torch.tensor(self.SIGMAS))
 
@@ -354,12 +354,14 @@ class TestNftDeterminism:
     def test_corruption_noise_reproduces(self):
         ctx = TestPrepareNftBatch()._ctx(_Sd3StyleConfig())
         batch = TestPrepareNftBatch()._batch()
-        first = prepare_nft_batch(ctx, batch)
-        second = prepare_nft_batch(ctx, batch)
+        first = prepare_nft_batch(ctx, batch, microbatch_id=0, optim_step_idx=0)
+        second = prepare_nft_batch(ctx, batch, microbatch_id=0, optim_step_idx=0)
         assert torch.equal(first.latents["visual"], second.latents["visual"])
 
     def test_a_different_microbatch_draws_different_noise(self):
         harness = TestPrepareNftBatch()
-        first = prepare_nft_batch(harness._ctx(_Sd3StyleConfig()), harness._batch())
-        second = prepare_nft_batch(harness._ctx(_Sd3StyleConfig(), microbatch_id=1), harness._batch())
+        first = prepare_nft_batch(harness._ctx(_Sd3StyleConfig()), harness._batch(), microbatch_id=0, optim_step_idx=0)
+        second = prepare_nft_batch(
+            harness._ctx(_Sd3StyleConfig()), harness._batch(), microbatch_id=1, optim_step_idx=0
+        )
         assert not torch.equal(first.latents["visual"], second.latents["visual"])

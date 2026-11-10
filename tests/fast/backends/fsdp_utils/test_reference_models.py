@@ -259,7 +259,14 @@ def test_loaded_reference_and_teacher_are_independent_and_frozen(
             teacher_output = teacher[component](inputs)
         assert not torch.equal(target, teacher_output)
         harness, observed = make_actor_forward_harness(actor, reference, component, inputs, "ref")
-        load_actor_forward_method()(harness, None, [], metrics=None).backward()
+        load_actor_forward_method()(
+            harness,
+            None,
+            [],
+            microbatch_id=0,
+            optim_step_idx=0,
+            metrics=None,
+        ).backward()
         oracle_output = oracle(inputs)
         (oracle_output - target).square().mean().backward()
         torch.testing.assert_close(observed["new_pred"], oracle_output)
@@ -299,7 +306,14 @@ def test_lora_base_forward_restores_adapters_and_actor_gradients(tmp_path, unsha
     with torch.no_grad():
         target = base(inputs)
     harness, observed = make_actor_forward_harness(actor, {}, component, inputs, "lora_base")
-    load_actor_forward_method()(harness, None, [], metrics=None).backward()
+    load_actor_forward_method()(
+        harness,
+        None,
+        [],
+        microbatch_id=0,
+        optim_step_idx=0,
+        metrics=None,
+    ).backward()
     oracle_output = oracle(inputs)
     (oracle_output - target).square().mean().backward()
     torch.testing.assert_close(observed["ref_pred"], target)
@@ -353,7 +367,14 @@ def test_lora_base_reference_keeps_adapter_gradients_on_fsdp_shards():
             harness, _ = make_actor_forward_harness(
                 {"transformer": model}, {}, "transformer", torch.ones(2, 3), "lora_base"
             )
-            forward(harness, None, [], metrics=None).backward()
+            forward(
+                harness,
+                None,
+                [],
+                microbatch_id=0,
+                optim_step_idx=0,
+                metrics=None,
+            ).backward()
             for name, parameter in adapter_parameters.items():
                 assert parameter.requires_grad and parameter.grad is not None, (step, name)
             model.zero_grad(set_to_none=True)
@@ -390,7 +411,14 @@ def test_nft_gets_ema_as_old_and_lora_base_as_kl_reference(tmp_path, unsharded_m
     harness, observed = make_actor_forward_harness(
         actor, {}, component, inputs, "lora_base", loss_type="nft", ema_optimizer=ema_optimizer
     )
-    load_actor_forward_method()(harness, None, [], metrics=None)
+    load_actor_forward_method()(
+        harness,
+        None,
+        [],
+        microbatch_id=0,
+        optim_step_idx=0,
+        metrics=None,
+    )
     torch.testing.assert_close(observed["new_pred"], expected_new)
     torch.testing.assert_close(observed["old_pred"], expected_old)
     torch.testing.assert_close(observed["ref_pred"], expected_ref)

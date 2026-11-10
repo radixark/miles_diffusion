@@ -12,7 +12,7 @@ from miles.utils.metric_buffer import MetricBuffer
 
 
 def select_component(
-    ctx: DiffusionLossContext, noise_schedule: FlowNoiseSchedule, device: torch.device
+    ctx: DiffusionLossContext, noise_schedule: FlowNoiseSchedule, device: torch.device, *, microbatch_id: int
 ) -> tuple[str, nn.Module, torch.Tensor]:
     """Pick one rank-aligned DiT component and the indices of the grid points it serves."""
     config = ctx.train_pipeline_config
@@ -25,7 +25,7 @@ def select_component(
     else:
         # dp_rank stays out of this seed: every rank must forward the same expert.
         expert_generator = torch.Generator().manual_seed(
-            stable_hash("expert", int(ctx.args.seed), ctx.rollout_id, ctx.microbatch_id)
+            stable_hash("expert", int(ctx.args.seed), ctx.rollout_id, microbatch_id)
         )
         drawn = int(torch.randint(len(timesteps), (1,), generator=expert_generator))
         component_name = component_for_timestep(timesteps[drawn])
@@ -38,6 +38,8 @@ def prepare_sft_batch(
     ctx: DiffusionLossContext,
     batch: list[dict],
     *,
+    microbatch_id: int,
+    optim_step_idx: int,
     pad_to_len: int | None = None,
     grid_index_range: tuple[int, int] | None = None,
 ) -> PreparedBatch:
@@ -45,7 +47,8 @@ def prepare_sft_batch(
 
     The visual grid picks the DiT component and the index is drawn uniformly from the points it serves, within
     ``grid_index_range`` (inclusive) when given. Sharing the index pairs the streams' sigmas as inference steps them,
-    one step index read through each stream's shift.
+    one step index read through each stream's shift. ``microbatch_id`` seeds the draws; ``optim_step_idx`` is part of
+    every prepare hook's signature and unused here.
     """
     device = ctx.device
     config = ctx.train_pipeline_config
@@ -58,13 +61,15 @@ def prepare_sft_batch(
         stream_name: FlowNoiseSchedule.shifted(ctx.args.fsdp_flow_shift[stream_name], config.num_train_timesteps)
         for stream_name in stream_names
     }
-    component_name, model, visual_pool = select_component(ctx, noise_schedules["visual"], device)
+    component_name, model, visual_pool = select_component(
+        ctx, noise_schedules["visual"], device, microbatch_id=microbatch_id
+    )
     if grid_index_range is not None:
         visual_pool = visual_pool[(visual_pool >= grid_index_range[0]) & (visual_pool <= grid_index_range[1])]
 
     # The visual stream keeps the single-stream seed, so single-stream runs draw as before; other streams add their
     # name, so adding a stream never changes another stream's noise.
-    seed_parts = ("sample", int(ctx.args.seed), ctx.rollout_id, ctx.microbatch_id, ctx.dp_rank)
+    seed_parts = ("sample", int(ctx.args.seed), ctx.rollout_id, microbatch_id, ctx.dp_rank)
     generators = {
         stream_name: torch.Generator(device=device).manual_seed(
             stable_hash(*seed_parts) if stream_name == "visual" else stable_hash(*seed_parts, stream_name)
@@ -123,6 +128,7 @@ def sft_loss_formula(
     old_pred: dict[str, torch.Tensor] | None,
     ref_pred: dict[str, torch.Tensor] | None,
     metrics: MetricBuffer,
+    optim_step_idx: int,
     write_old_log_prob: bool = False,
     old_log_prob_from_new: bool = False,
 ) -> torch.Tensor:

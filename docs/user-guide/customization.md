@@ -279,12 +279,14 @@ def convert_samples_to_train_data(args, samples) -> dict:
 ### `--custom-prepare-train-batch-path`
 
 ```python
-def prepare(ctx, batch, *, pad_to_len=None) -> PreparedBatch:
+def prepare(ctx, batch, *, microbatch_id, optim_step_idx, pad_to_len=None) -> PreparedBatch:
     ...
 ```
 
 Read only under `--loss-type custom_loss`; the other loss types take their prepare from the loss hub's table
-above. Builds DiT inputs from train pairs.
+above. Builds DiT inputs from train pairs. `microbatch_id` numbers the micro-batch within the rollout (training
+counts from 0; the old-log-prob recompute of windows 1.. passes their training forwards' numbers) and
+`optim_step_idx` is its optimizer step; the built-in hooks seed their noise from `microbatch_id`.
 `PreparedBatch.latents`, `timesteps` and
 `timesteps_for_model` are keyed by latent stream name: `"visual"`, plus e.g.
 `"audio"` for joint audio-video models.

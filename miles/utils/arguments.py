@@ -960,7 +960,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help=(
                     "Dotted path to prepare hook "
-                    "`fn(ctx, batch, *, pad_to_len=None) -> PreparedBatch`. "
+                    "`fn(ctx, batch, *, microbatch_id, optim_step_idx, pad_to_len=None) -> PreparedBatch`. "
                     "Builds DiT inputs; --loss-type custom_loss only, default is Flow-GRPO SDE-pair stacking."
                 ),
             )

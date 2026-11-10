@@ -18,9 +18,15 @@ def prepare_flow_grpo_batch(
     ctx: DiffusionLossContext,
     batch: list[dict],
     *,
+    microbatch_id: int,
+    optim_step_idx: int,
     pad_to_len: int | None = None,
 ) -> PreparedBatch:
-    """Stack SDE-pair fields and build CFG conditioning (guidance from args)."""
+    """Stack SDE-pair fields and build CFG conditioning (guidance from args).
+
+    The pairs carry their own noise, so ``microbatch_id`` and ``optim_step_idx`` are part of every prepare hook's
+    signature and unused here.
+    """
     args = ctx.args
     device = ctx.device
     config = ctx.train_pipeline_config
@@ -114,6 +120,7 @@ def flow_grpo_loss_formula(
     old_pred: dict[str, torch.Tensor] | None,
     ref_pred: dict[str, torch.Tensor] | None,
     metrics: MetricBuffer,
+    optim_step_idx: int,
     write_old_log_prob: bool = False,
     old_log_prob_from_new: bool = False,
 ) -> torch.Tensor | None:
