@@ -73,8 +73,9 @@ def train(args):
         train_outputs = {}
         for role, train_group in train_groups.items():
             logger.info(f"train: rollout {rollout_id} {role} train start")
-            train_outputs[role] = train_group.async_train(rollout_id, rollout_data_ref, train_outputs)
-            ray.get(train_outputs[role])
+            # Each rank returns a Box around its output's ObjectRef; the driver keeps the boxes (not the payload)
+            # and hands them to the later groups, as RolloutManager.generate does for the shards.
+            train_outputs[role] = ray.get(train_group.async_train(rollout_id, rollout_data_ref, train_outputs))
             logger.info(f"train: rollout {rollout_id} {role} train done")
         ray.get(rollout_manager.release.remote(rollout_id))
 
