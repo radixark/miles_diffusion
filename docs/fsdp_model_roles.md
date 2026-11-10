@@ -37,9 +37,8 @@ access `ctx.reference_models` by component name.
 
 A third source, the teacher (`--teacher-load`, with `--teacher-lora-adapter-path` for its
 adapters), is loaded by `--loss-type dmd2`, without adapters, into its critic group, which
-scores the student's samples with it. Otherwise it has no built-in consumer: `--teacher-load`
-requires a custom prepare/loss/train-output hook, which reads it from `ctx.teacher_models`, and
-teacher inference should run inside `torch.no_grad()`.
+scores the student's samples with it. Otherwise only a custom hook reads it, from `ctx.teacher_models`,
+and teacher inference should run inside `torch.no_grad()`.
 
 Each source may load pretrained PEFT LoRA adapters, one plain PEFT directory (what
 `save_pretrained` writes) per `--update-weight-target-module` entry, in the same order:

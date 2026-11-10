@@ -273,7 +273,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--ref-load` | str | – | HF pipeline checkpoint of an independent frozen reference model. Requires `--ref-mode ref`. |
 | `--ref-lora-adapter-path` | str+ | – | PEFT adapter directories applied to `--ref-load`, one per `--update-weight-target-module` entry, in order. |
 | `--ref-cpu-offload` | flag | off | Keep the reference shards in pinned CPU memory between forwards (FSDP `CPUOffloadPolicy`). |
-| `--teacher-load` | str | – | HF pipeline checkpoint of a frozen teacher model, read only by custom prepare/loss/train-output hooks as `ctx.teacher_models`, so it requires `--custom-prepare-train-batch-path`, `--custom-loss-function-path` or `--custom-train-output-function-path`. |
+| `--teacher-load` | str | – | HF pipeline checkpoint of a frozen teacher model, offered to the hooks as `ctx.teacher_models`; `--loss-type dmd2` scores the student's samples with it. |
 | `--teacher-lora-adapter-path` | str+ | – | PEFT adapter directories applied to `--teacher-load`, one per `--update-weight-target-module` entry, in order. |
 | `--teacher-cpu-offload` | flag | off | Keep the teacher shards in pinned CPU memory between forwards. |
 | `--custom-prepare-train-batch-path` | str | – | Builds DiT inputs. |
