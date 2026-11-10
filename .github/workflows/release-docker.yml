@@ -74,12 +74,16 @@ jobs:
             echo "::error::release-lock.json not found at ${{ steps.resolve.outputs.ref }} — was this tag cut via release-branch-cut.yml?"
             exit 1
           fi
+          # Assign before echoing: a failing $(...) inside echo exits 0 under bash -e.
           for key in sglang_commit sglang_image_tag sglang_image_digest; do
-            echo "$key=$(python3 -c "import json; print(json.load(open('release-lock.json'))['$key'])")" >> "$GITHUB_OUTPUT"
+            value=$(python3 -c "import json; print(json.load(open('release-lock.json'))['$key'])")
+            [ -n "$value" ] || { echo "::error::release-lock.json has an empty $key"; exit 1; }
+            echo "$key=$value" >> "$GITHUB_OUTPUT"
           done
           # github.sha is the default-branch HEAD on workflow_dispatch; the
           # image must bake the checked-out release commit.
-          echo "miles_diffusion_commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          MILES_DIFFUSION_COMMIT=$(git rev-parse HEAD)
+          echo "miles_diffusion_commit=$MILES_DIFFUSION_COMMIT" >> "$GITHUB_OUTPUT"
 
       - name: Login to Docker Hub
         uses: docker/login-action@v3

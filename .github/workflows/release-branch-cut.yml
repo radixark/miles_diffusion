@@ -130,8 +130,15 @@ jobs:
             # Existing branch: reuse its committed lockfile for the CI image tag.
             git fetch origin "$BRANCH_NAME"
             git checkout "$BRANCH_NAME"
-            echo "ci_image_tag=$(python3 -c "import json; print(json.load(open('release-lock.json'))['ci_image_tag'])")" >> "$GITHUB_OUTPUT"
-            echo "tested_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            if [ ! -f release-lock.json ]; then
+              echo "::error::$BRANCH_NAME has no release-lock.json; only branches created by this workflow can be re-tested"
+              exit 1
+            fi
+            # Assign before echoing: a failing $(...) inside echo exits 0 under bash -e.
+            CI_IMAGE_TAG=$(python3 -c "import json; print(json.load(open('release-lock.json'))['ci_image_tag'])")
+            TESTED_SHA=$(git rev-parse HEAD)
+            echo "ci_image_tag=$CI_IMAGE_TAG" >> "$GITHUB_OUTPUT"
+            echo "tested_sha=$TESTED_SHA" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -174,8 +181,9 @@ jobs:
           git add release-lock.json
           git commit -m "chore(release): freeze dependency lockfile for $BRANCH_NAME"
           git push origin "$BRANCH_NAME"
+          TESTED_SHA=$(git rev-parse HEAD)
           echo "ci_image_tag=$CI_IMAGE_TAG" >> "$GITHUB_OUTPUT"
-          echo "tested_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "tested_sha=$TESTED_SHA" >> "$GITHUB_OUTPUT"
           echo "Froze: sglang=$SGLANG_COMMIT image=$CI_IMAGE_TAG base=${SGLANG_IMAGE_TAG}@${SGLANG_IMAGE_DIGEST}"
 
       - name: Summary
