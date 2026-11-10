@@ -10,9 +10,12 @@ import torch
 import torch.nn as nn
 
 
-@dataclass
+@dataclass(frozen=True, eq=False)
 class DiffusionLossContext:
-    """Train-side handles for prepare and loss hooks."""
+    """Rollout-level, read-only handles for the loss hooks; what changes per micro-batch travels as arguments.
+
+    Compared by identity: nothing hashes a context, and a synthesized hash would fail on the dict fields.
+    """
 
     models: dict[str, torch.nn.Module]
     train_pipeline_config: Any

@@ -48,6 +48,7 @@ from tests.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=10, suite="stage-a-cpu", labels=[])
 
+import dataclasses
 from argparse import Namespace
 
 import pytest
@@ -450,7 +451,7 @@ def test_surrogate_gradient_matches_the_reference():
     pairs = _generator_pairs(2)
     x0 = torch.randn(2, *LATENT_SHAPE, requires_grad=True)
     x0_real, x0_fake = torch.randn(2, *LATENT_SHAPE), torch.randn(2, *LATENT_SHAPE)
-    ctx.external_data = {"critic": _scores(pairs, x0_real, x0_fake)}
+    ctx = dataclasses.replace(ctx, external_data={"critic": _scores(pairs, x0_real, x0_fake)})
 
     loss_sum, _ = _loss(ctx, pairs, x0)
     (loss_sum / len(pairs)).backward()
@@ -470,7 +471,7 @@ def test_critic_matching_the_teacher_gives_no_gradient():
     pairs = _generator_pairs(2)
     x0 = torch.randn(2, *LATENT_SHAPE, requires_grad=True)
     x0_pred = torch.randn(2, *LATENT_SHAPE)
-    ctx.external_data = {"critic": _scores(pairs, x0_pred, x0_pred)}
+    ctx = dataclasses.replace(ctx, external_data={"critic": _scores(pairs, x0_pred, x0_pred)})
 
     loss_sum, metrics = _loss(ctx, pairs, x0)
     loss_sum.backward()
@@ -496,13 +497,8 @@ def test_gaussian_student_moves_toward_the_teacher():
         x0 = student_mu + torch.randn(2, *LATENT_SHAPE, generator=generator)
         a, b = 0.5, 0.5
         x_s = a * x0.detach() + b * torch.randn(x0.shape, generator=generator)
-        ctx.external_data = {
-            "critic": _scores(
-                pairs,
-                posterior_mean(teacher_mu, x_s, a, b),
-                posterior_mean(float(student_mu), x_s, a, b),
-            )
-        }
+        scores = _scores(pairs, posterior_mean(teacher_mu, x_s, a, b), posterior_mean(float(student_mu), x_s, a, b))
+        ctx = dataclasses.replace(ctx, external_data={"critic": scores})
         loss_sum, _ = _loss(ctx, pairs, x0)
         (loss_sum / len(pairs)).backward()
         optimizer.step()
@@ -516,7 +512,7 @@ def test_trainer_and_rollout_x0_diff_is_recorded():
     ctx = _ctx()
     pairs = _generator_pairs(2)
     x0 = torch.stack([pair["x0"] for pair in pairs]) + 0.25
-    ctx.external_data = {"critic": _scores(pairs, x0, x0)}
+    ctx = dataclasses.replace(ctx, external_data={"critic": _scores(pairs, x0, x0)})
 
     _, metrics = _loss(ctx, pairs, x0)
 
@@ -530,7 +526,10 @@ def test_health_metrics_are_recorded_overall_and_per_step():
     pairs = _generator_pairs(2)
     # Pair n stopped at step n: x0 = 0.5 + n against a teacher x0 of 0 and a critic x0 of 0.25.
     x0 = torch.stack([pair["x0"] for pair in pairs]) + torch.tensor([0.5, 1.5]).view(2, 1, 1, 1)
-    ctx.external_data = {"critic": _scores(pairs, torch.zeros(2, *LATENT_SHAPE), torch.full((2, *LATENT_SHAPE), 0.25))}
+    ctx = dataclasses.replace(
+        ctx,
+        external_data={"critic": _scores(pairs, torch.zeros(2, *LATENT_SHAPE), torch.full((2, *LATENT_SHAPE), 0.25))},
+    )
 
     _, metrics = _loss(ctx, pairs, x0)
 

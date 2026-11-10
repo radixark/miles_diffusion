@@ -36,6 +36,7 @@ from tests.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=30, suite="stage-a-cpu", labels=[])
 
+import dataclasses
 from argparse import Namespace
 
 import pytest
@@ -116,6 +117,12 @@ class _Metrics:
     def emit_mean(self, key, *, total, count):
         prev_total, prev_count = self.seen.get(key, (0.0, 0))
         self.seen[key] = (prev_total + float(total), prev_count + count)
+
+
+def test_the_context_is_read_only():
+    ctx = _ctx({"transformer": nn.Identity()})
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        ctx.rollout_id = 4
 
 
 class TestPrepareSftBatch:
