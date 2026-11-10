@@ -18,7 +18,7 @@ miles_diffusion/
 │   │   │   ├── actor.py           # FSDPTrainRayActor: wrap, forward, loss, step
 │   │   │   ├── configs/           # TrainPipelineConfig per model family
 │   │   │   ├── models/            # native model packages (ltx) + diffusers parallel plans
-│   │   │   ├── loss_hub/          # flow_grpo / nft / sft objectives
+│   │   │   ├── loss_hub/          # loss hooks per (loss_type, role): flow_grpo / nft / sft / dmd2
 │   │   │   ├── sequence_parallel/ # USP = Ulysses × Ring
 │   │   │   ├── monkey_patches/    # FSDP2 param-dtype patch (torch 2.11 gated)
 │   │   │   ├── mixed_precision.py # per-parameter dtype map compilation

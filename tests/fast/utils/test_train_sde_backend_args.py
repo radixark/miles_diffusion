@@ -2,8 +2,8 @@
 
     sde + no-const + default FlowSdeStepBackend (keeps constants) --> rejected
     sde + no-const + custom --sde-step-backend-path                --> allowed (backend owns it)
-    ode + Flow-GRPO loss formula (no custom formula)               --> rejected
-    ode + NFT / custom loss formula; cps; flag off                 --> allowed
+    ode + the Flow-GRPO formula (policy_loss, or custom_loss without a formula path) --> rejected
+    ode + nft / dmd2 / custom_loss with its own formula; cps; flag off --> allowed
 """
 
 from tests.ci.ci_register import register_cpu_ci
@@ -24,7 +24,11 @@ def _args(**overrides):
         diffusion_log_prob_no_const=True,
         diffusion_sde_type="sde",
         sde_step_backend_path=None,
+        loss_type="policy_loss",
+        custom_prepare_train_batch_path=None,
         custom_loss_function_path=None,
+        custom_train_input_postprocess_path=None,
+        custom_train_output_function_path=None,
     )
     values.update(overrides)
     return Namespace(**values)
@@ -35,6 +39,7 @@ def _args(**overrides):
     [
         (dict(), "--diffusion-log-prob-no-const"),
         (dict(diffusion_sde_type="ode"), "--diffusion-sde-type ode"),
+        (dict(diffusion_sde_type="ode", loss_type="custom_loss"), "--diffusion-sde-type ode"),
     ],
 )
 def test_rejects_rollouts_the_backend_cannot_score(overrides, match):
@@ -47,7 +52,9 @@ def test_rejects_rollouts_the_backend_cannot_score(overrides, match):
     [
         dict(sde_step_backend_path="my_pkg.backends.NoConstFlowSde"),
         dict(diffusion_sde_type="cps"),
-        dict(diffusion_sde_type="ode", custom_loss_function_path=NFT_FORMULA),
+        dict(diffusion_sde_type="ode", loss_type="nft"),
+        dict(diffusion_sde_type="ode", loss_type="dmd2"),
+        dict(diffusion_sde_type="ode", loss_type="custom_loss", custom_loss_function_path=NFT_FORMULA),
         dict(diffusion_log_prob_no_const=False),
     ],
 )

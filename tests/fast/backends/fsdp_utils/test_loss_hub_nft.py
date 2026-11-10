@@ -42,8 +42,6 @@ def _args(**overrides):
         diffusion_nft_timestep_strategy_path="miles.ray.data_conversion_hub.nft.drop_final_steps",
         diffusion_nft_num_dropped_timesteps=0,
         seed=42,
-        custom_prepare_train_batch_path=None,
-        custom_loss_function_path=None,
     )
     base.update(overrides)
     return Namespace(**base)

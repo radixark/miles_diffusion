@@ -29,8 +29,6 @@ def _args(**overrides):
         rollout_num_gpus_per_engine=4,
         loss_type="grpo",
         custom_expand_samples_to_train_pairs_path=None,
-        custom_prepare_train_batch_path=None,
-        custom_loss_function_path=None,
         ref_mode="none",
         diffusion_kl_beta=0.0,
     )

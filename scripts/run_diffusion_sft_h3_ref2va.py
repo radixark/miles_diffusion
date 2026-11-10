@@ -69,8 +69,6 @@ def execute(args: ScriptArgs) -> None:
         "--train-only "
         "--custom-convert-samples-to-train-data-path miles.rollout.sft_rollout.convert_samples_to_train_data "
         "--custom-rollout-log-function-path miles.rollout.sft_rollout.log_rollout_data "
-        "--custom-prepare-train-batch-path miles.backends.fsdp_utils.loss_hub.sft.prepare_sft_batch "
-        "--custom-loss-function-path miles.backends.fsdp_utils.loss_hub.sft.sft_loss_formula "
         "--diffusion-task ref2va "
         "--sft-offload-encoder "
     )

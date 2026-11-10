@@ -1809,16 +1809,11 @@ def set_default_diffusion_args(args) -> None:
     if args.sglang_tp_size is None and args.sglang_sp_degree is None and not args.sglang_enable_cfg_parallel:
         args.sglang_tp_size = args.rollout_num_gpus_per_engine
 
-    is_nft = args.loss_type == "nft"
-    if is_nft:
+    if args.loss_type == "nft":
         if args.custom_expand_samples_to_train_pairs_path is None:
             args.custom_expand_samples_to_train_pairs_path = (
                 "miles.ray.data_conversion_hub.nft.expand_samples_to_train_pairs"
             )
-        if args.custom_prepare_train_batch_path is None:
-            args.custom_prepare_train_batch_path = "miles.backends.fsdp_utils.loss_hub.nft.prepare_nft_batch"
-        if args.custom_loss_function_path is None:
-            args.custom_loss_function_path = "miles.backends.fsdp_utils.loss_hub.nft.nft_loss_formula"
 
     if args.loss_type == "dmd2":
         if args.custom_expand_samples_to_train_pairs_path is None:
@@ -1829,12 +1824,6 @@ def set_default_diffusion_args(args) -> None:
             args.critic_load = args.teacher_load
         if args.critic_lr is None:
             args.critic_lr = args.lr
-        if args.custom_prepare_train_batch_path is None:
-            args.custom_prepare_train_batch_path = "miles.backends.fsdp_utils.loss_hub.dmd2.prepare_generator_batch"
-        if args.custom_loss_function_path is None:
-            args.custom_loss_function_path = "miles.backends.fsdp_utils.loss_hub.dmd2.dmd2_loss_formula"
-        if args.custom_train_input_postprocess_path is None:
-            args.custom_train_input_postprocess_path = "miles.backends.fsdp_utils.loss_hub.dmd2.select_scored_pairs"
 
     if args.ref_mode is None:
         args.ref_mode = "lora_base" if args.diffusion_kl_beta > 0 else "none"
@@ -1960,13 +1949,15 @@ def validate_train_sde_backend(args) -> None:
             "--diffusion-log-prob-no-const with --diffusion-sde-type sde needs a --sde-step-backend-path "
             "whose log_prob also drops the constants"
         )
-    # ODE rollouts carry zero log-probs and no noise; only a custom loss formula (NFT's is the default
-    # under --loss-type nft) can train on them, the Flow-GRPO one would score them as SDE steps.
-    if args.diffusion_sde_type == "ode" and args.custom_loss_function_path is None:
-        raise ValueError(
-            "--diffusion-sde-type ode is for DiffusionNFT (--loss-type nft) or a custom loss formula; "
-            "the Flow-GRPO loss needs an sde or cps rollout"
-        )
+    # ODE rollouts carry zero log-probs and no noise, which the Flow-GRPO formula would score as SDE steps.
+    if args.diffusion_sde_type == "ode":
+        from miles.backends.fsdp_utils.loss_hub import LOSS_HOOKS, get_loss_hooks
+
+        if get_loss_hooks(args, "actor").formula is LOSS_HOOKS[("policy_loss", "actor")].formula:
+            raise ValueError(
+                "--diffusion-sde-type ode is for DiffusionNFT (--loss-type nft), DMD2 or a custom loss formula; "
+                "the Flow-GRPO loss needs an sde or cps rollout"
+            )
 
 
 def validate_dmd2_args(args) -> None:
@@ -2133,12 +2124,7 @@ def miles_validate_args(args):
                 "--loss-type sft_loss does not run rollout engines; pass "
                 "--rollout-function-path miles.rollout.sft_rollout.generate_rollout (or your own)"
             )
-        for name in (
-            "custom_convert_samples_to_train_data_path",
-            "custom_rollout_log_function_path",
-            "custom_prepare_train_batch_path",
-            "custom_loss_function_path",
-        ):
+        for name in ("custom_convert_samples_to_train_data_path", "custom_rollout_log_function_path"):
             if getattr(args, name) is None:
                 raise ValueError(
                     f"--loss-type sft_loss requires --{name.replace('_', '-')}; "

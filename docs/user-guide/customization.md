@@ -33,8 +33,8 @@ signatures they expect, and the defaults they replace — in the same spirit as
 | **Model family** | `--train-pipeline-config-path` | Family `TrainPipelineConfig` |
 | | `--model-backend-path` | Model load / FSDP backend |
 
-`--loss-type` (`policy_loss` / `nft` / `sft_loss` / `custom_loss` / `dmd2`) is the
-shortcut that auto-fills several of the train-side paths; see § Training.
+`--loss-type` (`policy_loss` / `nft` / `sft_loss` / `custom_loss` / `dmd2`) selects the train-side
+hooks of each trainer group from the loss hub, and picks the default expand path; see § Training.
 
 ***
 
@@ -226,27 +226,32 @@ def buffer_filter(
 
 ## Training
 
-`--loss-type` picks the default prepare / formula / expand paths:
+`--loss-type` picks the default expand path and selects each trainer group's hooks from the loss hub,
+`miles.backends.fsdp_utils.loss_hub.LOSS_HOOKS`, keyed by `(loss_type, role)`. A group's hooks are
+its prepare, its loss formula (the function `--custom-loss-function-path` names under `custom_loss`),
+and optionally a train-input and a train-output hook:
 
-| `--loss-type` | Expand pairs | Prepare | Loss formula |
-|---|---|---|---|
-| `policy_loss` (default) | Flow-GRPO built-in | `prepare_flow_grpo_batch` | `flow_grpo_loss_formula` |
-| `nft` | `data_conversion_hub.nft.expand_samples_to_train_pairs` | `loss_hub.nft.prepare_nft_batch` | `nft_loss_formula` |
-| `sft_loss` | none; convert `sft_rollout.convert_samples_to_train_data` | `loss_hub.sft.prepare_sft_batch` | `sft_loss_formula` |
-| `custom_loss` | your expand (or convert) | your prepare | your formula |
-| `dmd2` | `data_conversion_hub.dmd2.expand_samples_to_train_pairs` | `loss_hub.dmd2.prepare_generator_batch` | `dmd2_loss_formula` |
+| `--loss-type` | Expand pairs | Prepare | Loss formula | Train-input / train-output |
+|---|---|---|---|---|
+| `policy_loss` (default) | Flow-GRPO built-in | `prepare_flow_grpo_batch` | `flow_grpo_loss_formula` | – |
+| `nft` | `data_conversion_hub.nft.expand_samples_to_train_pairs` | `loss_hub.nft.prepare_nft_batch` | `nft_loss_formula` | – |
+| `sft_loss` | none; convert `sft_rollout.convert_samples_to_train_data` | `loss_hub.sft.prepare_sft_batch` | `sft_loss_formula` | – |
+| `custom_loss` | your expand (or convert) | your prepare | your formula | yours |
+| `dmd2`, actor | `data_conversion_hub.dmd2.expand_samples_to_train_pairs` | `loss_hub.dmd2.prepare_generator_batch` | `dmd2_loss_formula` | `select_scored_pairs` / – |
+| `dmd2`, critic | (the actor's pairs) | `loss_hub.dmd2.prepare_critic_batch` | `critic_loss_formula` | – / `score_last_step_samples` |
 
-`sft_loss` auto-fills nothing: it requires the convert, rollout-log, prepare and loss
-paths, plus `--train-only` and a rollout function that runs no engines (e.g.
-`miles.rollout.sft_rollout.generate_rollout`; see `scripts/run_diffusion_sft_wan22.py`). `custom_loss` behaves like `policy_loss`:
-any hook left unset falls back to the Flow-GRPO built-in. `dmd2` also trains a `critic` group
-before the actor on each rollout: it starts from `--critic-load` (default `--teacher-load`),
-learns the student's samples with the SFT loss at `--critic-lr` (default `--lr`). On its last step
-it keeps its own x0 predictions from that step's forward, before the update, and after training hands
-them with the teacher's x0 at the same noisy inputs to the actor as `ctx.external_data["critic"]`.
-The actor trains on those samples only (its train-input hook defaults to
-`loss_hub.dmd2.select_scored_pairs`): it recomputes the student's x0 at the rollout's step and moves
-it along their difference.
+`sft_loss` requires the convert and rollout-log paths, plus `--train-only` and a rollout function
+that runs no engines (e.g. `miles.rollout.sft_rollout.generate_rollout`; see
+`scripts/run_diffusion_sft_wan22.py`). `custom_loss` is the only loss type that reads the four hook
+flags (`--custom-prepare-train-batch-path`, `--custom-loss-function-path`,
+`--custom-train-input-postprocess-path`, `--custom-train-output-function-path`): any hook left unset
+falls back to the Flow-GRPO built-in. `dmd2` also trains
+a `critic` group before the actor on each rollout: it starts from `--critic-load` (default
+`--teacher-load`), learns the student's samples with the SFT loss at `--critic-lr` (default `--lr`).
+On its last step it keeps its own x0 predictions from that step's forward, before the update, and
+after training its train-output hook hands them with the teacher's x0 at the same noisy inputs to the
+actor as `ctx.external_data["critic"]`. The actor trains on those samples only (its train-input hook):
+it recomputes the student's x0 at the rollout's step and moves it along their difference.
 
 DiT forward always stays in the FSDP actor; the loss hook only computes the
 objective.
@@ -278,9 +283,8 @@ def prepare(ctx, batch, *, pad_to_len=None) -> PreparedBatch:
     ...
 ```
 
-Builds DiT inputs from train pairs. Defaults:
-`miles.backends.fsdp_utils.loss_hub.flow_grpo.prepare_flow_grpo_batch` or the NFT
-equivalent under `loss_hub.nft`. `PreparedBatch.latents`, `timesteps` and
+Builds DiT inputs from train pairs; the loss hub's table above lists each loss type's.
+`PreparedBatch.latents`, `timesteps` and
 `timesteps_for_model` are keyed by latent stream name: `"visual"`, plus e.g.
 `"audio"` for joint audio-video models.
 

@@ -22,10 +22,6 @@ def compute_trainer_configs(args: Namespace) -> list[TrainerConfig]:
         "save": None if args.save is None else args.save.rstrip("/") + "_critic",
         "num_steps_per_rollout": critic_steps,
         "global_batch_size": args.global_batch_size // critic_steps,
-        "custom_prepare_train_batch_path": "miles.backends.fsdp_utils.loss_hub.dmd2.prepare_critic_batch",
-        "custom_loss_function_path": "miles.backends.fsdp_utils.loss_hub.dmd2.critic_loss_formula",
-        "custom_train_input_postprocess_path": None,
-        "custom_train_output_function_path": "miles.backends.fsdp_utils.loss_hub.dmd2.score_last_step_samples",
     }
     return [
         TrainerConfig(role="critic", overrides=critic_overrides),
