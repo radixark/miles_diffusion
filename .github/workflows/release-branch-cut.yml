@@ -92,6 +92,8 @@ jobs:
       - name: Preflight the CI image
         if: steps.check_exists.outputs.branch_exists != 'true'
         id: preflight
+        # bash with pipefail: the pipelines below must not hide a failing producer.
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           COMMIT_SHA: ${{ steps.validate.outputs.commit_sha }}
@@ -120,6 +122,7 @@ jobs:
 
       - name: Create branch and freeze release-lock.json
         id: freeze
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DEV_IMAGE_TAG: ${{ steps.preflight.outputs.dev_image_tag }}
@@ -148,11 +151,7 @@ jobs:
 
           SGLANG_COMMIT=$(git ls-remote https://github.com/sgl-project/sglang refs/heads/sglang-miles | cut -f1)
 
-          # Retag by digest, not by name: the dated tag can be overwritten
-          # within its day, and the release-scoped name never moves.
           CI_IMAGE_TAG="release-${BRANCH_NAME#release/}-ci"
-          docker buildx imagetools create -t "radixark/miles_diffusion:${CI_IMAGE_TAG}" "radixark/miles_diffusion@${DEV_IMAGE_DIGEST}"
-          echo "Retagged radixark/miles_diffusion:${DEV_IMAGE_TAG} (${DEV_IMAGE_DIGEST}) -> radixark/miles_diffusion:${CI_IMAGE_TAG}"
 
           # `docker build --pull` re-resolves the base tag at every build, so
           # release-docker.yml pins FROM <tag>@<digest>.
@@ -178,6 +177,13 @@ jobs:
             --fa3-wheels-repo "$MILES_WHEELS_REPO" \
             --fa3-wheels-tag "$FA3_WHEELS_TAG" \
             --fa3-wheels-fingerprint "$FA3_WHEELS_FINGERPRINT"
+
+          # Retag by digest, not by name: the dated tag can be overwritten
+          # within its day, and the release-scoped name never moves. After the
+          # lock writer validated every input, so a failed cut leaves no tag.
+          docker buildx imagetools create -t "radixark/miles_diffusion:${CI_IMAGE_TAG}" "radixark/miles_diffusion@${DEV_IMAGE_DIGEST}"
+          echo "Retagged radixark/miles_diffusion:${DEV_IMAGE_TAG} (${DEV_IMAGE_DIGEST}) -> radixark/miles_diffusion:${CI_IMAGE_TAG}"
+
           git add release-lock.json
           git commit -m "chore(release): freeze dependency lockfile for $BRANCH_NAME"
           git push origin "$BRANCH_NAME"
