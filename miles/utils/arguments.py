@@ -947,10 +947,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 choices=["policy_loss", "sft_loss", "custom_loss", "nft", "dmd2"],
                 default="policy_loss",
                 help=(
-                    "Train objective shortcut. Diffusion default policy_loss = Flow-GRPO prepare+formula. "
-                    "nft auto-fills prepare / loss-formula paths and selects the NFT train-data converter. "
-                    "dmd2 auto-fills the DMD2 converter / prepare / loss-formula / train-input paths and trains a "
-                    "critic group before the actor. "
+                    "Train objective. Each loss type selects its prepare / loss-formula / train-input / train-output "
+                    "hooks from the loss hub by (loss_type, trainer role): policy_loss is Flow-GRPO; nft and dmd2 "
+                    "also pick their default --custom-expand-samples-to-train-pairs-path, and dmd2 trains a critic "
+                    "group before the actor. Only custom_loss reads the --custom-*-path hook flags. "
                     "DiT forward always stays in the FSDP actor."
                 ),
             )
@@ -961,7 +961,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "Dotted path to prepare hook "
                     "`fn(ctx, batch, *, pad_to_len=None) -> PreparedBatch`. "
-                    "Builds DiT inputs; default is Flow-GRPO SDE-pair stacking."
+                    "Builds DiT inputs; --loss-type custom_loss only, default is Flow-GRPO SDE-pair stacking."
                 ),
             )
             parser.add_argument(
@@ -971,6 +971,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "Dotted path to a loss *formula* only: "
                     "`fn(ctx, batch, prepared, *, new_pred, ref_pred, metrics, ...) -> Tensor`. "
+                    "--loss-type custom_loss only, default is Flow-GRPO's. "
                     "DiT forward is owned by the actor; this hook only computes the objective."
                 ),
             )
@@ -981,7 +982,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "Dotted path to `fn(ctx, train_pairs) -> list` that preprocesses this rank's train pairs (the "
                     "converted rollout output) before they are split into micro-batches and optimizer steps. It "
-                    "returns the pairs to train on; `ctx.external_data` holds earlier trainer groups' outputs."
+                    "returns the pairs to train on; `ctx.external_data` holds earlier trainer groups' outputs. "
+                    "--loss-type custom_loss only."
                 ),
             )
             parser.add_argument(
@@ -991,7 +993,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "Dotted path to `fn(ctx, train_pairs) -> Any`, run without grad after the train steps of "
                     "a rollout. Its return value reaches the paired rank of every trainer group that trains "
-                    "later on the same rollout as `ctx.external_data[<role>]`."
+                    "later on the same rollout as `ctx.external_data[<role>]`. --loss-type custom_loss only."
                 ),
             )
             parser.add_argument(
@@ -1960,6 +1962,22 @@ def validate_train_sde_backend(args) -> None:
             )
 
 
+def validate_loss_hook_paths(args) -> None:
+    if args.loss_type == "custom_loss":
+        return
+    for name in (
+        "custom_prepare_train_batch_path",
+        "custom_loss_function_path",
+        "custom_train_input_postprocess_path",
+        "custom_train_output_function_path",
+    ):
+        if getattr(args, name) is not None:
+            raise ValueError(
+                f"--{name.replace('_', '-')} is read only under --loss-type custom_loss; "
+                f"--loss-type {args.loss_type} selects its own hooks"
+            )
+
+
 def validate_dmd2_args(args) -> None:
     if args.loss_type != "dmd2":
         if args.critic_load is not None or args.critic_lr is not None:
@@ -2038,6 +2056,7 @@ def miles_validate_args(args):
         )
     if len(set(args.update_weight_target_modules)) != len(args.update_weight_target_modules):
         raise ValueError(f"--update-weight-target-module has duplicates: {args.update_weight_target_module!r}")
+    validate_loss_hook_paths(args)
     validate_reference_model_args(args)
     validate_actor_lora_adapter(args)
 

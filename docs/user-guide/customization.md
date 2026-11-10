@@ -283,7 +283,8 @@ def prepare(ctx, batch, *, pad_to_len=None) -> PreparedBatch:
     ...
 ```
 
-Builds DiT inputs from train pairs; the loss hub's table above lists each loss type's.
+Read only under `--loss-type custom_loss`; the other loss types take their prepare from the loss hub's table
+above. Builds DiT inputs from train pairs.
 `PreparedBatch.latents`, `timesteps` and
 `timesteps_for_model` are keyed by latent stream name: `"visual"`, plus e.g.
 `"audio"` for joint audio-video models.
@@ -295,8 +296,9 @@ def loss_formula(ctx, batch, prepared, *, new_pred, old_pred, ref_pred, metrics,
     ...
 ```
 
-`new_pred`, `old_pred` and `ref_pred` are keyed by the same stream names as `prepared.latents`.
-`old_pred` is `None` unless `--loss-type nft`; `ref_pred` is `None` with `--ref-mode none`.
+Read only under `--loss-type custom_loss`. `new_pred`, `old_pred` and `ref_pred` are keyed by the same stream
+names as `prepared.latents`. `old_pred` (the EMA forward) is `None` for a custom formula, since the trunk runs it
+only under `--loss-type nft`; `ref_pred` is `None` with `--ref-mode none`.
 
 ### `--custom-train-input-postprocess-path`
 
@@ -305,7 +307,8 @@ def train_input(ctx, train_pairs) -> list:
     ...
 ```
 
-Preprocesses this rank's train pairs, the rollout output after conversion, before they are split into
+Read only under `--loss-type custom_loss`. Preprocesses this rank's train pairs, the rollout output after
+conversion, before they are split into
 micro-batches and optimizer steps. It may filter, reorder or rewrite them, and returns the pairs to
 train on. `ctx` is the context the prepare, loss and train-output hooks get, so earlier trainer
 groups' outputs are already in `ctx.external_data`. The micro-batch schedule, the training forwards
@@ -318,7 +321,8 @@ def train_output(ctx, train_pairs) -> Any:
     ...
 ```
 
-Runs without grad after this trainer group's train steps on a rollout. Every trainer group that
+Read only under `--loss-type custom_loss`. Runs without grad after this trainer group's train steps on a
+rollout. Every trainer group that
 trains later on the same rollout reads the return value of its paired rank (same rank, same
 train pairs) as `ctx.external_data[<role>]`. Prepare and loss hooks see the current optimizer step
 as `ctx.optim_step_idx` and can leave inputs for this hook in `ctx.train_output_inputs`, which

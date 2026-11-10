@@ -98,3 +98,8 @@ def test_dmd2_trainer_groups_get_their_hooks_by_role(parse):
         "global_batch_size": 4,
     }
     assert vars(actor) == {**vars(args), "teacher_load": None}
+
+
+def test_a_hook_path_outside_custom_loss_fails_validation(parse):
+    with pytest.raises(ValueError, match="read only under --loss-type custom_loss"):
+        parse(ARGV_BY_LOSS_TYPE["nft"] + " --teacher-load teacher --custom-loss-function-path my.formula")

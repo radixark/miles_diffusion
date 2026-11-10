@@ -108,6 +108,13 @@ def test_builtin_producer_still_requires_checkpoint(args: Namespace) -> None:
         miles_validate_args(args)
 
 
+def test_sft_loss_rejects_a_prepare_path(args: Namespace) -> None:
+    # The SFT hooks come from the loss hub; a path would be a second, possibly different, source.
+    args.custom_prepare_train_batch_path = "external.prepare"
+    with pytest.raises(ValueError, match="read only under --loss-type custom_loss"):
+        miles_validate_args(args)
+
+
 def test_external_producer_still_requires_the_convert_hook(args: Namespace) -> None:
     args.custom_convert_samples_to_train_data_path = None
     with pytest.raises(ValueError, match="custom-convert-samples-to-train-data-path"):
