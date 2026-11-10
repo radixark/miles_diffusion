@@ -108,17 +108,17 @@ def test_nft_x0_comes_from_the_final_step():
         _clean_x0_from_sample(sample)
 
 
-def _stored_traj(full: DiTTrajectory, kept: list[int], row: int = 1):
+def _stored_traj(full: DiTTrajectory, kept: list[int]):
     from radix_transfer_plugins import FieldSpec, StoreRef
 
     from miles.utils.output_store import StoreSlice
 
     spec = FieldSpec(
-        name="dit_trajectory.latents", dtype="float32", shape=(2, len(kept), 4, 6), codec="identity", nbytes=0
+        name="dit_trajectory.latents.1", dtype="float32", shape=(len(kept), 4, 6), codec="identity", nbytes=0
     )
     ref = StoreRef(backend="mooncake", key="k", fields=(spec,))
     windowed = _windowed(full, kept)
-    windowed.latents = StoreSlice(ref, "dit_trajectory.latents", rows=(row,))
+    windowed.latents = StoreSlice(ref, "dit_trajectory.latents.1")
     return windowed
 
 
@@ -126,8 +126,8 @@ def test_stored_latents_become_row_slices_of_the_pairs():
     full = _full_traj()
     kept = [2, 3, 4]
     features, _ = _build(_stored_traj(full, kept))
-    assert [features["latent"][t].rows for t in range(2)] == [(1, 0), (1, 1)]
-    assert [features["next_latent"][t].rows for t in range(2)] == [(1, 1), (1, 2)]
+    assert [features["latent"][t].rows for t in range(2)] == [(0,), (1,)]
+    assert [features["next_latent"][t].rows for t in range(2)] == [(1,), (2,)]
     assert torch.equal(features["timestep"], full.timesteps[SDE])
 
 
@@ -136,4 +136,4 @@ def test_stored_x0_is_the_final_row_slice():
 
     sample = _sample()
     sample.dit_trajectory = _stored_traj(_full_traj(), [T])
-    assert _clean_x0_from_sample(sample).rows == (1, 0)
+    assert _clean_x0_from_sample(sample).rows == (0,)
