@@ -7,7 +7,8 @@ name: PR Test
 #     node-radixark-32-0000) split into (h200,3gpu) + (h200,5gpu) runners —
 #     stage-b (fast-gpu) and stage-c (e2e) only, no stage-c-8-gpu-h100.
 #   * `resolve-ci-image` resolves a `radixark/miles_diffusion:<tag>`
-#     container (default `latest`), overridable via the `ci-image-tag:`
+#     container (default `latest`, or the tag a release branch's
+#     release-lock.json freezes), overridable via the `ci-image-tag:`
 #     PR-body line or the `ci_image_tag` dispatch input.
 #   * `docker-paths` + `docker-build` build a `pr-<num>` image on docker PRs.
 #   * `ci_megatron_pr` workflow_dispatch input removed — miles-D source has
@@ -32,8 +33,8 @@ on:
     - cron: '30 16 * * *'
   workflow_dispatch:
     inputs:
-      # Empty defaults: on a release branch the values come from its
-      # release-lock.json; anywhere else the old defaults still apply.
+      # Empty so a release branch's release-lock.json can apply; without a
+      # lockfile the resolve steps fall back to the values named below.
       ci_sglang_pr:
         description: 'SGLang branch/commit (empty: release-lock.json if present, else sglang-miles)'
         required: false
