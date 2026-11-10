@@ -2005,6 +2005,8 @@ def validate_dmd2_args(args) -> None:
         )
     if args.ref_mode != "none":
         raise ValueError("--loss-type dmd2 uses no reference model; drop --ref-mode and --diffusion-kl-beta")
+    if args.diffusion_recompute_old_log_prob:
+        raise ValueError("--diffusion-recompute-old-log-prob is only supported for policy_loss / Flow-GRPO, not DMD2")
     if args.num_steps_per_rollout != 1:
         raise ValueError(
             f"--loss-type dmd2 takes one actor step per rollout, got --num-steps-per-rollout "

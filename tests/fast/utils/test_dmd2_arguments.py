@@ -7,7 +7,7 @@
                       takes --dmd2-critic-steps-per-rollout steps over each DP shard
     other losses  ──► --critic-load / --critic-lr have no consumer and are rejected
     teacher score ──► CFG --dmd2-teacher-guidance-scale >= 1
-    actor         ──► unguided rollouts, one step per rollout
+    actor         ──► unguided rollouts, one step per rollout, no old-log-prob recompute (no ratio)
 """
 
 from tests.ci.ci_register import register_cpu_ci
@@ -36,6 +36,7 @@ def _args(**overrides):
         diffusion_true_cfg_scale=None,
         use_lora=False,
         ref_mode="none",
+        diffusion_recompute_old_log_prob=False,
         num_steps_per_rollout=1,
         global_batch_size=40,
         actor_num_gpus_per_node=4,
@@ -126,6 +127,7 @@ def test_valid_dmd2_args_pass_unchanged():
         ({"use_lora": True}, "drop --use-lora"),
         ({"teacher_lora_adapter_paths": ["teacher-adapter"]}, "drop --use-lora and --teacher-lora-adapter-path"),
         ({"ref_mode": "ref"}, "uses no reference model"),
+        ({"diffusion_recompute_old_log_prob": True}, "not DMD2"),
         ({"num_steps_per_rollout": 2}, "one actor step per rollout"),
         ({"dmd2_critic_steps_per_rollout": 0}, "must be >= 1"),
         # 40 samples over 2 DP shards = 20 per shard, which 3 critic steps cannot split.
