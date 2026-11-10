@@ -31,13 +31,13 @@ def main() -> int:
     runs = json.load(open(run_path))
     tags = json.load(open(tags_path))["results"]
 
-    dated = sorted((t for t in tags if DATED_TAG_RE.fullmatch(t["name"])), key=lambda t: t["name"])
-    if not dated:
+    dated_tags = sorted((t for t in tags if DATED_TAG_RE.fullmatch(t["name"])), key=lambda t: t["name"])
+    if not dated_tags:
         print(
             "no dev-cu129-sglang-main-<YYYYMMDD> tag on Docker Hub; dispatch docker-build.yml first", file=sys.stderr
         )
         return 1
-    newest = dated[-1]
+    newest_tag = dated_tags[-1]
 
     if not runs:
         print("no successful docker-build.yml run found", file=sys.stderr)
@@ -46,17 +46,17 @@ def main() -> int:
     if run["headBranch"] != "main":
         print(f"newest successful docker-build.yml run is on {run['headBranch']!r}, not main", file=sys.stderr)
         return 1
-    pushed = parse_time(newest["last_updated"])
-    if not parse_time(run["createdAt"]) <= pushed <= parse_time(run["updatedAt"]):
+    pushed_at = parse_time(newest_tag["last_updated"])
+    if not parse_time(run["createdAt"]) <= pushed_at <= parse_time(run["updatedAt"]):
         print(
-            f"{newest['name']} (pushed {newest['last_updated']}) was not pushed by the newest successful "
+            f"{newest_tag['name']} (pushed {newest_tag['last_updated']}) was not pushed by the newest successful "
             f"docker-build.yml run ({run['createdAt']} .. {run['updatedAt']}); rebuild the image on main first",
             file=sys.stderr,
         )
         return 1
 
-    print(f"dev_image_tag={newest['name']}")
-    print(f"dev_image_digest={newest['digest']}")
+    print(f"dev_image_tag={newest_tag['name']}")
+    print(f"dev_image_digest={newest_tag['digest']}")
     print(f"image_build_sha={run['headSha']}")
     return 0
 

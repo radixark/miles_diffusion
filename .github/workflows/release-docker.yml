@@ -79,7 +79,7 @@ jobs:
           done
           # github.sha is the default-branch HEAD on workflow_dispatch; the
           # image must bake the checked-out release commit.
-          echo "md_commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "miles_diffusion_commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Login to Docker Hub
         uses: docker/login-action@v3
@@ -94,7 +94,7 @@ jobs:
           SGLANG_IMAGE_TAG: ${{ steps.lock.outputs.sglang_image_tag }}
           SGLANG_IMAGE_DIGEST: ${{ steps.lock.outputs.sglang_image_digest }}
           SGLANG_COMMIT: ${{ steps.lock.outputs.sglang_commit }}
-          MD_COMMIT: ${{ steps.lock.outputs.md_commit }}
+          MILES_DIFFUSION_COMMIT: ${{ steps.lock.outputs.miles_diffusion_commit }}
         run: |
           # --no-cache --pull as in docker-build.yml: cached layers would pin
           # stale sources; the base image is pinned by digest so --pull cannot
@@ -102,7 +102,7 @@ jobs:
           docker build --no-cache --pull -f docker/Dockerfile . \
             --build-arg "SGLANG_IMAGE_TAG=${SGLANG_IMAGE_TAG}@${SGLANG_IMAGE_DIGEST}" \
             --build-arg "SGLANG_DIFFUSION_COMMIT=${SGLANG_COMMIT}" \
-            --build-arg "MILES_DIFFUSION_COMMIT=${MD_COMMIT}" \
+            --build-arg "MILES_DIFFUSION_COMMIT=${MILES_DIFFUSION_COMMIT}" \
             -t "${IMAGE}"
           docker push "${IMAGE}"
 
@@ -119,5 +119,5 @@ jobs:
             echo "- \`radixark/miles_diffusion:v${{ steps.resolve.outputs.version }}\` (cu129, x86_64)"
             echo "- base image: \`lmsysorg/sglang:${{ steps.lock.outputs.sglang_image_tag }}@${{ steps.lock.outputs.sglang_image_digest }}\`"
             echo "- sglang: \`${{ steps.lock.outputs.sglang_commit }}\`"
-            echo "- miles_diffusion: \`${{ steps.lock.outputs.md_commit }}\`"
+            echo "- miles_diffusion: \`${{ steps.lock.outputs.miles_diffusion_commit }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
