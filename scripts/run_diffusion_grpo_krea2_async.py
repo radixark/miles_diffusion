@@ -107,8 +107,9 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         "--sglang-dit-precision bf16 "
         "--sglang-vae-slicing "
         "--update-weight-buffer-size 2147483648 "
-        # the launcher starts the Mooncake master on this port
-        "--use-output-store --output-store-mooncake-master 127.0.0.1:50070 "
+        # the launcher starts the Mooncake master on this port; debug mode stores every step's debug tensors,
+        # ~12 GB per 240-sample rollout with two rollouts in flight, beyond the 16gb default segment
+        "--use-output-store --output-store-mooncake-master 127.0.0.1:50070 --output-store-global-segment-size 64gb "
     )
 
     train_backend_args = "--train-backend fsdp --diffusion-forward-dtype bf16 --micro-batch-size 2 "
