@@ -121,7 +121,8 @@ def test_each_rank_receives_the_same_rank_output_of_earlier_groups():
     external_data = {"critic": ["critic_0", "critic_1"], "reward": ["reward_0", "reward_1"]}
 
     assert group.async_train(7, "data", external_data) == [
-        (0, 7, "data", {"critic": "critic_0", "reward": "reward_0"}),
-        (1, 7, "data", {"critic": "critic_1", "reward": "reward_1"}),
+        (0, 7, "data", {"critic": "critic_0", "reward": "reward_0"}, None),
+        (1, 7, "data", {"critic": "critic_1", "reward": "reward_1"}, None),
     ]
-    assert group.async_train(7, "data") == [(0, 7, "data", {}), (1, 7, "data", {})]
+    assert group.async_train(7, "data") == [(0, 7, "data", {}, None), (1, 7, "data", {}, None)]
+    assert group.async_train(7, "data", optim_steps=(1, 3)) == [(0, 7, "data", {}, (1, 3)), (1, 7, "data", {}, (1, 3))]
