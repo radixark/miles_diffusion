@@ -1,12 +1,14 @@
-"""Async Krea-2-Raw Flow-GRPO with score centering and OCR on 6 training + 2 rollout GPUs.
+"""Async Krea-2-Raw Flow-GRPO with score centering (experimental) and OCR on 4 training + 4 rollout GPUs.
 
-Same pools and batch as run_diffusion_nft_krea2_async.py, run through train_diffusion_async.py
-with the Flow-GRPO loss: each batch is sampled by engines holding the previous step's actor
-weights while the current batch trains, and the LoRA adapters sync to the rollout GPUs over
-NCCL. The one-step-stale rollout means the trainer re-scores SDE transitions drawn around a
-mean it no longer owns; --diffusion-score-centering removes the drift that puts into the PPO
-gradient (see docs/advanced/sde-backend.md §5). One prompt x 8 samples per training GPU,
-two SDE steps per sample (steps 3-4 of 10), micro-batch 2, no gradient checkpointing.
+Run through train_diffusion_async.py: each batch is sampled by engines holding the previous
+step's actor weights while the current batch trains, and the LoRA adapters sync to the rollout
+GPUs over NCCL. The engines run the DiT in fp8 and apply the adapters on the fly, since they
+cannot be merged into fp8 weights; training stays bf16. The one-step-stale, fp8 rollout means
+the trainer re-scores SDE transitions drawn around a mean it no longer owns;
+--diffusion-score-centering removes the drift that puts into the PPO gradient (see
+docs/advanced/sde-backend.md §5). Rollout tensors travel through the output store. 30 prompts
+x 8 samples per step, two SDE steps per sample (steps 3-4 of 10), micro-batch 2, no gradient
+checkpointing.
 
 Usage:
     python3 scripts/run_diffusion_grpo_krea2_async.py
@@ -29,11 +31,11 @@ WANDB_PROJECT = "miles-diffusion-grpo"
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
-    num_rollout: int = 100
+    num_rollout: int = 300
     data_dir: str = "/root/datasets"
     extra_args: str = ""
     score_centering: bool = True
-    # CI cap: half of every GPU pool and of the batch, 3 training + 1 rollout GPUs with 3 prompts per step
+    # CI cap: 3 training + 1 rollout GPUs with 3 prompts per step
     four_gpu_ci: bool = False
 
 
@@ -44,7 +46,9 @@ def prepare(args: ScriptArgs) -> str:
 
 def execute(args: ScriptArgs, data_dir: str) -> None:
     run_name = f"diffusion_grpo_krea2_ocr_async_{U.create_run_id()}"
-    num_train_gpus, num_rollout_gpus = (3, 1) if args.four_gpu_ci else (6, 2)
+    num_train_gpus, num_rollout_gpus = (3, 1) if args.four_gpu_ci else (4, 4)
+    # 30 x 8 = 240 samples per step, the nearest to 32 x 8 that both 4 and 6 trainer ranks divide
+    num_prompts = 3 if args.four_gpu_ci else 30
     num_gpus = num_train_gpus + num_rollout_gpus
 
     ckpt_args = (
@@ -69,12 +73,12 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         # score centering reads the rollout's per-step means and noise stds from the debug tensors
         "--diffusion-debug-mode "
         "--rollout-microgroup-size 1 "
-        f"--rollout-batch-size {num_train_gpus} --n-samples-per-prompt 8 "
+        f"--rollout-batch-size {num_prompts} --n-samples-per-prompt 8 "
     )
 
     eval_args = (
         "--diffusion-eval-num-steps 52 --skip-eval-before-train "
-        # the 1018-prompt OCR eval takes over an hour on 2 rollout GPUs, so it runs once, after 100 rollouts
+        # the 1018-prompt OCR eval is slow, so it runs every 100 rollouts
         f"--eval-prompt-data ocr_test {data_dir}/test.jsonl --eval-interval 100 "
     )
 
@@ -88,7 +92,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
 
     optimizer_args = "--lr 3e-4 --adam-beta2 0.999 --weight-decay 1e-4 --clip-grad 1.0 "
 
-    # without --colocate the adapters sync over NCCL and the rollout merges them
+    # without --colocate the adapters sync over NCCL
     lora_args = "--use-lora --lora-rank 32 --lora-alpha 64 --lora-init-weights gaussian "
 
     wandb_args = U.get_default_wandb_args(
@@ -98,10 +102,13 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
     sglang_args = (
         "--use-miles-router "
         "--sglang-server-concurrency 8 "
-        "--sglang-lora-merge-mode merge "
+        "--sglang-lora-merge-mode dynamic "
+        "--sglang-quantization fp8 "
         "--sglang-dit-precision bf16 "
         "--sglang-vae-slicing "
         "--update-weight-buffer-size 2147483648 "
+        # the launcher starts the Mooncake master on this port
+        "--use-output-store --output-store-mooncake-master 127.0.0.1:50070 "
     )
 
     train_backend_args = "--train-backend fsdp --diffusion-forward-dtype bf16 --micro-batch-size 2 "
