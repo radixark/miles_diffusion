@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import msgpack
 import ray
 import torch
 
-from miles.utils.output_store import StoredTensor
+from miles.utils.output_store import StoredTensor, materialize_stored_tensors
 from miles.utils.processing_utils import fhwc_to_cfhw
 from miles.utils.types import CondKwargs, DenoisingEnv, DiTTrajectory, RolloutDebugTensors, Sample, decode_tensor
+
+if TYPE_CHECKING:
+    from radix_transfer_plugins import OutputStore
 
 __all__ = [
     "apply_rollout_image_response",
@@ -75,6 +78,13 @@ def _normalize_generated_output(tensor: torch.Tensor | None) -> torch.Tensor | N
         )
 
     return canonical.contiguous()
+
+
+def read_generated_outputs(store: OutputStore, outputs: list[StoredTensor]) -> list[torch.Tensor]:
+    """Read stored outputs in one store read, in the ``[C, F, H, W]`` layout an inline output is parsed to."""
+    tensors = list(outputs)
+    materialize_stored_tensors(tensors, store=store)
+    return [_normalize_generated_output(tensor) for tensor in tensors]
 
 
 def _parse_tensor_or_list(
@@ -223,7 +233,13 @@ def apply_rollout_image_response(
         sample.rollout_store_ref = StoreRef.from_builtins(ref)
         deserialize_func = _store_deserialize_func(sample.rollout_store_ref, deserialize_func)
 
-    sample.generated_output = _normalize_generated_output(deserialize_func(body.get("generated_output")))
+    generated_output = deserialize_func(body.get("generated_output"))
+    # a stored output gets its layout where it is read (read_generated_outputs)
+    sample.generated_output = (
+        generated_output
+        if isinstance(generated_output, StoredTensor)
+        else _normalize_generated_output(generated_output)
+    )
     sample.generated_audio = deserialize_func(body.get("generated_audio"))
     sample.audio_sample_rate = body.get("audio_sample_rate")
     # Eval-mode rollout (rollout=False) sends no log_probs; train-mode always does.
