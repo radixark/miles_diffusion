@@ -19,7 +19,7 @@ FastVideo/FastVideo-FastH3-4-step-Preview-v1-Dense-DataFree, released at step 10
 Deviations: 768p 16:9 only (FastH3 mixes shapes); only the video stream is distilled (the rollout
 records no audio trajectory), so audio follows whatever the shared layers learn -- listen to the media.
 
-Prompts: the 248,221 VidProM prompts of vidprom_filtered_extended.txt (the list Self-Forcing, NVlabs/rcm
+Prompts: the 248,219 unique VidProM prompts (248,221 lines) of vidprom_filtered_extended.txt (the list Self-Forcing, NVlabs/rcm
 and FastVideo's Wan data-free DMD train on), downloaded at a pinned revision and split here
 deterministically: train 247,219 / test 1,000 / eval_media 26 (16 test prompts + 10 FastGen-DMD
 demo prompts that also describe sound). The output hashes are pinned, so every node builds the same files.
