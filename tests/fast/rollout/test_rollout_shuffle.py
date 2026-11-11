@@ -89,3 +89,23 @@ def test_resume_mid_epoch_continues_the_same_permutation(tmp_path):
 
     assert [_prompts(resumed.get_samples(2)) for _ in range(3)] == continued
     assert resumed.dataset.epoch_id == 1
+
+
+def test_request_larger_than_dataset_wraps_multiple_epochs(tmp_path):
+    """A rollout asking for more prompts than the dataset holds still gets exactly that many."""
+    source = RolloutDataSourceWithBuffer(_args(tmp_path, rollout_shuffle=False))
+
+    assert _prompts(source.get_samples(12)) == PROMPTS + PROMPTS + ["p0", "p1"]
+    assert source.sample_offset == 2
+    assert source.epoch_id == 2
+    assert _prompts(source.get_samples(3)) == ["p2", "p3", "p4"]
+
+
+def test_shuffled_request_larger_than_dataset_covers_each_epoch(tmp_path):
+    source = RolloutDataSourceWithBuffer(_args(tmp_path))
+    drawn = _prompts(source.get_samples(11))
+
+    assert len(drawn) == 11
+    assert sorted(drawn[:5]) == PROMPTS
+    assert sorted(drawn[5:10]) == PROMPTS
+    assert source.sample_offset == 1
