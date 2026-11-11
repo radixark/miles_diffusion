@@ -102,9 +102,10 @@ def main():
     )
 
     torch.manual_seed(43)
-    inp = torch.randn(4, 8, device="cuda")
+    # apply_fsdp2 sets cast_forward_inputs=False: the model boundary hands the DiT bf16 inputs
+    inp = torch.randn(4, 8, device="cuda", dtype=torch.bfloat16)
     output = model(inp)
-    reference_output = reference(inp.to(torch.bfloat16))
+    reference_output = reference(inp)
     assert torch.equal(output, reference_output)
     assert model.block.seen_param_dtypes == (torch.bfloat16, torch.float32)
     assert model.seen_root_dtype == torch.float32

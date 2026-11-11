@@ -42,6 +42,11 @@ on:
         required: false
         default: false
         description: 'Upload tests/ci/fixtures/e2e_standards/ as a build artifact for the author to review and commit (record-e2e-standards.yml)'
+      ref:
+        type: string
+        required: false
+        default: ''
+        description: 'Exact commit to test (release CI). Empty: the PR merge ref, else github.sha.'
 
 env:
   # Unless you know the consequences, change this together with docker/Dockerfile's
@@ -80,7 +85,7 @@ jobs:
         working-directory: ${{ github.workspace }}
     env:
       PYTHONPATH: ${{ github.workspace }}
-      GITHUB_COMMIT_NAME: ${{ github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
+      GITHUB_COMMIT_NAME: ${{ inputs.ref || github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
       # Gated models (e.g. stabilityai/stable-diffusion-3.5-medium for the SD3
       # e2e) need an HF token with repo access; unset for public-model tests.
@@ -90,7 +95,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           # Review-triggered callers otherwise check out the default branch.
-          ref: ${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
+          # release CI: github.sha is the main tip the cut was dispatched on
+          ref: ${{ inputs.ref || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha) }}
 
       - name: Cleanup Ray processes
         shell: bash
@@ -142,6 +148,14 @@ jobs:
             PR_SGLANG_REPO=$(echo "$PR_BODY" | grep -m1 -oP '^ci-sglang-repo:\s+\K\S+' || true)
             [ -z "$SGLANG_REPO" ] && [ -n "$PR_SGLANG_REPO" ] && SGLANG_REPO="$PR_SGLANG_REPO"
           fi
+          # release-lock.json (committed by release-branch-cut.yml) names the
+          # sglang commit a release branch was frozen with; its repo and
+          # commit apply as a pair.
+          if [ -z "$SGLANG_PR" ] && [ -f release-lock.json ]; then
+            SGLANG_PR=$(python3 -c "import json; print(json.load(open('release-lock.json'))['sglang_commit'])")
+            SGLANG_REPO=$(python3 -c "import json; print(json.load(open('release-lock.json'))['sglang_repo'])")
+            echo "release-lock.json present: sglang=${SGLANG_REPO}@${SGLANG_PR}"
+          fi
           [ -z "$SGLANG_PR" ] && SGLANG_PR="$DEFAULT_SGLANG_REF"
           [ -z "$SGLANG_REPO" ] && SGLANG_REPO="$DEFAULT_SGLANG_REPO"
           resolve_fetch_ref() {
@@ -168,7 +182,7 @@ jobs:
           # explicit URL so
           # `ci-sglang-repo:` overrides work regardless of the checkout's
           # configured remote.
-          cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch "https://github.com/${SGLANG_REPO}.git" "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && SGLANG_BUILD_RUST_EXTS=none pip install -e python --no-deps --break-system-packages
+          cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch "https://github.com/${SGLANG_REPO}.git" "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && SGLANG_BUILD_RUST_EXTS=none pip install -e python --no-deps --break-system-packages && pip install -e radix_transfer_plugins --no-deps --break-system-packages
           cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
 
       - name: Install (miles-diffusion only)
@@ -217,7 +231,8 @@ jobs:
       - name: Checkout miles-diffusion
         uses: actions/checkout@v4
         with:
-          ref: ${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
+          # release CI: github.sha is the main tip the cut was dispatched on
+          ref: ${{ inputs.ref || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha) }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -251,6 +266,14 @@ jobs:
             PR_SGLANG_REPO=$(echo "$PR_BODY" | grep -m1 -oP '^ci-sglang-repo:\s+\K\S+' || true)
             [ -z "$SGLANG_REPO" ] && [ -n "$PR_SGLANG_REPO" ] && SGLANG_REPO="$PR_SGLANG_REPO"
           fi
+          # release-lock.json (committed by release-branch-cut.yml) names the
+          # sglang commit a release branch was frozen with; its repo and
+          # commit apply as a pair.
+          if [ -z "$SGLANG_PR" ] && [ -f release-lock.json ]; then
+            SGLANG_PR=$(python3 -c "import json; print(json.load(open('release-lock.json'))['sglang_commit'])")
+            SGLANG_REPO=$(python3 -c "import json; print(json.load(open('release-lock.json'))['sglang_repo'])")
+            echo "release-lock.json present: sglang=${SGLANG_REPO}@${SGLANG_PR}"
+          fi
           [ -z "$SGLANG_PR" ] && SGLANG_PR="$DEFAULT_SGLANG_REF"
           [ -z "$SGLANG_REPO" ] && SGLANG_REPO="$DEFAULT_SGLANG_REPO"
           resolve_fetch_ref() {
@@ -279,6 +302,7 @@ jobs:
           UV_SYSTEM_PYTHON: "1"
         run: |
           SGLANG_BUILD_RUST_EXTS=none uv pip install -e sglang/python --no-deps
+          uv pip install -e sglang/radix_transfer_plugins --no-deps
           # sglang is installed --no-deps; its pinned pure-python runtime deps
           # live in requirements-ci-cpu.txt (same pattern as radixark/miles).
           # One resolve for both files so neither can move the other's pins.

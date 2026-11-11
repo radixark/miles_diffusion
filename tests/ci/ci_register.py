@@ -120,6 +120,17 @@ def _extract_list_constant(node: ast.AST, *, context: str = "value") -> list:
     return out
 
 
+def _is_main_guard(stmt: ast.stmt) -> bool:
+    return (
+        isinstance(stmt, ast.If)
+        and isinstance(stmt.test, ast.Compare)
+        and isinstance(stmt.test.left, ast.Name)
+        and stmt.test.left.id == "__name__"
+        and len(stmt.test.comparators) == 1
+        and _extract_constant(stmt.test.comparators[0]) == "__main__"
+    )
+
+
 class RegistryVisitor(ast.NodeVisitor):
     def __init__(self, filename: str):
         self.filename = filename
@@ -215,12 +226,20 @@ class RegistryVisitor(ast.NodeVisitor):
         return self._parse_call_args(func_call, func_call.func.id)
 
     def visit_Module(self, node):
+        registered_names = set()
         for stmt in node.body:
             if not isinstance(stmt, ast.Expr) or not isinstance(stmt.value, ast.Call):
                 continue
             cr = self._collect_ci_registry(stmt.value)
             if cr is not None:
                 self.registries.append(cr)
+                registered_names.add(stmt.value.func.id)
+        # run_suite executes CUDA files as `python3 <file>`; without this entry they pass running no test
+        if "register_cuda_ci" in registered_names and not any(_is_main_guard(stmt) for stmt in node.body):
+            raise ValueError(
+                f'{self.filename}: register_cuda_ci files need `if __name__ == "__main__": '
+                'sys.exit(pytest.main([__file__, "-v"]))`, or CI runs none of their tests'
+            )
 
 
 def ut_parse_one_file(filename: str) -> list[CIRegistry]:

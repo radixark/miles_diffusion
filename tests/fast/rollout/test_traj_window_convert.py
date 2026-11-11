@@ -57,6 +57,15 @@ def _build(traj, sde=SDE):
     return _build_per_timestep_features(_sample(sde), traj=traj, rollout_log_probs=log_probs)
 
 
+def _stacked(value):
+    return torch.stack(value) if isinstance(value, list) else value
+
+
+def _owns_its_storage(row: torch.Tensor) -> bool:
+    """A view would ship the whole trajectory with every pair."""
+    return row.untyped_storage().nbytes() == row.nbytes
+
+
 def test_windowed_matches_full_bitwise():
     full = _full_traj()
     feats_full, idx_full = _build(full)
@@ -64,15 +73,16 @@ def test_windowed_matches_full_bitwise():
     assert torch.equal(idx_full, idx_win)
     assert feats_full.keys() == feats_win.keys()
     for key in feats_full:
-        assert torch.equal(feats_full[key], feats_win[key]), key
+        assert torch.equal(_stacked(feats_full[key]), _stacked(feats_win[key])), key
+    assert all(_owns_its_storage(row) for row in feats_win["latent"] + feats_win["next_latent"])
 
 
 def test_full_trajectory_without_provenance_is_legacy():
     feats, idx = _build(_full_traj())
     assert idx.tolist() == SDE
     full = _full_traj()
-    assert torch.equal(feats["latent"], full.latents[SDE])
-    assert torch.equal(feats["next_latent"], full.latents[[s + 1 for s in SDE]])
+    assert torch.equal(torch.stack(feats["latent"]), full.latents[SDE])
+    assert torch.equal(torch.stack(feats["next_latent"]), full.latents[[s + 1 for s in SDE]])
     assert torch.equal(feats["log_prob_old"], torch.linspace(-1.0, -2.0, T)[SDE])
 
 
@@ -90,8 +100,8 @@ def test_non_contiguous_kept_set_pairs_by_provenance():
     full = _full_traj()
     win = _windowed(full, [2, 3, 4, 7, 8])
     feats, _ = _build(win, sde=[2, 3, 7])
-    assert torch.equal(feats["latent"], full.latents[[2, 3, 7]])
-    assert torch.equal(feats["next_latent"], full.latents[[3, 4, 8]])
+    assert torch.equal(torch.stack(feats["latent"]), full.latents[[2, 3, 7]])
+    assert torch.equal(torch.stack(feats["next_latent"]), full.latents[[3, 4, 8]])
 
 
 def test_nft_x0_comes_from_the_final_step():
@@ -106,3 +116,43 @@ def test_nft_x0_comes_from_the_final_step():
     sample.dit_trajectory = _windowed(full, [2, 3, 4])
     with pytest.raises(ValueError, match="needs x0"):
         _clean_x0_from_sample(sample)
+
+
+def test_debug_rows_are_picked_by_step_and_own_their_storage():
+    from miles.ray.data_conversion_hub.flow_grpo import _slice_rollout_debug_for_train_pairs
+    from miles.utils.types import RolloutDebugTensors
+
+    outputs = torch.randn(T, 4, 6)
+    pairs = _slice_rollout_debug_for_train_pairs(
+        RolloutDebugTensors(rollout_model_outputs=outputs), sde_idx=torch.tensor(SDE)
+    )
+    for pair, step in zip(pairs, SDE, strict=True):
+        row = pair["rollout_step_model_output"]
+        assert torch.equal(row, outputs[step]) and _owns_its_storage(row)
+
+
+def _stored_traj(full: DiTTrajectory, kept: list[int]):
+    from radix_transfer_plugins import StoreRef
+
+    from miles.utils.output_store import StoredTensor
+
+    ref = StoreRef(backend="mooncake", key="k", fields=())
+    windowed = _windowed(full, kept)
+    windowed.latents = [StoredTensor(ref, f"dit_trajectory.latents.1.{step}") for step in kept]
+    return windowed
+
+
+def test_stored_latents_become_per_step_stored_tensors_of_the_pairs():
+    full = _full_traj()
+    features, _ = _build(_stored_traj(full, [2, 3, 4]))
+    assert [s.field for s in features["latent"]] == ["dit_trajectory.latents.1.2", "dit_trajectory.latents.1.3"]
+    assert [s.field for s in features["next_latent"]] == ["dit_trajectory.latents.1.3", "dit_trajectory.latents.1.4"]
+    assert torch.equal(features["timestep"], full.timesteps[SDE])
+
+
+def test_stored_x0_is_the_final_step_stored_tensor():
+    from miles.ray.data_conversion_hub.nft import _clean_x0_from_sample
+
+    sample = _sample()
+    sample.dit_trajectory = _stored_traj(_full_traj(), [T])
+    assert _clean_x0_from_sample(sample).field == f"dit_trajectory.latents.1.{T}"

@@ -33,6 +33,7 @@ def add_sglang_diffusion_arguments(parser):
         "gpu_id_step",
         "base_gpu_id",
         "nccl_port",
+        "scheduler_port",
         "skip_server_warmup",
         "enable_return_routed_experts",
         # pinned to "manual" in _compute_server_args

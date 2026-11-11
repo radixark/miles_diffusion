@@ -1,6 +1,6 @@
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cpu_ci
 
-register_cuda_ci(est_time=15, suite="stage-b-3-gpu-h200", labels=[])
+register_cpu_ci(est_time=15, suite="stage-a-cpu", labels=[])
 
 from argparse import Namespace
 
@@ -20,6 +20,7 @@ def _server_args(**overrides):
         colocate=True,
         train_only=False,
         lora_target_modules=["to_q", "to_k"],
+        use_output_store=False,
     )
     base.update(overrides)
     return Namespace(**base)

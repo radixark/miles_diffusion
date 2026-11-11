@@ -48,7 +48,9 @@ RUN cd /sgl-workspace/sglang && \
         git fetch --depth=1 "${SGLANG_DIFFUSION_REPO}" "${SGLANG_DIFFUSION_COMMIT}"; \
     fi && \
     git checkout --detach FETCH_HEAD && \
-    SGLANG_BUILD_RUST_EXTS=none pip install -e python --no-deps
+    SGLANG_BUILD_RUST_EXTS=none pip install -e python --no-deps && \
+    pip install -e radix_transfer_plugins --no-deps && \
+    python3 -c "import radix_transfer_plugins.stashes.token_output"
 # sgl main's FA3 wrappers need sglang-kernel 0.4.5 (only_qv kwarg); the base image ships 0.4.2.
 RUN pip install --no-deps "sglang-kernel==0.4.5+cu129" --extra-index-url https://docs.sglang.io/whl/cu129
 # Bake the kernels lockfile like upstream so the FA3 hub loader never resolves a stale snapshot.
@@ -58,6 +60,9 @@ RUN cd /sgl-workspace/sglang && \
     mv python/kernels.lock /root/.cache/sglang/
 # torch_memory_saver backs release/resume_memory_occupation; pin the validated version.
 RUN pip install torch_memory_saver==0.0.9
+# The output store's read-only clients mount no segment (size 0), which Mooncake accepts from 0.3.12;
+# the base image ships an older one that rejects it.
+RUN pip install mooncake-transfer-engine==0.3.13.post1
 
 COPY requirements.txt /tmp/requirements.txt
 # Pre-seed a pip-managed PyJWT so requirements upgrades don't trip on the

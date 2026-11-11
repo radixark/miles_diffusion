@@ -10,6 +10,7 @@ import msgpack
 import ray
 import torch
 
+from miles.utils.output_store import StoredTensor
 from miles.utils.processing_utils import fhwc_to_cfhw
 from miles.utils.types import CondKwargs, DenoisingEnv, DiTTrajectory, RolloutDebugTensors, Sample, decode_tensor
 
@@ -27,6 +28,22 @@ def _default_deserialize_func(value: Any) -> torch.Tensor | None:
     if isinstance(value, dict) and value.get("__tensor__"):
         return decode_tensor(value["data"]).detach().cpu()
     raise TypeError(f"Cannot deserialize {type(value)}")
+
+
+def _is_serialized_tensor(value: Any) -> bool:
+    return isinstance(value, dict) and ("__tensor__" in value or "__store__" in value)
+
+
+def _store_deserialize_func(ref, deserialize_func: Callable[[Any], torch.Tensor | None]):
+    def deserialize(value: Any) -> torch.Tensor | StoredTensor | list[StoredTensor] | None:
+        # A tensor with a step axis is stored one field per step
+        if isinstance(value, list):
+            return [deserialize(item) for item in value]
+        if isinstance(value, dict) and "__store__" in value:
+            return StoredTensor(ref, value["__store__"])
+        return deserialize_func(value)
+
+    return deserialize
 
 
 def _normalize_generated_output(tensor: torch.Tensor | None) -> torch.Tensor | None:
@@ -122,7 +139,7 @@ def _parse_cond_kwargs(
 def _deserialize_optional_tensor(value, *, deserialize_func):
     if value is None:
         return None
-    if isinstance(value, dict) and value.get("__tensor__"):
+    if _is_serialized_tensor(value):
         return deserialize_func(value)
     if isinstance(value, torch.Tensor):
         return value
@@ -136,7 +153,7 @@ def _parse_h3_packed_layout(value, *, deserialize_func):
         return value
     out = {}
     for key, item in value.items():
-        if isinstance(item, dict) and item.get("__tensor__"):
+        if _is_serialized_tensor(item):
             out[key] = deserialize_func(item)
         else:
             out[key] = item
@@ -200,6 +217,11 @@ def apply_rollout_image_response(
         sample.prompt = str(body["prompt"])
     if "seed" in body:
         sample.seed = int(body["seed"])
+    if (ref := body.get("output_store_ref")) is not None:
+        from radix_transfer_plugins import StoreRef
+
+        sample.rollout_store_ref = StoreRef.from_builtins(ref)
+        deserialize_func = _store_deserialize_func(sample.rollout_store_ref, deserialize_func)
 
     sample.generated_output = _normalize_generated_output(deserialize_func(body.get("generated_output")))
     # Eval-mode rollout (rollout=False) sends no log_probs; train-mode always does.

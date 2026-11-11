@@ -12,7 +12,7 @@ from miles.utils.types import Sample
 
 def _clean_x0_from_sample(sample: Sample) -> torch.Tensor:
     traj = sample.dit_trajectory
-    if traj is None or traj.latents is None or traj.latents.shape[0] < 1:
+    if traj is None or traj.latents is None or len(traj.latents) < 1:
         raise ValueError(
             f"sample {sample.index} missing dit_trajectory.latents; "
             "NFT needs the final clean latent x0 from rollout"
@@ -26,7 +26,8 @@ def _clean_x0_from_sample(sample: Sample) -> torch.Tensor:
                 f"sample {sample.index} trajectory ends at step {final_step}, not the final "
                 f"step {num_steps}; NFT needs x0"
             )
-    return traj.latents[-1].detach().cpu().float()
+    x0 = traj.latents[-1]
+    return x0.detach().cpu().float() if isinstance(x0, torch.Tensor) else x0
 
 
 # ---- Timestep strategies: (args, num_steps, generator) -> the sampling-step indices to train on, in training

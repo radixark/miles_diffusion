@@ -31,7 +31,7 @@ def expand_samples_to_train_pairs(
         pair_debug_steps = None
         if sample.rollout_debug_tensors is not None:
             pair_debug_steps = _slice_rollout_debug_for_train_pairs(sample.rollout_debug_tensors, sde_idx=idx)
-        sample_t_steps = int(per_timestep_features["latent"].shape[0])
+        sample_t_steps = len(per_timestep_features["latent"])
         if pair_debug_steps is not None and len(pair_debug_steps) != sample_t_steps:
             raise ValueError(
                 f"rollout_debug_tensors step count {len(pair_debug_steps)} != train pairs {sample_t_steps} "
@@ -41,7 +41,7 @@ def expand_samples_to_train_pairs(
         for t in range(sample_t_steps):
             pair: dict[str, Any] = {
                 **per_sample_features,
-                **{key: tensor[t].detach().cpu() for key, tensor in per_timestep_features.items()},
+                **{key: _to_cpu(tensor[t]) for key, tensor in per_timestep_features.items()},
             }
             if pair_debug_steps is not None:
                 pair["rollout_debug_tensors"] = pair_debug_steps[t]
@@ -51,6 +51,15 @@ def expand_samples_to_train_pairs(
         raise ValueError("No train pairs were produced from rollout samples")
 
     return {"train_data": train_data}
+
+
+def _to_cpu(value):
+    return value.detach().cpu() if isinstance(value, torch.Tensor) else value
+
+
+def _own_row(row):
+    # A view would pickle the whole trajectory into every pair of the shard
+    return row.detach().cpu().clone() if isinstance(row, torch.Tensor) else row
 
 
 def _sample_required_inputs(sample: Sample):
@@ -90,7 +99,7 @@ def _build_per_timestep_features(
     *,
     traj,
     rollout_log_probs: torch.Tensor,
-) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
+) -> tuple[dict[str, Any], torch.Tensor]:
     """Fields with one row per selected denoising step.
 
     ``traj.latents`` is either the full 0..T trajectory or the filtered window
@@ -107,7 +116,7 @@ def _build_per_timestep_features(
     sigmas = traj.sigmas
 
     if traj.latent_step_indices is None:
-        position = {step: step for step in range(int(all_latents.shape[0]))}
+        position = {step: step for step in range(len(all_latents))}
     else:
         position = {int(step): pos for pos, step in enumerate(traj.latent_step_indices.tolist())}
     needed = sorted({int(s) for s in sde_idx} | {int(s) + 1 for s in sde_idx})
@@ -120,11 +129,9 @@ def _build_per_timestep_features(
         )
 
     idx = torch.as_tensor(sde_idx, dtype=torch.long)
-    latent_pos = torch.as_tensor([position[int(s)] for s in sde_idx], dtype=torch.long)
-    next_pos = torch.as_tensor([position[int(s) + 1] for s in sde_idx], dtype=torch.long)
     return {
-        "latent": all_latents[latent_pos],
-        "next_latent": all_latents[next_pos],
+        "latent": [_own_row(all_latents[position[int(s)]]) for s in sde_idx],
+        "next_latent": [_own_row(all_latents[position[int(s) + 1]]) for s in sde_idx],
         "timestep": timesteps[idx],
         "sigma": sigmas[idx],
         "next_sigma": sigmas[idx + 1],
@@ -146,22 +153,22 @@ def _slice_rollout_debug_for_train_pairs(
         "rollout_noise_std_devs": "rollout_step_noise_std_dev",
         "rollout_model_outputs": "rollout_step_model_output",
     }
-    indexed: dict[str, torch.Tensor] = {}
+    indexed: dict[str, Any] = {}
     for rollout_key, train_pair_key in rollout_to_train_pair_fields.items():
         tensor = getattr(dbg, rollout_key, None)
         if tensor is None:
             continue
-        tensor = tensor.detach().cpu()
+        tensor = _to_cpu(tensor)
         if sde_idx is not None:
-            tensor = tensor[sde_idx]
+            tensor = [_own_row(tensor[int(s)]) for s in sde_idx]
         indexed[train_pair_key] = tensor
 
     if not indexed:
         return None
 
-    num_steps = int(next(iter(indexed.values())).shape[0])
+    num_steps = len(next(iter(indexed.values())))
     for key, tensor in indexed.items():
-        if int(tensor.shape[0]) != num_steps:
-            raise ValueError(f"Rollout debug field {key!r} has {tensor.shape[0]} steps, expected {num_steps}")
+        if len(tensor) != num_steps:
+            raise ValueError(f"Rollout debug field {key!r} has {len(tensor)} steps, expected {num_steps}")
 
     return [{key: tensor[step] for key, tensor in indexed.items()} for step in range(num_steps)]

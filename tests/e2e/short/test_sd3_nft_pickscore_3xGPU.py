@@ -21,7 +21,7 @@ register_e2e_ci(
     est_time=900,
     suite="stage-c-3-gpu-h200",
     script="scripts/run_diffusion_nft_sd3_pickscore.py",
-    args=["--num-rollout", "4"],
+    args=["--num-rollout", "4", "--extra-args", "--use-output-store --output-store-mooncake-master 127.0.0.1:50066"],
     metrics=[
         "rollout/reward/raw_num_samples",
         "rollout/reward/raw_mean",

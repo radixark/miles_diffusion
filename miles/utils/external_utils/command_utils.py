@@ -7,6 +7,8 @@ import json
 import os
 import random
 import shlex
+import socket
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -105,6 +107,9 @@ def execute_train(
     if (f := before_ray_job_submit) is not None:
         f()
 
+    if (port := _output_store_master_port(train_args)) is not None:
+        start_mooncake_master(port)
+
     runtime_env_vars = {
         # exported for the submitting client too, but only the runtime env reaches the ray workers
         "PYTHONUNBUFFERED": "1",
@@ -145,6 +150,38 @@ def execute_train(
     logged_env_vars = {k: "***" if k in redact_env_vars else v for k, v in runtime_env_vars.items()}
     logged_env_json = json.dumps({"env_vars": logged_env_vars})
     exec_command(cmd, log_cmd=cmd.replace(shlex.quote(runtime_env_json), shlex.quote(logged_env_json), 1))
+
+
+MOONCAKE_MASTER_LOG = Path("/tmp/mooncake_master.log")
+
+
+def _output_store_master_port(train_args: str) -> int | None:
+    argv = shlex.split(train_args)
+    if "--use-output-store" not in argv:
+        return None
+    try:
+        address = argv[argv.index("--output-store-mooncake-master") + 1]
+    except (ValueError, IndexError):
+        raise ValueError("--use-output-store needs --output-store-mooncake-master host:port") from None
+    return int(address.rsplit(":", 1)[1])
+
+
+def start_mooncake_master(port: int, timeout_s: float = 30) -> None:
+    """Start a Mooncake master on this node in place of any on the same port, and wait until it listens."""
+    # The bracket keeps pkill off this shell; the master's command line may start with a launcher's path.
+    pattern = shlex.quote(f"mooncake_maste[r] --rpc_port {port} ")
+    exec_command(f"pkill -f {pattern}; for _ in $(seq 50); do pgrep -f {pattern} >/dev/null || break; sleep 0.2; done")
+    exec_command(f"(setsid mooncake_master --rpc_port {port} --metrics_port 0 > {MOONCAKE_MASTER_LOG} 2>&1 &)")
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        with socket.socket() as sock:
+            sock.settimeout(1)
+            if sock.connect_ex(("127.0.0.1", port)) == 0:
+                return
+        time.sleep(0.5)
+    raise RuntimeError(
+        f"mooncake_master is not listening on port {port} after {timeout_s}s; see {MOONCAKE_MASTER_LOG}"
+    )
 
 
 def _pythonpath_with_sources(*additional_pythonpaths: str | None) -> str:
