@@ -1,5 +1,13 @@
-"""SFT argument validation: encoder requirements apply only to the built-in producer; flow shifts and supervised
-streams are named per stream."""
+"""SFT argument validation.
+
+    --loss-type sft_loss ──► requires the convert and rollout-log paths; its prepare / loss hooks come from the
+                             loss hub, so a --custom-prepare-train-batch-path is rejected
+    producer   built-in ──► --sft-encoder-checkpoint required, encoder validates its args
+               external ──► no encoder requirement
+    --fsdp-flow-shift        "5" is the visual shift, "visual=12,audio=3" keys each stream; visual required, > 0
+    --fsdp-supervised-streams comma-separated, visual required, only visual / audio known
+    --diffusion-task         must be one of the config's tasks
+"""
 
 import shlex
 import sys
@@ -46,8 +54,7 @@ def args(monkeypatch: pytest.MonkeyPatch) -> Namespace:
             "--rollout-batch-size 1 --global-batch-size 1 --num-rollout 1 "
             "--actor-num-gpus-per-node 1 --micro-batch-size 1 "
             "--custom-convert-samples-to-train-data-path external.convert "
-            "--custom-rollout-log-function-path external.log "
-            "--custom-prepare-train-batch-path external.prepare --custom-loss-function-path external.loss"
+            "--custom-rollout-log-function-path external.log"
         ),
     )
     result = load_fsdp_args(extra_args_provider=get_miles_extra_args_provider())
@@ -101,7 +108,14 @@ def test_builtin_producer_still_requires_checkpoint(args: Namespace) -> None:
         miles_validate_args(args)
 
 
-def test_external_producer_still_requires_sft_hooks(args: Namespace) -> None:
-    args.custom_prepare_train_batch_path = None
-    with pytest.raises(ValueError, match="custom-prepare-train-batch-path"):
+def test_sft_loss_rejects_a_prepare_path(args: Namespace) -> None:
+    # The SFT hooks come from the loss hub; a path would be a second, possibly different, source.
+    args.custom_prepare_train_batch_path = "external.prepare"
+    with pytest.raises(ValueError, match="read only under --loss-type custom_loss"):
+        miles_validate_args(args)
+
+
+def test_external_producer_still_requires_the_convert_hook(args: Namespace) -> None:
+    args.custom_convert_samples_to_train_data_path = None
+    with pytest.raises(ValueError, match="custom-convert-samples-to-train-data-path"):
         miles_validate_args(args)

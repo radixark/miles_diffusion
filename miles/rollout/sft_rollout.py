@@ -1,6 +1,6 @@
 """SFT rollout plugin: lazy content-addressed encode cache behind the standard RolloutManager flow.
 
-Plugged via --loss-type sft_loss (see set_default_diffusion_args): generate_rollout replaces the
+Plugged via --loss-type sft_loss, whose recipes pass these three paths: generate_rollout replaces the
 sglang rollout, convert_samples_to_train_data replaces the reward/advantage conversion, and
 log_rollout_data replaces the reward logging. The encoder actor pool plays the architectural role
 sglang engines play in RL: the GPU data producer behind the rollout function, colocated on the

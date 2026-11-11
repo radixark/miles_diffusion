@@ -1,7 +1,7 @@
 """--loss-type dmd2 defaults and validation; validation rejects what DMD2 cannot run and never fills args.
 
-    defaults      ──► converter / generator prepare / generator loss / train-input paths,
-                      --critic-load = --teacher-load, --critic-lr = --lr, unless the user set them
+    defaults      ──► the expand path, --critic-load = --teacher-load, --critic-lr = --lr, unless the user
+                      set them; no hook path: the loss hub selects the generator's and the critic's hooks by role
     critic group  ──► scores with --teacher-load (no adapters), learns on a visual --fsdp-flow-shift grid,
                       scores in a 0 <= MIN < MAX <= 1 --dmd2-score-sigma-range,
                       takes --dmd2-critic-steps-per-rollout steps over each DP shard
@@ -59,9 +59,6 @@ def test_dmd2_critic_defaults_to_the_teacher_and_the_actor_lr(user, expected):
         rollout_num_gpus_per_engine=1,
         loss_type="dmd2",
         custom_expand_samples_to_train_pairs_path=None,
-        custom_prepare_train_batch_path=None,
-        custom_loss_function_path=None,
-        custom_train_input_postprocess_path=None,
         ref_mode=None,
         diffusion_kl_beta=0.0,
         teacher_load="teacher",
@@ -79,8 +76,7 @@ def test_critic_flags_without_dmd2_are_rejected(flag):
     validate_dmd2_args(Namespace(loss_type="nft", critic_load=None, critic_lr=None))
 
 
-@pytest.mark.parametrize("custom_loss", [None, "my.generator_loss"])
-def test_dmd2_fills_only_unset_hook_paths(custom_loss):
+def test_dmd2_fills_the_expand_path_and_touches_no_hook_path():
     args = Namespace(
         sglang_tp_size=1,
         sglang_sp_degree=None,
@@ -88,9 +84,6 @@ def test_dmd2_fills_only_unset_hook_paths(custom_loss):
         rollout_num_gpus_per_engine=1,
         loss_type="dmd2",
         custom_expand_samples_to_train_pairs_path=None,
-        custom_prepare_train_batch_path=None,
-        custom_loss_function_path=custom_loss,
-        custom_train_input_postprocess_path=None,
         ref_mode=None,
         diffusion_kl_beta=0.0,
         teacher_load="teacher",
@@ -98,16 +91,16 @@ def test_dmd2_fills_only_unset_hook_paths(custom_loss):
         critic_load=None,
         critic_lr=None,
     )
+    original = vars(args).copy()
     set_default_diffusion_args(args)
-    assert args.custom_expand_samples_to_train_pairs_path.endswith(
-        "data_conversion_hub.dmd2.expand_samples_to_train_pairs"
-    )
-    assert args.custom_prepare_train_batch_path.endswith("loss_hub.dmd2.prepare_generator_batch")
-    assert args.custom_loss_function_path == (
-        custom_loss or "miles.backends.fsdp_utils.loss_hub.dmd2.dmd2_loss_formula"
-    )
-    assert args.custom_train_input_postprocess_path.endswith("loss_hub.dmd2.select_scored_pairs")
-    assert args.ref_mode == "none"
+    # A Namespace without the hook path attributes: a default that wrote one would add a key here.
+    assert vars(args) == {
+        **original,
+        "custom_expand_samples_to_train_pairs_path": "miles.ray.data_conversion_hub.dmd2.expand_samples_to_train_pairs",
+        "critic_load": "teacher",
+        "critic_lr": 2e-6,
+        "ref_mode": "none",
+    }
 
 
 def test_valid_dmd2_args_pass_unchanged():

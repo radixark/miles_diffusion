@@ -171,8 +171,7 @@ def make_actor_forward_harness(
         reference_models=reference_models,
         train_pipeline_config=TinyPipelineConfig(),
         _forward_dtype=torch.float32,
-        custom_prepare_train_batch_func=lambda *args, **kwargs: prepared,
-        custom_loss_formula_func=loss_formula,
+        loss_hooks=SimpleNamespace(prepare=lambda *args, **kwargs: prepared, formula=loss_formula),
     )
     return harness, observed
 

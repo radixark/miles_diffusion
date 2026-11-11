@@ -33,7 +33,7 @@ Implementation: `miles/backends/fsdp_utils/sde_step_backend.py`. Override with
 |---|---|---|---|
 | Flow-SDE | `sde` (default) | `FlowSdeStepBackend` | Transition noise std η·√(σ/(1−σ))·√(−dt) with the rollout's recorded σ (the grid's second σ replaces the denominator's σ at σ = 1); [Flow-GRPO](https://arxiv.org/abs/2505.05470) |
 | CPS | `cps` | `CpsSdeStepBackend` | Transition noise std σ_next·sin(η·π/2); log-prob is −(x−μ)², without the Gaussian constants or the 1/(2σ²) scale (forces `--diffusion-log-prob-no-const`); [FlowCPS](https://arxiv.org/abs/2509.05952) |
-| ODE | `ode` | `FlowSdeStepBackend` (placeholder; NFT never calls it) | Deterministic; NFT (or a custom loss formula) only — with the Flow-GRPO loss it is rejected at parse time |
+| ODE | `ode` | `FlowSdeStepBackend` (placeholder; NFT and DMD2 never call it) | Deterministic; NFT, DMD2 or a custom loss formula only — with the Flow-GRPO loss it is rejected at parse time |
 
 `--diffusion-noise-level` (η) sets the SDE noise scale. DanceGRPO-style constant-η
 schedules use the same `sde` backend with a tuned η

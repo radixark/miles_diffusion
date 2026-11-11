@@ -40,7 +40,7 @@ from .diffusion_update_weight_utils import (
 )
 from .ema import EMAOptimizer, reshard_model
 from .input_dtype_policy import apply_input_dtype_policy
-from .loss_hub import DiffusionLossContext, flow_grpo_loss_formula, prepare_flow_grpo_batch
+from .loss_hub import DiffusionLossContext, get_loss_hooks
 from .lr_scheduler import get_lr_scheduler
 from .metrics import new_metric_buffer
 from .mixed_precision import parse_dtype_from_str
@@ -168,25 +168,7 @@ class FSDPTrainRayActor(TrainRayActor):
             self.model = torch.nn.ModuleDict(self.models)
 
         self.sde_backend = load_function(args.sde_step_backend_path)()
-
-        self.custom_prepare_train_batch_func = (
-            load_function(args.custom_prepare_train_batch_path)
-            if args.custom_prepare_train_batch_path is not None
-            else None
-        )
-        self.custom_loss_formula_func = (
-            load_function(args.custom_loss_function_path) if args.custom_loss_function_path is not None else None
-        )
-        self.custom_train_input_postprocess_func = (
-            load_function(args.custom_train_input_postprocess_path)
-            if args.custom_train_input_postprocess_path is not None
-            else None
-        )
-        self.custom_train_output_func = (
-            load_function(args.custom_train_output_function_path)
-            if args.custom_train_output_function_path is not None
-            else None
-        )
+        self.loss_hooks = get_loss_hooks(args, role)
 
         if args.optimizer == "adam":
             self.optimizer = torch.optim.AdamW(
@@ -386,8 +368,8 @@ class FSDPTrainRayActor(TrainRayActor):
             dp_rank=self.parallel_state.dp_rank,
             external_data=external_data,
         )
-        if self.custom_train_input_postprocess_func is not None:
-            train_pairs = self.custom_train_input_postprocess_func(loss_ctx, train_pairs)
+        if self.loss_hooks.train_input is not None:
+            train_pairs = self.loss_hooks.train_input(loss_ctx, train_pairs)
 
         num_pairs = len(train_pairs)
 
@@ -504,9 +486,9 @@ class FSDPTrainRayActor(TrainRayActor):
                 reduced = {f"train/{self._metric_role_tag()}{key}": value for key, value in metrics.reduce().items()}
                 self._log_metrics(rollout_id, reduced, step=self.global_step)
 
-        if self.custom_train_output_func is not None:
+        if self.loss_hooks.train_output is not None:
             with torch.no_grad():
-                return self.custom_train_output_func(loss_ctx, train_pairs)
+                return self.loss_hooks.train_output(loss_ctx, train_pairs)
 
     def _maybe_legacy_window_pad_len(self, train_pairs: list, microbatch_ranges: list) -> int | None:
         """LEGACY 2D parity: the whole-window max cond seq_len (like the legacy tile path), or
@@ -533,10 +515,7 @@ class FSDPTrainRayActor(TrainRayActor):
         old_log_prob_from_new: bool = False,
     ) -> torch.Tensor | None:
         """Run one prepared diffusion micro-batch."""
-        if self.custom_prepare_train_batch_func is not None:
-            prepared = self.custom_prepare_train_batch_func(ctx, batch, pad_to_len=pad_to_len)
-        else:
-            prepared = prepare_flow_grpo_batch(ctx, batch, pad_to_len=pad_to_len)
+        prepared = self.loss_hooks.prepare(ctx, batch, pad_to_len=pad_to_len)
         train_pipeline_config = self.train_pipeline_config
         forward_dtype = self._forward_dtype
 
@@ -587,19 +566,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 # PEFT re-enables adapter gradients on exit; reshard first so that lands on the shards, not gathered copies.
                 reshard_model(prepared.model)
 
-        if self.custom_loss_formula_func is not None:
-            return self.custom_loss_formula_func(
-                ctx,
-                batch,
-                prepared,
-                new_pred=new_pred,
-                old_pred=old_pred,
-                ref_pred=ref_pred,
-                metrics=metrics,
-                write_old_log_prob=write_old_log_prob,
-                old_log_prob_from_new=old_log_prob_from_new,
-            )
-        return flow_grpo_loss_formula(
+        return self.loss_hooks.formula(
             ctx,
             batch,
             prepared,

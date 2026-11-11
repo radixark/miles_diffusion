@@ -947,10 +947,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 choices=["policy_loss", "sft_loss", "custom_loss", "nft", "dmd2"],
                 default="policy_loss",
                 help=(
-                    "Train objective shortcut. Diffusion default policy_loss = Flow-GRPO prepare+formula. "
-                    "nft auto-fills prepare / loss-formula paths and selects the NFT train-data converter. "
-                    "dmd2 auto-fills the DMD2 converter / prepare / loss-formula / train-input paths and trains a "
-                    "critic group before the actor. "
+                    "Train objective. Each loss type selects its prepare / loss-formula / train-input / train-output "
+                    "hooks from the loss hub by (loss_type, trainer role): policy_loss is Flow-GRPO; nft and dmd2 "
+                    "also pick their default --custom-expand-samples-to-train-pairs-path, and dmd2 trains a critic "
+                    "group before the actor. Only custom_loss reads the --custom-*-path hook flags. "
                     "DiT forward always stays in the FSDP actor."
                 ),
             )
@@ -961,7 +961,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "Dotted path to prepare hook "
                     "`fn(ctx, batch, *, pad_to_len=None) -> PreparedBatch`. "
-                    "Builds DiT inputs; default is Flow-GRPO SDE-pair stacking."
+                    "Builds DiT inputs; --loss-type custom_loss only, default is Flow-GRPO SDE-pair stacking."
                 ),
             )
             parser.add_argument(
@@ -971,6 +971,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "Dotted path to a loss *formula* only: "
                     "`fn(ctx, batch, prepared, *, new_pred, ref_pred, metrics, ...) -> Tensor`. "
+                    "--loss-type custom_loss only, default is Flow-GRPO's. "
                     "DiT forward is owned by the actor; this hook only computes the objective."
                 ),
             )
@@ -981,7 +982,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "Dotted path to `fn(ctx, train_pairs) -> list` that preprocesses this rank's train pairs (the "
                     "converted rollout output) before they are split into micro-batches and optimizer steps. It "
-                    "returns the pairs to train on; `ctx.external_data` holds earlier trainer groups' outputs."
+                    "returns the pairs to train on; `ctx.external_data` holds earlier trainer groups' outputs. "
+                    "--loss-type custom_loss only."
                 ),
             )
             parser.add_argument(
@@ -991,7 +993,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "Dotted path to `fn(ctx, train_pairs) -> Any`, run without grad after the train steps of "
                     "a rollout. Its return value reaches the paired rank of every trainer group that trains "
-                    "later on the same rollout as `ctx.external_data[<role>]`."
+                    "later on the same rollout as `ctx.external_data[<role>]`. --loss-type custom_loss only."
                 ),
             )
             parser.add_argument(
@@ -1818,16 +1820,11 @@ def set_default_diffusion_args(args) -> None:
     if args.sglang_tp_size is None and args.sglang_sp_degree is None and not args.sglang_enable_cfg_parallel:
         args.sglang_tp_size = args.rollout_num_gpus_per_engine
 
-    is_nft = args.loss_type == "nft"
-    if is_nft:
+    if args.loss_type == "nft":
         if args.custom_expand_samples_to_train_pairs_path is None:
             args.custom_expand_samples_to_train_pairs_path = (
                 "miles.ray.data_conversion_hub.nft.expand_samples_to_train_pairs"
             )
-        if args.custom_prepare_train_batch_path is None:
-            args.custom_prepare_train_batch_path = "miles.backends.fsdp_utils.loss_hub.nft.prepare_nft_batch"
-        if args.custom_loss_function_path is None:
-            args.custom_loss_function_path = "miles.backends.fsdp_utils.loss_hub.nft.nft_loss_formula"
 
     if args.loss_type == "dmd2":
         if args.custom_expand_samples_to_train_pairs_path is None:
@@ -1838,12 +1835,6 @@ def set_default_diffusion_args(args) -> None:
             args.critic_load = args.teacher_load
         if args.critic_lr is None:
             args.critic_lr = args.lr
-        if args.custom_prepare_train_batch_path is None:
-            args.custom_prepare_train_batch_path = "miles.backends.fsdp_utils.loss_hub.dmd2.prepare_generator_batch"
-        if args.custom_loss_function_path is None:
-            args.custom_loss_function_path = "miles.backends.fsdp_utils.loss_hub.dmd2.dmd2_loss_formula"
-        if args.custom_train_input_postprocess_path is None:
-            args.custom_train_input_postprocess_path = "miles.backends.fsdp_utils.loss_hub.dmd2.select_scored_pairs"
 
     if args.ref_mode is None:
         args.ref_mode = "lora_base" if args.diffusion_kl_beta > 0 else "none"
@@ -1894,15 +1885,6 @@ def validate_reference_model_args(args) -> None:
         raise ValueError("--ref-cpu-offload requires --ref-load")
     if args.teacher_cpu_offload and args.teacher_load is None:
         raise ValueError("--teacher-cpu-offload requires --teacher-load")
-    if (
-        args.teacher_load is not None
-        and args.custom_prepare_train_batch_path is None
-        and args.custom_loss_function_path is None
-        and args.custom_train_output_function_path is None
-    ):
-        raise ValueError(
-            "--teacher-load has no consumer; only custom prepare/loss/train-output hooks read ctx.teacher_models"
-        )
     if args.ref_mode == "lora_base" and not args.use_lora:
         raise ValueError("--ref-mode lora_base requires --use-lora")
 
@@ -2002,13 +1984,31 @@ def validate_train_sde_backend(args) -> None:
             "--diffusion-log-prob-no-const with --diffusion-sde-type sde needs a --sde-step-backend-path "
             "whose log_prob also drops the constants"
         )
-    # ODE rollouts carry zero log-probs and no noise; only a custom loss formula (NFT's is the default
-    # under --loss-type nft) can train on them, the Flow-GRPO one would score them as SDE steps.
-    if args.diffusion_sde_type == "ode" and args.custom_loss_function_path is None:
-        raise ValueError(
-            "--diffusion-sde-type ode is for DiffusionNFT (--loss-type nft) or a custom loss formula; "
-            "the Flow-GRPO loss needs an sde or cps rollout"
-        )
+    # ODE rollouts carry zero log-probs and no noise, which the Flow-GRPO formula would score as SDE steps.
+    if args.diffusion_sde_type == "ode":
+        from miles.backends.fsdp_utils.loss_hub import LOSS_HOOKS, get_loss_hooks
+
+        if get_loss_hooks(args, "actor").formula is LOSS_HOOKS[("policy_loss", "actor")].formula:
+            raise ValueError(
+                "--diffusion-sde-type ode is for DiffusionNFT (--loss-type nft), DMD2 or a custom loss formula; "
+                "the Flow-GRPO loss needs an sde or cps rollout"
+            )
+
+
+def validate_loss_hook_paths(args) -> None:
+    if args.loss_type == "custom_loss":
+        return
+    for name in (
+        "custom_prepare_train_batch_path",
+        "custom_loss_function_path",
+        "custom_train_input_postprocess_path",
+        "custom_train_output_function_path",
+    ):
+        if getattr(args, name) is not None:
+            raise ValueError(
+                f"--{name.replace('_', '-')} is read only under --loss-type custom_loss; "
+                f"--loss-type {args.loss_type} selects its own hooks"
+            )
 
 
 def validate_dmd2_args(args) -> None:
@@ -2094,6 +2094,7 @@ def miles_validate_args(args):
         )
     if len(set(args.update_weight_target_modules)) != len(args.update_weight_target_modules):
         raise ValueError(f"--update-weight-target-module has duplicates: {args.update_weight_target_module!r}")
+    validate_loss_hook_paths(args)
     validate_reference_model_args(args)
     validate_actor_lora_adapter(args)
     validate_score_centering_args(args)
@@ -2181,12 +2182,7 @@ def miles_validate_args(args):
                 "--loss-type sft_loss does not run rollout engines; pass "
                 "--rollout-function-path miles.rollout.sft_rollout.generate_rollout (or your own)"
             )
-        for name in (
-            "custom_convert_samples_to_train_data_path",
-            "custom_rollout_log_function_path",
-            "custom_prepare_train_batch_path",
-            "custom_loss_function_path",
-        ):
+        for name in ("custom_convert_samples_to_train_data_path", "custom_rollout_log_function_path"):
             if getattr(args, name) is None:
                 raise ValueError(
                     f"--loss-type sft_loss requires --{name.replace('_', '-')}; "
