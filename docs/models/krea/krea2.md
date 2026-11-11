@@ -79,7 +79,7 @@ tensors reach the trainer through the output store (`--use-output-store`; the la
 The engines sample each batch with the previous step's actor weights, so the trainer re-scores transitions drawn around
 a mean it no longer owns, and the fp8 engine moves that mean further. The experimental `--diffusion-score-centering` (with
 `--diffusion-debug-mode`) removes the drift this puts into the PPO gradient, see
-[SDE Step Backend §5](../../advanced/sde-backend.md#5-score-centering). `--no-score-centering` runs the plain
+[SDE Step Backend §5 (experimental)](../../advanced/sde-backend.md#5-score-centering-experimental). `--no-score-centering` runs the plain
 one-step-async baseline with everything else unchanged.
 
 **Status:** [📈 V — Verified](../../user-guide/recipe-verification.md#v), see §5.3 and §5.4.
@@ -109,7 +109,7 @@ The OCR reward rises from ~0.29 to ~0.88, at ~79 s per rollout; `eval/ocr_test` 
 NFT varies a lot from seed to seed. Over seeds 1234, 4321 and 2026, the mean OCR reward of the last 10 rollouts is
 0.942, 0.905 and 0.907 for §5.1 and 0.885, 0.827 and 0.940 for §5.2.
 
-### 5.3 Asynchronous Flow-GRPO, with and without score centering
+### 5.3 Asynchronous Flow-GRPO, with and without score centering (experimental)
 
 The §4.4 recipe as is and with `--no-score-centering`, two seeds each. Seed 1 uses the defaults
 (`--seed 1234 --rollout-seed 42`) and was resumed once from its rollout-200 checkpoint; seed 2 adds
@@ -126,7 +126,7 @@ stays below 1.7% and the reward keeps rising; the mean of the last 10 rollouts i
 
 ![Krea-2 async Flow-GRPO fp8 rollout clip fraction, score centering on and off](../../assets/images/krea2/async_grpo_fp8_clipfrac.png)
 
-### 5.4 Score centering over 600 rollouts
+### 5.4 Score centering (experimental) over 600 rollouts
 
 Seed 1 with score centering, continued to `--num-rollout 600`. The OCR reward rises from ~0.23 (mean of the first 10
 rollouts) to ~0.95 (mean of the last 10), and the clip fraction falls from 0.52% on average over rollouts 200–299 to

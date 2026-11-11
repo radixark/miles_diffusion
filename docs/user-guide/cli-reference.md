@@ -268,7 +268,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--diffusion-clip-range` | float | `1e-4` | |
 | `--diffusion-adv-clip-max` | float | `5.0` | Under `nft` this also sets the advantage-to-`r` slope. |
 | `--diffusion-recompute-old-log-prob` | flag | off | Recompute old log-probs with the trainer forward instead of trusting the rollout's. `policy_loss` only. |
-| `--diffusion-score-centering` | flag | off | Experimental. Remove the train/rollout drift term from the PPO gradient: the loss adds `A · (center − center.detach())`, where `center` is the closed-form `E_q[clip_A(r)]` under the rollout step's Gaussian ([SDE Step Backend](../advanced/sde-backend.md#5-score-centering)). `policy_loss` with `--diffusion-sde-type sde` and `--diffusion-debug-mode` only; excludes `--diffusion-recompute-old-log-prob`. |
+| `--diffusion-score-centering` | flag | off | Experimental. Remove the train/rollout drift term from the PPO gradient: the loss adds `A · (center − center.detach())`, where `center` is the closed-form `E_q[clip_A(r)]` under the rollout step's Gaussian ([SDE Step Backend](../advanced/sde-backend.md#5-score-centering-experimental)). `policy_loss` with `--diffusion-sde-type sde` and `--diffusion-debug-mode` only; excludes `--diffusion-recompute-old-log-prob`. |
 | `--diffusion-kl-beta` | float | `0.0` | KL to the `--ref-mode` model; under `nft` adds `kl_beta * mean((v_θ − v_ref)²)` per pair. |
 | `--ref-mode` | enum | – | KL reference: `none` / `lora_base` (actor with adapters disabled) / `ref` (the model from `--ref-load`). Auto: `lora_base` when KL > 0. |
 | `--ref-load` | str | – | HF pipeline checkpoint of an independent frozen reference model. Requires `--ref-mode ref`. |

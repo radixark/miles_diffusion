@@ -82,9 +82,9 @@ Checklist:
 3. Match input dtypes between FSDP forward and the rollout engine for fp32 runs.
 4. Watch `train/log_prob_mean_abs_diff` — near zero before the first optimizer step.
 
-## 5. Score centering
+## 5. Score centering (experimental)
 
-**Experimental.** The flag, its metrics and its requirements may still change.
+The flag, its metrics and its requirements may still change.
 
 Even when the kernels agree, the engine and the trainer rarely compute the exact same
 transition mean, and a one-step-stale rollout under `train_diffusion_async.py` never does.
