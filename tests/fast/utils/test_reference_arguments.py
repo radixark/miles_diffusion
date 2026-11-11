@@ -2,7 +2,7 @@
 
     actor: full / LoRA ---> ref: base / base + LoRA, teacher: base / base + LoRA
     actor: LoRA        ---> lora_base: reuse actor with its adapter disabled
-    teacher            ---> loaded for whichever hook reads ctx.teacher_models; nothing in args says who will
+    teacher            ---> run by the trunk when a prepare hook asks for it; nothing in args says which will
     actor LoRA enabled --> adapter config --> checkpoint A/B support + uniform IPC scaling + CLI r/alpha match
     adapter paths      ---> one plain PEFT directory per component, in order; any other count is rejected
 

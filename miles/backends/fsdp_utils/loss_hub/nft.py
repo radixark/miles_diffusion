@@ -113,6 +113,7 @@ def nft_loss_formula(
     new_pred: dict[str, torch.Tensor],
     old_pred: dict[str, torch.Tensor] | None,
     ref_pred: dict[str, torch.Tensor] | None,
+    teacher_pred: dict[str, torch.Tensor] | None = None,
     metrics: MetricBuffer,
     optim_step_idx: int,
     train_output_inputs: list,

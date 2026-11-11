@@ -2,7 +2,7 @@
 
     full / new / saved LoRA -> actor (trainable) ---> loss ---> gradients + optimizer step
                            +-> reference (full or LoRA) --no_grad--/
-                           +-> teacher (LoRA) -----------no_grad--/
+                           +-> teacher (LoRA) -----------no_grad--/   runs first, when prepare asks for it
     two components         ---> select the matching role component
     LoRA base reference    ---> disable adapter ---> adapters and their gradients back on the actor
     FSDP2 kept-gathered    ---> lora_base forward ---> next step still trains the adapters
@@ -84,11 +84,16 @@ class TinyBackend:
 
 class TinyPipelineConfig:
     input_dtype_policy = {}
+    cfg_batching = False
+
+    def __init__(self):
+        self.noise_pred_calls = []
 
     def postprocess_model_after_materialize(self, model):
         pass
 
     def compute_noise_pred(self, *, model, latents_input, **kwargs):
+        self.noise_pred_calls.append((model, kwargs))
         return {"visual": model(latents_input["visual"])}
 
 
@@ -122,7 +127,7 @@ def save_component_lora_adapters(path):
     return adapter_paths
 
 
-def load_actor_forward_method():
+def load_actor_forward_method(reshard_model=reshard_model):
     path = Path(__file__).resolve().parents[4] / "miles/backends/fsdp_utils/actor.py"
     source = ast.parse(path.read_text())
     actor = next(node for node in source.body if isinstance(node, ast.ClassDef) and node.name == "FSDPTrainRayActor")
@@ -141,7 +146,16 @@ def load_actor_forward_method():
 
 
 def make_actor_forward_harness(
-    models, reference_models, component, inputs, ref_mode, *, loss_type="policy_loss", ema_optimizer=None
+    models,
+    reference_models,
+    component,
+    inputs,
+    ref_mode,
+    *,
+    loss_type="policy_loss",
+    ema_optimizer=None,
+    teacher_models=None,
+    teacher_guidance_scale=None,
 ):
     observed = {}
     prepared = SimpleNamespace(
@@ -156,17 +170,19 @@ def make_actor_forward_harness(
         cfg_batching=False,
         guidance_scale=1.0,
         true_cfg_scale=None,
+        teacher_guidance_scale=teacher_guidance_scale,
     )
 
     def prepare(ctx, batch, **kwargs):
         observed["prepare_kwargs"] = kwargs
         return prepared
 
-    def loss_formula(ctx, batch, prepared, *, new_pred, old_pred, ref_pred, **kwargs):
-        predictions = {"new_pred": new_pred, "old_pred": old_pred, "ref_pred": ref_pred}
+    def loss_formula(ctx, batch, prepared, *, new_pred, old_pred, ref_pred, teacher_pred, **kwargs):
+        predictions = {"new_pred": new_pred, "old_pred": old_pred, "ref_pred": ref_pred, "teacher_pred": teacher_pred}
         observed.update({name: pred["visual"] for name, pred in predictions.items() if pred is not None})
         observed["formula_kwargs"] = kwargs
-        return (new_pred["visual"] - ref_pred["visual"]).square().mean()
+        target = torch.zeros_like(new_pred["visual"]) if ref_pred is None else ref_pred["visual"]
+        return (new_pred["visual"] - target).square().mean()
 
     harness = SimpleNamespace(
         args=Namespace(ref_mode=ref_mode, loss_type=loss_type),
@@ -174,6 +190,7 @@ def make_actor_forward_harness(
         ema_optimizer=ema_optimizer,
         model=torch.nn.ModuleDict(models),
         reference_models=reference_models,
+        teacher_models={} if teacher_models is None else teacher_models,
         train_pipeline_config=TinyPipelineConfig(),
         _forward_dtype=torch.float32,
         loss_hooks=SimpleNamespace(prepare=prepare, formula=loss_formula),
@@ -511,3 +528,81 @@ def test_the_trunk_hands_the_hooks_their_own_counters_and_the_one_list():
     assert observed["prepare_kwargs"] == {"microbatch_id": 7, "optim_step_idx": 2, "pad_to_len": None}
     assert observed["formula_kwargs"]["optim_step_idx"] == 2
     assert observed["formula_kwargs"]["train_output_inputs"] is train_output_inputs
+
+
+def _teacher_harness(teacher_guidance_scale, *, with_teacher=True):
+    actor, teacher = TinyComponent(), TinyComponent()
+    order = []
+    actor.register_forward_hook(lambda *_: order.append("actor"))
+    teacher.register_forward_hook(lambda *_: order.append("teacher"))
+    harness, observed = make_actor_forward_harness(
+        {"transformer": actor},
+        {},
+        "transformer",
+        torch.ones(2, 3),
+        "none",
+        teacher_models={"transformer": teacher} if with_teacher else None,
+        teacher_guidance_scale=teacher_guidance_scale,
+    )
+    observed["order"] = order
+    return harness, observed, actor, teacher
+
+
+def _run_forward(harness, reshard_model=reshard_model):
+    return load_actor_forward_method(reshard_model=reshard_model)(
+        harness, None, [], microbatch_id=0, optim_step_idx=0, train_output_inputs=[], metrics=None
+    )
+
+
+@pytest.mark.parametrize("cfg_batching", [False, True])
+def test_the_teacher_runs_first_without_grad_with_its_own_cfg(cfg_batching):
+    harness, observed, actor, teacher = _teacher_harness(3.0)
+    harness.train_pipeline_config.cfg_batching = cfg_batching
+    resharded = []
+
+    _run_forward(harness, reshard_model=resharded.append).backward()
+
+    assert observed["order"] == ["teacher", "actor"]
+    assert resharded == [teacher]
+    assert not observed["teacher_pred"].requires_grad
+    with torch.no_grad():
+        torch.testing.assert_close(observed["teacher_pred"], teacher(torch.ones(2, 3)))
+    assert actor.block.proj.weight.grad is not None and teacher.block.proj.weight.grad is None
+    [(teacher_model, teacher_call), (actor_model, actor_call)] = harness.train_pipeline_config.noise_pred_calls
+    assert teacher_model is teacher and actor_model is actor
+    assert (teacher_call["use_cfg"], teacher_call["cfg_batching"], teacher_call["guidance_scale"]) == (
+        True,
+        cfg_batching,
+        3.0,
+    )
+    assert (actor_call["use_cfg"], actor_call["cfg_batching"], actor_call["guidance_scale"]) == (False, False, 1.0)
+
+
+def test_an_unguided_teacher_runs_without_cfg():
+    harness, _, _, teacher = _teacher_harness(1.0)
+    harness.train_pipeline_config.cfg_batching = True
+
+    _run_forward(harness, reshard_model=lambda model: None)
+
+    [(teacher_model, teacher_call), _] = harness.train_pipeline_config.noise_pred_calls
+    assert teacher_model is teacher
+    assert (teacher_call["use_cfg"], teacher_call["cfg_batching"], teacher_call["guidance_scale"]) == (
+        False,
+        False,
+        1.0,
+    )
+
+
+def test_no_teacher_forward_unless_the_prepare_hook_asks():
+    harness, observed, _, teacher = _teacher_harness(None)
+
+    _run_forward(harness)
+
+    assert teacher.forward_count.item() == 0 and "teacher_pred" not in observed
+    assert observed["order"] == ["actor"]
+
+
+def test_a_teacher_request_without_a_teacher_is_rejected():
+    harness, _, _, _ = _teacher_harness(3.0, with_teacher=False)
+    with pytest.raises(ValueError, match="--teacher-load"):
+        _run_forward(harness)

@@ -358,7 +358,6 @@ class FSDPTrainRayActor(TrainRayActor):
         loss_ctx = DiffusionLossContext(
             models=self.models,
             reference_models=self.reference_models,
-            teacher_models=self.teacher_models,
             train_pipeline_config=self.train_pipeline_config,
             sde_backend=self.sde_backend,
             args=self.args,
@@ -538,7 +537,13 @@ class FSDPTrainRayActor(TrainRayActor):
             default_dtype=forward_dtype,
         )
 
-        def _compute_noise_pred(model) -> dict[str, torch.Tensor]:
+        def _compute_noise_pred(
+            model,
+            *,
+            use_cfg: bool = prepared.use_cfg,
+            cfg_batching: bool = prepared.cfg_batching,
+            guidance_scale: float = prepared.guidance_scale,
+        ) -> dict[str, torch.Tensor]:
             with torch.autocast(
                 "cuda",
                 dtype=forward_dtype,
@@ -551,11 +556,28 @@ class FSDPTrainRayActor(TrainRayActor):
                     pos_cond=pos_cond_in,
                     neg_cond=neg_cond_in,
                     joint_cond=joint_cond_in,
-                    use_cfg=prepared.use_cfg,
-                    cfg_batching=prepared.cfg_batching,
-                    guidance_scale=prepared.guidance_scale,
+                    use_cfg=use_cfg,
+                    cfg_batching=cfg_batching,
+                    guidance_scale=guidance_scale,
                     true_cfg_scale=prepared.true_cfg_scale,
                 )
+
+        # The frozen teacher runs before the training forward, so its gather never overlaps the activations.
+        teacher_pred = None
+        if prepared.teacher_guidance_scale is not None:
+            if prepared.component_name not in self.teacher_models:
+                raise ValueError("the prepared batch asks for a teacher forward, which needs --teacher-load")
+            teacher = self.teacher_models[prepared.component_name]
+            use_cfg = prepared.teacher_guidance_scale > 1.0
+            with torch.no_grad():
+                teacher_pred = _compute_noise_pred(
+                    teacher,
+                    use_cfg=use_cfg,
+                    cfg_batching=use_cfg and train_pipeline_config.cfg_batching,
+                    guidance_scale=prepared.teacher_guidance_scale,
+                )
+            # A no-grad forward leaves FSDP's root parameters gathered; sleep must move the shards.
+            reshard_model(teacher)
 
         new_pred = _compute_noise_pred(prepared.model)
 
@@ -583,6 +605,7 @@ class FSDPTrainRayActor(TrainRayActor):
             new_pred=new_pred,
             old_pred=old_pred,
             ref_pred=ref_pred,
+            teacher_pred=teacher_pred,
             metrics=metrics,
             optim_step_idx=optim_step_idx,
             train_output_inputs=train_output_inputs,
