@@ -35,7 +35,10 @@ def _is_serialized_tensor(value: Any) -> bool:
 
 
 def _store_deserialize_func(ref, deserialize_func: Callable[[Any], torch.Tensor | None]):
-    def deserialize(value: Any) -> torch.Tensor | StoreSlice | None:
+    def deserialize(value: Any) -> torch.Tensor | StoreSlice | list[StoreSlice] | None:
+        # A tensor with a step axis is stored one field per step
+        if isinstance(value, list):
+            return [deserialize(item) for item in value]
         if isinstance(value, dict) and "__store__" in value:
             return StoreSlice(ref, value["__store__"])
         return deserialize_func(value)

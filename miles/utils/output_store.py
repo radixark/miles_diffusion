@@ -6,7 +6,7 @@ import dataclasses
 import json
 from argparse import Namespace
 from collections.abc import Callable, Iterable, Iterator
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from miles.utils.types import Sample
@@ -94,35 +94,10 @@ def sweep_output_store(args: Namespace) -> int:
 
 @dataclass(frozen=True)
 class StoreSlice:
-    """Rows of one stored tensor; indexes like the tensor along its leading axis until a pair's row is fixed."""
+    """One stored field; the trainer reads it back into its tensor."""
 
     ref: StoreRef
     field: str
-    rows: tuple[int, ...] = ()
-    select: tuple[int, ...] | None = None
-
-    @property
-    def shape(self) -> tuple[int, ...]:
-        shape = next(spec.shape for spec in self.ref.fields if spec.name == self.field)[len(self.rows) :]
-        return shape if self.select is None else (len(self.select),) + shape[1:]
-
-    def __getitem__(self, index) -> StoreSlice:
-        size = self.shape[0]
-        if isinstance(index, int):
-            index = _row_index(index, size)
-            if self.select is None:
-                return replace(self, rows=self.rows + (index,))
-            return replace(self, rows=self.rows + (self.select[index],), select=None)
-        selected = tuple(_row_index(int(i), size) for i in index)
-        if self.select is not None:
-            selected = tuple(self.select[i] for i in selected)
-        return replace(self, select=selected)
-
-
-def _row_index(index: int, size: int) -> int:
-    if not -size <= index < size:
-        raise IndexError(f"row {index} is out of range for {size} rows")
-    return index + size if index < 0 else index
 
 
 def store_refs_of(samples: Iterable[Any]) -> dict[str, StoreRef]:
@@ -152,7 +127,7 @@ def take_dropped_refs() -> dict[str, StoreRef]:
 
 
 def materialize_store_slices(train_pairs: list[dict[str, Any]], *, store: OutputStore) -> None:
-    """Replace every StoreSlice in the pairs with its rows of the stored tensor; each object is read once."""
+    """Replace every StoreSlice in the pairs with its stored tensor; each object is read once."""
     from radix_transfer_plugins.stashes.tensor_stash import TensorStash
 
     wanted: dict[str, tuple[StoreRef, set[str]]] = {}
@@ -167,13 +142,7 @@ def materialize_store_slices(train_pairs: list[dict[str, Any]], *, store: Output
         for (ref, _), stash in zip(requests, stashes, strict=True)
         for name, tensor in stash.tensors.items()
     }
-    _map_slices(train_pairs, lambda store_slice: _rows(tensors[(store_slice.ref.key, store_slice.field)], store_slice))
-
-
-def _rows(tensor: Any, store_slice: StoreSlice) -> Any:
-    for row in store_slice.rows:
-        tensor = tensor[row]
-    return tensor if store_slice.select is None else tensor[list(store_slice.select)]
+    _map_slices(train_pairs, lambda store_slice: tensors[(store_slice.ref.key, store_slice.field)])
 
 
 def _slices(obj: Any) -> Iterator[StoreSlice]:
