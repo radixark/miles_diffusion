@@ -60,6 +60,9 @@ RUN cd /sgl-workspace/sglang && \
     mv python/kernels.lock /root/.cache/sglang/
 # torch_memory_saver backs release/resume_memory_occupation; pin the validated version.
 RUN pip install torch_memory_saver==0.0.9
+# The output store's read-only clients mount no segment (size 0), which Mooncake accepts from 0.3.12;
+# the base image ships an older one that rejects it.
+RUN pip install mooncake-transfer-engine==0.3.13.post1
 
 COPY requirements.txt /tmp/requirements.txt
 # Pre-seed a pip-managed PyJWT so requirements upgrades don't trip on the
