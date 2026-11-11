@@ -134,15 +134,15 @@ def test_debug_rows_are_picked_by_step_and_own_their_storage():
 def _stored_traj(full: DiTTrajectory, kept: list[int]):
     from radix_transfer_plugins import StoreRef
 
-    from miles.utils.output_store import StoreSlice
+    from miles.utils.output_store import StoredTensor
 
     ref = StoreRef(backend="mooncake", key="k", fields=())
     windowed = _windowed(full, kept)
-    windowed.latents = [StoreSlice(ref, f"dit_trajectory.latents.1.{step}") for step in kept]
+    windowed.latents = [StoredTensor(ref, f"dit_trajectory.latents.1.{step}") for step in kept]
     return windowed
 
 
-def test_stored_latents_become_per_step_slices_of_the_pairs():
+def test_stored_latents_become_per_step_stored_tensors_of_the_pairs():
     full = _full_traj()
     features, _ = _build(_stored_traj(full, [2, 3, 4]))
     assert [s.field for s in features["latent"]] == ["dit_trajectory.latents.1.2", "dit_trajectory.latents.1.3"]
@@ -150,7 +150,7 @@ def test_stored_latents_become_per_step_slices_of_the_pairs():
     assert torch.equal(features["timestep"], full.timesteps[SDE])
 
 
-def test_stored_x0_is_the_final_step_slice():
+def test_stored_x0_is_the_final_step_stored_tensor():
     from miles.ray.data_conversion_hub.nft import _clean_x0_from_sample
 
     sample = _sample()

@@ -40,9 +40,9 @@ def test_normalize_generated_output_rejects_missing_channel_dimension():
         _normalize_generated_output(torch.zeros(5, 8, 12))
 
 
-def test_store_markers_become_slices_of_the_response_ref():
+def test_store_markers_become_stored_tensors_of_the_response_ref():
     from miles.utils.diffusion_rollout_response import apply_rollout_image_response
-    from miles.utils.output_store import StoreSlice
+    from miles.utils.output_store import StoredTensor
     from miles.utils.types import Sample
 
     ref = {
@@ -89,7 +89,7 @@ def test_store_markers_become_slices_of_the_response_ref():
     sample = apply_rollout_image_response(Sample(index=0), body)
     assert sample.rollout_store_ref.key == "prefix/uuid"
     latents = sample.dit_trajectory.latents
-    assert all(isinstance(latent, StoreSlice) for latent in latents)
+    assert all(isinstance(latent, StoredTensor) for latent in latents)
     assert [latent.field for latent in latents] == ["dit_trajectory.latents.1.2", "dit_trajectory.latents.1.3"]
     assert torch.equal(sample.dit_trajectory.timesteps, torch.tensor([1.0, 0.0]))
     cond = sample.denoising_env.pos_cond_kwargs

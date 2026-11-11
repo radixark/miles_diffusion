@@ -10,7 +10,7 @@ import msgpack
 import ray
 import torch
 
-from miles.utils.output_store import StoreSlice
+from miles.utils.output_store import StoredTensor
 from miles.utils.processing_utils import fhwc_to_cfhw
 from miles.utils.types import CondKwargs, DenoisingEnv, DiTTrajectory, RolloutDebugTensors, Sample, decode_tensor
 
@@ -35,12 +35,12 @@ def _is_serialized_tensor(value: Any) -> bool:
 
 
 def _store_deserialize_func(ref, deserialize_func: Callable[[Any], torch.Tensor | None]):
-    def deserialize(value: Any) -> torch.Tensor | StoreSlice | list[StoreSlice] | None:
+    def deserialize(value: Any) -> torch.Tensor | StoredTensor | list[StoredTensor] | None:
         # A tensor with a step axis is stored one field per step
         if isinstance(value, list):
             return [deserialize(item) for item in value]
         if isinstance(value, dict) and "__store__" in value:
-            return StoreSlice(ref, value["__store__"])
+            return StoredTensor(ref, value["__store__"])
         return deserialize_func(value)
 
     return deserialize
