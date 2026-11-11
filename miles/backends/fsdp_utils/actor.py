@@ -325,7 +325,10 @@ class FSDPTrainRayActor(TrainRayActor):
             )
         )
 
-    def train(self, rollout_id: int, rollout_data_ref, external_data) -> Any:  # type: ignore[override]
+    def train(  # type: ignore[override]
+        self, rollout_id: int, rollout_data_ref, external_data, optim_steps: tuple[int, int] | None = None
+    ) -> Any:
+        """Train this rank's shard of the rollout: all of its optimizer steps, or the range ``optim_steps``."""
         if self.args.offload_train:
             self.wake_up()
 
@@ -337,9 +340,12 @@ class FSDPTrainRayActor(TrainRayActor):
                 materialize_stored_tensors(rollout_data["train_data"], store=self._output_store)
             external_data = {role: ray.get(box.inner) for role, box in external_data.items()}
             train_output = self._train_core(
-                rollout_id=rollout_id, rollout_data=rollout_data, external_data=external_data
+                rollout_id=rollout_id, rollout_data=rollout_data, external_data=external_data, optim_steps=optim_steps
             )
-            if self.ema_optimizer is not None:
+            # The EMA moves once per rollout, after its last step, whichever call trains that step.
+            if self.ema_optimizer is not None and (
+                optim_steps is None or optim_steps[1] == self.args.num_steps_per_rollout
+            ):
                 self.ema_optimizer.step(self.global_step)
 
         train_metric_utils.log_perf_data_raw(
@@ -351,26 +357,34 @@ class FSDPTrainRayActor(TrainRayActor):
         # object store until the paired rank of a later group reads it.
         return Box(ray.put(train_output))
 
-    def _train_core(self, rollout_id: int, rollout_data, external_data: dict[str, Any]) -> Any:
-        """Run the shared diffusion training loop."""
-        device = torch.device("cuda", torch.cuda.current_device())
-
-        train_pairs: list = rollout_data["train_data"]
-        if not train_pairs:
-            raise ValueError("rollout_data['train_data'] is empty")
-
-        loss_ctx = DiffusionLossContext(
+    def _loss_context(self, rollout_id: int, external_data: dict[str, Any]) -> DiffusionLossContext:
+        return DiffusionLossContext(
             models=self.models,
             reference_models=self.reference_models,
             train_pipeline_config=self.train_pipeline_config,
             sde_backend=self.sde_backend,
             args=self.args,
             forward_dtype=self._forward_dtype,
-            device=device,
+            device=torch.device("cuda", torch.cuda.current_device()),
             rollout_id=rollout_id,
             dp_rank=self.parallel_state.dp_rank,
             external_data=external_data,
         )
+
+    def _train_core(
+        self,
+        rollout_id: int,
+        rollout_data,
+        external_data: dict[str, Any],
+        optim_steps: tuple[int, int] | None = None,
+    ) -> Any:
+        """Run the shared diffusion training loop; ``optim_steps`` limits it to a range of the rollout's steps."""
+        train_pairs: list = rollout_data["train_data"]
+        if not train_pairs:
+            raise ValueError("rollout_data['train_data'] is empty")
+
+        loss_ctx = self._loss_context(rollout_id, external_data)
+        device = loss_ctx.device
         if self.loss_hooks.train_input is not None:
             train_pairs = self.loss_hooks.train_input(loss_ctx, train_pairs)
         train_output_inputs: list = []  # one list per train call
@@ -402,6 +416,14 @@ class FSDPTrainRayActor(TrainRayActor):
                 microbatch_schedule=microbatch_schedule,
             )
 
+        step_lo, step_hi = (0, num_optim_steps_per_rollout) if optim_steps is None else optim_steps
+        if not 0 <= step_lo < step_hi <= num_optim_steps_per_rollout:
+            raise ValueError(
+                f"optim_steps={optim_steps} is not a range within the {num_optim_steps_per_rollout} steps"
+            )
+        if optim_steps is not None and self.args.diffusion_recompute_old_log_prob:
+            raise ValueError("--diffusion-recompute-old-log-prob recomputes the whole rollout; no step range")
+
         # ------------- Recompute old log-probs (impl-consistent PPO ratio) -------------
         if self.args.diffusion_recompute_old_log_prob:
             with timer("recompute_old_log_prob"), torch.no_grad():
@@ -432,8 +454,10 @@ class FSDPTrainRayActor(TrainRayActor):
 
         # ------------- Forward / Backward -------------
         with timer("actor_train"):
-            microbatch_id = 0
-            for optim_step_idx, microbatch_ranges in enumerate(microbatch_schedule):
+            # The micro-batch ids of the full run, so a range draws the same noise as the whole rollout would.
+            microbatch_id = sum(len(microbatch_ranges) for microbatch_ranges in microbatch_schedule[:step_lo])
+            for optim_step_idx in range(step_lo, step_hi):
+                microbatch_ranges = microbatch_schedule[optim_step_idx]
                 self.optimizer.zero_grad(set_to_none=True)
 
                 old_log_prob_from_new = self.args.diffusion_recompute_old_log_prob and optim_step_idx == 0

@@ -13,15 +13,17 @@ from typing import Any
 from miles.utils.ray_utils import Box
 
 
-def _load_train():
+def _load_methods(*names):
+    """The named FSDPTrainRayActor methods, compiled with Ray, the timers and the perf log replaced."""
     path = Path(__file__).resolve().parents[4] / "miles/backends/fsdp_utils/actor.py"
     actor_class = next(
         node
         for node in ast.parse(path.read_text()).body
         if isinstance(node, ast.ClassDef) and node.name == "FSDPTrainRayActor"
     )
-    train = next(node for node in actor_class.body if isinstance(node, ast.FunctionDef) and node.name == "train")
-    train.decorator_list = []
+    methods = [node for node in actor_class.body if isinstance(node, ast.FunctionDef) and node.name in names]
+    for method in methods:
+        method.decorator_list = []
     store = {}
 
     def put(value):
@@ -38,15 +40,16 @@ def _load_train():
         inverse_timer=lambda name: nullcontext(),
         train_metric_utils=SimpleNamespace(log_perf_data_raw=lambda **kwargs: None),
     )
-    exec(compile(ast.Module(body=[train], type_ignores=[]), str(path), "exec"), namespace)
-    return namespace["train"], store, put
+    exec(compile(ast.Module(body=methods, type_ignores=[]), str(path), "exec"), namespace)
+    return namespace, store, put
 
 
 def test_train_unboxes_external_data_and_boxes_its_output():
-    train, store, put = _load_train()
+    namespace, store, put = _load_methods("train")
+    train = namespace["train"]
     seen = {}
 
-    def train_core(rollout_id, rollout_data, external_data):
+    def train_core(rollout_id, rollout_data, external_data, optim_steps=None):
         seen.update(rollout_data=rollout_data, external_data=external_data)
         return {"scores": [rollout_id]}
 

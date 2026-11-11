@@ -94,7 +94,7 @@ class TrainerProbe:
             self.actor.FSDPTrainRayActor.update_weights(self, previous_ema=previous_ema)
         return self.published, self.global_step
 
-    def _train_core(self, rollout_id, rollout_data, external_data):
+    def _train_core(self, rollout_id, rollout_data, external_data, optim_steps=None):
         start = time.monotonic()
         with self.ema_optimizer.use_weights(self.model):
             reference = self.param.item()
