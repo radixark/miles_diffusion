@@ -24,6 +24,9 @@ SCHEMA = {
     "model_output_mean_abs_diff": MetricReduce.MEAN,
     "model_output_max_abs_diff": MetricReduce.MAX,
     "model_output_rel_max": MetricReduce.MAX,
+    "prev_mean_diff_over_noise_std": MetricReduce.MEAN,
+    "score_center_expected_clipped_ratio": MetricReduce.MEAN,
+    "score_center_density_abs_diff": MetricReduce.MEAN,
     "grad_norm": MetricReduce.REPLICATED,
     "nft_loss": MetricReduce.MEAN,
     "nft_loss_per_pair": MetricReduce.MEAN,
@@ -59,6 +62,24 @@ def new_metric_buffer(
         schema[f"log_prob_mean_abs_diff_{component}"] = MetricReduce.MEAN
         schema[f"model_output_mean_abs_diff_{component}"] = MetricReduce.MEAN
     return MetricBuffer(group=group, device=device, schema=schema)
+
+
+def record_prev_mean_diff_over_noise_std(
+    metrics: MetricBuffer,
+    rollout_prev_mean: torch.Tensor,
+    prev_mean: torch.Tensor,
+    noise_std: torch.Tensor,
+) -> None:
+    """Record the trainer-vs-rollout SDE transition-mean gap per pair, RMS in units of the step's noise std."""
+    bsz = prev_mean.shape[0]
+    with torch.no_grad():
+        # flattened per pair like model_output, so logging never depends on the debug layout
+        noise_std = noise_std.reshape(bsz, -1)
+        mean_diff = rollout_prev_mean.reshape(bsz, -1) - prev_mean.reshape(bsz, -1)
+        diff_over_std = torch.where(noise_std > 0, mean_diff / noise_std, 0.0)
+        metrics.emit_mean(
+            "prev_mean_diff_over_noise_std", total=diff_over_std.pow(2).mean(dim=1).sqrt().sum(), count=bsz
+        )
 
 
 def record_rollout_train_abs_diff(

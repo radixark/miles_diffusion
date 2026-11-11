@@ -268,6 +268,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--diffusion-clip-range` | float | `1e-4` | |
 | `--diffusion-adv-clip-max` | float | `5.0` | Under `nft` this also sets the advantage-to-`r` slope. |
 | `--diffusion-recompute-old-log-prob` | flag | off | Recompute old log-probs with the trainer forward instead of trusting the rollout's. `policy_loss` only. |
+| `--diffusion-score-centering` | flag | off | Experimental: cancels the train/rollout drift in the PPO gradient with a closed-form centering term ([SDE Step Backend §5](../advanced/sde-backend.md#5-score-centering-experimental)); needs `--diffusion-sde-type sde` and `--diffusion-debug-mode`, not with `--diffusion-recompute-old-log-prob`. |
 | `--diffusion-kl-beta` | float | `0.0` | KL to the `--ref-mode` model; under `nft` adds `kl_beta * mean((v_θ − v_ref)²)` per pair. |
 | `--ref-mode` | enum | – | KL reference: `none` / `lora_base` (actor with adapters disabled) / `ref` (the model from `--ref-load`). Auto: `lora_base` when KL > 0. |
 | `--ref-load` | str | – | HF pipeline checkpoint of an independent frozen reference model. Requires `--ref-mode ref`. |
@@ -403,7 +404,7 @@ Every one takes a dotted path.
 | `--load-debug-rollout-data-subsample` | float | – | |
 | `--save-debug-train-data` | path template | – | Fills `{rollout_id}` and `{rank}`. |
 | `--dump-details` | dir | – | Sets the debug dump paths for post-hoc analysis. |
-| `--diffusion-debug-mode` | flag | off | Engine returns per-step debug tensors; enables the `model_output_*_abs_diff` metrics. |
+| `--diffusion-debug-mode` | flag | off | Engine returns per-step debug tensors; enables the `model_output_*_abs_diff` and `prev_mean_diff_over_noise_std` metrics. |
 
 `--debug-skip-optimizer-step` + `--diffusion-debug-mode` is the standard train/rollout alignment
 probe: frozen weights, and the metrics report exactly how far the two forwards drift.

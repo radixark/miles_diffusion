@@ -82,7 +82,44 @@ Checklist:
 3. Match input dtypes between FSDP forward and the rollout engine for fp32 runs.
 4. Watch `train/log_prob_mean_abs_diff` — near zero before the first optimizer step.
 
-## 5. Pairs well with
+## 5. Score centering (experimental)
+
+The flag, its metrics and its requirements may still change.
+
+Even when the kernels agree, the engine and the trainer rarely compute the exact same
+transition mean, and a one-step-stale rollout under `train_diffusion_async.py` never does.
+The engine samples `x' ~ N(μ_q, s²)` while the trainer scores it under `N(μ_θ, s²)`, so the
+PPO gradient carries a drift term, `E[A] · ∇θ E_q[clip_A(r)]`, that pulls the actor toward
+the engine instead of toward reward
+([Score Centering Stabilizes Off-policy RL](https://arxiv.org/abs/2609.20807)).
+
+`--diffusion-score-centering` subtracts that term exactly. Flow-GRPO's per-element mean
+log-prob makes `r = (p_θ/q)^(1/D)`, so under the engine `log r` is normal with mean
+`−κ/(2D)` and variance `κ/D²`, where `κ = |μ_θ − μ_q|² / s²`. The expected clipped ratio
+`E_q[clip_A(r)]` therefore has a closed form in `κ`, and the loss adds
+`A · (center − center.detach())`: the logged loss and the clip mask are unchanged, only the
+gradient moves, and it is an exact no-op when `μ_q = μ_θ`. The clip is integrated rather than
+applied per sample, which is what makes the correction exact for the clipped objective.
+
+```bash
+--diffusion-score-centering --diffusion-debug-mode
+```
+
+- Requires `--loss-type policy_loss`, `--diffusion-sde-type sde` with the default backend,
+  `0 < --diffusion-clip-range < 1`, and `--diffusion-debug-mode`: the engine returns `μ_q`
+  (`rollout_prev_sample_means`) and the step's noise std (`rollout_noise_std_devs`) only there.
+- The PPO denominator must be the engine's own log-prob, so `--diffusion-recompute-old-log-prob`
+  is rejected. The loss also raises if the two sides' transition stds differ or if the stored
+  log-probs are not the Gaussian density of the recorded means at the sampled latents.
+- `train/prev_mean_diff_over_noise_std` reports `|μ_q − μ_θ|` in units of the step's noise std
+  (RMS over latent elements) whenever debug tensors are present; drift grows with it.
+- `train/score_center_expected_clipped_ratio` is the center itself: `1.0` means nothing to
+  remove, below `1` for positive advantages and above for negative ones under drift.
+  `train/score_center_density_abs_diff` must stay near `0` (hard limit `5e-5`).
+
+DiffusionNFT has no SDE log-prob, so score centering does not apply to it.
+
+## 6. Pairs well with
 
 - [Customization](../user-guide/customization.md) — `--diffusion-step-strategy-path` and `--sde-step-backend-path`.
 - [SD3 model guide](../models/sd3/sd3.md) — Flow-GRPO vs NFT recipe flags.
