@@ -34,6 +34,8 @@ def _args(**overrides):
         rollout_video_dtype="keep",
         train_pipeline_config_path=None,
         use_output_store=False,
+        rm_type="pickscore",
+        custom_rm_path=None,
     )
     values.update(overrides)
     return Namespace(**values)
