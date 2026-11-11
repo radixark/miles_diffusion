@@ -48,6 +48,7 @@ def test_dmd2_critic_trains_first_from_its_own_checkpoint(load, save, critic_dir
         use_ema=True,
         custom_prepare_train_batch_path="my.prepare_generator",
         custom_loss_function_path="my.generator_loss",
+        custom_train_input_postprocess_path="my.select_pairs",
         custom_train_output_function_path=None,
     )
     original = vars(args).copy()
@@ -62,6 +63,7 @@ def test_dmd2_critic_trains_first_from_its_own_checkpoint(load, save, critic_dir
     assert (critic.use_ema, actor.use_ema) == (False, True)
     assert critic.custom_prepare_train_batch_path.endswith("loss_hub.dmd2.prepare_critic_batch")
     assert critic.custom_loss_function_path.endswith("loss_hub.dmd2.critic_loss_formula")
+    assert critic.custom_train_input_postprocess_path is None
     assert critic.custom_train_output_function_path.endswith("loss_hub.dmd2.score_last_step_samples")
     assert vars(actor) == {**original, "teacher_load": None}
     assert vars(args) == original
