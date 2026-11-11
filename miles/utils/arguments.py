@@ -310,7 +310,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "Dtype of the decoded video in rollout and eval responses. 'keep' returns the "
                     "engine's raw float tensor; 'uint8' quantises engine-side with the same "
-                    "formula the reward path applies, cutting the response body ~4x. Use "
+                    "formula the reward path applies, cutting the response body (with --use-output-store, "
+                    "the stored output) ~4x. Use "
                     "'keep' for any consumer that needs the unquantised tensor."
                 ),
             )
@@ -589,8 +590,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
                 default=False,
                 help=(
-                    "Rollout requests put their latents, debug and cond tensors in the run's Mooncake "
-                    "(sglang-d --output-store-backend) and return a ref; the trainer reads them from there."
+                    "Rollout requests put their latents, debug and cond tensors and their generated output in "
+                    "the run's Mooncake (sglang-d --output-store-backend) and return a ref; the rollout reads the "
+                    "output back right after generation and the trainer reads the tensors."
                 ),
             )
             parser.add_argument(
@@ -606,7 +608,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--output-store-local-buffer-size",
                 type=str,
                 default="2gb",
-                help="Mooncake local buffer of each sglang-d engine; bounds the bytes of its puts in flight.",
+                help=(
+                    "Mooncake local buffer of each sglang-d engine; bounds the bytes of its puts in flight, and one "
+                    "request's tensors and generated output must fit in it."
+                ),
             )
             parser.add_argument(
                 "--output-store-global-segment-size",
