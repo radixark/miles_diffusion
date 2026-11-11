@@ -259,19 +259,22 @@ async def load_generated_outputs(state: GenerateState, samples: list[Sample]) ->
     if not stored:
         return
     outputs = [sample.generated_output for sample in stored]
-    tensors = await asyncio.to_thread(read_generated_outputs, state.output_store, outputs)
     refs = [
         msgspec.structs.replace(
             output.ref, fields=tuple(spec for spec in output.ref.fields if spec.name == output.field)
         )
         for output in outputs
     ]
-    try:
-        await asyncio.to_thread(state.output_store.delete_many, refs)
-    except Exception:
-        logger.warning(
-            "Failed to delete %d read outputs; the rollout's release deletes them", len(refs), exc_info=True
-        )
+    st = hooks.StageTimer()
+    with st.stage("store_read"):
+        tensors = await asyncio.to_thread(read_generated_outputs, state.output_store, outputs)
+        try:
+            await asyncio.to_thread(state.output_store.delete_many, refs)
+        except Exception:
+            logger.warning(
+                "Failed to delete %d read outputs; the rollout's release deletes them", len(refs), exc_info=True
+            )
+    st.attach(stored)
     for sample, tensor in zip(stored, tensors, strict=True):
         sample.generated_output = tensor
 

@@ -8,7 +8,8 @@ Mental model (one microgroup, store on):
     sample.generated_output = StoredTensor(ref, "generated_output.<b>")
         |  load_generated_outputs, inside the semaphore
         |      read_generated_outputs                 (2) == the inline-parsed tensor (CHW, HWC); one read per ref
-        |      delete the output fields               (3) latents stay for the trainer; inline (eval) outputs untouched
+        |      delete the output fields               (3) latents stay for the trainer; inline (eval) outputs untouched;
+        |                                                 read + delete is the dashboard's store_read stage
         |                                             (4) a failing delete is left to the release; a failing read fails
         v
     sample.generated_output = tensor                  (5) every call site (microgroup, group_rm, custom generate)
@@ -33,6 +34,7 @@ from radix_transfer_plugins.stashes.tensor_stash import TensorStash
 from tests.fast.utils.test_output_store_materialize import MemoryBackend
 
 import miles.rollout.sglang_diffusion_rollout as rollout_fn_module
+from miles.dashboard.events import STAGE_KINDS
 from miles.rollout.sglang_diffusion_rollout import (
     generate_and_rm_group,
     generate_and_rm_microgroup,
@@ -92,7 +94,8 @@ def test_read_matches_the_inline_parse_with_one_read_per_ref():
 
 @pytest.mark.asyncio
 async def test_load_reads_the_outputs_and_deletes_only_their_fields():
-    """Latents stay for the trainer; the outputs leave the store once read; an inline (eval) output is untouched."""
+    """Latents stay for the trainer; the outputs leave the store once read; an inline (eval) output is untouched.
+    The dashboard drops a stage name it does not know, so the read time must use a known one."""
     store, backend, ref = _stored({"generated_output.0": _CHW, "generated_output.1": _HWC, _LATENTS: _CHW})
     inline = torch.zeros(3, 1, 2, 2)
     samples = [Sample(index=b, generated_output=StoredTensor(ref, f"generated_output.{b}")) for b in (0, 1)]
@@ -104,6 +107,10 @@ async def test_load_reads_the_outputs_and_deletes_only_their_fields():
     assert torch.equal(samples[1].generated_output, _normalize_generated_output(_HWC))
     assert samples[2].generated_output is inline
     assert set(backend.objects[ref.key]) == {_LATENTS}
+    stages = [
+        [segment["stage"] for segment in (sample.metadata or {}).get("lifecycle_stages", [])] for sample in samples
+    ]
+    assert stages == [["store_read"], ["store_read"], []] and "store_read" in STAGE_KINDS
 
 
 @pytest.mark.asyncio
