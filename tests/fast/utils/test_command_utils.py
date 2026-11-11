@@ -10,7 +10,9 @@ from tests.ci.ci_register import register_cpu_ci
 register_cpu_ci(est_time=30, suite="stage-a-cpu", labels=[])
 
 import json
+import re
 import shlex
+import socket
 import subprocess
 import traceback
 
@@ -94,3 +96,37 @@ def test_submit_logs_only_selected_env_values_redacted(monkeypatch, capsys, reda
     assert logged_env["NCCL_DEBUG"] == "INFO"
     assert logged_env["OTHER_API_KEY"] == "unselected-test-value"
     assert "overridden-secret" not in output
+
+
+@pytest.mark.parametrize(
+    "train_args, port",
+    [
+        ("--num-rollout 1", None),
+        ("--use-output-store --output-store-mooncake-master 10.0.0.1:50051", 50051),
+        ("--output-store-mooncake-master [fd00::1]:50052 --use-output-store", 50052),
+    ],
+)
+def test_output_store_master_port_comes_from_the_train_args(train_args, port):
+    assert commands._output_store_master_port(train_args) == port
+
+
+def test_output_store_without_a_master_is_rejected_before_the_job():
+    with pytest.raises(ValueError, match="needs --output-store-mooncake-master"):
+        commands._output_store_master_port("--use-output-store")
+
+
+def test_start_mooncake_master_kills_the_old_master_but_not_its_own_shell(monkeypatch):
+    commands_run = []
+    monkeypatch.setattr(commands, "exec_command", lambda cmd, **kwargs: commands_run.append(cmd))
+    with socket.socket() as listening:
+        listening.bind(("127.0.0.1", 0))
+        listening.listen()
+        port = listening.getsockname()[1]
+        commands.start_mooncake_master(port)
+    kill, start = commands_run
+    pattern = re.match(r"pkill -f '([^']*)'", kill).group(1)
+    assert re.search(pattern, f"/envs/bin/python /envs/bin/mooncake_master --rpc_port {port} --metrics_port 0")
+    assert re.search(pattern, f"/envs/mooncake/mooncake_master --rpc_port {port} --metrics_port 0")
+    assert not re.search(pattern, f"/envs/mooncake/mooncake_master --rpc_port {port}0 --metrics_port 0")
+    assert not re.search(pattern, kill)
+    assert f"setsid mooncake_master --rpc_port {port} " in start

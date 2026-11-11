@@ -18,6 +18,7 @@ from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.metric_buffer import MetricBuffer
 from miles.utils.metric_utils import compute_rollout_step
+from miles.utils.output_store import mooncake_client
 from miles.utils.timer import Timer, inverse_timer, timer
 from miles.utils.tracking_utils import init_tracking
 from miles.utils.train_data_utils import (
@@ -92,6 +93,12 @@ class FSDPTrainRayActor(TrainRayActor):
         if self.args.start_rollout_id is None:
             self.args.start_rollout_id = 0
 
+        # Alive as long as the actor: the store keeps this node's objects in the memory it lends.
+        self._output_store_segment = (
+            mooncake_client(args, global_segment_size=args.output_store_global_segment_size, local_buffer_size=0)
+            if args.use_output_store and self._rank % args.num_gpus_per_node == 0
+            else None
+        )
         self._forward_dtype = parse_dtype_from_str(args.diffusion_forward_dtype)
 
         from miles.utils.misc import load_function
