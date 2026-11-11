@@ -26,7 +26,6 @@ class DiffusionLossContext:
     rollout_id: int = 0
     dp_rank: int = 0
     reference_models: dict[str, torch.nn.Module] = field(default_factory=dict)
-    teacher_models: dict[str, torch.nn.Module] = field(default_factory=dict)
     external_data: dict[str, Any] = field(default_factory=dict)
 
 
@@ -70,3 +69,5 @@ class PreparedBatch:
     joint_cond: dict | None
     advantage: torch.Tensor
     extras: dict[str, Any] = field(default_factory=dict)
+    # CFG scale of the frozen teacher's no-grad forward on this batch; None runs no teacher forward.
+    teacher_guidance_scale: float | None = None

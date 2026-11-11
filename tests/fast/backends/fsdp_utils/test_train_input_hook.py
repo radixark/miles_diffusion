@@ -60,7 +60,6 @@ def _actor(train_input, train_output, forwarded, **args):
         lists=lists,
         models={},
         reference_models={},
-        teacher_models={},
         train_pipeline_config=None,
         sde_backend=None,
         args=Namespace(

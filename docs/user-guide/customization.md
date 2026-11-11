@@ -248,9 +248,9 @@ flags (`--custom-prepare-train-batch-path`, `--custom-loss-function-path`,
 falls back to the Flow-GRPO built-in. `dmd2` also trains
 a `critic` group before the actor on each rollout: it starts from `--critic-load` (default
 `--teacher-load`), learns the student's samples with the SFT loss at `--critic-lr` (default `--lr`).
-On its last step it keeps its own x0 predictions from that step's forward, before the update, and
-after training its train-output hook hands them with the teacher's x0 at the same noisy inputs to the
-actor as `ctx.external_data["critic"]`. The actor trains on those samples only (its train-input hook):
+On its last step its prepare hook also asks for the teacher at the same noisy inputs, and its loss
+formula keeps the critic's x0 from that step's forward, before the update, next to the teacher's; after
+training its train-output hook hands them to the actor as `ctx.external_data["critic"]`. The actor trains on those samples only (its train-input hook):
 it recomputes the student's x0 at the rollout's step and moves it along their difference.
 
 DiT forward always stays in the FSDP actor; the loss hook only computes the
@@ -289,13 +289,16 @@ counts from 0; the old-log-prob recompute of windows 1.. passes their training f
 `optim_step_idx` is its optimizer step; the built-in hooks seed their noise from `microbatch_id`.
 `PreparedBatch.latents`, `timesteps` and
 `timesteps_for_model` are keyed by latent stream name: `"visual"`, plus e.g.
-`"audio"` for joint audio-video models.
+`"audio"` for joint audio-video models. `PreparedBatch.teacher_guidance_scale` asks the trunk to run the frozen
+teacher (`--teacher-load`) without grad on this micro-batch at that CFG scale, over `neg_cond` / `joint_cond`, before
+the training forward; the formula receives it as `teacher_pred`.
 
 ### `--custom-loss-function-path`
 
 ```python
 def loss_formula(
-    ctx, batch, prepared, *, new_pred, old_pred, ref_pred, metrics, optim_step_idx, train_output_inputs, **kwargs
+    ctx, batch, prepared, *, new_pred, old_pred, ref_pred, teacher_pred, metrics, optim_step_idx,
+    train_output_inputs, **kwargs
 ):
     ...
 ```
@@ -304,7 +307,9 @@ Read only under `--loss-type custom_loss`. `optim_step_idx` is the micro-batch's
 `train_output_inputs` is the list the formula may fill for the train-output hook, empty at the start of each train
 call. `new_pred`, `old_pred` and `ref_pred` are keyed by the same stream
 names as `prepared.latents`. `old_pred` (the EMA forward) is `None` for a custom formula, since the trunk runs it
-only under `--loss-type nft`; `ref_pred` is `None` with `--ref-mode none`.
+only under `--loss-type nft`; `ref_pred` is `None` with `--ref-mode none`. `teacher_pred` is the frozen teacher's
+no-grad prediction at `prepared.teacher_guidance_scale`, which the trunk runs before the training forward when the
+prepare hook sets that scale, else `None`.
 
 ### `--custom-train-input-postprocess-path`
 
