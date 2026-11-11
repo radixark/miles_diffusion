@@ -2031,10 +2031,15 @@ def validate_dmd2_args(args) -> None:
         )
     dp_size = args.actor_num_gpus_per_node * args.actor_num_nodes // args.sequence_parallel_size
     critic_steps = args.dmd2_critic_steps_per_rollout
-    if critic_steps < 1 or args.global_batch_size % (critic_steps * dp_size) != 0:
+    if (
+        critic_steps < 1
+        or args.global_batch_size % (critic_steps * dp_size) != 0
+        or (args.global_batch_size // (critic_steps * dp_size)) % args.micro_batch_size != 0
+    ):
         raise ValueError(
             f"--dmd2-critic-steps-per-rollout {critic_steps} must be >= 1 and split each of the {dp_size} DP "
-            f"shards of the {args.global_batch_size} samples per rollout evenly"
+            f"shards of the {args.global_batch_size} samples per rollout into whole --micro-batch-size "
+            f"{args.micro_batch_size} micro-batches"
         )
 
 
