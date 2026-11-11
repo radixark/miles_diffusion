@@ -62,7 +62,13 @@ class TrainerProbe:
         self.actor = actor
         self.delay = delay
         self.rollout_manager = manager
-        self.args = Namespace(offload_train=False, debug_rollout_only=False, train_only=False, rollout_weights="ema")
+        self.args = Namespace(
+            offload_train=False,
+            debug_rollout_only=False,
+            train_only=False,
+            rollout_weights="ema",
+            use_output_store=False,
+        )
         self.parallel_state = SimpleNamespace(get_mesh=lambda name: SimpleNamespace(get_local_rank=lambda: 0))
         self.model = torch.nn.Linear(1, 1, bias=False)
         self.param = self.model.weight
