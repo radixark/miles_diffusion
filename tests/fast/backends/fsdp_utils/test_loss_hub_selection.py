@@ -6,6 +6,8 @@
       sft_loss / actor      SFT prepare + formula
       dmd2 / actor          generator prepare + DMD2 formula, train_input = select_scored_pairs
       dmd2 / critic         critic prepare + critic formula, train_output = score_last_step_samples
+      dmd2 / critic-scoring scoring prepare + scoring formula (no loss), train_input = last_step_pairs,
+                            train_output = score_last_step_samples: the forward-only pass of the original scoring
     custom_loss / actor     each --custom-*-path loaded; unset prepare / formula fall back to Flow-GRPO's
     no such (loss_type, role) ──► KeyError
 
@@ -46,6 +48,12 @@ HOOK_PATHS_BY_LOSS_TYPE_AND_ROLE = {
     ("dmd2", "critic"): dict(
         prepare="miles.backends.fsdp_utils.loss_hub.dmd2.prepare_critic_batch",
         formula="miles.backends.fsdp_utils.loss_hub.dmd2.critic_loss_formula",
+        train_output="miles.backends.fsdp_utils.loss_hub.dmd2.score_last_step_samples",
+    ),
+    ("dmd2", "critic-scoring"): dict(
+        prepare="miles.backends.fsdp_utils.loss_hub.dmd2.prepare_scoring_batch",
+        formula="miles.backends.fsdp_utils.loss_hub.dmd2.scoring_formula",
+        train_input="miles.backends.fsdp_utils.loss_hub.dmd2.last_step_pairs",
         train_output="miles.backends.fsdp_utils.loss_hub.dmd2.score_last_step_samples",
     ),
 }
