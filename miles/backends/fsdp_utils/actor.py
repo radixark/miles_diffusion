@@ -1,6 +1,7 @@
 import logging
 from argparse import Namespace
 from contextlib import nullcontext
+from typing import Any
 
 import ray
 import torch
@@ -19,6 +20,7 @@ from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.metric_buffer import MetricBuffer
 from miles.utils.metric_utils import compute_rollout_step
 from miles.utils.output_store import connect_output_store, materialize_stored_tensors, mooncake_client
+from miles.utils.ray_utils import Box
 from miles.utils.timer import Timer, inverse_timer, timer
 from miles.utils.tracking_utils import init_tracking
 from miles.utils.train_data_utils import (
@@ -175,6 +177,11 @@ class FSDPTrainRayActor(TrainRayActor):
         self.custom_loss_formula_func = (
             load_function(args.custom_loss_function_path) if args.custom_loss_function_path is not None else None
         )
+        self.custom_train_output_func = (
+            load_function(args.custom_train_output_function_path)
+            if args.custom_train_output_function_path is not None
+            else None
+        )
 
         if args.optimizer == "adam":
             self.optimizer = torch.optim.AdamW(
@@ -323,7 +330,7 @@ class FSDPTrainRayActor(TrainRayActor):
             )
         )
 
-    def train(self, rollout_id: int, rollout_data_ref) -> None:  # type: ignore[override]
+    def train(self, rollout_id: int, rollout_data_ref, external_data) -> Any:  # type: ignore[override]
         if self.args.offload_train:
             self.wake_up()
 
@@ -333,7 +340,10 @@ class FSDPTrainRayActor(TrainRayActor):
                 return
             if self.args.use_output_store:
                 materialize_stored_tensors(rollout_data["train_data"], store=self._output_store)
-            self._train_core(rollout_id=rollout_id, rollout_data=rollout_data)
+            external_data = {role: ray.get(box.inner) for role, box in external_data.items()}
+            train_output = self._train_core(
+                rollout_id=rollout_id, rollout_data=rollout_data, external_data=external_data
+            )
             if self.ema_optimizer is not None:
                 self.ema_optimizer.step(self.global_step)
 
@@ -342,8 +352,11 @@ class FSDPTrainRayActor(TrainRayActor):
             args=self.args,
             is_primary_rank=dist.get_rank() == 0,
         )
+        # Boxed like the rollout shards: the driver's ray.get on this task only waits, the payload stays in the
+        # object store until the paired rank of a later group reads it.
+        return Box(ray.put(train_output))
 
-    def _train_core(self, rollout_id: int, rollout_data) -> None:
+    def _train_core(self, rollout_id: int, rollout_data, external_data: dict[str, Any]) -> Any:
         """Run the shared diffusion training loop."""
         device = torch.device("cuda", torch.cuda.current_device())
 
@@ -389,6 +402,7 @@ class FSDPTrainRayActor(TrainRayActor):
             device=device,
             rollout_id=rollout_id,
             dp_rank=self.parallel_state.dp_rank,
+            external_data=external_data,
         )
 
         # ------------- Recompute old log-probs (impl-consistent PPO ratio) -------------
@@ -470,6 +484,10 @@ class FSDPTrainRayActor(TrainRayActor):
 
                 reduced = {f"train/{key}": value for key, value in metrics.reduce().items()}
                 self._log_metrics(rollout_id, reduced, step=self.global_step)
+
+        if self.custom_train_output_func is not None:
+            with torch.no_grad():
+                return self.custom_train_output_func(loss_ctx, train_pairs)
 
     def _maybe_legacy_window_pad_len(self, train_pairs: list, microbatch_ranges: list) -> int | None:
         """LEGACY 2D parity: the whole-window max cond seq_len (like the legacy tile path), or
