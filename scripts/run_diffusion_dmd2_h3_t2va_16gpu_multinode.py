@@ -136,21 +136,6 @@ def prepare(args: ScriptArgs) -> str:
     return str(prompt_dir)
 
 
-def _fasth3_checkpoint(data_dir: str) -> str:
-    """MiniMax-H3 with FastH3's transformer: the export shares every other component and both shifts."""
-    from huggingface_hub import snapshot_download
-
-    base = Path(snapshot_download(MODEL))
-    student = Path(snapshot_download(FASTH3_MODEL, allow_patterns=["transformer/*"]))
-    overlay = Path(data_dir) / "MiniMax-H3-FastH3-4step-dense"
-    overlay.mkdir(parents=True, exist_ok=True)
-    for entry in base.iterdir():
-        link = overlay / entry.name
-        if not link.is_symlink():
-            link.symlink_to(student / "transformer" if entry.name == "transformer" else entry)
-    return str(overlay)
-
-
 def execute(args: ScriptArgs, prompt_dir: str) -> None:
     run_name = f"diffusion_dmd2_h3_t2va_{args.reference or 'student'}_{U.create_run_id()}"
     run_dir = f"{args.output_dir}/{run_name}"
@@ -221,11 +206,13 @@ def execute(args: ScriptArgs, prompt_dir: str) -> None:
         if args.reference == "teacher":
             checkpoint, eval_steps = MODEL, 50
         elif args.reference == "fasth3":
-            checkpoint, eval_steps = _fasth3_checkpoint(args.data_dir), 4
+            checkpoint, eval_steps = FASTH3_MODEL, 4
         else:
             raise ValueError(f"--reference must be teacher or fasth3, got {args.reference!r}")
         mode_args = (
             f"--hf-checkpoint {checkpoint} "
+            # Every engine fetches the checkpoint by its Hub id; the FastH3 name matches no H3 pattern.
+            "--diffusion-model-family h3 "
             "--debug-rollout-only "
             "--num-rollout 0 "
             "--eval-interval 1 "
