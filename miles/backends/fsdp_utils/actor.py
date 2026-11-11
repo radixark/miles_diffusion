@@ -543,6 +543,7 @@ class FSDPTrainRayActor(TrainRayActor):
             use_cfg: bool = prepared.use_cfg,
             cfg_batching: bool = prepared.cfg_batching,
             guidance_scale: float = prepared.guidance_scale,
+            true_cfg_scale: float | None = prepared.true_cfg_scale,
         ) -> dict[str, torch.Tensor]:
             with torch.autocast(
                 "cuda",
@@ -559,7 +560,7 @@ class FSDPTrainRayActor(TrainRayActor):
                     use_cfg=use_cfg,
                     cfg_batching=cfg_batching,
                     guidance_scale=guidance_scale,
-                    true_cfg_scale=prepared.true_cfg_scale,
+                    true_cfg_scale=true_cfg_scale,
                 )
 
         # The frozen teacher runs before the training forward, so its gather never overlaps the activations.
@@ -575,6 +576,7 @@ class FSDPTrainRayActor(TrainRayActor):
                     use_cfg=use_cfg,
                     cfg_batching=use_cfg and train_pipeline_config.cfg_batching,
                     guidance_scale=prepared.teacher_guidance_scale,
+                    true_cfg_scale=None,
                 )
             # A no-grad forward leaves FSDP's root parameters gathered; sleep must move the shards.
             reshard_model(teacher)

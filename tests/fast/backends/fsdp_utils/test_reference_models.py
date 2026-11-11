@@ -156,6 +156,7 @@ def make_actor_forward_harness(
     ema_optimizer=None,
     teacher_models=None,
     teacher_guidance_scale=None,
+    true_cfg_scale=None,
 ):
     observed = {}
     prepared = SimpleNamespace(
@@ -169,7 +170,7 @@ def make_actor_forward_harness(
         use_cfg=False,
         cfg_batching=False,
         guidance_scale=1.0,
-        true_cfg_scale=None,
+        true_cfg_scale=true_cfg_scale,
         teacher_guidance_scale=teacher_guidance_scale,
     )
 
@@ -530,7 +531,7 @@ def test_the_trunk_hands_the_hooks_their_own_counters_and_the_one_list():
     assert observed["formula_kwargs"]["train_output_inputs"] is train_output_inputs
 
 
-def _teacher_harness(teacher_guidance_scale, *, with_teacher=True):
+def _teacher_harness(teacher_guidance_scale, *, with_teacher=True, true_cfg_scale=None):
     actor, teacher = TinyComponent(), TinyComponent()
     order = []
     actor.register_forward_hook(lambda *_: order.append("actor"))
@@ -543,6 +544,7 @@ def _teacher_harness(teacher_guidance_scale, *, with_teacher=True):
         "none",
         teacher_models={"transformer": teacher} if with_teacher else None,
         teacher_guidance_scale=teacher_guidance_scale,
+        true_cfg_scale=true_cfg_scale,
     )
     observed["order"] = order
     return harness, observed, actor, teacher
@@ -556,7 +558,8 @@ def _run_forward(harness, reshard_model=reshard_model):
 
 @pytest.mark.parametrize("cfg_batching", [False, True])
 def test_the_teacher_runs_first_without_grad_with_its_own_cfg(cfg_batching):
-    harness, observed, actor, teacher = _teacher_harness(3.0)
+    # true_cfg_scale overrides guidance_scale in cfg_combine, so the student's must not reach the teacher.
+    harness, observed, actor, teacher = _teacher_harness(3.0, true_cfg_scale=7.0)
     harness.train_pipeline_config.cfg_batching = cfg_batching
     resharded = []
 
@@ -575,7 +578,9 @@ def test_the_teacher_runs_first_without_grad_with_its_own_cfg(cfg_batching):
         cfg_batching,
         3.0,
     )
+    assert teacher_call["true_cfg_scale"] is None
     assert (actor_call["use_cfg"], actor_call["cfg_batching"], actor_call["guidance_scale"]) == (False, False, 1.0)
+    assert actor_call["true_cfg_scale"] == 7.0
 
 
 def test_an_unguided_teacher_runs_without_cfg():
