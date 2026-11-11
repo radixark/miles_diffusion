@@ -1,4 +1,4 @@
-"""The trainer reads a shard's store slices back into the tensors the inline path would have carried."""
+"""The trainer reads a shard's stored tensors back into the tensors the inline path would have carried."""
 
 import msgspec
 import torch
@@ -11,11 +11,12 @@ from radix_transfer_plugins import OutputStore, StorageBackend
 from radix_transfer_plugins.stashes.tensor_stash import TensorStash
 
 from miles.ray.data_conversion_hub.flow_grpo import expand_samples_to_train_pairs
-from miles.utils.output_store import StoreSlice, materialize_store_slices
+from miles.utils.output_store import StoredTensor, materialize_stored_tensors
 from miles.utils.types import CondKwargs, DenoisingEnv, DiTTrajectory, RolloutDebugTensors, Sample
 
-B, K, T = 2, 3, 2
-SDE = [0, 1]
+B, T = 2, 3
+K = T + 1
+SDE = [1]
 
 
 class MemoryBackend(StorageBackend):
@@ -68,6 +69,22 @@ def _batched():
     }
 
 
+def _fields(batched):
+    """The fields sglang stores: one per sample and step for the step-axis tensors, one per sample for cond."""
+    fields = {
+        "denoising_env.pos_cond_kwargs.pooled_projections.0": batched[
+            "denoising_env.pos_cond_kwargs.pooled_projections.0"
+        ]
+    }
+    for b in range(B):
+        for name in ("dit_trajectory.latents", "rollout_debug_tensors.rollout_model_outputs"):
+            for step, row in enumerate(batched[name][b]):
+                fields[f"{name}.{b}.{step}"] = row
+        hidden = "denoising_env.pos_cond_kwargs.encoder_hidden_states.0"
+        fields[f"{hidden}.{b}"] = batched[hidden][b]
+    return fields
+
+
 def _sample(index, latents, model_outputs, hidden, pooled) -> Sample:
     return Sample(
         index=index,
@@ -91,10 +108,10 @@ def test_pairs_read_back_equal_the_inline_pairs():
     backend = MemoryBackend()
     store = OutputStore(backend=backend)
     batched = _batched()
-    (ref,) = store.put_many([TensorStash(batched)])
+    (ref,) = store.put_many([TensorStash(_fields(batched))])
 
-    def slice_of(name, row=None):
-        return StoreSlice(ref, name, () if row is None else (row,))
+    def steps_of(name, b, num_steps):
+        return [StoredTensor(ref, f"{name}.{b}.{step}") for step in range(num_steps)]
 
     inline = [
         _sample(
@@ -109,21 +126,28 @@ def test_pairs_read_back_equal_the_inline_pairs():
     stored = [
         _sample(
             b,
-            slice_of("dit_trajectory.latents", b),
-            slice_of("rollout_debug_tensors.rollout_model_outputs", b),
-            slice_of("denoising_env.pos_cond_kwargs.encoder_hidden_states.0", b),
-            slice_of("denoising_env.pos_cond_kwargs.pooled_projections.0"),
+            steps_of("dit_trajectory.latents", b, K),
+            steps_of("rollout_debug_tensors.rollout_model_outputs", b, T),
+            StoredTensor(ref, f"denoising_env.pos_cond_kwargs.encoder_hidden_states.0.{b}"),
+            StoredTensor(ref, "denoising_env.pos_cond_kwargs.pooled_projections.0"),
         )
         for b in range(B)
     ]
     rewards = [0.5, -0.5]
     expected = expand_samples_to_train_pairs(None, inline, rewards, rewards)["train_data"]
     pairs = expand_samples_to_train_pairs(None, stored, rewards, rewards)["train_data"]
-    assert isinstance(pairs[0]["latent"], StoreSlice)
+    assert isinstance(pairs[0]["latent"], StoredTensor)
 
-    materialize_store_slices(pairs, store=store)
+    materialize_stored_tensors(pairs, store=store)
 
-    assert len(backend.reads) == 1 and backend.reads[0] == [(ref.key, sorted(batched))]
+    # Only the trained step, its next latent and the cond fields; not the whole trajectory
+    read = sorted(
+        [f"dit_trajectory.latents.{b}.{s}" for b in range(B) for s in (1, 2)]
+        + [f"rollout_debug_tensors.rollout_model_outputs.{b}.1" for b in range(B)]
+        + [f"denoising_env.pos_cond_kwargs.encoder_hidden_states.0.{b}" for b in range(B)]
+        + ["denoising_env.pos_cond_kwargs.pooled_projections.0"]
+    )
+    assert len(backend.reads) == 1 and backend.reads[0] == [(ref.key, read)]
     assert len(pairs) == len(expected) == B * len(SDE)
     for pair, want in zip(pairs, expected, strict=True):
         for key in ("latent", "next_latent", "timestep", "sigma", "log_prob_old"):
@@ -140,9 +164,9 @@ def test_pairs_read_back_equal_the_inline_pairs():
         assert pair["advantage"] == want["advantage"]
 
 
-def test_pairs_without_slices_read_nothing():
+def test_pairs_without_stored_tensors_read_nothing():
     backend = MemoryBackend()
     pairs = [{"latent": torch.ones(2), "denoising_env": DenoisingEnv()}]
-    materialize_store_slices(pairs, store=OutputStore(backend=backend))
+    materialize_stored_tensors(pairs, store=OutputStore(backend=backend))
     assert backend.reads == []
     assert torch.equal(pairs[0]["latent"], torch.ones(2))

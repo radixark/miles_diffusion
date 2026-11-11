@@ -40,22 +40,25 @@ def test_normalize_generated_output_rejects_missing_channel_dimension():
         _normalize_generated_output(torch.zeros(5, 8, 12))
 
 
-def test_store_markers_become_slices_of_the_response_ref():
+def test_store_markers_become_stored_tensors_of_the_response_ref():
     from miles.utils.diffusion_rollout_response import apply_rollout_image_response
-    from miles.utils.output_store import StoreSlice
+    from miles.utils.output_store import StoredTensor
     from miles.utils.types import Sample
 
     ref = {
         "backend": "mooncake",
         "key": "prefix/uuid",
         "fields": [
-            {
-                "name": "dit_trajectory.latents.1",
-                "dtype": "bfloat16",
-                "shape": [4, 3],
-                "codec": "identity",
-                "nbytes": 24,
-            },
+            *(
+                {
+                    "name": f"dit_trajectory.latents.1.{step}",
+                    "dtype": "bfloat16",
+                    "shape": [4, 3],
+                    "codec": "identity",
+                    "nbytes": 24,
+                }
+                for step in (2, 3)
+            ),
             {
                 "name": "denoising_env.pos_cond_kwargs.pooled",
                 "dtype": "float32",
@@ -69,7 +72,7 @@ def test_store_markers_become_slices_of_the_response_ref():
         "request_id": "r",
         "output_store_ref": ref,
         "dit_trajectory": {
-            "latents": {"__store__": "dit_trajectory.latents.1"},
+            "latents": [{"__store__": "dit_trajectory.latents.1.2"}, {"__store__": "dit_trajectory.latents.1.3"}],
             "timesteps": {"__tensor__": True, "data": _tensor_bytes(torch.tensor([1.0, 0.0]))},
             "sigmas": None,
             "latent_step_indices": None,
@@ -86,8 +89,8 @@ def test_store_markers_become_slices_of_the_response_ref():
     sample = apply_rollout_image_response(Sample(index=0), body)
     assert sample.rollout_store_ref.key == "prefix/uuid"
     latents = sample.dit_trajectory.latents
-    assert isinstance(latents, StoreSlice) and latents.field == "dit_trajectory.latents.1" and latents.rows == ()
-    assert latents.shape == (4, 3)
+    assert all(isinstance(latent, StoredTensor) for latent in latents)
+    assert [latent.field for latent in latents] == ["dit_trajectory.latents.1.2", "dit_trajectory.latents.1.3"]
     assert torch.equal(sample.dit_trajectory.timesteps, torch.tensor([1.0, 0.0]))
     cond = sample.denoising_env.pos_cond_kwargs
     assert cond.encoder_hidden_states[0].field == "denoising_env.pos_cond_kwargs.encoder_hidden_states.0.1"

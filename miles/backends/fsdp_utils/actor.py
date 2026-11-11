@@ -18,7 +18,7 @@ from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.metric_buffer import MetricBuffer
 from miles.utils.metric_utils import compute_rollout_step
-from miles.utils.output_store import connect_output_store, materialize_store_slices, mooncake_client
+from miles.utils.output_store import connect_output_store, materialize_stored_tensors, mooncake_client
 from miles.utils.timer import Timer, inverse_timer, timer
 from miles.utils.tracking_utils import init_tracking
 from miles.utils.train_data_utils import (
@@ -332,7 +332,7 @@ class FSDPTrainRayActor(TrainRayActor):
             if self.args.debug_rollout_only:
                 return
             if self.args.use_output_store:
-                materialize_store_slices(rollout_data["train_data"], store=self._output_store)
+                materialize_stored_tensors(rollout_data["train_data"], store=self._output_store)
             self._train_core(rollout_id=rollout_id, rollout_data=rollout_data)
             if self.ema_optimizer is not None:
                 self.ema_optimizer.step(self.global_step)

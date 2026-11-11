@@ -6,7 +6,7 @@ import dataclasses
 import json
 from argparse import Namespace
 from collections.abc import Callable, Iterable, Iterator
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from miles.utils.types import Sample
@@ -93,36 +93,11 @@ def sweep_output_store(args: Namespace) -> int:
 
 
 @dataclass(frozen=True)
-class StoreSlice:
-    """Rows of one stored tensor; indexes like the tensor along its leading axis until a pair's row is fixed."""
+class StoredTensor:
+    """One stored field; the trainer reads it back into its tensor."""
 
     ref: StoreRef
     field: str
-    rows: tuple[int, ...] = ()
-    select: tuple[int, ...] | None = None
-
-    @property
-    def shape(self) -> tuple[int, ...]:
-        shape = next(spec.shape for spec in self.ref.fields if spec.name == self.field)[len(self.rows) :]
-        return shape if self.select is None else (len(self.select),) + shape[1:]
-
-    def __getitem__(self, index) -> StoreSlice:
-        size = self.shape[0]
-        if isinstance(index, int):
-            index = _row_index(index, size)
-            if self.select is None:
-                return replace(self, rows=self.rows + (index,))
-            return replace(self, rows=self.rows + (self.select[index],), select=None)
-        selected = tuple(_row_index(int(i), size) for i in index)
-        if self.select is not None:
-            selected = tuple(self.select[i] for i in selected)
-        return replace(self, select=selected)
-
-
-def _row_index(index: int, size: int) -> int:
-    if not -size <= index < size:
-        raise IndexError(f"row {index} is out of range for {size} rows")
-    return index + size if index < 0 else index
 
 
 def store_refs_of(samples: Iterable[Any]) -> dict[str, StoreRef]:
@@ -151,13 +126,13 @@ def take_dropped_refs() -> dict[str, StoreRef]:
     return refs
 
 
-def materialize_store_slices(train_pairs: list[dict[str, Any]], *, store: OutputStore) -> None:
-    """Replace every StoreSlice in the pairs with its rows of the stored tensor; each object is read once."""
+def materialize_stored_tensors(train_pairs: list[dict[str, Any]], *, store: OutputStore) -> None:
+    """Replace every StoredTensor in the pairs with its tensor; each object is read once."""
     from radix_transfer_plugins.stashes.tensor_stash import TensorStash
 
     wanted: dict[str, tuple[StoreRef, set[str]]] = {}
-    for store_slice in _slices(train_pairs):
-        wanted.setdefault(store_slice.ref.key, (store_slice.ref, set()))[1].add(store_slice.field)
+    for stored in _stored_tensors(train_pairs):
+        wanted.setdefault(stored.ref.key, (stored.ref, set()))[1].add(stored.field)
     if not wanted:
         return
     requests = [(ref, sorted(fields)) for ref, fields in wanted.values()]
@@ -167,41 +142,35 @@ def materialize_store_slices(train_pairs: list[dict[str, Any]], *, store: Output
         for (ref, _), stash in zip(requests, stashes, strict=True)
         for name, tensor in stash.tensors.items()
     }
-    _map_slices(train_pairs, lambda store_slice: _rows(tensors[(store_slice.ref.key, store_slice.field)], store_slice))
+    _map_stored_tensors(train_pairs, lambda stored: tensors[(stored.ref.key, stored.field)])
 
 
-def _rows(tensor: Any, store_slice: StoreSlice) -> Any:
-    for row in store_slice.rows:
-        tensor = tensor[row]
-    return tensor if store_slice.select is None else tensor[list(store_slice.select)]
-
-
-def _slices(obj: Any) -> Iterator[StoreSlice]:
-    if isinstance(obj, StoreSlice):
+def _stored_tensors(obj: Any) -> Iterator[StoredTensor]:
+    if isinstance(obj, StoredTensor):
         yield obj
     elif isinstance(obj, dict):
         for value in obj.values():
-            yield from _slices(value)
+            yield from _stored_tensors(value)
     elif isinstance(obj, list):
         for value in obj:
-            yield from _slices(value)
+            yield from _stored_tensors(value)
     elif dataclasses.is_dataclass(obj) and not isinstance(obj, type):
         for value in vars(obj).values():
-            yield from _slices(value)
+            yield from _stored_tensors(value)
 
 
-def _map_slices(obj: Any, fn: Callable[[StoreSlice], Any]) -> Any:
-    """Replace the slices under ``obj`` in place; dicts, lists and dataclasses are shared by the pairs of a sample."""
-    if isinstance(obj, StoreSlice):
+def _map_stored_tensors(obj: Any, fn: Callable[[StoredTensor], Any]) -> Any:
+    """Replace the stored tensors under ``obj`` in place; dicts, lists and dataclasses are shared by the pairs of a sample."""
+    if isinstance(obj, StoredTensor):
         return fn(obj)
     if isinstance(obj, dict):
         for key, value in obj.items():
-            obj[key] = _map_slices(value, fn)
+            obj[key] = _map_stored_tensors(value, fn)
     elif isinstance(obj, list):
         for i, value in enumerate(obj):
-            obj[i] = _map_slices(value, fn)
+            obj[i] = _map_stored_tensors(value, fn)
     elif dataclasses.is_dataclass(obj) and not isinstance(obj, type):
         fields = vars(obj)
         for name, value in fields.items():
-            fields[name] = _map_slices(value, fn)
+            fields[name] = _map_stored_tensors(value, fn)
     return obj
