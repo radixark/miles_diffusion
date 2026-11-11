@@ -12,8 +12,15 @@ Only first derivatives are implemented; scalar work is done in float64.
 from __future__ import annotations
 
 import math
+from typing import TYPE_CHECKING
 
 import torch
+
+from miles.utils.metric_buffer import MetricBuffer
+from miles.utils.train_data_utils import stack_train_pair_rollout_debug
+
+if TYPE_CHECKING:
+    from miles.backends.fsdp_utils.sde_step_backend import SdeStepOutput
 
 
 def _exp_difference(log_left: torch.Tensor, log_right: torch.Tensor) -> torch.Tensor:
@@ -171,3 +178,43 @@ def gaussian_score_center(
         "score_center_density_abs_diff": density_abs_diff,
     }
     return center, metrics
+
+
+def score_centering_term(
+    batch: list[dict],
+    step_out: SdeStepOutput,
+    rollout_prev_mean: torch.Tensor | None,
+    *,
+    next_latents: torch.Tensor,
+    log_ratio: torch.Tensor,
+    advantage: torch.Tensor,
+    clip_range: float,
+    loss_dtype: torch.dtype,
+    metrics: MetricBuffer,
+) -> torch.Tensor:
+    """Per-pair term to add to the clipped PPO loss for --diffusion-score-centering.
+
+    It is zero-valued, so the logged loss and the clip mask are unchanged; only the gradient moves.
+    ``rollout_prev_mean`` is the stacked ``rollout_step_prev_sample_mean``, already on ``step_out``'s
+    device in float32.
+    """
+    rollout_noise_std = stack_train_pair_rollout_debug(batch, "rollout_step_noise_std_dev")
+    if rollout_prev_mean is None or rollout_noise_std is None:
+        raise ValueError(
+            "--diffusion-score-centering needs the rollout's per-step prev-sample means and noise stds; "
+            "these rollouts carry none (run with --diffusion-debug-mode)"
+        )
+    center, centering_metrics = gaussian_score_center(
+        prev_mean=step_out.prev_mean,
+        rollout_prev_mean=rollout_prev_mean,
+        noise_std=step_out.noise_std,
+        rollout_noise_std=rollout_noise_std.to(step_out.prev_mean.device),
+        next_latents=next_latents,
+        log_ratio=log_ratio,
+        advantage=advantage,
+        clip_range=clip_range,
+    )
+    with torch.no_grad():
+        for key, values in centering_metrics.items():
+            metrics.emit_mean(key, total=values.sum(), count=len(batch))
+    return advantage * (center - center.detach()).to(loss_dtype)

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import torch
 
-from miles.backends.fsdp_utils.loss_hub.score_centering import gaussian_score_center
+from miles.backends.fsdp_utils.loss_hub.score_centering import score_centering_term
 from miles.backends.fsdp_utils.loss_hub.types import DiffusionLossContext, PreparedBatch
-from miles.backends.fsdp_utils.metrics import record_rollout_train_abs_diff
+from miles.backends.fsdp_utils.metrics import record_prev_mean_diff_over_noise_std, record_rollout_train_abs_diff
 from miles.utils.metric_buffer import MetricBuffer
 from miles.utils.train_data_utils import stack_train_pair_rollout_debug
 
@@ -155,26 +155,18 @@ def flow_grpo_loss_formula(
     rollout_prev_mean = stack_train_pair_rollout_debug(batch, "rollout_step_prev_sample_mean")
     if rollout_prev_mean is not None:
         rollout_prev_mean = rollout_prev_mean.to(device=step_out.prev_mean.device, dtype=torch.float32)
-    centering_metrics = {}
     if args.diffusion_score_centering:
-        rollout_noise_std = stack_train_pair_rollout_debug(batch, "rollout_step_noise_std_dev")
-        if rollout_prev_mean is None or rollout_noise_std is None:
-            raise ValueError(
-                "--diffusion-score-centering needs the rollout's per-step prev-sample means and noise stds; "
-                "these rollouts carry none (run with --diffusion-debug-mode)"
-            )
-        center, centering_metrics = gaussian_score_center(
-            prev_mean=step_out.prev_mean,
-            rollout_prev_mean=rollout_prev_mean,
-            noise_std=step_out.noise_std,
-            rollout_noise_std=rollout_noise_std.to(step_out.prev_mean.device),
+        per_pair_loss = per_pair_loss + score_centering_term(
+            batch,
+            step_out,
+            rollout_prev_mean,
             next_latents=next_latents,
             log_ratio=log_prob_new - log_prob_old,
             advantage=prepared.advantage,
             clip_range=clip_range,
+            loss_dtype=per_pair_loss.dtype,
+            metrics=metrics,
         )
-        # Gradient-only term: the logged PPO loss keeps its value and its clip mask.
-        per_pair_loss = per_pair_loss + prepared.advantage * (center - center.detach()).to(per_pair_loss.dtype)
     loss_sum = per_pair_loss.sum()
     bsz = len(batch)
 
@@ -197,8 +189,6 @@ def flow_grpo_loss_formula(
         kl_sum = kl_per_pair.sum()
 
     with torch.no_grad():
-        for key, values in centering_metrics.items():
-            metrics.emit_mean(key, total=values.sum(), count=bsz)
         metrics.emit_mean("loss", total=loss_sum, count=bsz)
         metrics.emit_mean("policy_loss", total=per_pair_loss.sum(), count=bsz)
         metrics.emit_mean("kl_loss", total=kl_sum, count=bsz)
@@ -219,13 +209,7 @@ def flow_grpo_loss_formula(
             )
 
         if rollout_prev_mean is not None:
-            # flattened per pair like model_output, so logging never depends on the debug layout
-            noise_std = step_out.noise_std.reshape(bsz, -1)
-            mean_diff = rollout_prev_mean.reshape(bsz, -1) - step_out.prev_mean.reshape(bsz, -1)
-            diff_over_std = torch.where(noise_std > 0, mean_diff / noise_std, 0.0)
-            metrics.emit_mean(
-                "prev_mean_diff_over_noise_std", total=diff_over_std.pow(2).mean(dim=1).sqrt().sum(), count=bsz
-            )
+            record_prev_mean_diff_over_noise_std(metrics, rollout_prev_mean, step_out.prev_mean, step_out.noise_std)
 
         rollout_model_output = stack_train_pair_rollout_debug(batch, "rollout_step_model_output")
         if rollout_model_output is not None:
