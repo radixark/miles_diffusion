@@ -7,7 +7,8 @@ name: PR Test
 #     node-radixark-32-0000) split into (h200,3gpu) + (h200,5gpu) runners —
 #     stage-b (fast-gpu) and stage-c (e2e) only, no stage-c-8-gpu-h100.
 #   * `resolve-ci-image` resolves a `radixark/miles_diffusion:<tag>`
-#     container (default `latest`), overridable via the `ci-image-tag:`
+#     container (default `latest`, or the tag a release branch's
+#     release-lock.json freezes), overridable via the `ci-image-tag:`
 #     PR-body line or the `ci_image_tag` dispatch input.
 #   * `docker-paths` + `docker-build` build a `pr-<num>` image on docker PRs.
 #   * `ci_megatron_pr` workflow_dispatch input removed — miles-D source has
@@ -16,6 +17,11 @@ name: PR Test
 #     miles main's cron (catches drift in floating deps: sglang main tip,
 #     image `latest`, HF snapshots), and `--continue-on-error` so one failing
 #     test does not hide the rest of its suite.
+#   * `workflow_call` from release-branch-cut.yml: tests an exact commit inside
+#     a frozen image. The caller is always a workflow_dispatch, and the called
+#     run inherits that event name, so every job below takes the trusted,
+#     full-scope manual-dispatch path; `inputs.ref` / `inputs.ci_image_tag` only
+#     redirect what is checked out and which image the suites run in.
 
 on:
   pull_request:
@@ -27,26 +33,47 @@ on:
     - cron: '30 16 * * *'
   workflow_dispatch:
     inputs:
+      # empty defaults let a release branch's release-lock.json apply
       ci_sglang_pr:
-        description: 'SGLang branch/commit (default: sglang-miles)'
+        description: 'SGLang branch/commit (empty: release-lock.json if present, else sglang-miles)'
         required: false
         type: string
-        default: 'sglang-miles'
+        default: ''
       ci_sglang_repo:
-        description: 'SGLang repository owner/name (default: sgl-project/sglang)'
+        description: 'SGLang repository owner/name (empty: release-lock.json if present, else sgl-project/sglang)'
         required: false
         type: string
-        default: 'sgl-project/sglang'
+        default: ''
       ci_image_tag:
-        description: 'miles-diffusion Docker image tag (default: latest)'
+        description: 'miles-diffusion Docker image tag (empty: release-lock.json if present, else latest)'
         required: false
         type: string
-        default: 'latest'
+        default: ''
       continue_on_error:
         description: 'Keep running a suite after a test fails, as nightly does'
         required: false
         type: boolean
         default: false
+  workflow_call:
+    inputs:
+      ref:
+        description: 'Exact commit to test (e.g. the release branch tip the lockfile was committed on).'
+        required: true
+        type: string
+      ci_image_tag:
+        description: 'miles-diffusion Docker image tag to run the GPU suites in (the frozen release-vX.Y.Z-ci tag).'
+        required: true
+        type: string
+      nightly:
+        description: 'Also admit nightly-only tests: release CI takes the nightly scope.'
+        required: false
+        type: boolean
+        default: true
+      continue_on_error:
+        description: 'Keep running a GPU suite after a test fails (the CPU suites run pytest -x regardless).'
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -237,12 +264,23 @@ jobs:
     outputs:
       container_image: ${{ steps.resolve.outputs.container_image }}
     steps:
+      # Only the lockfile is needed: a release branch pins its CI image there.
+      - name: Checkout release lockfile
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha) }}
+          sparse-checkout: release-lock.json
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
       - name: Resolve CI image
         id: resolve
         shell: bash
         env:
           PR_BODY: ${{ github.event.pull_request.body || '' }}
-          INPUT_CI_IMAGE_TAG: ${{ github.event.inputs.ci_image_tag || '' }}
+          # In a workflow_call chain github.event.inputs are the caller's, so the
+          # frozen release tag arrives as inputs.ci_image_tag.
+          INPUT_CI_IMAGE_TAG: ${{ inputs.ci_image_tag || github.event.inputs.ci_image_tag || '' }}
           DOCKER_BUILT: ${{ needs.docker-build.result == 'success' }}
           PR_NUMBER: ${{ github.event.pull_request.number || '' }}
         run: |
@@ -252,6 +290,12 @@ jobs:
           if [ -n "$PR_BODY" ]; then
             PR_CI_IMAGE_TAG=$(echo "$PR_BODY" | grep -m1 -oP '^ci-image-tag:\s+\K\S+' || true)
             [ -z "$CI_IMAGE_TAG" ] && [ -n "$PR_CI_IMAGE_TAG" ] && CI_IMAGE_TAG="$PR_CI_IMAGE_TAG"
+          fi
+          # release-lock.json pins a release branch's CI image; `latest` moves on
+          # every main push touching docker files.
+          if [ -z "$CI_IMAGE_TAG" ] && [ -f release-lock.json ]; then
+            CI_IMAGE_TAG=$(python3 -c "import json; print(json.load(open('release-lock.json'))['ci_image_tag'])")
+            echo "release-lock.json present: image tag ${CI_IMAGE_TAG}"
           fi
           [ -z "$CI_IMAGE_TAG" ] && CI_IMAGE_TAG="latest"
           if [[ ! "$CI_IMAGE_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
@@ -268,12 +312,13 @@ jobs:
     if: needs.ci-gate.outputs.authorized == 'true'
     uses: ./.github/workflows/_run-ci.yml
     with:
+      ref: ${{ inputs.ref || '' }}
       cpu_runner: true
       execute_command: >-
         python tests/ci/run_suite.py --hw cpu --suite stage-a-cpu
         --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
         ${{ (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || needs.ci-gate.outputs.docs_only == 'true' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
-        ${{ github.event_name == 'schedule' && '--nightly' || '' }}
+        ${{ (github.event_name == 'schedule' || inputs.nightly) && '--nightly' || '' }}
         ${{ (github.event_name == 'schedule' || inputs.continue_on_error) && '--continue-on-error' || '' }}
     secrets: inherit
 
@@ -285,12 +330,13 @@ jobs:
     if: needs.ci-gate.outputs.authorized == 'true' && needs.stage-a-cpu.result == 'success'
     uses: ./.github/workflows/_run-ci.yml
     with:
+      ref: ${{ inputs.ref || '' }}
       cpu_runner: true
       execute_command: >-
         python tests/ci/run_suite.py --hw cpu --suite stage-b-cpu
         --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
         ${{ (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || needs.ci-gate.outputs.docs_only == 'true' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
-        ${{ github.event_name == 'schedule' && '--nightly' || '' }}
+        ${{ (github.event_name == 'schedule' || inputs.nightly) && '--nightly' || '' }}
         ${{ (github.event_name == 'schedule' || inputs.continue_on_error) && '--continue-on-error' || '' }}
     secrets: inherit
 
@@ -309,6 +355,7 @@ jobs:
       ((github.event_name == 'workflow_dispatch') || (github.event_name == 'schedule') || (github.event.pull_request))
     uses: ./.github/workflows/_run-ci.yml
     with:
+      ref: ${{ inputs.ref || '' }}
       # Suite names match the runner split: 3gpu (GPUs 0-2) + 5gpu (GPUs 3-7).
       runs_on: '["h200", "3gpu"]'
       container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
@@ -316,7 +363,7 @@ jobs:
         python tests/ci/run_suite.py --hw cuda --suite stage-b-3-gpu-h200
         --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
         ${{ (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
-        ${{ github.event_name == 'schedule' && '--nightly' || '' }}
+        ${{ (github.event_name == 'schedule' || inputs.nightly) && '--nightly' || '' }}
         ${{ (github.event_name == 'schedule' || inputs.continue_on_error) && '--continue-on-error' || '' }}
     secrets: inherit
 
@@ -332,13 +379,14 @@ jobs:
       ((github.event_name == 'workflow_dispatch') || (github.event_name == 'schedule') || (github.event.pull_request))
     uses: ./.github/workflows/_run-ci.yml
     with:
+      ref: ${{ inputs.ref || '' }}
       runs_on: '["h200", "5gpu"]'
       container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
       execute_command: >-
         python tests/ci/run_suite.py --hw cuda --suite stage-b-5-gpu-h200
         --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
         ${{ (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
-        ${{ github.event_name == 'schedule' && '--nightly' || '' }}
+        ${{ (github.event_name == 'schedule' || inputs.nightly) && '--nightly' || '' }}
         ${{ (github.event_name == 'schedule' || inputs.continue_on_error) && '--continue-on-error' || '' }}
     secrets: inherit
 
@@ -366,13 +414,14 @@ jobs:
           !contains(github.event.pull_request.labels.*.name, 'skip-ci-stage-c')))
     uses: ./.github/workflows/_run-ci.yml
     with:
+      ref: ${{ inputs.ref || '' }}
       runs_on: '["h200", "3gpu"]'
       container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
       execute_command: >-
         python tests/ci/run_suite.py --hw cuda --suite stage-c-3-gpu-h200
         --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
         ${{ (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
-        ${{ github.event_name == 'schedule' && '--nightly' || '' }}
+        ${{ (github.event_name == 'schedule' || inputs.nightly) && '--nightly' || '' }}
         ${{ (github.event_name == 'schedule' || inputs.continue_on_error) && '--continue-on-error' || '' }}
     secrets: inherit
 
@@ -388,12 +437,13 @@ jobs:
           !contains(github.event.pull_request.labels.*.name, 'skip-ci-stage-c')))
     uses: ./.github/workflows/_run-ci.yml
     with:
+      ref: ${{ inputs.ref || '' }}
       runs_on: '["h200", "5gpu"]'
       container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
       execute_command: >-
         python tests/ci/run_suite.py --hw cuda --suite stage-c-5-gpu-h200
         --labels ${{ join(github.event.pull_request.labels.*.name, ' ') }}
         ${{ (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || contains(github.event.pull_request.labels.*.name, 'run-ci-image') || contains(github.event.pull_request.labels.*.name, 'run-ci-all')) && '--match-all-labels' || '' }}
-        ${{ github.event_name == 'schedule' && '--nightly' || '' }}
+        ${{ (github.event_name == 'schedule' || inputs.nightly) && '--nightly' || '' }}
         ${{ (github.event_name == 'schedule' || inputs.continue_on_error) && '--continue-on-error' || '' }}
     secrets: inherit
