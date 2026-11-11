@@ -104,7 +104,7 @@ def test_t2va_prediction_matches_the_sft_target_and_skips_padding_rows():
         device=torch.device("cpu"),
     )
     batch = [{"latent": {"visual": torch.ones(3, 96)}, "cond_kwargs": cond}]
-    prepared = prepare_sft_batch(context, batch)
+    prepared = prepare_sft_batch(context, batch, microbatch_id=0, optim_step_idx=0)
     prediction = config.compute_noise_pred(
         model=context.models["transformer"],
         latents_input=prepared.latents,
@@ -125,7 +125,15 @@ def test_t2va_prediction_matches_the_sft_target_and_skips_padding_rows():
     assert inputs["timestep_indices"].shape == (7,)
     metrics = new_metric_buffer(None, torch.device("cpu"), ["transformer"], sigma_buckets=5)
     loss = sft_loss_formula(
-        context, batch, prepared, new_pred=prediction, old_pred=None, ref_pred=None, metrics=metrics
+        context,
+        batch,
+        prepared,
+        new_pred=prediction,
+        old_pred=None,
+        ref_pred=None,
+        metrics=metrics,
+        optim_step_idx=0,
+        train_output_inputs=[],
     )
     assert torch.isfinite(loss) and loss.item() > 0
 
@@ -405,7 +413,7 @@ def test_real_tiny_diffusers_h3_joint_sft_forward_and_backward(forward_dtype):
         forward_dtype=forward_dtype,
         device=torch.device("cpu"),
     )
-    prepared = prepare_sft_batch(context, batch)
+    prepared = prepare_sft_batch(context, batch, microbatch_id=0, optim_step_idx=0)
     autocast_enabled = forward_dtype != torch.float32 and config.enable_autocast
     with torch.autocast("cpu", dtype=forward_dtype, enabled=autocast_enabled):
         prediction = config.compute_noise_pred(
@@ -426,7 +434,15 @@ def test_real_tiny_diffusers_h3_joint_sft_forward_and_backward(forward_dtype):
     }
     metrics = new_metric_buffer(None, torch.device("cpu"), ["transformer_ref"], sigma_buckets=5)
     loss = sft_loss_formula(
-        context, batch, prepared, new_pred=prediction, old_pred=None, ref_pred=None, metrics=metrics
+        context,
+        batch,
+        prepared,
+        new_pred=prediction,
+        old_pred=None,
+        ref_pred=None,
+        metrics=metrics,
+        optim_step_idx=0,
+        train_output_inputs=[],
     )
     assert torch.isfinite(loss) and loss.item() > 0
     assert prepared.extras["target"]["visual"].dtype == torch.float32

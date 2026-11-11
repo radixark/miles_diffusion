@@ -18,6 +18,8 @@ def prepare_critic_batch(
     ctx: DiffusionLossContext,
     batch: list[dict],
     *,
+    microbatch_id: int,
+    optim_step_idx: int,
     pad_to_len: int | None = None,
 ) -> PreparedBatch:
     """SFT flow matching on the student's x0 predictions, conditioned on their rollout prompts.
@@ -33,12 +35,19 @@ def prepare_critic_batch(
         for pair in batch
     ]
     grid_index_range = None
-    if _is_scoring_step(ctx):
+    if _is_scoring_step(ctx, optim_step_idx):
         min_sigma, max_sigma = ctx.args.dmd2_score_sigma_range
         num_train_timesteps = config.num_train_timesteps
         # Grid index i carries the unshifted sigma 1 - i / num_train_timesteps.
         grid_index_range = (round(num_train_timesteps * (1 - max_sigma)), round(num_train_timesteps * (1 - min_sigma)))
-    return prepare_sft_batch(ctx, sft_batch, pad_to_len=pad_to_len, grid_index_range=grid_index_range)
+    return prepare_sft_batch(
+        ctx,
+        sft_batch,
+        microbatch_id=microbatch_id,
+        optim_step_idx=optim_step_idx,
+        pad_to_len=pad_to_len,
+        grid_index_range=grid_index_range,
+    )
 
 
 def critic_loss_formula(
@@ -50,6 +59,8 @@ def critic_loss_formula(
     old_pred: dict[str, torch.Tensor] | None,
     ref_pred: dict[str, torch.Tensor] | None,
     metrics: MetricBuffer,
+    optim_step_idx: int,
+    train_output_inputs: list,
     write_old_log_prob: bool = False,
     old_log_prob_from_new: bool = False,
 ) -> torch.Tensor:
@@ -59,9 +70,9 @@ def critic_loss_formula(
     """
     latents = prepared.latents["visual"]
     sigmas = prepared.extras["sigmas"]["visual"].view(len(batch), *([1] * (latents.ndim - 1)))
-    if _is_scoring_step(ctx):
+    if _is_scoring_step(ctx, optim_step_idx):
         x0_fake = latents - sigmas * new_pred["visual"].detach().float()
-        ctx.train_output_inputs.append(
+        train_output_inputs.append(
             (batch, prepared.component_name, latents, prepared.timesteps["visual"], sigmas, x0_fake)
         )
     if ctx.args.dmd2_critic_loss_space == "x0":
@@ -77,15 +88,19 @@ def critic_loss_formula(
         old_pred=old_pred,
         ref_pred=ref_pred,
         metrics=metrics,
+        optim_step_idx=optim_step_idx,
+        train_output_inputs=train_output_inputs,
         write_old_log_prob=write_old_log_prob,
         old_log_prob_from_new=old_log_prob_from_new,
     )
 
 
-def score_last_step_samples(ctx: DiffusionLossContext, train_pairs: list[dict]) -> dict[int, dict]:
+def score_last_step_samples(
+    ctx: DiffusionLossContext, train_pairs: list[dict], train_output_inputs: list
+) -> dict[int, dict]:
     """The teacher's x0 at each scored sample's noisy input, next to the critic's x0 kept there, by sample."""
     predictions = {}
-    for batch, component_name, latents, timesteps, sigmas, x0_fake in ctx.train_output_inputs:
+    for batch, component_name, latents, timesteps, sigmas, x0_fake in train_output_inputs:
         teacher = ctx.teacher_models[component_name]
         real_pred = _predict_velocity(ctx, teacher, batch, latents, timesteps, ctx.args.dmd2_teacher_guidance_scale)
         for pair, x0_real, fake in zip(batch, latents - sigmas * real_pred, x0_fake, strict=True):
@@ -97,8 +112,8 @@ def score_last_step_samples(ctx: DiffusionLossContext, train_pairs: list[dict]) 
     return predictions
 
 
-def _is_scoring_step(ctx: DiffusionLossContext) -> bool:
-    return ctx.optim_step_idx == ctx.args.num_steps_per_rollout - 1
+def _is_scoring_step(ctx: DiffusionLossContext, optim_step_idx: int) -> bool:
+    return optim_step_idx == ctx.args.num_steps_per_rollout - 1
 
 
 def _predict_velocity(
@@ -171,9 +186,15 @@ def prepare_generator_batch(
     ctx: DiffusionLossContext,
     batch: list[dict],
     *,
+    microbatch_id: int,
+    optim_step_idx: int,
     pad_to_len: int | None = None,
 ) -> PreparedBatch:
-    """The student's step ``i`` on its own rollout input ``x_i``, unguided."""
+    """The student's step ``i`` on its own rollout input ``x_i``, unguided.
+
+    The pairs carry their own noise, so ``microbatch_id`` and ``optim_step_idx`` are part of every prepare hook's
+    signature and unused here.
+    """
     if len(ctx.models) != 1:
         raise ValueError("DMD2 currently supports a single DiT component")
     device = ctx.device
@@ -211,6 +232,8 @@ def dmd2_loss_formula(
     old_pred: dict[str, torch.Tensor] | None,
     ref_pred: dict[str, torch.Tensor] | None,
     metrics: MetricBuffer,
+    optim_step_idx: int,
+    train_output_inputs: list,
     write_old_log_prob: bool = False,
     old_log_prob_from_new: bool = False,
 ) -> torch.Tensor:

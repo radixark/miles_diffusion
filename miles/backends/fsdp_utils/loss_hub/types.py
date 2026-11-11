@@ -10,9 +10,12 @@ import torch
 import torch.nn as nn
 
 
-@dataclass
+@dataclass(frozen=True, eq=False)
 class DiffusionLossContext:
-    """Train-side handles for prepare and loss hooks."""
+    """Rollout-level, read-only handles for the loss hooks; what changes per micro-batch travels as arguments.
+
+    Compared by identity: nothing hashes a context, and a synthesized hash would fail on the dict fields.
+    """
 
     models: dict[str, torch.nn.Module]
     train_pipeline_config: Any
@@ -21,14 +24,10 @@ class DiffusionLossContext:
     forward_dtype: torch.dtype
     device: torch.device
     rollout_id: int = 0
-    microbatch_id: int = 0
-    optim_step_idx: int = 0
     dp_rank: int = 0
     reference_models: dict[str, torch.nn.Module] = field(default_factory=dict)
     teacher_models: dict[str, torch.nn.Module] = field(default_factory=dict)
     external_data: dict[str, Any] = field(default_factory=dict)
-    # Filled by loss hooks during one train call and read by the train-output hook.
-    train_output_inputs: list[Any] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

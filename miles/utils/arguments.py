@@ -960,7 +960,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help=(
                     "Dotted path to prepare hook "
-                    "`fn(ctx, batch, *, pad_to_len=None) -> PreparedBatch`. "
+                    "`fn(ctx, batch, *, microbatch_id, optim_step_idx, pad_to_len=None) -> PreparedBatch`. "
                     "Builds DiT inputs; --loss-type custom_loss only, default is Flow-GRPO SDE-pair stacking."
                 ),
             )
@@ -991,8 +991,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help=(
-                    "Dotted path to `fn(ctx, train_pairs) -> Any`, run without grad after the train steps of "
-                    "a rollout. Its return value reaches the paired rank of every trainer group that trains "
+                    "Dotted path to `fn(ctx, train_pairs, train_output_inputs) -> Any`, run without grad after the "
+                    "train steps of a rollout with the list the loss formula filled. Its return value reaches the paired rank of every trainer group that trains "
                     "later on the same rollout as `ctx.external_data[<role>]`. --loss-type custom_loss only."
                 ),
             )
@@ -2038,6 +2038,8 @@ def validate_dmd2_args(args) -> None:
         )
     if args.ref_mode != "none":
         raise ValueError("--loss-type dmd2 uses no reference model; drop --ref-mode and --diffusion-kl-beta")
+    if args.diffusion_recompute_old_log_prob:
+        raise ValueError("--diffusion-recompute-old-log-prob is only supported for policy_loss / Flow-GRPO, not DMD2")
     if args.num_steps_per_rollout != 1:
         raise ValueError(
             f"--loss-type dmd2 takes one actor step per rollout, got --num-steps-per-rollout "

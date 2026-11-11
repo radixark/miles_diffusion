@@ -158,9 +158,14 @@ def make_actor_forward_harness(
         true_cfg_scale=None,
     )
 
+    def prepare(ctx, batch, **kwargs):
+        observed["prepare_kwargs"] = kwargs
+        return prepared
+
     def loss_formula(ctx, batch, prepared, *, new_pred, old_pred, ref_pred, **kwargs):
         predictions = {"new_pred": new_pred, "old_pred": old_pred, "ref_pred": ref_pred}
         observed.update({name: pred["visual"] for name, pred in predictions.items() if pred is not None})
+        observed["formula_kwargs"] = kwargs
         return (new_pred["visual"] - ref_pred["visual"]).square().mean()
 
     harness = SimpleNamespace(
@@ -171,7 +176,7 @@ def make_actor_forward_harness(
         reference_models=reference_models,
         train_pipeline_config=TinyPipelineConfig(),
         _forward_dtype=torch.float32,
-        loss_hooks=SimpleNamespace(prepare=lambda *args, **kwargs: prepared, formula=loss_formula),
+        loss_hooks=SimpleNamespace(prepare=prepare, formula=loss_formula),
     )
     return harness, observed
 
@@ -259,7 +264,15 @@ def test_loaded_reference_and_teacher_are_independent_and_frozen(
             teacher_output = teacher[component](inputs)
         assert not torch.equal(target, teacher_output)
         harness, observed = make_actor_forward_harness(actor, reference, component, inputs, "ref")
-        load_actor_forward_method()(harness, None, [], metrics=None).backward()
+        load_actor_forward_method()(
+            harness,
+            None,
+            [],
+            microbatch_id=0,
+            optim_step_idx=0,
+            train_output_inputs=[],
+            metrics=None,
+        ).backward()
         oracle_output = oracle(inputs)
         (oracle_output - target).square().mean().backward()
         torch.testing.assert_close(observed["new_pred"], oracle_output)
@@ -299,7 +312,15 @@ def test_lora_base_forward_restores_adapters_and_actor_gradients(tmp_path, unsha
     with torch.no_grad():
         target = base(inputs)
     harness, observed = make_actor_forward_harness(actor, {}, component, inputs, "lora_base")
-    load_actor_forward_method()(harness, None, [], metrics=None).backward()
+    load_actor_forward_method()(
+        harness,
+        None,
+        [],
+        microbatch_id=0,
+        optim_step_idx=0,
+        train_output_inputs=[],
+        metrics=None,
+    ).backward()
     oracle_output = oracle(inputs)
     (oracle_output - target).square().mean().backward()
     torch.testing.assert_close(observed["ref_pred"], target)
@@ -353,7 +374,15 @@ def test_lora_base_reference_keeps_adapter_gradients_on_fsdp_shards():
             harness, _ = make_actor_forward_harness(
                 {"transformer": model}, {}, "transformer", torch.ones(2, 3), "lora_base"
             )
-            forward(harness, None, [], metrics=None).backward()
+            forward(
+                harness,
+                None,
+                [],
+                microbatch_id=0,
+                optim_step_idx=0,
+                train_output_inputs=[],
+                metrics=None,
+            ).backward()
             for name, parameter in adapter_parameters.items():
                 assert parameter.requires_grad and parameter.grad is not None, (step, name)
             model.zero_grad(set_to_none=True)
@@ -390,7 +419,15 @@ def test_nft_gets_ema_as_old_and_lora_base_as_kl_reference(tmp_path, unsharded_m
     harness, observed = make_actor_forward_harness(
         actor, {}, component, inputs, "lora_base", loss_type="nft", ema_optimizer=ema_optimizer
     )
-    load_actor_forward_method()(harness, None, [], metrics=None)
+    load_actor_forward_method()(
+        harness,
+        None,
+        [],
+        microbatch_id=0,
+        optim_step_idx=0,
+        train_output_inputs=[],
+        metrics=None,
+    )
     torch.testing.assert_close(observed["new_pred"], expected_new)
     torch.testing.assert_close(observed["old_pred"], expected_old)
     torch.testing.assert_close(observed["ref_pred"], expected_ref)
@@ -452,3 +489,25 @@ def test_ipc_publication_uses_loaded_adapter_config(tmp_path, unsharded_model_lo
     namespace[method.name](harness, [("block.proj.lora_A.weight", torch.ones(2, 3))], "transformer")
     assert len(sent) == 1
     assert sent[0]["lora_rank"] == 2 and sent[0]["lora_alpha"] == 4
+
+
+def test_the_trunk_hands_the_hooks_their_own_counters_and_the_one_list():
+    model = torch.nn.Linear(3, 3)
+    harness, observed = make_actor_forward_harness(
+        {"block": model}, {"block": model}, "block", torch.ones(2, 3), "ref"
+    )
+    train_output_inputs = []
+
+    load_actor_forward_method()(
+        harness,
+        None,
+        [],
+        microbatch_id=7,
+        optim_step_idx=2,
+        train_output_inputs=train_output_inputs,
+        metrics=None,
+    )
+
+    assert observed["prepare_kwargs"] == {"microbatch_id": 7, "optim_step_idx": 2, "pad_to_len": None}
+    assert observed["formula_kwargs"]["optim_step_idx"] == 2
+    assert observed["formula_kwargs"]["train_output_inputs"] is train_output_inputs

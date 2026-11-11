@@ -80,7 +80,7 @@ def test_the_table_has_no_other_entries():
 
 
 def test_custom_loss_loads_every_path():
-    def prepare(ctx, batch, *, pad_to_len=None):
+    def prepare(ctx, batch, *, microbatch_id, optim_step_idx, pad_to_len=None):
         pass
 
     def formula(ctx, batch, prepared, **kwargs):
@@ -89,7 +89,7 @@ def test_custom_loss_loads_every_path():
     def train_input(ctx, train_pairs):
         pass
 
-    def train_output(ctx, train_pairs):
+    def train_output(ctx, train_pairs, train_output_inputs):
         pass
 
     args = _custom_args(

@@ -370,6 +370,7 @@ class FSDPTrainRayActor(TrainRayActor):
         )
         if self.loss_hooks.train_input is not None:
             train_pairs = self.loss_hooks.train_input(loss_ctx, train_pairs)
+        train_output_inputs: list = []  # one list per train call
 
         num_pairs = len(train_pairs)
 
@@ -409,27 +410,28 @@ class FSDPTrainRayActor(TrainRayActor):
                     sigma_buckets=self.args.log_loss_sigma_bucket,
                 )
                 # Skip window 0: its training forward runs on the same pre-update weights and doubles as the recompute.
-                # Start the id after window 0's micro-batches to stay aligned with the training loop.
+                # Each later window's micro-batches get the ids and step index of their training forwards.
                 microbatch_id = len(microbatch_schedule[0])
-                for microbatch_ranges in microbatch_schedule[1:]:
+                for optim_step_idx, microbatch_ranges in enumerate(microbatch_schedule[1:], 1):
                     legacy_pad_to_len = self._maybe_legacy_window_pad_len(train_pairs, microbatch_ranges)
                     for pair_lo, pair_hi in microbatch_ranges:
-                        loss_ctx.microbatch_id = microbatch_id
-                        microbatch_id += 1
                         self._forward_train_pair_batch(
                             loss_ctx,
                             train_pairs[pair_lo:pair_hi],
+                            microbatch_id=microbatch_id,
+                            optim_step_idx=optim_step_idx,
+                            train_output_inputs=train_output_inputs,
                             metrics=unused_metrics,
                             pad_to_len=legacy_pad_to_len,
                             write_old_log_prob=True,
                         )
+                        microbatch_id += 1
 
         # ------------- Forward / Backward -------------
         with timer("actor_train"):
             microbatch_id = 0
             for optim_step_idx, microbatch_ranges in enumerate(microbatch_schedule):
                 self.optimizer.zero_grad(set_to_none=True)
-                loss_ctx.optim_step_idx = optim_step_idx
 
                 old_log_prob_from_new = self.args.diffusion_recompute_old_log_prob and optim_step_idx == 0
 
@@ -448,15 +450,17 @@ class FSDPTrainRayActor(TrainRayActor):
 
                 for pair_lo, pair_hi in microbatch_ranges:
                     chunk = train_pairs[pair_lo:pair_hi]
-                    loss_ctx.microbatch_id = microbatch_id
-                    microbatch_id += 1
                     loss_sum = self._forward_train_pair_batch(
                         loss_ctx,
                         chunk,
+                        microbatch_id=microbatch_id,
+                        optim_step_idx=optim_step_idx,
+                        train_output_inputs=train_output_inputs,
                         metrics=metrics,
                         pad_to_len=legacy_pad_to_len,
                         old_log_prob_from_new=old_log_prob_from_new,
                     )
+                    microbatch_id += 1
                     if not self.args.debug_skip_optimizer_step:
                         # ShardedGradScaler keeps fp16 policy grads from underflowing
                         # (required for SD3.5 fp16 forward); no-op for bf16/fp32.
@@ -488,7 +492,7 @@ class FSDPTrainRayActor(TrainRayActor):
 
         if self.loss_hooks.train_output is not None:
             with torch.no_grad():
-                return self.loss_hooks.train_output(loss_ctx, train_pairs)
+                return self.loss_hooks.train_output(loss_ctx, train_pairs, train_output_inputs)
 
     def _maybe_legacy_window_pad_len(self, train_pairs: list, microbatch_ranges: list) -> int | None:
         """LEGACY 2D parity: the whole-window max cond seq_len (like the legacy tile path), or
@@ -509,13 +513,19 @@ class FSDPTrainRayActor(TrainRayActor):
         ctx: DiffusionLossContext,
         batch: list,
         *,
+        microbatch_id: int,
+        optim_step_idx: int,
+        train_output_inputs: list,
         metrics: MetricBuffer,
         pad_to_len: int | None = None,
         write_old_log_prob: bool = False,
         old_log_prob_from_new: bool = False,
     ) -> torch.Tensor | None:
-        """Run one prepared diffusion micro-batch."""
-        prepared = self.loss_hooks.prepare(ctx, batch, pad_to_len=pad_to_len)
+        """Run one prepared diffusion micro-batch: number ``microbatch_id`` of the rollout, in optimizer step
+        ``optim_step_idx``."""
+        prepared = self.loss_hooks.prepare(
+            ctx, batch, microbatch_id=microbatch_id, optim_step_idx=optim_step_idx, pad_to_len=pad_to_len
+        )
         train_pipeline_config = self.train_pipeline_config
         forward_dtype = self._forward_dtype
 
@@ -574,6 +584,8 @@ class FSDPTrainRayActor(TrainRayActor):
             old_pred=old_pred,
             ref_pred=ref_pred,
             metrics=metrics,
+            optim_step_idx=optim_step_idx,
+            train_output_inputs=train_output_inputs,
             write_old_log_prob=write_old_log_prob,
             old_log_prob_from_new=old_log_prob_from_new,
         )

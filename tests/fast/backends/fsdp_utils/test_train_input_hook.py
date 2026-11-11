@@ -3,11 +3,14 @@
     train pairs (the converted rollout output) + ctx (external_data from earlier groups)
         --train-input hook (filter / reorder / rewrite)--> preprocessed pairs
     preprocessed pairs --> micro-batch schedule --> training forwards, in order
-    preprocessed pairs --> train-output hook (the same ctx)
+    preprocessed pairs --> train-output hook (the same ctx, the list the forwards filled)
     no hook            --> the converted train pairs, as before
 
+The trunk numbers each forward: ``microbatch_id`` counts the rollout's micro-batches, ``optim_step_idx`` is the
+window; the old-log-prob recompute of windows 1.. reuses their training forwards' numbers.
+
 The production _train_core runs on CPU with the forward, metrics and rank checks replaced; the
-optimizer step is skipped, so only the pairs and ctx each stage receives are observed.
+optimizer step is skipped, so only the pairs, ctx and numbers each stage receives are observed.
 """
 
 from tests.ci.ci_register import register_cpu_ci
@@ -51,8 +54,10 @@ def _load_train_core():
     return namespace["_train_core"]
 
 
-def _actor(train_input, train_output, forwarded):
+def _actor(train_input, train_output, forwarded, **args):
+    lists = []  # the train_output_inputs object each forward received
     return SimpleNamespace(
+        lists=lists,
         models={},
         reference_models={},
         teacher_models={},
@@ -62,10 +67,10 @@ def _actor(train_input, train_output, forwarded):
             num_steps_per_rollout=2,
             micro_batch_size=1,
             loss_type="policy_loss",
-            diffusion_recompute_old_log_prob=False,
             debug_skip_optimizer_step=True,
             log_loss_sigma_bucket=0,
             diffusion_num_steps=4,
+            **{"diffusion_recompute_old_log_prob": False, **args},
         ),
         _forward_dtype=torch.float32,
         parallel_state=SimpleNamespace(dp_rank=0, dp_group=None),
@@ -73,7 +78,13 @@ def _actor(train_input, train_output, forwarded):
         optimizer=SimpleNamespace(zero_grad=lambda set_to_none: None),
         global_step=0,
         _maybe_legacy_window_pad_len=lambda train_pairs, microbatch_ranges: None,
-        _forward_train_pair_batch=lambda ctx, chunk, **kwargs: forwarded.append((ctx.microbatch_id, chunk)),
+        _forward_train_pair_batch=lambda ctx, chunk, **kwargs: (
+            forwarded.append(
+                (kwargs["microbatch_id"], kwargs["optim_step_idx"], kwargs.get("write_old_log_prob", False), chunk)
+            ),
+            kwargs["train_output_inputs"].append(kwargs["microbatch_id"]),
+            lists.append(kwargs["train_output_inputs"]),
+        ),
         _log_metrics=lambda rollout_id, metrics, step: None,
     )
 
@@ -96,25 +107,46 @@ def test_later_stages_see_the_preprocessed_pairs():
         ]
 
     forwarded = []
-    actor = _actor(train_input, lambda ctx, train_pairs: (ctx, train_pairs), forwarded)
-    ctx, output_pairs = _load_train_core()(
+    actor = _actor(train_input, lambda ctx, train_pairs, inputs: (ctx, train_pairs, inputs), forwarded)
+    ctx, output_pairs, train_output_inputs = _load_train_core()(
         actor, rollout_id=3, rollout_data={"train_data": pairs}, external_data={"critic": scores}
     )
 
     preprocessed = [{"sample_index": index, "score": scores[index]} for index in (1, 2, 4, 5)]
     assert seen_by_input == [(ctx, pairs)]
     assert (ctx.rollout_id, ctx.external_data) == (3, {"critic": scores})
-    assert forwarded == [(microbatch_id, [pair]) for microbatch_id, pair in enumerate(preprocessed)]
+    # Two optimizer steps of two micro-batches each: the id counts on, the step index follows the window.
+    assert forwarded == [
+        (0, 0, False, [preprocessed[0]]),
+        (1, 0, False, [preprocessed[1]]),
+        (2, 1, False, [preprocessed[2]]),
+        (3, 1, False, [preprocessed[3]]),
+    ]
     assert output_pairs == preprocessed
+    # Every forward appended to the one list the train-output hook received.
+    assert train_output_inputs == [0, 1, 2, 3]
+    assert all(received is train_output_inputs for received in actor.lists)
     assert actor.global_step == 2
 
 
 def test_without_the_hook_the_converted_pairs_train():
     pairs = [{"sample_index": index} for index in range(4)]
     forwarded = []
-    actor = _actor(None, lambda ctx, train_pairs: train_pairs, forwarded)
+    actor = _actor(None, lambda ctx, train_pairs, inputs: train_pairs, forwarded)
 
     output_pairs = _load_train_core()(actor, rollout_id=0, rollout_data={"train_data": pairs}, external_data={})
 
-    assert forwarded == [(index, [pair]) for index, pair in enumerate(pairs)]
+    assert forwarded == [(index, index // 2, False, [pair]) for index, pair in enumerate(pairs)]
     assert output_pairs == pairs
+
+
+def test_the_recompute_passes_the_numbers_of_the_training_forwards_of_windows_1_on():
+    pairs = [{"sample_index": index} for index in range(4)]
+    forwarded = []
+    actor = _actor(None, lambda ctx, train_pairs, inputs: None, forwarded, diffusion_recompute_old_log_prob=True)
+
+    _load_train_core()(actor, rollout_id=0, rollout_data={"train_data": pairs}, external_data={})
+
+    recompute = [(2, 1, True, [pairs[2]]), (3, 1, True, [pairs[3]])]
+    training = [(index, index // 2, False, [pair]) for index, pair in enumerate(pairs)]
+    assert forwarded == recompute + training

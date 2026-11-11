@@ -24,9 +24,12 @@ def prepare_nft_batch(
     ctx: DiffusionLossContext,
     batch: list[dict],
     *,
+    microbatch_id: int,
+    optim_step_idx: int,
     pad_to_len: int | None = None,
 ) -> PreparedBatch:
-    """Corrupt clean x0 at each pair's sigma; CFG-free cond."""
+    """Corrupt clean x0 at each pair's sigma; CFG-free cond. ``microbatch_id`` seeds the noise; ``optim_step_idx`` is
+    part of every prepare hook's signature and unused here."""
     if len(ctx.models) != 1:
         raise ValueError("DiffusionNFT currently supports a single DiT component")
     device = ctx.device
@@ -41,7 +44,7 @@ def prepare_nft_batch(
     pos_cond = config.collate_cond_for_sample_batch(pos_list, device, pad_to_len=pad_to_len)
 
     noise_generator = torch.Generator(device=device).manual_seed(
-        stable_hash("nft_corrupt", int(ctx.args.seed), ctx.rollout_id, ctx.microbatch_id, ctx.dp_rank)
+        stable_hash("nft_corrupt", int(ctx.args.seed), ctx.rollout_id, microbatch_id, ctx.dp_rank)
     )
     xt = corrupt(x0, t, sample_noise(x0, generator=noise_generator))
     # Rollout trajectories carry only the visual stream.
@@ -111,6 +114,8 @@ def nft_loss_formula(
     old_pred: dict[str, torch.Tensor] | None,
     ref_pred: dict[str, torch.Tensor] | None,
     metrics: MetricBuffer,
+    optim_step_idx: int,
+    train_output_inputs: list,
     write_old_log_prob: bool = False,
     old_log_prob_from_new: bool = False,
 ) -> torch.Tensor:

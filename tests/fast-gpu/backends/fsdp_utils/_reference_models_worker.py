@@ -92,7 +92,15 @@ def check_roles(mesh, adapter_paths, reference_has_adapter, cpu_offload):
             target = reference_oracle(inputs)
             torch.testing.assert_close(teacher[component](inputs), teacher_oracle(inputs))
         harness, observed = make_actor_forward_harness(actor, reference, component, inputs, "ref")
-        load_actor_forward_method()(harness, None, [], metrics=None).backward()
+        load_actor_forward_method()(
+            harness,
+            None,
+            [],
+            microbatch_id=0,
+            optim_step_idx=0,
+            train_output_inputs=[],
+            metrics=None,
+        ).backward()
         expected_actor_output = oracle(inputs)
         (expected_actor_output - target).square().mean().backward()
         torch.testing.assert_close(observed["ref_pred"], target)
@@ -116,7 +124,15 @@ def check_roles(mesh, adapter_paths, reference_has_adapter, cpu_offload):
             base_target = base_oracle(inputs)
         forward_count = actor[component].base_model.model.forward_count.item()
         harness, observed = make_actor_forward_harness(actor, {}, component, inputs, "lora_base")
-        load_actor_forward_method()(harness, None, [], metrics=None).backward()
+        load_actor_forward_method()(
+            harness,
+            None,
+            [],
+            microbatch_id=0,
+            optim_step_idx=0,
+            train_output_inputs=[],
+            metrics=None,
+        ).backward()
         expected_actor_output = oracle(inputs)
         (expected_actor_output - base_target).square().mean().backward()
         torch.testing.assert_close(observed["ref_pred"], base_target)
