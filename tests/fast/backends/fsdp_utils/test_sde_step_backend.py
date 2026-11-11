@@ -92,7 +92,7 @@ class TestCpsSdeStepBackend:
         sigmas = torch.tensor([0.7, 0.3])
         next_sigmas = torch.tensor([0.6, 0.0])  # terminal σ_next = 0
         x, v, nxt = (torch.randn(2, 128, 8) for _ in range(3))
-        score = CpsSdeStepBackend().sde_step_logprob(
+        step_out = CpsSdeStepBackend().sde_step_logprob(
             v,
             x,
             prev_sample=nxt,
@@ -101,7 +101,7 @@ class TestCpsSdeStepBackend:
             next_sigmas=next_sigmas,
             sigma_max=torch.full((2,), float("nan")),  # CPS has no sigma == 1 special case
         )
-        log_prob, mean = score.log_prob, score.prev_mean
+        log_prob, mean = step_out.log_prob, step_out.prev_mean
 
         sigma, sigma_next = sigmas.view(-1, 1, 1), next_sigmas.view(-1, 1, 1)
         std_t = sigma_next * math.sin(0.8 * math.pi / 2)

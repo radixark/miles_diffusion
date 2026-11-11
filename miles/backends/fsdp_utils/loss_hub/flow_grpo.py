@@ -132,14 +132,14 @@ def flow_grpo_loss_formula(
         "sigma_max": prepared.extras["sigma_max"],
     }
 
-    score = ctx.sde_backend.sde_step_logprob(
+    step_out = ctx.sde_backend.sde_step_logprob(
         new_pred["visual"].float(),
         prepared.latents["visual"].float(),
         prev_sample=next_latents.float(),
         noise_level=noise_level,
         **sde_step_sigmas,
     )
-    log_prob_new = score.log_prob
+    log_prob_new = step_out.log_prob
 
     if write_old_log_prob:
         for pair, log_prob in zip(batch, log_prob_new, strict=True):
@@ -154,7 +154,7 @@ def flow_grpo_loss_formula(
 
     rollout_prev_mean = stack_train_pair_rollout_debug(batch, "rollout_step_prev_sample_mean")
     if rollout_prev_mean is not None:
-        rollout_prev_mean = rollout_prev_mean.to(device=score.prev_mean.device, dtype=torch.float32)
+        rollout_prev_mean = rollout_prev_mean.to(device=step_out.prev_mean.device, dtype=torch.float32)
     centering_metrics = {}
     if args.diffusion_score_centering:
         rollout_noise_std = stack_train_pair_rollout_debug(batch, "rollout_step_noise_std_dev")
@@ -164,10 +164,10 @@ def flow_grpo_loss_formula(
                 "these rollouts carry none (run with --diffusion-debug-mode)"
             )
         center, centering_metrics = gaussian_score_center(
-            prev_mean=score.prev_mean,
+            prev_mean=step_out.prev_mean,
             rollout_prev_mean=rollout_prev_mean,
-            noise_std=score.noise_std,
-            rollout_noise_std=rollout_noise_std.to(score.prev_mean.device),
+            noise_std=step_out.noise_std,
+            rollout_noise_std=rollout_noise_std.to(step_out.prev_mean.device),
             next_latents=next_latents,
             log_ratio=log_prob_new - log_prob_old,
             advantage=prepared.advantage,
@@ -182,17 +182,17 @@ def flow_grpo_loss_formula(
     if kl_beta > 0:
         if ref_pred is None:
             raise ValueError("Flow-GRPO KL requires a reference DiT forward; set --ref-mode lora_base or ref")
-        ref_score = ctx.sde_backend.sde_step_logprob(
+        ref_step_out = ctx.sde_backend.sde_step_logprob(
             ref_pred["visual"].float(),
             prepared.latents["visual"].float(),
             prev_sample=next_latents.float(),
             noise_level=noise_level,
             **sde_step_sigmas,
         )
-        kl_per_pair = ((score.prev_mean - ref_score.prev_mean) ** 2).mean(
-            dim=tuple(range(1, score.prev_mean.ndim)),
+        kl_per_pair = ((step_out.prev_mean - ref_step_out.prev_mean) ** 2).mean(
+            dim=tuple(range(1, step_out.prev_mean.ndim)),
             keepdim=True,
-        ) / (2 * score.std_dev_t**2)
+        ) / (2 * step_out.std_dev_t**2)
         loss_sum = loss_sum + kl_beta * kl_per_pair.sum()
         kl_sum = kl_per_pair.sum()
 
@@ -220,8 +220,8 @@ def flow_grpo_loss_formula(
 
         if rollout_prev_mean is not None:
             # flattened per pair like model_output, so logging never depends on the debug layout
-            noise_std = score.noise_std.reshape(bsz, -1)
-            mean_diff = rollout_prev_mean.reshape(bsz, -1) - score.prev_mean.reshape(bsz, -1)
+            noise_std = step_out.noise_std.reshape(bsz, -1)
+            mean_diff = rollout_prev_mean.reshape(bsz, -1) - step_out.prev_mean.reshape(bsz, -1)
             diff_over_std = torch.where(noise_std > 0, mean_diff / noise_std, 0.0)
             metrics.emit_mean(
                 "prev_mean_diff_over_noise_std", total=diff_over_std.pow(2).mean(dim=1).sqrt().sum(), count=bsz

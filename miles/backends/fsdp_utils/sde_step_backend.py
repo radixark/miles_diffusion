@@ -25,8 +25,11 @@ from typing import NamedTuple
 import torch
 
 
-class SdeStepScore(NamedTuple):
-    """One scored transition; the first four fields keep ``sde_step_with_logprob``'s order."""
+class SdeStepOutput(NamedTuple):
+    """One SDE step: the sampled latent, its log-prob and the transition's mean and stds.
+
+    The first four fields keep ``sde_step_with_logprob``'s order.
+    """
 
     prev_sample: torch.Tensor
     log_prob: torch.Tensor
@@ -79,7 +82,7 @@ class SdeStepBackend(abc.ABC):
         sigmas: torch.Tensor,
         next_sigmas: torch.Tensor,
         sigma_max: torch.Tensor,
-    ) -> SdeStepScore:
+    ) -> SdeStepOutput:
         model_output = model_output.float()
         sample = sample.float()
         prev_sample = prev_sample.float()
@@ -92,7 +95,7 @@ class SdeStepBackend(abc.ABC):
             sigma_max=sigma_max.view(view),
             noise_level=noise_level,
         )
-        return SdeStepScore(
+        return SdeStepOutput(
             prev_sample=prev_sample,
             log_prob=self.log_prob(prev_sample, prev_mean, noise_std),
             prev_mean=prev_mean,
