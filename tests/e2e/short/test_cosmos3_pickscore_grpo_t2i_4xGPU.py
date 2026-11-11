@@ -23,7 +23,12 @@ register_e2e_ci(
     est_time=1200,
     suite="stage-c-5-gpu-h200",
     script="scripts/run_diffusion_grpo_cosmos3_pickscore_t2i_4gpu.py",
-    args=["--num-rollout", "2", "--extra-args", "--deterministic-mode"],
+    args=[
+        "--num-rollout",
+        "2",
+        "--extra-args",
+        "--deterministic-mode --use-output-store --output-store-mooncake-master 127.0.0.1:50061",
+    ],
     labels=["e2e"],
     metrics=[
         "rollout/reward/raw_num_samples",

@@ -17,6 +17,7 @@ register_e2e_ci(
     est_time=2400,
     suite="stage-c-5-gpu-h200",
     script="scripts/run_diffusion_nft_krea2_async.py",
+    # Inline on purpose: the legacy (no output store) gate for rollouts fetched by the rollout manager.
     args=["--num-rollout", "4", "--four-gpu-ci"],
     labels=["e2e"],
     metrics=[
