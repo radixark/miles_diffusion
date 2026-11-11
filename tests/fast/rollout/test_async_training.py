@@ -275,7 +275,7 @@ def test_empty_and_single_rollout(tmp_path, monkeypatch, count):
     [
         (dict(colocate=True), "separate resident"),
         (dict(offload_rollout=True), "separate resident"),
-        (dict(loss_type="policy_loss"), "only --loss-type nft"),
+        (dict(loss_type="sft_loss"), "supports NFT and Flow-GRPO policy_loss"),
     ],
 )
 def test_train_rejects_unsupported_setups(overrides, message):

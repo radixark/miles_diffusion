@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import torch
 
+from miles.backends.fsdp_utils.loss_hub.score_centering import score_centering_term
 from miles.backends.fsdp_utils.loss_hub.types import DiffusionLossContext, PreparedBatch
-from miles.backends.fsdp_utils.metrics import record_rollout_train_abs_diff
+from miles.backends.fsdp_utils.metrics import record_prev_mean_diff_over_noise_std, record_rollout_train_abs_diff
 from miles.utils.metric_buffer import MetricBuffer
 from miles.utils.train_data_utils import stack_train_pair_rollout_debug
 
@@ -139,13 +140,14 @@ def flow_grpo_loss_formula(
         "sigma_max": prepared.extras["sigma_max"],
     }
 
-    _, log_prob_new, prev_sample_mean_new, std_dev_t_new = ctx.sde_backend.sde_step_logprob(
+    step_out = ctx.sde_backend.sde_step_logprob(
         new_pred["visual"].float(),
         prepared.latents["visual"].float(),
         prev_sample=next_latents.float(),
         noise_level=noise_level,
         **sde_step_sigmas,
     )
+    log_prob_new = step_out.log_prob
 
     if write_old_log_prob:
         for pair, log_prob in zip(batch, log_prob_new, strict=True):
@@ -157,6 +159,22 @@ def flow_grpo_loss_formula(
     unclipped = -prepared.advantage * ratio
     clipped = -prepared.advantage * torch.clamp(ratio, 1.0 - clip_range, 1.0 + clip_range)
     per_pair_loss = torch.maximum(unclipped, clipped)
+
+    rollout_prev_mean = stack_train_pair_rollout_debug(batch, "rollout_step_prev_sample_mean")
+    if rollout_prev_mean is not None:
+        rollout_prev_mean = rollout_prev_mean.to(device=step_out.prev_mean.device, dtype=torch.float32)
+    if args.diffusion_score_centering:
+        per_pair_loss = per_pair_loss + score_centering_term(
+            batch,
+            step_out,
+            rollout_prev_mean,
+            next_latents=next_latents,
+            log_ratio=log_prob_new - log_prob_old,
+            advantage=prepared.advantage,
+            clip_range=clip_range,
+            loss_dtype=per_pair_loss.dtype,
+            metrics=metrics,
+        )
     loss_sum = per_pair_loss.sum()
     bsz = len(batch)
 
@@ -164,17 +182,17 @@ def flow_grpo_loss_formula(
     if kl_beta > 0:
         if ref_pred is None:
             raise ValueError("Flow-GRPO KL requires a reference DiT forward; set --ref-mode lora_base or ref")
-        _, _, prev_sample_mean_ref, _ = ctx.sde_backend.sde_step_logprob(
+        ref_step_out = ctx.sde_backend.sde_step_logprob(
             ref_pred["visual"].float(),
             prepared.latents["visual"].float(),
             prev_sample=next_latents.float(),
             noise_level=noise_level,
             **sde_step_sigmas,
         )
-        kl_per_pair = ((prev_sample_mean_new - prev_sample_mean_ref) ** 2).mean(
-            dim=tuple(range(1, prev_sample_mean_new.ndim)),
+        kl_per_pair = ((step_out.prev_mean - ref_step_out.prev_mean) ** 2).mean(
+            dim=tuple(range(1, step_out.prev_mean.ndim)),
             keepdim=True,
-        ) / (2 * std_dev_t_new**2)
+        ) / (2 * step_out.std_dev_t**2)
         loss_sum = loss_sum + kl_beta * kl_per_pair.sum()
         kl_sum = kl_per_pair.sum()
 
@@ -197,6 +215,9 @@ def flow_grpo_loss_formula(
                 total=log_prob_abs_diff_sum,
                 count=bsz,
             )
+
+        if rollout_prev_mean is not None:
+            record_prev_mean_diff_over_noise_std(metrics, rollout_prev_mean, step_out.prev_mean, step_out.noise_std)
 
         rollout_model_output = stack_train_pair_rollout_debug(batch, "rollout_step_model_output")
         if rollout_model_output is not None:

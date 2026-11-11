@@ -22,6 +22,8 @@ def compute_trainer_configs(args: Namespace) -> list[TrainerConfig]:
         "save": None if args.save is None else args.save.rstrip("/") + "_critic",
         "num_steps_per_rollout": critic_steps,
         "global_batch_size": args.global_batch_size // critic_steps,
+        # Only the actor's EMA has a reader (its weight sync); the critic's would be built, stepped and saved for nothing.
+        "use_ema": False,
     }
     return [
         TrainerConfig(role="critic", overrides=critic_overrides),
