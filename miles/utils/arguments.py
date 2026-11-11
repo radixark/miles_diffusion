@@ -749,6 +749,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help="HF name or path for the frozen SFT encoders (tokenizer/text_encoder/vae subfolders).",
             )
+            parser.add_argument(
+                "--sft-distilled-cfg-scale",
+                type=float,
+                default=1.0,
+                help=(
+                    "guidance scale the checkpoint distilled in; SFT inverts it against a space-prompt uncond "
+                    "branch and supervises the plain flow-matching velocity (1.0 trains the raw prediction)"
+                ),
+            )
 
             parser.add_argument(
                 "--start-rollout-id",
@@ -2131,11 +2140,13 @@ def miles_validate_args(args):
     if args.model_backend_path is None:
         args.model_backend_path = cfg_cls.model_backend_path
     if not cfg_cls.supports_cfg_training and (
-        args.diffusion_guidance_scale != 1.0 or args.diffusion_negative_prompt is not None
+        args.diffusion_guidance_scale != 1.0
+        or args.diffusion_true_cfg_scale not in (None, 1.0)
+        or args.diffusion_negative_prompt is not None
     ):
         raise ValueError(
             f"{cfg_cls.__name__} trains unguided (supports_cfg_training=False); set "
-            f"--diffusion-guidance-scale 1.0 and drop --diffusion-negative-prompt"
+            f"--diffusion-guidance-scale 1.0 and drop --diffusion-true-cfg-scale and --diffusion-negative-prompt"
         )
     if cfg_cls.tasks and args.diffusion_task not in cfg_cls.tasks:
         raise ValueError(
@@ -2203,6 +2214,15 @@ def miles_validate_args(args):
             from miles.rollout.encoder_hub import get_encoder
 
             get_encoder(args.diffusion_model_family, args.diffusion_task).validate_args(args)
+        if args.sft_distilled_cfg_scale != 1.0:
+            if not cfg_cls.cfg_distilled:
+                raise ValueError(
+                    f"{cfg_cls.__name__} has no CFG distilled in (cfg_distilled=False); drop --sft-distilled-cfg-scale"
+                )
+            if not (math.isfinite(args.sft_distilled_cfg_scale) and args.sft_distilled_cfg_scale > 0):
+                raise ValueError(
+                    f"--sft-distilled-cfg-scale must be finite and positive, got {args.sft_distilled_cfg_scale}"
+                )
         if args.fsdp_flow_shift is None or "visual" not in args.fsdp_flow_shift:
             raise ValueError("--loss-type sft_loss requires a visual --fsdp-flow-shift for the training sigma grid")
         if not set(args.fsdp_supervised_streams) <= {"visual", "audio"}:

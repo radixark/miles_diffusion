@@ -34,6 +34,11 @@ def select_component(
     return component_name, model, torch.tensor(served, device=device)
 
 
+def _move_top_level_tensors(cond_kwargs: dict, device: torch.device) -> dict:
+    # A family whose cond values nest tensors inside dicts moves them itself in its collate/forward.
+    return {key: value.to(device) if isinstance(value, torch.Tensor) else value for key, value in cond_kwargs.items()}
+
+
 def prepare_sft_batch(
     ctx: DiffusionLossContext,
     batch: list[dict],
@@ -41,7 +46,7 @@ def prepare_sft_batch(
     pad_to_len: int | None = None,
     grid_index_range: tuple[int, int] | None = None,
 ) -> PreparedBatch:
-    """Corrupt every latent stream at one shared grid index, each through its own shifted grid; CFG-free cached cond.
+    """Corrupt every latent stream at one shared grid index, each through its own shifted grid; cached cond.
 
     The visual grid picks the DiT component and the index is drawn uniformly from the points it serves, within
     ``grid_index_range`` (inclusive) when given. Sharing the index pairs the streams' sigmas as inference steps them,
@@ -85,16 +90,19 @@ def prepare_sft_batch(
         latents[stream_name] = (1.0 - sigma_exp) * x0 + sigma_exp * noise
         targets[stream_name] = noise - x0
 
-    # Only top-level tensors move here. A family whose cond values nest tensors
-    # inside dicts moves them itself in its collate/forward.
-    cond_list = [
-        {
-            key: value.to(device) if isinstance(value, torch.Tensor) else value
-            for key, value in pair["cond_kwargs"].items()
-        }
-        for pair in batch
-    ]
-    pos_cond = config.collate_cond_for_sample_batch(cond_list, device, pad_to_len=pad_to_len)
+    pos_cond = config.collate_cond_for_sample_batch(
+        [_move_top_level_tensors(pair["cond_kwargs"], device) for pair in batch], device, pad_to_len=pad_to_len
+    )
+    distilled_cfg_scale = ctx.args.sft_distilled_cfg_scale
+    use_cfg = distilled_cfg_scale != 1.0
+    neg_cond = None
+    if use_cfg:
+        # Unconditioned pairs share one uncond cond kwargs; a pair with references carries its own.
+        neg_cond = config.collate_cond_for_sample_batch(
+            [_move_top_level_tensors(pair["uncond_cond_kwargs"], device) for pair in batch],
+            device,
+            pad_to_len=pad_to_len,
+        )
 
     return PreparedBatch(
         latents=latents,
@@ -102,12 +110,12 @@ def prepare_sft_batch(
         timesteps_for_model={stream_name: config.process_timestep_as_input(t) for stream_name, t in timesteps.items()},
         model=model,
         component_name=component_name,
-        guidance_scale=0.0,
-        use_cfg=False,
+        guidance_scale=distilled_cfg_scale if use_cfg else 0.0,
+        use_cfg=use_cfg,
         cfg_batching=False,
         true_cfg_scale=None,
         pos_cond=pos_cond,
-        neg_cond=None,
+        neg_cond=neg_cond,
         joint_cond=None,
         advantage=torch.ones(bsz, device=device, dtype=torch.float32),
         extras={"target": targets, "sigmas": sigmas},

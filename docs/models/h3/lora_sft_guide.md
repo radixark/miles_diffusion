@@ -84,7 +84,16 @@ Watch the run's log in wandb (project `miles-diffusion-sft`).
 The recipe defaults are exactly the validated optimum: **lr 3e-5, weight decay 0.01,
 LoRA rank 64 / alpha 128, rollout batch 32 (1 sample per GPU per optimizer step)**,
 `--fsdp-flow-shift visual=12,audio=3`, `--fsdp-supervised-streams visual`,
-`--diffusion-guidance-scale 1.0` (H3 has no CFG), `--sft-offload-encoder`.
+`--diffusion-guidance-scale 1.0` (H3 runs no inference-time CFG), `--sft-offload-encoder`.
+
+H3 has CFG distilled in, so its prediction `c` is already guided, while the SFT target `noise - x0` is a plain
+flow-matching velocity. Training `c` on it directly wears the distilled guidance away. `--sft-distilled-cfg-scale w`
+also runs the DiT on a `" "` uncond, `u`, without gradient, and supervises `u + (c - u) / w` instead. The uncond
+replaces the whole Qwen3-VL input with `" "`, caption and any reference vision blocks alike, and keeps everything
+else: a Ref2VA uncond still sees the sample's VAE reference rows at their reference timesteps. In t2va the uncond is
+the same for every clip, so it is encoded once into `.sft_cache/uncond-<sha>.pt`; in Ref2VA the references shape its
+packed layout, so each pair carries its own. Each step costs one extra forward. `w` is the guidance scale MiniMax
+distilled in; at `1.0` the run is the plain SFT above.
 
 miles-diffusion started with RL and later grew to cover SFT. Read a rollout here as whatever
 produces the next batch of training samples — RL generates them, SFT encodes them. Each batch is

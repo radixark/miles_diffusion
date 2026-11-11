@@ -10,9 +10,11 @@
       │                 marked h3_target_has_soundtrack=False, so the trainer supervises its video only
       ├─ references     ordered rows per condition (keyframes lead), native noise augmentation per block
       │                 at SGLang's condition timesteps, which the pair also hands the trainer
-      └─ presentation   H3 labels + vision tokens -> HF Qwen3-VL with modality ids and multimodal RoPE
+      ├─ presentation   H3 labels + vision tokens -> HF Qwen3-VL with modality ids and multimodal RoPE
+      └─ uncond         under --sft-distilled-cfg-scale: " " as the whole Qwen3-VL stream, same reference blocks
       ▼
-    {"latent": {"visual": rows, "audio": rows}, "cond_kwargs": packed layout + reference rows}
+    {"latent": {"visual": rows, "audio": rows}, "cond_kwargs": packed layout + reference rows,
+     "uncond_cond_kwargs": uncond text + its packed layout (distilled CFG only)}
 
 What each test pins:
   canvas / request  preset mapping; unknown condition fields reach the native validator
@@ -24,6 +26,8 @@ What each test pins:
   references        video/audio pairs keep their order and boundaries through augmentation, which runs at
                     SGLang's condition timesteps
   pair              two targets marked as having a soundtrack, SGLang's condition timesteps, weights-only cache load
+  distilled CFG     --sft-distilled-cfg-scale adds the pair's own uncond: the " " text alone, packed over the
+                    same reference blocks and keyframes (scale 1.0 adds none)
 """
 
 from tests.ci.ci_register import register_cpu_ci
@@ -297,7 +301,11 @@ def test_augmentation_keeps_each_reference_boundary_at_native_condition_timestep
     assert torch.allclose(visual, references["visual"] + 0.001)
 
 
-def test_ref2va_pair_has_two_targets_and_cache_can_load_weights_only(monkeypatch):
+PROMPT = "A person sings"
+
+
+def _encode_pair(monkeypatch, args):
+    """Encode one Ref2VA pair over stubbed native stages; returns it with the layout packer's mock."""
     native_condition_timesteps(monkeypatch)
     plan, extra = reference_fixture()
     plan.shape = {"frame_count": 5, "height": 32, "width": 32}
@@ -332,10 +340,9 @@ def test_ref2va_pair_has_two_targets_and_cache_can_load_weights_only(monkeypatch
         },
     )
     monkeypatch.setattr(ref2va, "_augment_references", lambda refs, **kwargs: (refs["visual"], refs["audio"]))
-    prompt = "A person sings"
     pair = ref2va.encode_sample(
-        {"vae": None, "vae_arch": None},
-        Sample(prompt=prompt, target={"visual": "target.mp4"}),
+        {"vae": None, "vae_arch": None, "tokenizer": None},
+        Sample(prompt=PROMPT, target={"visual": "target.mp4"}),
         {
             "fps": 24.0,
             "frame_times_seconds": tuple(index / 24 for index in range(5)),
@@ -343,8 +350,14 @@ def test_ref2va_pair_has_two_targets_and_cache_can_load_weights_only(monkeypatch
             "audio_sample_rate": 48000,
         },
         torch.Generator().manual_seed(123),
-        SimpleNamespace(),
+        args,
     )
+    return pair, pack
+
+
+def test_ref2va_pair_has_two_targets_and_cache_can_load_weights_only(monkeypatch):
+    pair, pack = _encode_pair(monkeypatch, SimpleNamespace(sft_distilled_cfg_scale=1.0))
+    assert "uncond_cond_kwargs" not in pair
     assert pair["latent"]["visual"].shape == (2, 96)
     assert pair["latent"]["audio"].shape == (4, 32)
     assert pair["cond_kwargs"]["h3_reference_audio"].shape == (6, 32)
@@ -354,12 +367,30 @@ def test_ref2va_pair_has_two_targets_and_cache_can_load_weights_only(monkeypatch
     assert pair["cond_kwargs"]["h3_reference_audio_timestep"] == 0.75
     assert pack.call_args.kwargs["keyframe_frame_indices"] == [0]
     assert pack.call_args.kwargs["frame_count"] == 107
-    assert pair["prompt"] == prompt
+    assert pair["prompt"] == PROMPT
     buffer = io.BytesIO()
     torch.save(pair, buffer)
     buffer.seek(0)
     restored = torch.load(buffer, weights_only=True)
     assert torch.equal(restored["latent"]["audio"], torch.full((4, 32), 9.0))
+
+
+def test_distilled_cfg_pair_carries_a_text_only_uncond_over_the_same_references(monkeypatch):
+    native_stub(
+        monkeypatch, "presentation", minimax_h3_text_only_ids=lambda tokenizer, prompt: torch.arange(len(prompt))
+    )
+    monkeypatch.setattr(ref2va, "_encode_ids", lambda encoder, ids: torch.full((ids.numel(), 5120), 3.0))
+
+    pair, pack = _encode_pair(monkeypatch, SimpleNamespace(sft_distilled_cfg_scale=4.0))
+
+    positive, uncond = (call.kwargs for call in pack.call_args_list)
+    # Only the text length differs: the uncond layout packs the sample's own reference blocks and keyframes.
+    assert uncond.pop("text_len") == len(common.H3_UNCOND_PROMPT)
+    assert positive.pop("text_len") == 2
+    assert uncond == positive
+    uncond_cond_kwargs = pair["uncond_cond_kwargs"]
+    assert set(uncond_cond_kwargs) == {"encoder_hidden_states", "h3_packed_layout", "h3_token_tags"}
+    assert torch.equal(uncond_cond_kwargs["encoder_hidden_states"], torch.full((1, 1, 5120), 3.0))
 
 
 def test_variable_rate_target_averaging_24_fps_is_rejected(monkeypatch):

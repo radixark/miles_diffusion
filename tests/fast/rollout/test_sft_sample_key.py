@@ -5,7 +5,8 @@
 
 What each test pins: keys are deterministic; each encode arg, the prompt and the file revision change the key;
 the seed follows only the sample and --seed; args no encoder reads leave the name and seed alone; keys differ per
-sample and per model family.
+sample and per model family; a distilled CFG scale re-keys only samples with conditions, whose pairs carry their
+own uncond.
 """
 
 from tests.ci.ci_register import register_cpu_ci
@@ -29,6 +30,7 @@ def _args(**overrides):
         sft_frame_stride=2,
         diffusion_task="t2va",
         seed=1,
+        sft_distilled_cfg_scale=1.0,
     )
     base.update(overrides)
     return Namespace(**base)
@@ -109,3 +111,18 @@ def test_key_changes_with_model_family(tmp_path):
     name_wan, _ = sft_sample_key(_args(), sample)
     name_other, _ = sft_sample_key(_args(diffusion_model_family="other"), sample)
     assert name_wan != name_other
+
+
+def test_distilled_cfg_scale_rekeys_only_samples_with_conditions(tmp_path):
+    video = tmp_path / "a.mp4"
+    video.write_bytes(b"x" * 100)
+    image = tmp_path / "ref.png"
+    image.write_bytes(b"y" * 10)
+    plain = _sample(video)
+    referenced = Sample(prompt="p", conditions=[{"type": "image", "uri": str(image)}], target={"visual": str(video)})
+
+    assert sft_sample_key(_args(sft_distilled_cfg_scale=4.0), plain) == sft_sample_key(_args(), plain)
+    distilled_name, distilled_seed = sft_sample_key(_args(sft_distilled_cfg_scale=4.0), referenced)
+    plain_name, plain_seed = sft_sample_key(_args(), referenced)
+    assert distilled_name != plain_name
+    assert distilled_seed == plain_seed

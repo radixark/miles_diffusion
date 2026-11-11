@@ -14,6 +14,8 @@ from miles.utils.types import Sample
 
 H3_FPS = 24.0
 H3_TEXT_HIDDEN_DIM = 5120
+# The uncond the CFG distilled into H3 is guessed as a single space prompt.
+H3_UNCOND_PROMPT = " "
 H3_QWEN3VL_SELECTED_LM_LAYER = 50  # MINIMAX_H3_QWEN3VL_SELECTED_LM_LAYER
 # One 800-sample hop of the audio VAE at 32 kHz, i.e. one 40 Hz audio latent frame.
 AUDIO_DURATION_TOLERANCE_SECONDS = 800 / 32000

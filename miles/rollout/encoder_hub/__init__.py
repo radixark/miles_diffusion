@@ -8,7 +8,10 @@ Each family module provides:
   ``{"video": [C, T, H, W] uint8, "fps", "frame_times_seconds", "audio_sample_rate"}`` into the cached train
   sample (clean latents keyed by stream name, e.g. ``{"visual": ...}``, + cond kwargs). Inputs the family cannot
   train on (e.g. conditions) are rejected, never dropped;
-- ``validate_args(args)``: family-specific encode constraints.
+- ``validate_args(args)``: family-specific encode constraints;
+- ``encode_uncond(encoder, args)`` (families trained with ``--sft-distilled-cfg-scale``): the uncond cond kwargs
+  the run's unconditioned pairs share. A sample with conditions has its references shape its uncond, so
+  ``encode_sample`` attaches that pair's own ``uncond_cond_kwargs`` instead.
 """
 
 

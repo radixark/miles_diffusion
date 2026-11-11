@@ -7,9 +7,11 @@
 
     t2va pair: {"latent": {"visual", "audio" = the soundtrack, one row per packed audio slot},
                 "cond_kwargs": packed layout + text + h3_target_has_soundtrack}
+    t2va uncond: the " " prompt packed on the grid the args fix, equal to a " " pair's cond_kwargs
+                 minus h3_target_has_soundtrack
 
 Each test pins one side: rejection of off-grid inputs, an engine-derived
-geometry invariant the cached latents depend on, or the t2va pair's streams.
+geometry invariant the cached latents depend on, the t2va pair's streams, or the uncond's layout.
 """
 
 from tests.ci.ci_register import register_cpu_ci
@@ -123,3 +125,43 @@ def test_t2va_pair_carries_the_soundtrack_in_every_packed_audio_slot(monkeypatch
     assert pair["latent"].keys() == {"visual", "audio"}
     assert pair["latent"]["audio"].shape[0] == pair["cond_kwargs"]["h3_packed_layout"]["audio_pos"].shape[0] == 18
     assert pair["cond_kwargs"]["h3_target_has_soundtrack"] is True
+
+
+def test_t2va_uncond_is_a_space_prompt_pair_on_the_run_grid(monkeypatch):
+    import torch
+
+    from miles.rollout.encoder_hub.h3 import common
+    from miles.utils.types import Sample
+
+    native = "sglang.multimodal_gen.runtime.pipelines_core.stages.model_specific_stages.minimax_h3"
+    # The mocked VAE reports the grid a 107-frame 768x1344 target encodes to: 32x48x84 latents, 178 audio frames.
+    monkeypatch.setattr(
+        f"{native}.reference_encoding.minimax_h3_encode_reference_video_rows",
+        lambda vae, frames, arch: (torch.zeros(32 * 24 * 42, 96), 32, 48, 84),
+    )
+    monkeypatch.setattr(
+        f"{native}.presentation.minimax_h3_text_only_ids", lambda tokenizer, prompt: torch.arange(len(prompt))
+    )
+    monkeypatch.setattr(common, "encode_target_audio", lambda encoder, sample, media_clip: torch.ones(2 * 178, 32))
+
+    def text_encoder(input_ids, attention_mask, use_cache):
+        return Namespace(last_hidden_state=torch.full((1, input_ids.shape[1], 5120), 7.0))
+
+    encoder = {"device": torch.device("cpu"), "tokenizer": None, "text_encoder": text_encoder}
+    uncond = t2va.encode_uncond(encoder, _args())
+    pair = t2va.encode_sample(
+        {**encoder, "vae": None, "vae_arch": None},
+        Sample(prompt=t2va.H3_UNCOND_PROMPT, target={"visual": "clip.mp4"}),
+        {"video": torch.zeros(3, 1, 2, 2, dtype=torch.uint8), "audio_sample_rate": 48000},
+        None,
+        _args(),
+    )
+
+    expected = dict(pair["cond_kwargs"])
+    del expected["h3_target_has_soundtrack"]
+    assert uncond.keys() == expected.keys()
+    assert torch.equal(uncond["encoder_hidden_states"], expected["encoder_hidden_states"])
+    assert torch.equal(uncond["h3_token_tags"], expected["h3_token_tags"])
+    assert uncond["h3_packed_layout"].keys() == expected["h3_packed_layout"].keys()
+    for key, value in expected["h3_packed_layout"].items():
+        assert torch.equal(torch.as_tensor(uncond["h3_packed_layout"][key]), torch.as_tensor(value)), key
