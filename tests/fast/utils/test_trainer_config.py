@@ -45,6 +45,7 @@ def test_dmd2_critic_trains_first_from_its_own_checkpoint(load, save, critic_dir
         global_batch_size=40,
         num_steps_per_rollout=1,
         dmd2_critic_steps_per_rollout=5,
+        use_ema=True,
     )
     original = vars(args).copy()
 
@@ -52,8 +53,8 @@ def test_dmd2_critic_trains_first_from_its_own_checkpoint(load, save, critic_dir
 
     assert [config.role for config in trainer_configs] == ["critic", "actor"]
     critic, actor = (compute_trainer_args(args, config) for config in trainer_configs)
-    # The critic differs from the run's args only in what it trains, how fast, where it checkpoints and how
-    # many steps it takes; its hooks come from the loss hub by role, not from args.
+    # The critic differs from the run's args only in what it trains, how fast, where it checkpoints, how many
+    # steps it takes and that it keeps no EMA; its hooks come from the loss hub by role, not from args.
     assert vars(critic) == {
         **original,
         "hf_checkpoint": "critic-init",
@@ -62,6 +63,7 @@ def test_dmd2_critic_trains_first_from_its_own_checkpoint(load, save, critic_dir
         "save": critic_dir,
         "num_steps_per_rollout": 5,
         "global_batch_size": 8,
+        "use_ema": False,
     }
     assert vars(actor) == {**original, "teacher_load": None}
     assert vars(args) == original

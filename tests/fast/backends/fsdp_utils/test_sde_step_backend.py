@@ -56,23 +56,31 @@ class TestFlowSdeStepBackend:
         want = sde_step_with_logprob(
             _DiffusersFlowScheduler(timesteps, sigmas), v, timesteps[step], x, prev_sample=nxt, noise_level=0.7
         )
-        for g, w in zip(got, want, strict=True):
+        for g, w in zip((got.prev_sample, got.log_prob, got.prev_mean, got.std_dev_t), want, strict=True):
             torch.testing.assert_close(g, w, rtol=0.0, atol=0.0)
-        assert got[1].shape == (3,)
+        assert got.log_prob.shape == (3,)
+        # noise_std is the std log_prob scored against, not the reported std_dev_t
+        torch.testing.assert_close(
+            FlowSdeStepBackend().log_prob(nxt, got.prev_mean, got.noise_std), got.log_prob, rtol=0.0, atol=0.0
+        )
 
     def test_sigma_just_below_one_takes_sigma_max_like_the_engine(self):
         # FlowUniPC at shift 12 starts at 0.999993, not 1.0; sgl-d's isclose still swaps in
         # sigma_max there, where an exact == would leave sigma / (1 - sigma) ~ 1.4e5.
         sigmas = torch.tensor([0.999993, 0.990818, 0.0])
         x = torch.zeros(1, 4)
-        _, _, _, std_dev_t = FlowSdeStepBackend().sde_step_logprob(
-            torch.zeros(1, 4),
-            x,
-            prev_sample=x,
-            noise_level=0.7,
-            sigmas=sigmas[:1],
-            next_sigmas=sigmas[1:2],
-            sigma_max=sigmas[1:2],
+        std_dev_t = (
+            FlowSdeStepBackend()
+            .sde_step_logprob(
+                torch.zeros(1, 4),
+                x,
+                prev_sample=x,
+                noise_level=0.7,
+                sigmas=sigmas[:1],
+                next_sigmas=sigmas[1:2],
+                sigma_max=sigmas[1:2],
+            )
+            .std_dev_t
         )
         expected = torch.sqrt(sigmas[0] / (1 - sigmas[1])) * 0.7
         torch.testing.assert_close(std_dev_t.view(()), expected, rtol=0.0, atol=0.0)
@@ -84,7 +92,7 @@ class TestCpsSdeStepBackend:
         sigmas = torch.tensor([0.7, 0.3])
         next_sigmas = torch.tensor([0.6, 0.0])  # terminal σ_next = 0
         x, v, nxt = (torch.randn(2, 128, 8) for _ in range(3))
-        _, log_prob, mean, std = CpsSdeStepBackend().sde_step_logprob(
+        step_out = CpsSdeStepBackend().sde_step_logprob(
             v,
             x,
             prev_sample=nxt,
@@ -93,6 +101,7 @@ class TestCpsSdeStepBackend:
             next_sigmas=next_sigmas,
             sigma_max=torch.full((2,), float("nan")),  # CPS has no sigma == 1 special case
         )
+        log_prob, mean = step_out.log_prob, step_out.prev_mean
 
         sigma, sigma_next = sigmas.view(-1, 1, 1), next_sigmas.view(-1, 1, 1)
         std_t = sigma_next * math.sin(0.8 * math.pi / 2)

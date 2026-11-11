@@ -39,6 +39,7 @@ def _args(**overrides):
         diffusion_recompute_old_log_prob=False,
         num_steps_per_rollout=1,
         global_batch_size=40,
+        micro_batch_size=1,
         actor_num_gpus_per_node=4,
         actor_num_nodes=1,
         sequence_parallel_size=2,
@@ -132,6 +133,8 @@ def test_valid_dmd2_args_pass_unchanged():
         ({"dmd2_critic_steps_per_rollout": 0}, "must be >= 1"),
         # 40 samples over 2 DP shards = 20 per shard, which 3 critic steps cannot split.
         ({"dmd2_critic_steps_per_rollout": 3}, "split each of the 2 DP shards"),
+        # 20 per shard over 5 critic steps = 4 per step, which micro-batches of 8 cannot split.
+        ({"micro_batch_size": 8}, "whole --micro-batch-size 8 micro-batches"),
     ],
 )
 def test_unsupported_dmd2_args_are_rejected(overrides, message):
