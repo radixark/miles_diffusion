@@ -14,7 +14,16 @@ register_e2e_ci(
     suite="stage-c-3-gpu-h200",
     labels=["e2e"],
     script="scripts/run_diffusion_grpo_h3_t2va_2gpu.py",
-    args=["--num-rollout", "2", "--n-samples-per-prompt", "4", "--eval-interval", "0"],
+    args=[
+        "--num-rollout",
+        "2",
+        "--n-samples-per-prompt",
+        "4",
+        "--eval-interval",
+        "0",
+        "--extra-args",
+        "--use-output-store --output-store-mooncake-master 127.0.0.1:50062",
+    ],
     metrics=[
         "rollout/reward/raw_num_samples",
         "rollout/reward/raw_mean",
