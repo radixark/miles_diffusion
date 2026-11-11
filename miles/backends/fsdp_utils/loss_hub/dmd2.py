@@ -23,32 +23,44 @@ def prepare_critic_batch(
     """SFT flow matching on the student's x0 predictions, conditioned on their rollout prompts.
 
     The last step's samples are scored at their noisy inputs, so its grid points come from the scoring range and
-    the teacher runs on them too, with CFG over the rollout's negative cond when --dmd2-teacher-guidance-scale > 1.
+    the teacher runs on them too.
     """
+    scoring = _is_scoring_step(ctx, optim_step_idx)
+    prepared = prepare_sft_batch(
+        ctx,
+        _sft_batch(ctx, batch),
+        microbatch_id=microbatch_id,
+        optim_step_idx=optim_step_idx,
+        pad_to_len=pad_to_len,
+        grid_index_range=_score_grid_index_range(ctx) if scoring else None,
+    )
+    return _request_teacher_forward(ctx, batch, prepared, pad_to_len=pad_to_len) if scoring else prepared
+
+
+def _sft_batch(ctx: DiffusionLossContext, batch: list[dict]) -> list[dict]:
     config = ctx.train_pipeline_config
-    sft_batch = [
+    return [
         {
             "latent": {"visual": pair["x0"]},
             "cond_kwargs": config.prepare_cond_kwargs(pair["denoising_env"].pos_cond_kwargs, ctx.device),
         }
         for pair in batch
     ]
-    grid_index_range = None
-    if _is_scoring_step(ctx, optim_step_idx):
-        min_sigma, max_sigma = ctx.args.dmd2_score_sigma_range
-        num_train_timesteps = config.num_train_timesteps
-        # Grid index i carries the unshifted sigma 1 - i / num_train_timesteps.
-        grid_index_range = (round(num_train_timesteps * (1 - max_sigma)), round(num_train_timesteps * (1 - min_sigma)))
-    prepared = prepare_sft_batch(
-        ctx,
-        sft_batch,
-        microbatch_id=microbatch_id,
-        optim_step_idx=optim_step_idx,
-        pad_to_len=pad_to_len,
-        grid_index_range=grid_index_range,
-    )
-    if grid_index_range is None:
-        return prepared
+
+
+def _score_grid_index_range(ctx: DiffusionLossContext) -> tuple[int, int]:
+    min_sigma, max_sigma = ctx.args.dmd2_score_sigma_range
+    num_train_timesteps = ctx.train_pipeline_config.num_train_timesteps
+    # Grid index i carries the unshifted sigma 1 - i / num_train_timesteps.
+    return round(num_train_timesteps * (1 - max_sigma)), round(num_train_timesteps * (1 - min_sigma))
+
+
+def _request_teacher_forward(
+    ctx: DiffusionLossContext, batch: list[dict], prepared: PreparedBatch, *, pad_to_len: int | None
+) -> PreparedBatch:
+    """Ask the trunk for the teacher at --dmd2-teacher-guidance-scale on this batch, with the rollout's negative
+    cond collated for its CFG when the scale needs one."""
+    config = ctx.train_pipeline_config
     guidance_scale = ctx.args.dmd2_teacher_guidance_scale
     if guidance_scale <= 1.0:
         return dataclasses.replace(prepared, teacher_guidance_scale=guidance_scale)
@@ -58,7 +70,7 @@ def prepare_critic_batch(
             "--dmd2-teacher-guidance-scale > 1 needs the rollout's negative cond, "
             "which the engine returns only for requests that run CFG"
         )
-    pos_list = [entry["cond_kwargs"] for entry in sft_batch]
+    pos_list = [config.prepare_cond_kwargs(env.pos_cond_kwargs, ctx.device) for env in envs]
     neg_list = [config.prepare_cond_kwargs(env.neg_cond_kwargs, ctx.device) for env in envs]
     if config.cfg_batching:
         joint_cond = config.collate_cond_for_sample_batch(pos_list + neg_list, ctx.device, pad_to_len=pad_to_len)
