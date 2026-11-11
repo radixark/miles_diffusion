@@ -239,6 +239,7 @@ and optionally a train-input and a train-output hook:
 | `custom_loss` | your expand (or convert) | your prepare | your formula | yours |
 | `dmd2`, actor | `data_conversion_hub.dmd2.expand_samples_to_train_pairs` | `loss_hub.dmd2.prepare_generator_batch` | `dmd2_loss_formula` | `select_scored_pairs` / – |
 | `dmd2`, critic | (the actor's pairs) | `loss_hub.dmd2.prepare_critic_batch` | `critic_loss_formula` | – / `score_last_step_samples` |
+| `dmd2`, critic-scoring (forward only, `--dmd2-critic-scoring original`) | (the actor's pairs) | `loss_hub.dmd2.prepare_scoring_batch` | `scoring_formula` (no loss) | `last_step_pairs` / `score_last_step_samples` |
 
 `sft_loss` requires the convert and rollout-log paths, plus `--train-only` and a rollout function
 that runs no engines (e.g. `miles.rollout.sft_rollout.generate_rollout`; see
@@ -252,6 +253,10 @@ On its last step its prepare hook also asks for the teacher at the same noisy in
 formula keeps the critic's x0 from that step's forward, before the update, next to the teacher's; after
 training its train-output hook hands them to the actor as `ctx.external_data["critic"]`. The actor trains on those samples only (its train-input hook):
 it recomputes the student's x0 at the rollout's step and moves it along their difference.
+`dmd2` runs through `train_dmd2.py`, which orders the two groups within a rollout. Under
+`--dmd2-critic-scoring original` the critic trains K−1 steps, then scores its last step's pairs
+forward-only at a fresh draw (the `critic-scoring` hooks, through `FSDPTrainRayActor.compute`), the
+actor trains on the scores, and the critic trains its last step.
 
 DiT forward always stays in the FSDP actor; the loss hook only computes the
 objective.
