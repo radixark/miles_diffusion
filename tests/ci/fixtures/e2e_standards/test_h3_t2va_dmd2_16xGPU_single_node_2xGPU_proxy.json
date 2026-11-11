@@ -1,6 +1,6 @@
 {
   "meta": {
-    "commit": "d4f042a97999c118314acd9f14ff17f97945875d",
+    "commit": "daff1b5340cafea00416f77c7c14cf766a19224e",
     "source": "test_h3_t2va_dmd2_16xGPU_single_node_2xGPU_proxy.py"
   },
   "metrics": {
