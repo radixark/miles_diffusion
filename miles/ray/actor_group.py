@@ -111,6 +111,16 @@ class RayTrainGroup:
             for rank, actor in enumerate(self._actor_handlers)
         ]
 
+    def async_compute(self, rollout_id, rollout_data_ref, external_data, hooks_key):
+        """Run the loss hub's ``hooks_key`` hooks forward-only on each rank's shard; ``external_data`` as in
+        ``async_train``."""
+        return [
+            actor.compute.remote(
+                rollout_id, rollout_data_ref, {role: refs[rank] for role, refs in external_data.items()}, hooks_key
+            )
+            for rank, actor in enumerate(self._actor_handlers)
+        ]
+
     def save_model(self, rollout_id, force_sync=False):
         """Save actor model"""
         return ray.get([actor.save_model.remote(rollout_id, force_sync=force_sync) for actor in self._actor_handlers])

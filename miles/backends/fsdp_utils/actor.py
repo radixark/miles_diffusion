@@ -40,7 +40,7 @@ from .diffusion_update_weight_utils import (
 )
 from .ema import EMAOptimizer, reshard_model
 from .input_dtype_policy import apply_input_dtype_policy
-from .loss_hub import DiffusionLossContext, get_loss_hooks
+from .loss_hub import DiffusionLossContext, LossHooks, get_loss_hooks
 from .lr_scheduler import get_lr_scheduler
 from .metrics import new_metric_buffer
 from .mixed_precision import parse_dtype_from_str
@@ -357,6 +357,74 @@ class FSDPTrainRayActor(TrainRayActor):
         # object store until the paired rank of a later group reads it.
         return Box(ray.put(train_output))
 
+    def compute(self, rollout_id: int, rollout_data_ref, external_data, hooks_key: str) -> Any:
+        """Run the loss hub's ``(--loss-type, hooks_key)`` hooks forward-only on this rank's shard of the rollout.
+
+        Their train-input selection, one no-grad forward per micro-batch and their train-output hook, whose return
+        value is boxed as train's is. Nothing trains: the optimizer, scheduler, EMA and step count stay.
+        """
+        if self.args.offload_train:
+            self.wake_up()
+
+        with inverse_timer("train_wait"), timer("compute"):
+            rollout_data = ray.get(rollout_data_ref[self.parallel_state.get_mesh("dp").get_local_rank()].inner)
+            if self.args.debug_rollout_only:
+                return
+            external_data = {role: ray.get(box.inner) for role, box in external_data.items()}
+            output = self._compute_core(
+                rollout_id=rollout_id,
+                rollout_data=rollout_data,
+                external_data=external_data,
+                hooks=get_loss_hooks(self.args, hooks_key),
+            )
+        return Box(ray.put(output))
+
+    def _compute_core(self, rollout_id: int, rollout_data, external_data: dict[str, Any], hooks: LossHooks) -> Any:
+        """One no-grad forward per micro-batch of the pairs ``hooks.train_input`` keeps, then ``hooks.train_output``."""
+        train_pairs: list = rollout_data["train_data"]
+        loss_ctx = self._loss_context(rollout_id, external_data)
+        if hooks.train_input is not None:
+            train_pairs = hooks.train_input(loss_ctx, train_pairs)
+
+        micro_bs = self.args.micro_batch_size
+        num_optim_steps_per_rollout = self.args.num_steps_per_rollout
+        # Numbered past the training micro-batches of this rank's whole rollout, so no training forward shares a
+        # draw with these.
+        microbatch_schedule = build_microbatch_schedule(
+            num_pairs_per_optim_step=len(rollout_data["train_data"]) // num_optim_steps_per_rollout,
+            num_optim_steps_per_rollout=num_optim_steps_per_rollout,
+            micro_batch_size=micro_bs,
+        )
+        microbatch_id = sum(len(microbatch_ranges) for microbatch_ranges in microbatch_schedule)
+        microbatch_ranges = [
+            (pair_lo, min(pair_lo + micro_bs, len(train_pairs))) for pair_lo in range(0, len(train_pairs), micro_bs)
+        ]
+        train_output_inputs: list = []
+        # The formula may emit metrics; nothing reduces or logs them here.
+        metrics = new_metric_buffer(
+            self.parallel_state.dp_group, loss_ctx.device, self.models, sigma_buckets=self.args.log_loss_sigma_bucket
+        )
+        with torch.no_grad():
+            legacy_pad_to_len = self._maybe_legacy_window_pad_len(train_pairs, microbatch_ranges)
+            for pair_lo, pair_hi in microbatch_ranges:
+                self._forward_train_pair_batch(
+                    loss_ctx,
+                    train_pairs[pair_lo:pair_hi],
+                    microbatch_id=microbatch_id,
+                    optim_step_idx=num_optim_steps_per_rollout - 1,
+                    train_output_inputs=train_output_inputs,
+                    metrics=metrics,
+                    pad_to_len=legacy_pad_to_len,
+                    hooks=hooks,
+                )
+                microbatch_id += 1
+            # A no-grad forward leaves FSDP's root parameters gathered; sleep must move the shards.
+            for model in (*self.models.values(), *self.reference_models.values()):
+                reshard_model(model)
+            if hooks.train_output is None:
+                return None
+            return hooks.train_output(loss_ctx, train_pairs, train_output_inputs)
+
     def _loss_context(self, rollout_id: int, external_data: dict[str, Any]) -> DiffusionLossContext:
         return DiffusionLossContext(
             models=self.models,
@@ -547,10 +615,12 @@ class FSDPTrainRayActor(TrainRayActor):
         pad_to_len: int | None = None,
         write_old_log_prob: bool = False,
         old_log_prob_from_new: bool = False,
+        hooks: LossHooks | None = None,
     ) -> torch.Tensor | None:
         """Run one prepared diffusion micro-batch: number ``microbatch_id`` of the rollout, in optimizer step
-        ``optim_step_idx``."""
-        prepared = self.loss_hooks.prepare(
+        ``optim_step_idx``, through the group's hooks or ``hooks``."""
+        hooks = self.loss_hooks if hooks is None else hooks
+        prepared = hooks.prepare(
             ctx, batch, microbatch_id=microbatch_id, optim_step_idx=optim_step_idx, pad_to_len=pad_to_len
         )
         train_pipeline_config = self.train_pipeline_config
@@ -628,7 +698,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 # PEFT re-enables adapter gradients on exit; reshard first so that lands on the shards, not gathered copies.
                 reshard_model(prepared.model)
 
-        return self.loss_hooks.formula(
+        return hooks.formula(
             ctx,
             batch,
             prepared,
