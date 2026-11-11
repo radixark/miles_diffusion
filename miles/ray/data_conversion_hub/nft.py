@@ -12,7 +12,7 @@ from miles.utils.types import Sample
 
 def _clean_x0_from_sample(sample: Sample) -> torch.Tensor:
     traj = sample.dit_trajectory
-    if traj is None or traj.latents is None or traj.latents.shape[0] < 1:
+    if traj is None or traj.latents is None or len(traj.latents) < 1:
         raise ValueError(
             f"sample {sample.index} missing dit_trajectory.latents; "
             "NFT needs the final clean latent x0 from rollout"
