@@ -1062,7 +1062,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--diffusion-score-centering",
                 action="store_true",
                 help=(
-                    "Flow-GRPO only: subtract the expected clipped-ratio score under the rollout step's "
+                    "Experimental. Flow-GRPO only: subtract the expected clipped-ratio score under the rollout step's "
                     "Gaussian from the PPO gradient, so train/rollout drift stops acting as a reward. "
                     "Needs --diffusion-debug-mode for the rollout's per-step means and noise stds."
                 ),

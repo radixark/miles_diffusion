@@ -84,6 +84,8 @@ Checklist:
 
 ## 5. Score centering
 
+**Experimental.** The flag, its metrics and its requirements may still change.
+
 Even when the kernels agree, the engine and the trainer rarely compute the exact same
 transition mean, and a one-step-stale rollout under `train_diffusion_async.py` never does.
 The engine samples `x' ~ N(μ_q, s²)` while the trainer scores it under `N(μ_θ, s²)`, so the
