@@ -20,8 +20,10 @@ flowchart LR
 
 
 
-The rollout pipeline decomposes into `generate` / `deserialize` / `reward` components. Because every microgroup is its
-own `asyncio` task, the engine starts the next request while previous responses are still being unpacked and scored.
+The rollout pipeline decomposes into `generate` / `deserialize` / `reward` components. With `--use-output-store`, the
+output is read back from the store and deleted there between `deserialize` and `reward`, still inside the generation
+slot. Because every microgroup is its own `asyncio` task, the engine starts the next request while previous responses
+are still being unpacked and scored.
 Nothing waits for the full batch.
 
 ## 2. Deserialization: msgpack + parser-actor pool

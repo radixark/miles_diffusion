@@ -92,6 +92,11 @@ async def custom_generate(
 
 `evaluation=` is optional — if your signature omits it, the caller skips that kwarg.
 
+With `--use-output-store`, `generate_microgroup` leaves `sample.generated_output` as a `StoredTensor`.
+`generate_and_rm_microgroup` reads it into the tensor after your function returns and before the reward. Code that
+reads the output earlier, such as a custom generate function that refines its own first pass, calls
+`await load_generated_outputs(GenerateState(args), microgroup)` first.
+
 ### `--diffusion-step-strategy-path`
 
 Select which denoising steps contribute SDE log-probs / train pairs, and which
