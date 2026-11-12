@@ -73,6 +73,15 @@ def test_switch_on_rejects(overrides, message) -> None:
         validate_output_store_args(_args(**overrides))
 
 
+def test_switch_on_rejects_a_plugin_without_read_slot(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An older plugin would fail only when the first reader is built, after the trainers loaded their models."""
+    plugins = types.ModuleType("radix_transfer_plugins")
+    plugins.OutputStore = type("OutputStore", (), {"read_many": lambda self: None})
+    monkeypatch.setitem(sys.modules, "radix_transfer_plugins", plugins)
+    with pytest.raises(ValueError, match="OutputStore.read_slot"):
+        validate_output_store_args(_args())
+
+
 def test_engine_server_args_name_the_run_and_the_engine_host() -> None:
     server_args = sglang_output_store_server_args(_args(), local_hostname="10.0.0.7")
     assert server_args["output_store_backend"] == "mooncake"

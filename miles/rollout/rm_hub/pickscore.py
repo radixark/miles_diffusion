@@ -7,6 +7,7 @@ import torch
 from PIL import Image
 
 from miles.utils.misc import SingletonMeta
+from miles.utils.output_store import StoredTensor
 from miles.utils.processing_utils import generated_output_to_rgb_hwc_uint8_frames, sample_frame_indices
 from miles.utils.types import Sample
 
@@ -74,8 +75,10 @@ class PickScoreRewardActor:
         processor_path: str,
         model_path: str,
         frames_per_forward: int,
+        num_frames: int | None,
     ) -> None:
         self.frames_per_forward = frames_per_forward
+        self.num_frames = num_frames
         gpu_ids = ray.get_gpu_ids()
         use_cuda = bool(gpu_ids) and torch.cuda.is_available()
         if use_cuda:
@@ -88,10 +91,10 @@ class PickScoreRewardActor:
         )
 
     def score_batch(self, outputs: list[torch.Tensor], prompts: list[str]) -> list[float]:
-        # a video sample is scored on every frame it arrives with and gets their mean
+        # a video is scored on --pickscore-num-frames of its frames, averaged; already picked frames pass unchanged
         images, frame_counts = [], []
         for output in outputs:
-            frames = generated_output_to_rgb_hwc_uint8_frames(output, None)
+            frames = generated_output_to_rgb_hwc_uint8_frames(output, self.num_frames)
             images.extend(Image.fromarray(frame) for frame in frames)
             frame_counts.append(len(frames))
         flat_prompts = [p for p, n in zip(prompts, frame_counts, strict=True) for _ in range(n)]
@@ -112,11 +115,13 @@ class AsyncPickScorePool(AsyncRewardActorPool, metaclass=SingletonMeta):
 
     def __init__(self, args, placement_group=None, slots=None) -> None:
         super().__init__(
+            args=args,
             actor_cls=PickScoreRewardActor,
             actor_kwargs={
                 "processor_path": args.pickscore_processor_path,
                 "model_path": args.pickscore_model_path,
                 "frames_per_forward": args.pickscore_batch_size,
+                "num_frames": args.pickscore_num_frames,
             },
             num_workers=args.pickscore_num_workers,
             batch_size=args.pickscore_batch_size,
@@ -130,10 +135,15 @@ class AsyncPickScorePool(AsyncRewardActorPool, metaclass=SingletonMeta):
 
 async def pickscore_rm(args, samples: Sequence[Sample]) -> list[float]:
     pool = AsyncPickScorePool(args)
-    # pick --pickscore-num-frames here so only the scored frames cross the object store
+    # pick --pickscore-num-frames here so only the scored frames cross the object store; a stored output is not
+    # here to pick from, so its actor picks them
     outputs = [
-        s.generated_output[:, sample_frame_indices(s.generated_output.shape[1], args.pickscore_num_frames)]
-        for s in samples
+        (
+            output
+            if isinstance(output, StoredTensor)
+            else output[:, sample_frame_indices(output.shape[1], args.pickscore_num_frames)]
+        )
+        for output in (s.generated_output for s in samples)
     ]
     scores, max_queue_depth = await pool.score(outputs, [s.prompt for s in samples])
     record_reward_queue_depth(samples, "pickscore", max_queue_depth)
