@@ -66,6 +66,7 @@ class AsyncApiRewardPool(AsyncRewardActorPool, metaclass=SingletonMeta):
         if not isinstance(actor_cls, type) or not issubclass(actor_cls, self.actor_base_cls):
             raise TypeError(f"API reward actor_class must be an {self.actor_base_cls.__name__} subclass")
         super().__init__(
+            args=args,
             actor_cls=actor_cls,
             actor_kwargs=config.actor_kwargs,
             num_workers=1,

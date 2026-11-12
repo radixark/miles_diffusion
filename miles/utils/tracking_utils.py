@@ -16,6 +16,11 @@ def init_tracking(args, primary: bool = True, **kwargs):
         wandb_utils.init_wandb_secondary(args, **kwargs)
 
 
+def logs_rollout_media(args, rollout_id: int) -> bool:
+    """Whether train rollout ``rollout_id`` logs media to W&B."""
+    return args.wandb_log_num_images > 0 and rollout_id % args.wandb_log_image_interval == 0
+
+
 def log(args, metrics, step_key, is_media=False):
     # E2E metrics tee (tests/ci/e2e_metrics_registry.py): mirror every metric
     # dict to MILES_METRICS_JSONL; O_APPEND keeps concurrent writers line-atomic.

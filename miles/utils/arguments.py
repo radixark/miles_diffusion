@@ -591,8 +591,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=False,
                 help=(
                     "Rollout requests put their latents, debug and cond tensors and their generated output in "
-                    "the run's Mooncake (sglang-d --output-store-backend) and return a ref; the rollout reads the "
-                    "output back right after generation and the trainer reads the tensors."
+                    "the run's Mooncake (sglang-d --output-store-backend) and return a ref; the reward actors read "
+                    "the output and the trainer reads the tensors. In the rollout process a sample's "
+                    "generated_output is a StoredTensor until its reward and None after it, except the first "
+                    "--wandb-log-num-images scored samples of a rollout that logs media, which become tensors. "
+                    "Outputs wait in the store until scored; see --output-store-global-segment-size."
                 ),
             )
             parser.add_argument(
