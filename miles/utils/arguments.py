@@ -619,10 +619,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--output-store-global-segment-size",
                 type=str,
-                default="16gb",
+                default="72gb",
                 help=(
                     "Memory each training node lends the store, mounted by its first trainer actor; the run's "
-                    "stored objects live in these segments, so their sum bounds what a rollout can store."
+                    "stored objects live in these segments, so their sum bounds what a rollout can store. Outputs "
+                    "wait there until scored: the segments should hold one rollout's outputs plus two rollouts of "
+                    "latents, or a reward slower than generation fills the store and requests fail. The default "
+                    "holds an LTX-2.3 rollout of 64 float videos."
                 ),
             )
             parser.add_argument(
