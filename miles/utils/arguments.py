@@ -632,8 +632,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--output-store-protocol",
                 type=str,
                 choices=("rdma", "tcp"),
-                default="tcp",
-                help="Mooncake transfer protocol of every output store client; rdma needs an RDMA device on every node.",
+                default="rdma",
+                help=(
+                    "Mooncake transfer protocol of every output store client. rdma needs an RDMA device on every "
+                    "node; tcp works without one and is much slower, above all for puts."
+                ),
             )
             parser.add_argument(
                 "--output-store-device-name",
