@@ -4,6 +4,7 @@ import logging
 import warnings
 from argparse import Namespace
 from contextlib import contextmanager
+from itertools import chain
 
 import torch
 import torch.distributed as dist
@@ -26,8 +27,10 @@ def load_fsdp_models(
     lora_adapter_paths: list[str] | None = None,
     trainable: bool = False,
     cpu_offload: bool = False,
+    copy_from: dict[str, torch.nn.Module] | None = None,
 ) -> dict[str, torch.nn.Module]:
-    materialize_weights = dist.get_rank() == 0
+    """Load each component as FSDP2 shards; ``copy_from`` copies an already loaded model's shards instead."""
+    materialize_weights = copy_from is None and dist.get_rank() == 0
     master_dtype = parse_dtype_from_str(args.fsdp_master_dtype)
     models = {}
     for component_index, component in enumerate(args.update_weight_target_modules):
@@ -52,8 +55,14 @@ def load_fsdp_models(
 
         if not materialize_weights and any(not parameter.is_meta for parameter in model.parameters()):
             raise RuntimeError(f"{component} did not honor meta initialization")
-        checkpoint.sync_model_dtypes(model)
-        full_state = model.state_dict() if materialize_weights else {}
+        if copy_from is None:
+            checkpoint.sync_model_dtypes(model)
+            full_state = model.state_dict() if materialize_weights else {}
+        else:
+            source = copy_from[component]
+            source_dtypes = {name: t.dtype for name, t in chain(source.named_parameters(), source.named_buffers())}
+            for name, tensor in chain(model.named_parameters(), model.named_buffers()):
+                tensor.data = tensor.data.to(source_dtypes[name])
         model = apply_fsdp2(
             model,
             model_backend.fsdp_parallel_plan(model),
@@ -61,8 +70,11 @@ def load_fsdp_models(
             cpu_offload=cpu_offload,
             args=args,
         )
-        checkpoint.broadcast_full_state_to_fsdp(model, full_state, cpu_offload=cpu_offload)
-        del full_state
+        if copy_from is None:
+            checkpoint.broadcast_full_state_to_fsdp(model, full_state, cpu_offload=cpu_offload)
+            del full_state
+        else:
+            checkpoint.copy_state_to_fsdp(model, copy_from[component], cpu_offload=cpu_offload)
         train_pipeline_config.postprocess_model_after_materialize(model)
         if parallel_state.get_optional_mesh("sp") is not None:
             apply_sequence_parallel(
