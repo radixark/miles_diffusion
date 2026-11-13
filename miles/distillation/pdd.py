@@ -76,31 +76,3 @@ def interval_loss(predictions: torch.Tensor, selected: int, target: torch.Tensor
     """Per-sample squared error of the selected head against the teacher's mean velocity."""
     error = (predictions[selected].float() - target.float()).square()
     return error.flatten(1).mean(1)
-
-
-def pdd_loss(
-    predictions: torch.Tensor,
-    x_start: torch.Tensor,
-    grid: torch.Tensor,
-    start: int,
-    selected: int,
-    teacher: Callable,
-    *,
-    x_selected: torch.Tensor | None = None,
-    solver: str = "midpoint",
-) -> torch.Tensor:
-    """Per-sample loss for one uniformly sampled intra-block interval, shared across the microbatch.
-
-    The caller supplies predictions from ONE student forward at (x_start, grid[start]).
-    The teacher starts from ``x_selected`` (e.g. the rollout's state at that interval), or
-    else from the earlier heads' update under stop-gradient. Only the selected head and
-    its shared backbone receive gradients from this Monte Carlo loss.
-    """
-    validate_grid(grid)
-    if not 0 <= start <= selected < len(grid) - 1:
-        raise ValueError("require 0 <= start <= selected < num_intervals")
-    with torch.no_grad():
-        if x_selected is None:
-            x_selected = block_update(x_start.detach(), predictions.detach(), grid, start, selected)
-        target = teacher_mean_velocity(teacher, x_selected, grid[selected], grid.diff()[selected], solver)
-    return interval_loss(predictions, selected, target)

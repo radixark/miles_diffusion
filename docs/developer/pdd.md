@@ -115,23 +115,20 @@ engine/trainer parity; later blocks also include rollout staleness.
 ## Verification and limits
 
 ```bash
-python -m pytest tests/fast/distillation
-python -m pytest tests/fast-gpu/backends/fsdp_utils/test_pdd.py
+python -m pytest tests/fast/distillation/test_pdd.py
 python -m pytest tests/fast-gpu/backends/sglang_diffusion_utils/test_pdd_sglang_loop.py
 ```
 
-CPU tests cover detached teacher supervision, selected-head gradients, signed
-nonuniform grids, eight block updates from rollout states against an independent
-optimizer loop (the test plays the actor's teacher solve), the engine's cached
-interval steps, trajectory validation, timestep matching and unsupported configurations. The FSDP
-GPU test compares tiny-model updates with an unsharded reference on one and two
-ranks, loading the student through the model-transform hook (two-rank case skips
-with fewer GPUs). The SGLang GPU smoke runs real Qwen-Image 2.1 native stages, the
-response parser, one-rank FSDP, the PDD loss and the Miles weight iterator into
+The CPU tests cover the interval math on signed nonuniform grids, the detached
+midpoint teacher target, the engine's cached-head interval steps, timestep matching,
+trajectory validation, the LoRA student's trainable and checkpointed parameters,
+unsupported configurations, and eight block updates from rollout states against an
+independent optimizer loop (the test plays the actor's teacher solve). The GPU smoke
+runs a tiny Qwen-Image 2.1 through SGLang's native stages, the response parser,
+one-rank FSDP with a LoRA student, the PDD loss and the Miles weight iterator into
 SGLang's weight receiver: one rollout, eight updates and a sync, then checks every
-interval of the next rollout against the trainer within 0.5%. It does not exercise
-the HTTP/Ray driver, pretrained quality or multi-GPU placement.
-All GPU cases skip when CUDA is unavailable.
+interval of the next rollout against the trainer within 0.5%. It does not exercise the
+HTTP/Ray driver, pretrained quality or multi-GPU placement, and skips without CUDA.
 
 These are correctness checks, not quality claims. Automatic image/video metrics,
 historical datasets/reports and experiment orchestration are outside this change.
