@@ -1,4 +1,4 @@
-"""FSDPTrainRayActor.train hands its output to later groups through the object store, not through the driver."""
+"""FSDPTrainRayActor.train and .compute hand their output to later groups through the object store, not the driver."""
 
 from tests.ci.ci_register import register_cpu_ci
 
@@ -13,15 +13,17 @@ from typing import Any
 from miles.utils.ray_utils import Box
 
 
-def _load_train():
+def _load_methods(*names):
+    """The named FSDPTrainRayActor methods, compiled with Ray, the timers and the perf log replaced."""
     path = Path(__file__).resolve().parents[4] / "miles/backends/fsdp_utils/actor.py"
     actor_class = next(
         node
         for node in ast.parse(path.read_text()).body
         if isinstance(node, ast.ClassDef) and node.name == "FSDPTrainRayActor"
     )
-    train = next(node for node in actor_class.body if isinstance(node, ast.FunctionDef) and node.name == "train")
-    train.decorator_list = []
+    methods = [node for node in actor_class.body if isinstance(node, ast.FunctionDef) and node.name in names]
+    for method in methods:
+        method.decorator_list = []
     store = {}
 
     def put(value):
@@ -37,16 +39,18 @@ def _load_train():
         timer=lambda name: nullcontext(),
         inverse_timer=lambda name: nullcontext(),
         train_metric_utils=SimpleNamespace(log_perf_data_raw=lambda **kwargs: None),
+        get_loss_hooks=lambda args, hooks_key: ("hooks of", args.loss_type, hooks_key),
     )
-    exec(compile(ast.Module(body=[train], type_ignores=[]), str(path), "exec"), namespace)
-    return namespace["train"], store, put
+    exec(compile(ast.Module(body=methods, type_ignores=[]), str(path), "exec"), namespace)
+    return namespace, store, put
 
 
 def test_train_unboxes_external_data_and_boxes_its_output():
-    train, store, put = _load_train()
+    namespace, store, put = _load_methods("train")
+    train = namespace["train"]
     seen = {}
 
-    def train_core(rollout_id, rollout_data, external_data):
+    def train_core(rollout_id, rollout_data, external_data, optim_steps=None):
         seen.update(rollout_data=rollout_data, external_data=external_data)
         return {"scores": [rollout_id]}
 
@@ -62,6 +66,34 @@ def test_train_unboxes_external_data_and_boxes_its_output():
     result = train(actor, rollout_id=3, rollout_data_ref=[shard], external_data={"critic": critic_output})
 
     assert seen == {"rollout_data": {"train_data": []}, "external_data": {"critic": {"scores": [0]}}}
+    assert isinstance(result, Box)
+    assert store[result.inner] == {"scores": [3]}
+    assert result.inner not in (shard.inner, critic_output.inner)
+
+
+def test_compute_unboxes_external_data_and_boxes_its_output():
+    namespace, store, put = _load_methods("compute")
+    seen = {}
+
+    def compute_core(rollout_id, rollout_data, external_data, hooks):
+        seen.update(rollout_data=rollout_data, external_data=external_data, hooks=hooks)
+        return {"scores": [rollout_id]}
+
+    actor = SimpleNamespace(
+        args=SimpleNamespace(offload_train=False, debug_rollout_only=False, loss_type="dmd2"),
+        _compute_core=compute_core,
+        parallel_state=SimpleNamespace(get_mesh=lambda name: SimpleNamespace(get_local_rank=lambda: 0)),
+    )
+    shard = Box(put({"train_data": ["pair"]}))
+    critic_output = Box(put({"scores": [0]}))
+
+    result = namespace["compute"](actor, 3, [shard], {"critic": critic_output}, "critic-scoring")
+
+    assert seen == {
+        "rollout_data": {"train_data": ["pair"]},
+        "external_data": {"critic": {"scores": [0]}},
+        "hooks": ("hooks of", "dmd2", "critic-scoring"),
+    }
     assert isinstance(result, Box)
     assert store[result.inner] == {"scores": [3]}
     assert result.inner not in (shard.inner, critic_output.inner)

@@ -1,4 +1,10 @@
-"""DMD2 hooks: the critic group learns and scores the student's samples; the actor follows the scores."""
+"""DMD2 hooks: the critic group learns and scores the student's samples; the actor follows the scores.
+
+--dmd2-critic-scoring picks how the critic scores its last step's samples: ``reuse-critic-step`` scores them with
+that step's training forward (the critic hooks' last step is the scoring batch), ``original`` scores them with a
+separate forward-only pass (the ``critic-scoring`` hooks, run by ``FSDPTrainRayActor.compute``) before the critic
+trains that step on them, as tianweiy/DMD2 does.
+"""
 
 from __future__ import annotations
 
@@ -22,19 +28,37 @@ def prepare_critic_batch(
 ) -> PreparedBatch:
     """SFT flow matching on the student's x0 predictions, conditioned on their rollout prompts.
 
-    The last step's samples are scored at their noisy inputs, so its grid points come from the scoring range and
-    the teacher runs on them too.
+    Under --dmd2-critic-scoring reuse-critic-step the last step's samples are scored at their noisy inputs, so that
+    step prepares the scoring batch: grid points from the scoring range, the teacher asked for.
     """
-    scoring = _is_scoring_step(ctx, optim_step_idx)
+    if _is_scoring_step(ctx, optim_step_idx):
+        return prepare_scoring_batch(
+            ctx, batch, microbatch_id=microbatch_id, optim_step_idx=optim_step_idx, pad_to_len=pad_to_len
+        )
+    return prepare_sft_batch(
+        ctx, _sft_batch(ctx, batch), microbatch_id=microbatch_id, optim_step_idx=optim_step_idx, pad_to_len=pad_to_len
+    )
+
+
+def prepare_scoring_batch(
+    ctx: DiffusionLossContext,
+    batch: list[dict],
+    *,
+    microbatch_id: int,
+    optim_step_idx: int,
+    pad_to_len: int | None = None,
+) -> PreparedBatch:
+    """The critic's SFT draw on the student's x0 at grid points in --dmd2-score-sigma-range, with the teacher asked
+    for at the same noisy inputs."""
     prepared = prepare_sft_batch(
         ctx,
         _sft_batch(ctx, batch),
         microbatch_id=microbatch_id,
         optim_step_idx=optim_step_idx,
         pad_to_len=pad_to_len,
-        grid_index_range=_score_grid_index_range(ctx) if scoring else None,
+        grid_index_range=_score_grid_index_range(ctx),
     )
-    return _request_teacher_forward(ctx, batch, prepared, pad_to_len=pad_to_len) if scoring else prepared
+    return _request_teacher_forward(ctx, batch, prepared, pad_to_len=pad_to_len)
 
 
 def _sft_batch(ctx: DiffusionLossContext, batch: list[dict]) -> list[dict]:
@@ -98,14 +122,11 @@ def critic_loss_formula(
 
     On the last step it also keeps the critic's and the teacher's x0 at each noisy input, before that step's update.
     """
-    latents = prepared.latents["visual"]
-    sigmas = prepared.extras["sigmas"]["visual"].view(len(batch), *([1] * (latents.ndim - 1)))
     if _is_scoring_step(ctx, optim_step_idx):
-        x0_fake = latents - sigmas * new_pred["visual"].detach().float()
-        x0_real = latents - sigmas * teacher_pred["visual"].float()
-        for pair, real, fake in zip(batch, x0_real, x0_fake, strict=True):
-            train_output_inputs.append((pair["sample_index"], real, fake))
+        keep_scores(batch, prepared, new_pred, teacher_pred, train_output_inputs)
     if ctx.args.dmd2_critic_loss_space == "x0":
+        latents = prepared.latents["visual"]
+        sigmas = prepared.extras["sigmas"]["visual"].view(len(batch), *([1] * (latents.ndim - 1)))
         # x0 = x_sigma - sigma v, so the MSE on x0 weights the velocity MSE by sigma^2.
         x0_target = latents - sigmas * prepared.extras["target"]["visual"]
         prepared = dataclasses.replace(prepared, extras={**prepared.extras, "target": {"visual": x0_target}})
@@ -125,6 +146,44 @@ def critic_loss_formula(
     )
 
 
+def scoring_formula(
+    ctx: DiffusionLossContext,
+    batch: list[dict],
+    prepared: PreparedBatch,
+    *,
+    new_pred: dict[str, torch.Tensor],
+    old_pred: dict[str, torch.Tensor] | None,
+    ref_pred: dict[str, torch.Tensor] | None,
+    teacher_pred: dict[str, torch.Tensor] | None = None,
+    metrics: MetricBuffer,
+    optim_step_idx: int,
+    train_output_inputs: list,
+    **kwargs,
+) -> None:
+    """Keeps the critic's and the teacher's x0 at each noisy input and computes no loss.
+
+    The forward-only scoring of --dmd2-critic-scoring original, before the critic trains its last step on these samples.
+    """
+    keep_scores(batch, prepared, new_pred, teacher_pred, train_output_inputs)
+    return None
+
+
+def keep_scores(
+    batch: list[dict],
+    prepared: PreparedBatch,
+    new_pred: dict[str, torch.Tensor],
+    teacher_pred: dict[str, torch.Tensor] | None,
+    train_output_inputs: list,
+) -> None:
+    """Per sample, x0_fake = x_s - sigma v_critic and x0_real = x_s - sigma v_teacher, for score_last_step_samples."""
+    latents = prepared.latents["visual"]
+    sigmas = prepared.extras["sigmas"]["visual"].view(len(batch), *([1] * (latents.ndim - 1)))
+    x0_fake = latents - sigmas * new_pred["visual"].detach().float()
+    x0_real = latents - sigmas * teacher_pred["visual"].float()
+    for pair, real, fake in zip(batch, x0_real, x0_fake, strict=True):
+        train_output_inputs.append((pair["sample_index"], real, fake))
+
+
 def score_last_step_samples(
     ctx: DiffusionLossContext, train_pairs: list[dict], train_output_inputs: list
 ) -> dict[int, dict]:
@@ -132,8 +191,14 @@ def score_last_step_samples(
     return {index: {"x0_real": real.cpu(), "x0_fake": fake.cpu()} for index, real, fake in train_output_inputs}
 
 
+def last_step_pairs(ctx: DiffusionLossContext, train_pairs: list[dict]) -> list[dict]:
+    """The last 1/K of the rank's pairs, K the critic's steps per rollout: its last step's pairs, the ones it scores."""
+    return train_pairs[len(train_pairs) - len(train_pairs) // ctx.args.num_steps_per_rollout :]
+
+
 def _is_scoring_step(ctx: DiffusionLossContext, optim_step_idx: int) -> bool:
-    return optim_step_idx == ctx.args.num_steps_per_rollout - 1
+    """Under reuse-critic-step the last step's training forward is the critic's score; under original no step is."""
+    return ctx.args.dmd2_critic_scoring == "reuse-critic-step" and optim_step_idx == ctx.args.num_steps_per_rollout - 1
 
 
 def select_scored_pairs(ctx: DiffusionLossContext, train_pairs: list[dict]) -> list[dict]:

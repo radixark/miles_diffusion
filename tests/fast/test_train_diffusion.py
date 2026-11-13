@@ -84,6 +84,7 @@ def test_every_trainer_group_trains_each_rollout_in_order(monkeypatch, roles, of
     )
     monkeypatch.setattr(train_diffusion.ray, "get", _fake_ray_get(events))
     args = Namespace(
+        loss_type="policy_loss",
         start_rollout_id=0,
         num_rollout=2,
         offload_rollout=False,
@@ -111,3 +112,9 @@ def test_every_trainer_group_trains_each_rollout_in_order(monkeypatch, roles, of
             expected += [("clear_memory", role) for role in roles]
         expected += [("update_weights", "actor")]
     assert events == expected
+
+
+def test_dmd2_is_sent_to_its_own_driver(monkeypatch):
+    monkeypatch.setattr(train_diffusion, "configure_logger", lambda: None)
+    with pytest.raises(ValueError, match="run train_dmd2.py"):
+        train_diffusion.train(Namespace(loss_type="dmd2"))

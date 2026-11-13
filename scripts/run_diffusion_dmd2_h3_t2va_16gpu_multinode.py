@@ -272,6 +272,8 @@ def execute(args: ScriptArgs, prompt_dir: str) -> None:
             f"{topology_args} {args.extra_args}"
         ),
         num_gpus_per_node=args.num_gpus_per_node,
+        # The reference evals run no DMD2 training.
+        train_script="train_diffusion.py" if args.reference else "train_dmd2.py",
         config=args,
         extra_env_vars={"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"},
     )
