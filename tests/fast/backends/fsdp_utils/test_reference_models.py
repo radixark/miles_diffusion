@@ -67,9 +67,11 @@ class TinyComponent(torch.nn.Module):
 class TinyBackend:
     def __init__(self):
         self.component_load_requests = []
+        self.materialize_requests = []
 
     def load_component(self, component, *, checkpoint_path, master_dtype, materialize_weights):
         self.component_load_requests.append((component, checkpoint_path))
+        self.materialize_requests.append(materialize_weights)
         model = TinyComponent().to(dtype=master_dtype)
         if materialize_weights:
             value = {"actor": 0.1, "reference": 0.2, "teacher": 0.3}[checkpoint_path]
@@ -350,6 +352,46 @@ def test_lora_base_forward_restores_adapters_and_actor_gradients(tmp_path, unsha
     for actual, expected in zip(model.parameters(), oracle.parameters(), strict=True):
         if actual.requires_grad:
             torch.testing.assert_close(actual.grad, expected.grad)
+
+
+def test_a_model_copied_from_another_reads_no_weights_and_shares_no_storage(monkeypatch):
+    # The DMD2 critic starts from the teacher's checkpoint: its shards are copied, not loaded a second time.
+    monkeypatch.setattr(model_loader.dist, "get_rank", lambda: 0)
+    monkeypatch.setattr(model_loader.checkpoint, "sync_model_dtypes", lambda model: None)
+    monkeypatch.setattr(model_loader.checkpoint, "broadcast_full_state_to_fsdp", lambda *args, **kwargs: None)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: torch.device("cpu"))
+    dist.init_process_group("fake", store=dist.HashStore(), rank=0, world_size=1)
+    try:
+        mesh = init_device_mesh("cpu", (1,))
+        parallel = SimpleNamespace(get_mesh=lambda name: mesh, get_optional_mesh=lambda name: None)
+        args, backend, config = make_model_loader_args(), TinyBackend(), TinyPipelineConfig()
+        args.use_lora = False
+        teacher = model_loader.load_fsdp_models(args, backend, config, parallel, checkpoint_path="teacher")
+        critic = model_loader.load_fsdp_models(
+            args, backend, config, parallel, checkpoint_path="teacher", trainable=True, copy_from=teacher
+        )
+        assert backend.materialize_requests == [True, True, False, False]
+        inputs = torch.ones(2, 3)
+        for component in args.update_weight_target_modules:
+            assert critic[component].training and not teacher[component].training
+            for (name, copied), (_, source) in zip(
+                critic[component].named_parameters(), teacher[component].named_parameters(), strict=True
+            ):
+                assert copied.requires_grad and not source.requires_grad, name
+                assert torch.equal(copied.to_local(), source.to_local()), name
+                assert copied.to_local().data_ptr() != source.to_local().data_ptr(), name
+            for (name, copied), (_, source) in zip(
+                critic[component].named_buffers(), teacher[component].named_buffers(), strict=True
+            ):
+                assert torch.equal(copied, source) and copied.data_ptr() != source.data_ptr(), name
+            with torch.no_grad():
+                torch.testing.assert_close(critic[component](inputs), teacher[component](inputs))
+                for parameter in critic[component].parameters():
+                    parameter.to_local().add_(1)
+            for parameter in teacher[component].parameters():
+                assert torch.all(parameter.to_local() == 0.3 + (0.05 if component == "transformer_2" else 0.0))
+    finally:
+        dist.destroy_process_group()
 
 
 def test_first_forward_with_adapters_disabled_keeps_master_dtype_gradients():
