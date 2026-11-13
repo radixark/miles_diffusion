@@ -689,8 +689,11 @@ def _allocate_rollout_engine_addr_and_ports_normal(*, args, num_engines, rollout
 
         def get_addr_and_ports(engine):
             # use small ports to prevent ephemeral port between 32768 and 65536.
-            # also, ray uses port 10002-19999, thus we avoid near-10002 to avoid racing condition
-            start_port = 15000
+            # also, ray uses port 10002-19999, thus we avoid near-10002 to avoid racing condition.
+            # Mooncake's transfer engine binds its RPC and TCP ports at random in 15000-17000 (one client
+            # per engine, rollout manager and trainer with --use-output-store), and sglang-d binds its
+            # offline-job broker on port + 1, so the engine ports start above that range.
+            start_port = 17001
 
             def port(consecutive=1):
                 nonlocal start_port
