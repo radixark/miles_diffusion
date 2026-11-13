@@ -20,7 +20,7 @@ miles_diffusion/
 │   │   │   ├── models/            # native model packages (ltx) + diffusers parallel plans
 │   │   │   ├── loss_hub/          # loss hooks per (loss_type, role): flow_grpo / nft / sft / dmd2
 │   │   │   ├── sequence_parallel/ # USP = Ulysses × Ring
-│   │   │   ├── monkey_patches/    # FSDP2 param-dtype patch (torch 2.11 gated)
+│   │   │   ├── monkey_patches/    # FSDP2 param-dtype patch (torch 2.11/2.14 gated)
 │   │   │   ├── mixed_precision.py # per-parameter dtype map compilation
 │   │   │   └── sde_step_backend.py# SDE dynamics + log-prob scoring
 │   │   └── sglang_diffusion_utils/# the rollout half: engine wrapper + parity patches
