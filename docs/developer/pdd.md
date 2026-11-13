@@ -9,7 +9,7 @@ checkpoints.
 
 ## Supported configuration
 
-- 32 output heads per latent stream, four intervals per block: eight student
+- 32 output heads, four intervals per block: eight student
   forwards per sample.
 - A LoRA student: adapters on the backbone, the new heads trained in full; FP32 master
   weights, BF16 compute; a frozen teacher loaded from the same base model.
@@ -22,38 +22,36 @@ checkpoints.
 - No EMA, RL log probabilities, reference-policy loss, dynamic batching, Cache-DiT or
   compiled/graph execution.
 
-| Family | Task | Streams | Grid | Engine weights | FSDP all-gather |
-|---|---|---|---|---|---|
-| `qwen_image21` | t2i, 1024 × 1024 | visual | the scheduler's shifted grid | FP32 | FP32, BF16 autocast |
+- Qwen-Image 2.1 t2i at 1024 × 1024 on the scheduler's shifted grid; FP32 engine
+  weights; FSDP all-gathers FP32 and computes under BF16 autocast.
 
 ## How it works
 
 1. SGLang generates each prompt's trajectory with fixed student weights. The engine
    steps all 32 intervals: the first interval of each block runs the DiT and caches
    the 32 heads, the other three step on the cache, so the trajectory carries every
-   interval's start state (33 states per stream) for eight DiT forwards.
+   interval's start state (33 states) for eight DiT forwards.
 2. After data-parallel splitting, each trajectory expands into its eight blocks.
 3. Update j recomputes the heads from the rollout state at block j and samples one
    of its four intervals. The prepare hook asks the actor for the frozen teacher's
-   midpoint velocity from the rollout's state at that interval, one joint teacher call
-   per midpoint stage for all streams; the loss regresses the selected head of every
-   stream on it and steps once. Block j's states were produced j updates before the
+   midpoint velocity from the rollout's state at that interval; the loss regresses the
+   selected head on it and steps once. Block j's states were produced j updates before the
    weights it trains.
 4. After the eight updates the driver synchronizes the student back to SGLang: the
    LoRA adapter, then the heads as plain weights.
 
-The student's output layers are replicated into heads after LoRA is applied and before
+The student's output layer is replicated into heads after LoRA is applied and before
 FSDP wrapping and optimizer creation, so the heads train in full beside the adapters and
 LoRA checkpoints keep them; all heads start from the base model's output layer.
 
 `--loss-type pdd` registers its prepare/loss/train-input hooks in the loss hub
 (`LOSS_HOOKS[("pdd", "actor")]`) and fills defaults for generic Miles hooks
 (`set_pdd_defaults` in `miles/distillation/integration.py`); the trainer has no PDD
-branches. What differs per model family lives in `PDD_FAMILIES`:
+branches:
 
 | Hook | PDD default |
 |---|---|
-| `--custom-train-model-transform-path` | `install_student`: each stream's output layer as 32 heads, after LoRA |
+| `--custom-train-model-transform-path` | `install_student`: `proj_out` as 32 heads, after LoRA |
 | loss hub train input | `expand_train_pairs`: trajectory → eight block pairs |
 | loss hub prepare / formula | `loss_hub/pdd.py`; the teacher runs in the actor through `PreparedBatch.teacher_solver` |
 | `--custom-convert-samples-to-train-data-path` / `--custom-rm-path` | `miles/rollout/pdd_rollout.py` |

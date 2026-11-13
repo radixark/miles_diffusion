@@ -126,7 +126,7 @@ def main():
         pair = {
             "sample_index": rank,
             "pdd_start": start,
-            "pdd_trajectory": {"visual": trajectory},
+            "pdd_trajectory": trajectory,
             "denoising_env": env,
         }
         prepared = prepare_pdd_batch(ctx, [pair], microbatch_id=0, optim_step_idx=0)

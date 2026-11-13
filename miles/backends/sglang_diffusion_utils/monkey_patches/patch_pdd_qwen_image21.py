@@ -1,4 +1,4 @@
-"""Experimental head-only PDD rollout. Keep the native DiT and rollout scheduler.
+"""PDD rollout for Qwen-Image 2.1: keep the native DiT and rollout scheduler, replace only ``proj_out``.
 
 The ODE scheduler steps all 32 intervals. The first interval of each block runs the
 DiT, whose 32 heads are cached; the block's other three intervals step on the cached
@@ -10,14 +10,21 @@ No fused-head cache or exported checkpoint is needed for online weight sync.
 import torch
 from torch import nn
 
-from miles.distillation.integration import engine_timesteps, make_grid
+from miles.distillation.integration import (
+    BLOCK_SIZE,
+    IMAGE_TOKENS,
+    NUM_INTERVALS,
+    RESOLUTION,
+    engine_timesteps,
+    make_grid,
+)
 from miles.distillation.pdd import ParallelLinear
 
 
 class PDDProjection(nn.Module):
     def __init__(self, source):
         super().__init__()
-        self.parallel = ParallelLinear(source, 32)
+        self.parallel = ParallelLinear(source, NUM_INTERVALS)
         self.interval = None
         self.block = None
 
@@ -53,15 +60,19 @@ def apply():
     def timesteps(self, batch, server_args):
         if not isinstance(server_args.pipeline_config, QwenImage21PipelineConfig):
             return original_time(self, batch, server_args)
-        if (batch.height, batch.width, batch.num_inference_steps) != (1024, 1024, 8):
-            raise ValueError("PDD requires 1024x1024 and 8 steps")
+        if (batch.height, batch.width, batch.num_inference_steps) != (
+            RESOLUTION,
+            RESOLUTION,
+            NUM_INTERVALS // BLOCK_SIZE,
+        ):
+            raise ValueError(f"PDD requires {RESOLUTION}x{RESOLUTION} and {NUM_INTERVALS // BLOCK_SIZE} steps")
         batch = original_time(self, batch, server_args)
-        grid = make_grid(server_args.model_path, 32, 4096, batch.timesteps.device)
+        grid = make_grid(server_args.model_path, NUM_INTERVALS, IMAGE_TOKENS, batch.timesteps.device)
         # Every interval is a scheduler step; only block starts reach the DiT, at these timesteps.
         batch.timesteps = engine_timesteps(grid[:-1]).to(grid.device)
         batch.scheduler.timesteps = batch.timesteps
         batch.scheduler.sigmas = grid
-        batch.num_inference_steps = 32
+        batch.num_inference_steps = NUM_INTERVALS
         return batch
 
     def prepare(self, batch, server_args):
@@ -81,7 +92,7 @@ def apply():
 
     def predict(self, current_model, *args, **kwargs):
         head = current_model.proj_out
-        if head.interval % 4 == 0:
+        if head.interval % BLOCK_SIZE == 0:
             original_predict(self, current_model, *args, **kwargs)
         return head.block[head.interval]
 

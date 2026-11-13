@@ -97,7 +97,7 @@ def raw_forward(model, prepared):
 def rollout_pair(index):
     return dict(
         sample_index=index,
-        pdd_trajectory={"visual": torch.randn(33, 4, 2)},
+        pdd_trajectory=torch.randn(33, 4, 2),
         denoising_env=SimpleNamespace(pos_cond_kwargs={}),
     )
 
@@ -117,17 +117,17 @@ def test_eight_block_updates_from_rollout_states_match_reference():
         refopt.zero_grad()
         for pair in expanded[step * 2 : (step + 1) * 2]:
             prepared = prepare_pdd_batch(ctx, [pair], microbatch_id=0, optim_step_idx=0)
-            start, k, grids = (prepared.extras[v] for v in ("start", "selected", "grids"))
+            start, k, grid = (prepared.extras[v] for v in ("start", "selected", "grid"))
             x = prepared.latents["visual"]
-            torch.testing.assert_close(x[0], pair["pdd_trajectory"]["visual"][4 * step], rtol=0, atol=0)
+            torch.testing.assert_close(x[0], pair["pdd_trajectory"][4 * step], rtol=0, atol=0)
             assert start == 4 * step and not x.requires_grad
             predictions = reference(x, prepared.timesteps_for_model["visual"])
             # The teacher starts from the rollout's state at the sampled interval.
-            x_selected = pair["pdd_trajectory"]["visual"][k].unsqueeze(0)
+            x_selected = pair["pdd_trajectory"][k].unsqueeze(0)
             expected = pdd_loss(
                 predictions,
                 x,
-                grids["visual"],
+                grid,
                 start,
                 k,
                 lambda state, sigma: teacher(state, sigma.expand(1)),

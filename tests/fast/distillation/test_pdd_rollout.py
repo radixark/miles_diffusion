@@ -56,7 +56,7 @@ def test_converter_validates_grid_and_complete_trajectory(monkeypatch):
         diffusion_model_family="qwen_image21", hf_checkpoint="unused", diffusion_height=32, pdd_num_intervals=32
     )
     pair = pdd_rollout.convert_samples_to_train_data(args, [sample])["train_data"][0]
-    torch.testing.assert_close(pair["pdd_trajectory"]["visual"], sample.dit_trajectory.latents)
+    torch.testing.assert_close(pair["pdd_trajectory"], sample.dit_trajectory.latents)
     blocks = expand_trajectories([pair], intervals=32, block_size=4)
     assert [block["pdd_start"] for block in blocks] == list(range(0, 32, 4))
     for field, value in [

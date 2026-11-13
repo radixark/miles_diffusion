@@ -1,7 +1,6 @@
 """PDD rollout hooks: validate SGLang trajectories for the block-ordered updates.
 
-SGLang returns the start state of all 32 intervals plus the endpoint, per latent
-stream (the family's ``split_states`` cuts a packed trajectory into streams). The actor
+SGLang returns the start state of all 32 intervals plus the endpoint. The actor
 expands each trajectory into its eight blocks after DP splitting; block j trains
 from the rollout state at its first interval, and the teacher target starts from the
 rollout state at the sampled interval. Uses the shared rollout engine, response
@@ -10,7 +9,7 @@ parser, dataset cursor and weight sync.
 
 import torch
 
-from miles.distillation.integration import pdd_family
+from miles.distillation.integration import pdd_grid
 
 
 async def no_reward(args, samples, **kwargs):
@@ -20,15 +19,14 @@ async def no_reward(args, samples, **kwargs):
 
 
 def convert_samples_to_train_data(args, samples):
-    family = pdd_family(args)
-    grids = family.grids(args)
+    grid = pdd_grid(args)
     states_count = args.pdd_num_intervals + 1
     pairs = []
     for sample in samples:
         traj, env = sample.dit_trajectory, sample.denoising_env
         if traj is None or env is None or env.pos_cond_kwargs is None:
             raise ValueError("PDD requires SGLang trajectory and positive conditioning")
-        if traj.sigmas is None or not torch.equal(traj.sigmas.cpu().float(), grids["visual"]):
+        if traj.sigmas is None or not torch.equal(traj.sigmas.cpu().float(), grid):
             raise ValueError("PDD rollout sigma grid differs from training")
         # Require every interval start + the endpoint, never silently index a
         # filtered trajectory as if it were a complete one.
@@ -41,8 +39,7 @@ def convert_samples_to_train_data(args, samples):
             raise ValueError(f"PDD expects per-sample packed latent tokens [{states_count}, S, C]")
         if not torch.isfinite(states).all():
             raise ValueError("PDD rollout contains nonfinite states")
-        streams = family.split_states(states, env)
-        pairs.append(dict(sample_index=sample.index, pdd_trajectory=streams, denoising_env=env))
+        pairs.append(dict(sample_index=sample.index, pdd_trajectory=states, denoising_env=env))
     if not pairs:
         raise ValueError("PDD rollout produced no training samples")
     return {"train_data": pairs}

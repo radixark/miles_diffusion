@@ -263,15 +263,15 @@ def worker(output):
 
     # The trained heads now drive the engine; every interval state must match the trainer's heads.
     second = rollout()
-    assert not torch.equal(first["pdd_trajectory"]["visual"], second["pdd_trajectory"]["visual"])
+    assert not torch.equal(first["pdd_trajectory"], second["pdd_trajectory"])
     with torch.no_grad():
         for block in expand_train_pairs(ctx, [second]):
             prepared = prepare_pdd_batch(ctx, [block], microbatch_id=0, optim_step_idx=0)
             x, start = prepared.latents["visual"], block["pdd_start"]
             heads = predict(prepared)["visual"].reshape(*x.shape[:-1], 32, x.shape[-1]).permute(2, 0, 1, 3)
             for end in range(start + 1, start + 5):
-                following = block_update(x, heads, prepared.extras["grids"]["visual"], start, end)
-                expected = second["pdd_trajectory"]["visual"][end].cuda().unsqueeze(0)
+                following = block_update(x, heads, prepared.extras["grid"], start, end)
+                expected = second["pdd_trajectory"][end].cuda().unsqueeze(0)
                 # Mismatched BF16 timestep rounding alone gave 1.5-3% on some blocks.
                 relative = (following - expected).abs().mean() / (expected - x).abs().mean()
                 assert relative < 5e-3, (start, end, float(relative))
