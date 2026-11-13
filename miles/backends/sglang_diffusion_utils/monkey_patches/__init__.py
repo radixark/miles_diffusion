@@ -9,6 +9,7 @@ those groups before model construction.
 - ``qwen_image21``: Qwen-Image 2.1 recomputes the text prefix every step instead of caching its K/V,
   like the trainer.
 - ``ltx``:  LTX rollout cond kwargs + AV cross-off (video-only train parity).
+- ``pdd_qwen_image21``: PDD student heads and per-interval trajectories (``docs/developer/pdd.md``).
 
 Patch modules are imported inside ``apply_*`` only, so CPU-only Ray actors
 can import this package without pulling sglang triton kernels. Adding a
@@ -55,6 +56,13 @@ def apply_wan_rollout_patches() -> None:
     from miles.backends.sglang_diffusion_utils.monkey_patches import patch_wan_norm_ops
 
     patch_wan_norm_ops.apply()
+
+
+@register_rollout_patch_group("pdd_qwen_image21")
+def apply_pdd_qwen_image21_rollout_patches() -> None:
+    from . import patch_pdd_qwen_image21
+
+    patch_pdd_qwen_image21.apply()
 
 
 @register_rollout_patch_group("ltx")

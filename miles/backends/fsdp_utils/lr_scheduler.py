@@ -167,7 +167,7 @@ def get_lr_scheduler(args, optimizer: torch.optim.Optimizer) -> FSDPLRScheduler:
     Returns:
         FSDPLRScheduler: Initialized scheduler bound to ``optimizer``.
     """
-    args.train_iters = args.num_rollout * args.rollout_batch_size * args.n_samples_per_prompt // args.global_batch_size
+    args.train_iters = args.num_rollout * args.num_steps_per_rollout
     if args.lr_decay_iters is None:
         args.lr_decay_iters = args.train_iters
     lr_decay_steps = args.lr_decay_iters

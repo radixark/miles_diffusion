@@ -46,6 +46,8 @@ SCHEMA = {
     "x0_rel_max": MetricReduce.MAX,
     "peak_memory_allocated_gb": MetricReduce.MAX,
     "device_memory_used_gb": MetricReduce.MAX,
+    "pdd_next_latent_mae": MetricReduce.MEAN,
+    "pdd_update_relative_error": MetricReduce.MEAN,
 }
 
 # Also logged per rollout denoising step, under step_metric_key; a step no pair trained on is not logged.

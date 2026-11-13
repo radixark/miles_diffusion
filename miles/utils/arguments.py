@@ -163,6 +163,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--fsdp-param-dtype",
+                type=str,
+                default=None,
+                choices=["fp16", "bf16", "fp32"],
+                help=(
+                    "dtype FSDP all-gathers parameters to (MixedPrecisionPolicy.param_dtype). Defaults to "
+                    "--diffusion-forward-dtype; fp32 keeps gathered weights (biases, norms) at master "
+                    "precision and leaves matmul precision to autocast."
+                ),
+            )
+            parser.add_argument(
                 "--fsdp-reduce-dtype",
                 type=str,
                 default="fp32",
@@ -949,7 +960,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--loss-type",
                 type=str,
-                choices=["policy_loss", "sft_loss", "custom_loss", "nft", "dmd2"],
+                choices=["policy_loss", "sft_loss", "custom_loss", "nft", "dmd2", "pdd"],
                 default="policy_loss",
                 help=(
                     "Train objective. Each loss type selects its prepare / loss-formula / train-input / train-output "
@@ -959,6 +970,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "DiT forward always stays in the FSDP actor."
                 ),
             )
+            parser.add_argument("--pdd-num-intervals", type=int, default=32)
+            parser.add_argument("--pdd-block-size", type=int, default=4)
             parser.add_argument(
                 "--custom-prepare-train-batch-path",
                 type=str,
@@ -967,6 +980,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "Dotted path to prepare hook "
                     "`fn(ctx, batch, *, microbatch_id, optim_step_idx, pad_to_len=None) -> PreparedBatch`. "
                     "Builds DiT inputs; --loss-type custom_loss only, default is Flow-GRPO SDE-pair stacking."
+                ),
+            )
+            parser.add_argument(
+                "--custom-train-model-transform-path",
+                type=str,
+                default=None,
+                help=(
+                    "Dotted path to `fn(model, args) -> None` that edits each trainable component in place "
+                    "after loading and LoRA, before FSDP wrapping (e.g. replacing an output layer). Parameters it "
+                    "adds train in full beside any LoRA adapters and are kept in LoRA checkpoints. Runs on "
+                    "meta-initialized modules on non-zero ranks."
                 ),
             )
             parser.add_argument(
@@ -1841,6 +1865,11 @@ def set_default_diffusion_args(args) -> None:
         if args.critic_lr is None:
             args.critic_lr = args.lr
 
+    if args.loss_type == "pdd":
+        from miles.distillation.integration import set_pdd_defaults
+
+        set_pdd_defaults(args)
+
     if args.ref_mode is None:
         args.ref_mode = "lora_base" if args.diffusion_kl_beta > 0 else "none"
 
@@ -2150,6 +2179,10 @@ def miles_validate_args(args):
             f"{cfg_cls.__name__} trains --diffusion-task {list(cfg_cls.tasks)}, got {args.diffusion_task!r}"
         )
     cfg_cls.validate_args(args)
+    if args.loss_type == "pdd":
+        from miles.distillation.integration import validate_pdd_args
+
+        validate_pdd_args(args)
     if args.use_lora and args.lora_target_modules is None:
         args.lora_target_modules = list(cfg_cls.lora_target_modules)
 
@@ -2375,13 +2408,18 @@ def miles_validate_args(args):
     if args.num_steps_per_rollout is not None:
         samples_per_rollout = args.rollout_batch_size * args.n_samples_per_prompt
         derived_gbs = samples_per_rollout // args.num_steps_per_rollout
-        if args.global_batch_size is not None and args.global_batch_size != derived_gbs:
+        from miles.backends.fsdp_utils.loss_hub import get_loss_hooks
+
+        # A train-input hook may expand or select pairs, so it defines how many samples each optimizer step
+        # sees; an explicit global batch size then stands.
+        if args.global_batch_size is None:
+            args.global_batch_size = derived_gbs
+        elif args.global_batch_size != derived_gbs and get_loss_hooks(args, "actor").train_input is None:
             raise ValueError(
                 f"global_batch_size={args.global_batch_size} contradicts "
                 f"rollout_batch_size×n_samples_per_prompt÷num_steps_per_rollout={derived_gbs}; "
                 f"do not pass both."
             )
-        args.global_batch_size = derived_gbs
 
     train_world_size = args.actor_num_gpus_per_node * args.actor_num_nodes
     dp_size = train_world_size // args.sequence_parallel_size

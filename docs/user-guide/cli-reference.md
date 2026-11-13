@@ -90,8 +90,9 @@ For how these batch arguments relate to each other, see
 
 | Flag | Default | What |
 |---|---|---|
-| `--diffusion-forward-dtype` | `bf16` | Training-side DiT compute — FSDP `param_dtype` and the input cast. It reaches the engine only as the LoRA-merge precision (`fp32` merges in fp32, see [LoRA](../advanced/lora.md)); the engine's DiT precision is `--sglang-dit-precision`, which is not derived from it — set both to the same value. |
+| `--diffusion-forward-dtype` | `bf16` | Training-side DiT compute — the input cast and, unless `--fsdp-param-dtype` is set, FSDP `param_dtype`. It reaches the engine only as the LoRA-merge precision (`fp32` merges in fp32, see [LoRA](../advanced/lora.md)); the engine's DiT precision is `--sglang-dit-precision`, which is not derived from it — set both to the same value. |
 | `--fsdp-master-dtype` | `fp32` | Sharded master weights and optimizer state. |
+| `--fsdp-param-dtype` | `--diffusion-forward-dtype` | Parameter all-gather (FSDP `param_dtype`); `fp32` keeps gathered weights at master precision and leaves matmuls to autocast. |
 | `--fsdp-reduce-dtype` | `fp32` | Gradient reduce-scatter. |
 
 See [Dtype Control](../advanced/dtype-control.md).
@@ -136,6 +137,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--train-backend` | enum | `fsdp` | Only value. |
 | `--fsdp-master-dtype` | enum | `fp32` | `fp32` / `bf16` / `fp16`. Load, shard, and optimizer-state precision. |
 | `--fsdp-reduce-dtype` | enum | `fp32` | `bf16` matches flow_grpo's all-bf16 policy but adds cross-rank add-noise. |
+| `--fsdp-param-dtype` | enum | – | `fp32` / `bf16` / `fp16`; defaults to `--diffusion-forward-dtype`. |
 | `--diffusion-forward-dtype` | enum | `bf16` | `bf16` / `fp16` / `fp32`. |
 | `--fsdp-cpu-offload` | flag | off | Offloads params, grads, optimizer state; the optimizer then runs on CPU. |
 | `--fsdp-cpu-backend` | str | `gloo` | CPU process group for the above. |
@@ -279,6 +281,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--teacher-cpu-offload` | flag | off | Keep the teacher shards in pinned CPU memory between forwards. |
 | `--custom-prepare-train-batch-path` | str | – | `custom_loss` only: builds DiT inputs. |
 | `--custom-loss-function-path` | str | – | `custom_loss` only: loss **formula** only — the DiT forward stays in the actor. |
+| `--custom-train-model-transform-path` | str | – | `fn(model, args)` edits each trainable component in place after loading and LoRA, before FSDP wrapping (meta-initialized on non-zero ranks); parameters it adds train in full beside the adapters and are kept in LoRA checkpoints. |
 | `--custom-train-input-postprocess-path` | str | – | `custom_loss` only: preprocesses a rank's train pairs (the converted rollout output) before they are split into micro-batches, and returns the pairs to train on. `ctx.external_data` holds earlier trainer groups' outputs. |
 | `--custom-train-output-function-path` | str | – | `custom_loss` only: runs without grad after a rollout's train steps; its return value reaches the paired rank of each later trainer group as `ctx.external_data[<role>]`. |
 | `--diffusion-nft-beta` | float | `1.0` | |
