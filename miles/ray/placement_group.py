@@ -121,7 +121,7 @@ def create_placement_groups(args):
     }
 
 
-def allocate_train_group(args, num_nodes, num_gpus_per_node, pg, num_gpus_per_actor, role):
+def allocate_train_group(args, num_nodes, num_gpus_per_node, pg, num_gpus_per_actor, role, master_port_start):
     return RayTrainGroup(
         args=args,
         num_nodes=num_nodes,
@@ -129,14 +129,15 @@ def allocate_train_group(args, num_nodes, num_gpus_per_node, pg, num_gpus_per_ac
         pg=pg,
         num_gpus_per_actor=num_gpus_per_actor,
         role=role,
+        master_port_start=master_port_start,
     )
 
 
 def create_training_models(args, pgs, rollout_manager):
     trainer_configs = compute_trainer_configs(args)
     train_groups = {}
-    start_rollout_ids = set()
-    for config in trainer_configs:
+    init_refs = []
+    for index, config in enumerate(trainer_configs):
         role, role_args = config.role, compute_trainer_args(args, config)
         logger.info(f"Initializing {role} model...")
         train_groups[role] = allocate_train_group(
@@ -146,9 +147,12 @@ def create_training_models(args, pgs, rollout_manager):
             pg=pgs["actor"],
             num_gpus_per_actor=TRAIN_ACTOR_GPU / len(trainer_configs),
             role=role,
+            # The groups bind their master ports only in init, so each picks from its own range.
+            master_port_start=20000 + 1000 * index,
         )
-        start_rollout_ids.update(ray.get(train_groups[role].async_init(role_args, role=role, with_ref=False)))
-        logger.info(f"{role} model initialized.")
+        init_refs += train_groups[role].async_init(role_args, role=role, with_ref=False)
+    start_rollout_ids = set(ray.get(init_refs))
+    logger.info(f"{', '.join(train_groups)} models initialized.")
 
     assert len(start_rollout_ids) == 1, f"trainers restored different rollouts: {sorted(start_rollout_ids)}"
     if args.start_rollout_id is None:
