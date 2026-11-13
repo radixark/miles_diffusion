@@ -29,6 +29,11 @@ def load_fsdp_models(
 ) -> dict[str, torch.nn.Module]:
     materialize_weights = dist.get_rank() == 0
     master_dtype = parse_dtype_from_str(args.fsdp_master_dtype)
+    transform_model = None
+    if trainable and args.custom_train_model_transform_path is not None:
+        from miles.utils.misc import load_function
+
+        transform_model = load_function(args.custom_train_model_transform_path)
     models = {}
     for component_index, component in enumerate(args.update_weight_target_modules):
         with model_init_context(materialize_weights=materialize_weights):
@@ -46,6 +51,9 @@ def load_fsdp_models(
             model = load_lora_adapter(model, lora_adapter_paths[component_index], trainable=trainable)
         elif trainable and args.use_lora:
             model = apply_lora(model, args, train_pipeline_config)
+        if transform_model is not None:
+            # After LoRA, so the parameters it adds train in full beside the adapters.
+            transform_model(model.get_base_model() if hasattr(model, "get_base_model") else model, args)
         model.train(trainable)
         if not trainable:
             model.requires_grad_(False)
@@ -162,7 +170,7 @@ def apply_fsdp2(
 
     modules = [module for name, module in model.named_modules() if module.__class__.__name__ in layer_cls_to_wrap]
 
-    param_dtype = parse_dtype_from_str(args.diffusion_forward_dtype)
+    param_dtype = parse_dtype_from_str(args.fsdp_param_dtype or args.diffusion_forward_dtype)
     reduce_dtype = parse_dtype_from_str(args.fsdp_reduce_dtype)
     # A wrap entry may also be a module LIST — fully_shard can group several modules into one wrap
     # (one shared all-gather); today every wrap holds a single block.

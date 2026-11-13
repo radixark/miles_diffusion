@@ -32,7 +32,7 @@ class _CaptureUpdater(DiffusionUpdateWeightFromTensorLoRA):
         super().__init__(*args, **kwargs)
         self.buckets: list[list[tuple[str, torch.Tensor]]] = []
 
-    def update_bucket_weights(self, named_tensors, target_module):
+    def update_bucket_weights(self, named_tensors, target_module, *, replace_weights=False):
         self.buckets.append([(name, tensor.clone()) for name, tensor in named_tensors])
 
 
@@ -43,8 +43,9 @@ class _CaptureLoRAIPCUpdater(DiffusionUpdateWeightFromTensorLoRAIPC):
         super().__init__(*args, **kwargs)
         self.buckets: list[list[tuple[str, torch.Tensor]]] = []
 
-    def update_bucket_weights(self, named_tensors, target_module):
+    def update_bucket_weights(self, named_tensors, target_module, *, replace_weights=False):
         self.buckets.append([(name, tensor.clone()) for name, tensor in named_tensors])
+        self.replaced = getattr(self, "replaced", []) + [replace_weights]
 
 
 def _make_peft_model():
@@ -121,6 +122,19 @@ def test_lora_ipc_bucket_keeps_ab_together():
     A, B = lora_layer.lora_A["default"].weight, lora_layer.lora_B["default"].weight
     torch.testing.assert_close(synced["proj.lora_A"], A)
     torch.testing.assert_close(synced["proj.lora_B"], B)
+
+
+def test_lora_ipc_pushes_full_trained_params_as_plain_weights_after_the_adapter():
+    peft_model = _make_peft_model()
+    # A layer added after LoRA (as PDD's heads are) trains in full beside the adapter.
+    peft_model.get_base_model().head = torch.nn.Linear(16, 4).cuda()
+    updater = _CaptureLoRAIPCUpdater(_fake_args(1 << 30), {"transformer": peft_model})
+    updater.update_weights()
+    assert updater.replaced == [False, True]
+    adapter, trained = ({name: t for name, t in bucket} for bucket in updater.buckets)
+    assert set(adapter) == {"proj.lora_A", "proj.lora_B"}
+    assert set(trained) == {"head.weight", "head.bias"}
+    torch.testing.assert_close(trained["head.weight"], peft_model.get_base_model().head.weight)
 
 
 if __name__ == "__main__":

@@ -39,6 +39,18 @@ class HfWeightIteratorBase(ABC):
         )
         yield from pack_units_by_size(hf_adapter_units, self.args.update_weight_buffer_size)
 
+    def iter_hf_trained_weights(self) -> Iterator[list[tuple[str, torch.Tensor]]]:
+        """Parameters trained in full beside a LoRA adapter (e.g. a layer the model-transform hook added),
+        bucketed like ``iter_hf_weights``; a LoRA sync pushes them as plain weights after the adapter."""
+        hf_trained_units = assemble_atomic_update_groups(
+            self._iter_hf_trained_units(), self._hf_atomic_update_groups()
+        )
+        yield from pack_units_by_size(hf_trained_units, self.args.update_weight_buffer_size)
+
+    def _iter_hf_trained_units(self) -> Iterator[list[tuple[str, torch.Tensor]]]:
+        """Backend hook: units of the parameters trained in full beside a LoRA adapter. Default none."""
+        return iter(())
+
     @abstractmethod
     def _iter_hf_param_units(self) -> Iterator[list[tuple[str, torch.Tensor]]]:
         """Backend hook: one unit per training-side parameter, holding every HF

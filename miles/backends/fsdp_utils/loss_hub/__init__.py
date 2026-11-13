@@ -19,8 +19,10 @@ from miles.backends.fsdp_utils.loss_hub.dmd2 import (
 )
 from miles.backends.fsdp_utils.loss_hub.flow_grpo import flow_grpo_loss_formula, prepare_flow_grpo_batch
 from miles.backends.fsdp_utils.loss_hub.nft import nft_loss_formula, prepare_nft_batch
+from miles.backends.fsdp_utils.loss_hub.pdd import pdd_loss_formula, prepare_pdd_batch
 from miles.backends.fsdp_utils.loss_hub.sft import prepare_sft_batch, sft_loss_formula
 from miles.backends.fsdp_utils.loss_hub.types import DiffusionLossContext, PreparedBatch
+from miles.distillation.integration import expand_train_pairs
 from miles.utils.misc import load_function
 
 __all__ = ["LOSS_HOOKS", "DiffusionLossContext", "LossHooks", "PreparedBatch", "get_loss_hooks"]
@@ -50,6 +52,7 @@ LOSS_HOOKS: dict[tuple[str, str], LossHooks] = {
     ("sft_loss", "actor"): LossHooks(prepare_sft_batch, sft_loss_formula),
     ("dmd2", "actor"): LossHooks(prepare_generator_batch, dmd2_loss_formula, train_input=select_scored_pairs),
     ("dmd2", "critic"): LossHooks(prepare_critic_batch, critic_loss_formula, train_output=score_last_step_samples),
+    ("pdd", "actor"): LossHooks(prepare_pdd_batch, pdd_loss_formula, train_input=expand_train_pairs),
 }
 
 
