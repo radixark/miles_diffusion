@@ -9,6 +9,8 @@ import ray
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from miles.ray.utils import COLOCATED_REWARD_GPU
+from miles.utils.diffusion_rollout_response import read_generated_outputs
+from miles.utils.output_store import RegisteredTensorReader, StoredTensor, connect_output_store
 
 logger = logging.getLogger(__name__)
 
@@ -79,10 +81,27 @@ def record_reward_queue_depth(samples, name: str, max_queue_depth: int) -> None:
         sample.reward_max_queue_depth = depths
 
 
+class _StoredOutputRewardActor:
+    """A reward actor that reads the stored outputs it is given from the output store, then scores them."""
+
+    def __init__(self, *, scorer_cls, scorer_kwargs: dict, args) -> None:
+        self._scorer = scorer_cls(**scorer_kwargs)
+        self._reader = RegisteredTensorReader(connect_output_store(args))
+
+    def score_batch(self, outputs: list, prompts: list[str]) -> list[float]:
+        # eval outputs arrive inline
+        stored_outputs = [output for output in outputs if isinstance(output, StoredTensor)]
+        if stored_outputs:
+            read_outputs = iter(read_generated_outputs(self._reader, stored_outputs))
+            outputs = [next(read_outputs) if isinstance(output, StoredTensor) else output for output in outputs]
+        return self._scorer.score_batch(outputs, prompts)
+
+
 class AsyncRewardActorPool:
     """Round-robin pool for Ray reward actors exposing ``score_batch(outputs, prompts)``.
 
-    Actors receive the float ``generated_output`` tensors and quantise to uint8 themselves.
+    Actors receive the float ``generated_output`` tensors and quantise to uint8 themselves. With the output store
+    on they are given stored outputs and read them first.
     Colocated pools take one slot per rollout bundle from the manager's
     ``slots``; standalone pools are default-scheduled at ``num_gpus_per_worker``, which
     only lands on GPUs outside every placement group.
@@ -91,6 +110,7 @@ class AsyncRewardActorPool:
     def __init__(
         self,
         *,
+        args,
         actor_cls,
         actor_kwargs: dict,
         num_workers: int,
@@ -113,6 +133,9 @@ class AsyncRewardActorPool:
             num_gpus_per_worker = COLOCATED_REWARD_GPU
         else:
             strategies = ["DEFAULT"] * num_workers
+        if args.use_output_store:
+            actor_kwargs = {"scorer_cls": actor_cls, "scorer_kwargs": actor_kwargs, "args": args}
+            actor_cls = _StoredOutputRewardActor
 
         self._actors = [
             ray.remote(actor_cls)

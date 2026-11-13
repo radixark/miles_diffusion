@@ -62,6 +62,10 @@ jobs:
     # (e.g. the label name '["h200", "2gpu"]' with brackets), which no
     # runner carries, and the job queues forever.
     runs-on: ${{ fromJSON(inputs.runs_on) }}
+    # The CI node's RDMA devices are RoCE, and a RoCE connection needs the device's network interface, which the
+    # runner's bridge network does not have. `ci-roce` is an ipvlan network on bond0 that adds it. Created once on
+    # the node; without it the container is not created:
+    #   docker network create -d ipvlan --internal --subnet 192.168.250.0/24 -o parent=bond0 ci-roce
     container:
       image: ${{ inputs.container_image }}
       options: >
@@ -80,6 +84,7 @@ jobs:
         -v /data/miles_ci/paddleocr:/github/home/.paddleocr
         --privileged
         --ulimit nofile=65535:65535
+        --network ci-roce
     defaults:
       run:
         working-directory: ${{ github.workspace }}
@@ -90,6 +95,9 @@ jobs:
       # Gated models (e.g. stabilityai/stable-diffusion-3.5-medium for the SD3
       # e2e) need an HF token with repo access; unset for public-model tests.
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      # Mooncake's whitelist of RDMA devices: only bond0's is reachable through ci-roce, and a transfer that
+      # tries any of the other seven fails.
+      MC_MS_FILTERS: mlx5_bond_0
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
