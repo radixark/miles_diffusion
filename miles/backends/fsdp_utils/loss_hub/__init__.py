@@ -12,9 +12,12 @@ import torch
 from miles.backends.fsdp_utils.loss_hub.dmd2 import (
     critic_loss_formula,
     dmd2_loss_formula,
+    last_step_pairs,
     prepare_critic_batch,
     prepare_generator_batch,
+    prepare_scoring_batch,
     score_last_step_samples,
+    scoring_formula,
     select_scored_pairs,
 )
 from miles.backends.fsdp_utils.loss_hub.flow_grpo import flow_grpo_loss_formula, prepare_flow_grpo_batch
@@ -50,11 +53,16 @@ LOSS_HOOKS: dict[tuple[str, str], LossHooks] = {
     ("sft_loss", "actor"): LossHooks(prepare_sft_batch, sft_loss_formula),
     ("dmd2", "actor"): LossHooks(prepare_generator_batch, dmd2_loss_formula, train_input=select_scored_pairs),
     ("dmd2", "critic"): LossHooks(prepare_critic_batch, critic_loss_formula, train_output=score_last_step_samples),
+    # Forward-only, through FSDPTrainRayActor.compute: the critic's scoring under --dmd2-critic-scoring original.
+    ("dmd2", "critic-scoring"): LossHooks(
+        prepare_scoring_batch, scoring_formula, train_input=last_step_pairs, train_output=score_last_step_samples
+    ),
 }
 
 
 def get_loss_hooks(args: Namespace, role: str) -> LossHooks:
-    """The hooks of ``--loss-type`` for the trainer ``role``; only ``custom_loss`` reads the ``--custom-*-path`` flags.
+    """The hooks of ``--loss-type`` for the trainer ``role``, or for a forward-only pass such as ``critic-scoring``;
+    only ``custom_loss`` reads the ``--custom-*-path`` flags.
 
     Under ``custom_loss`` an unset prepare or formula path falls back to Flow-GRPO's.
     """
