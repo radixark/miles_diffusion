@@ -59,7 +59,7 @@ def api_transport(monkeypatch):
 def test_pool_reuses_one_concurrent_zero_gpu_worker(ray_worker, pool_cls):
     remote, actor_cls = ray_worker
     config = ApiRewardConfig(actor_kwargs={"model": "judge", "api_key_env": "TEST_RM_KEY"}, max_concurrency=2)
-    args = Namespace(**{f"_{pool_cls.name}_rm_config": config})
+    args = Namespace(use_output_store=False, **{f"_{pool_cls.name}_rm_config": config})
     pool = pool_cls(args)
     assert pool_cls(args) is pool
 
@@ -120,7 +120,7 @@ def test_custom_api_loads_config_and_owns_request_and_response_formats(
         return httpx.Response(200, json={"reward": float(payload["prompt"])})
 
     api_transport(handler)
-    pool = AsyncApiRewardPool(Namespace(_custom_api_rm_config=config))
+    pool = AsyncApiRewardPool(Namespace(use_output_store=False, _custom_api_rm_config=config))
     remote.assert_called_once_with(CustomApiRewardActor)
     actor_cls.remote.assert_called_once_with(**kwargs)
     actor_cls.options.assert_called_once_with(num_cpus=0, num_gpus=0, scheduling_strategy="DEFAULT", max_concurrency=3)
@@ -155,7 +155,7 @@ def test_custom_and_openai_pools_use_independent_configs_and_workers(ray_worker)
         max_concurrency=3,
     )
     openai_config = ApiRewardConfig(actor_kwargs={"model": "judge", "api_key_env": "TEST_RM_KEY"}, max_concurrency=7)
-    args = Namespace(_custom_api_rm_config=custom_config, _openai_api_rm_config=openai_config)
+    args = Namespace(use_output_store=False, _custom_api_rm_config=custom_config, _openai_api_rm_config=openai_config)
     custom_pool = AsyncApiRewardPool(args)
     openai_pool = AsyncOpenAIPool(args)
     assert custom_pool is not openai_pool
