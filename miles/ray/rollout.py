@@ -11,9 +11,6 @@ import numpy as np
 import ray
 import torch
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
-from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
-
-from miles.backends.sglang_diffusion_utils.sglang_diffusion_engine import SGLangDiffusionEngine
 from miles.ray.data_conversion_hub.flow_grpo import (
     expand_samples_to_train_pairs as flow_grpo_expand_samples_to_train_pairs,
 )
@@ -78,7 +75,7 @@ class RolloutManager:
         logger.info("RolloutManager: data source loaded, loading rollout functions...")
 
         self.generate_rollout = load_function(self.args.rollout_function_path)
-        self.eval_generate_rollout = load_function(self.args.eval_function_path)
+        self.eval_generate_rollout = None
         self.custom_reward_post_process_func = (
             load_function(self.args.custom_reward_post_process_path)
             if self.args.custom_reward_post_process_path is not None
@@ -96,7 +93,6 @@ class RolloutManager:
         )
         self.train_data_dp_splitter = TrainDataDPSplitter()
         logger.info(f"import {self.args.rollout_function_path} as generate_rollout function.")
-        logger.info(f"import {self.args.eval_function_path} as eval_generate_rollout function.")
 
         logger.info("RolloutManager rollout_num_gpus=%s", self.args.rollout_num_gpus)
 
@@ -244,6 +240,9 @@ class RolloutManager:
         if self.args.train_only:
             # if debug train only, we don't generate evaluation data
             return
+        if self.eval_generate_rollout is None:
+            self.eval_generate_rollout = load_function(self.args.eval_function_path)
+            logger.info(f"import {self.args.eval_function_path} as eval_generate_rollout function.")
         self.health_monitoring_resume()
 
         result = call_rollout_fn(self.eval_generate_rollout, self.args, rollout_id, self.data_source, evaluation=True)
@@ -292,6 +291,8 @@ class RolloutManager:
             )
 
     def onload_weights(self):
+        from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
+
         self.onload(tags=[GPU_MEMORY_TYPE_WEIGHTS])
 
     def recover_rollout_engines(self):
@@ -305,6 +306,8 @@ class RolloutManager:
         logger.info(f"Recovered {self.num_new_engines} dead rollout engines")
         assert self.num_new_engines == len(dead_indices), "num_new_engines does not match dead_indices length"
         if self.args.offload_rollout and dead_indices:
+            from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
+
             new_engines = [self.all_rollout_engines[i] for i in dead_indices]
             ray.get([engine.release_memory_occupation.remote() for engine in new_engines])
             ray.get([engine.resume_memory_occupation.remote(tags=[GPU_MEMORY_TYPE_WEIGHTS]) for engine in new_engines])
@@ -596,6 +599,8 @@ def _mux_audio(video_path: str, audio: torch.Tensor, sample_rate: int, path: str
 def init_rollout_engines(args, pg, all_rollout_engines):
     if args.train_only:
         return 0
+
+    from miles.backends.sglang_diffusion_utils.sglang_diffusion_engine import SGLangDiffusionEngine
 
     num_gpu_per_engine = min(args.rollout_num_gpus_per_engine, args.num_gpus_per_node)
     num_engines = args.rollout_num_gpus // num_gpu_per_engine
