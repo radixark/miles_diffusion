@@ -24,6 +24,7 @@ from miles.utils.types import Sample
 __all__ = [
     "RESOLUTION_GRANULARITY",
     "check_resolution",
+    "declared_resolutions",
     "parse_resolution_buckets",
     "parse_resolution_weights",
     "weighted_buckets",
@@ -106,6 +107,18 @@ def _bucket_distribution(
     buckets = parse_resolution_buckets(raw_buckets)
     weights = parse_resolution_weights(raw_weights, len(buckets))
     return tuple(buckets), None if weights is None else tuple(weights)
+
+
+def declared_resolutions(args: Namespace) -> tuple[tuple[int, int], ...]:
+    """The resolutions a run can draw, when it says so up front: --diffusion-resolution-buckets
+    under a resolution strategy. Empty otherwise (fixed resolution, or a custom strategy that
+    picks sizes freely), and per-resolution metrics are then skipped."""
+    if getattr(args, "diffusion_resolution_strategy_path", None) is None:
+        return ()
+    raw = getattr(args, "diffusion_resolution_buckets", None)
+    if raw is None:
+        return ()
+    return _bucket_distribution(raw, getattr(args, "diffusion_resolution_weights", None))[0]
 
 
 def weighted_buckets(args: Namespace, sample: Sample, seed: int) -> tuple[int, int]:

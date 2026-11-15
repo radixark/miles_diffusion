@@ -70,8 +70,18 @@ def sigma_bucket_key(stream_name: str, bucket: int, num_buckets: int) -> str:
     return f"loss_{stream_name}_sigma_{edge(bucket / num_buckets)}_{edge((bucket + 1) / num_buckets)}"
 
 
+def resolution_metric_key(prefix: str, resolution: tuple[int, int]) -> str:
+    height, width = resolution
+    return f"{prefix}_res_{height}x{width}"
+
+
 def new_metric_buffer(
-    group, device: torch.device, components: Collection[str], sigma_buckets: int = 0, num_rollout_steps: int = 0
+    group,
+    device: torch.device,
+    components: Collection[str],
+    sigma_buckets: int = 0,
+    num_rollout_steps: int = 0,
+    resolutions: Collection[tuple[int, int]] = (),
 ) -> MetricBuffer:
     """Buffer for one optimizer step, reducing over the DP group."""
     schema = dict(SCHEMA)
@@ -86,6 +96,12 @@ def new_metric_buffer(
     for component in components if len(components) > 1 else ():
         schema[f"log_prob_mean_abs_diff_{component}"] = MetricReduce.MEAN
         schema[f"model_output_mean_abs_diff_{component}"] = MetricReduce.MEAN
+    # Mixed-resolution rollouts: the train-vs-rollout log-prob drift per resolution, so a
+    # RoPE / img_shapes mismatch at one bucket cannot hide in the average. Declared up front
+    # because the reduction packs a layout every rank agrees on; a rank that saw no pair of
+    # some resolution contributes a zero count.
+    for resolution in resolutions:
+        schema[resolution_metric_key("log_prob_mean_abs_diff", resolution)] = MetricReduce.MEAN
     return MetricBuffer(group=group, device=device, schema=schema)
 
 

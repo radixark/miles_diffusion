@@ -6,7 +6,11 @@ import torch
 
 from miles.backends.fsdp_utils.loss_hub.score_centering import score_centering_term
 from miles.backends.fsdp_utils.loss_hub.types import DiffusionLossContext, PreparedBatch
+<<<<<<< HEAD
 from miles.backends.fsdp_utils.metrics import record_prev_mean_diff_over_noise_std, record_rollout_train_abs_diff
+=======
+from miles.backends.fsdp_utils.metrics import record_rollout_train_abs_diff, resolution_metric_key
+>>>>>>> 1ea11496 (feat(train): log the train-vs-rollout log-prob drift per resolution)
 from miles.utils.metric_buffer import MetricBuffer
 from miles.utils.train_data_utils import stack_train_pair_rollout_debug
 
@@ -216,6 +220,12 @@ def flow_grpo_loss_formula(
                 total=log_prob_abs_diff_sum,
                 count=bsz,
             )
+        # one resolution per micro-batch (check_single_resolution); only the declared buckets
+        resolution = batch[0].get("resolution")
+        if resolution is not None:
+            key = resolution_metric_key("log_prob_mean_abs_diff", resolution)
+            if key in metrics:
+                metrics.emit_mean(key, total=log_prob_abs_diff_sum, count=bsz)
 
         if rollout_prev_mean is not None:
             record_prev_mean_diff_over_noise_std(metrics, rollout_prev_mean, step_out.prev_mean, step_out.noise_std)
