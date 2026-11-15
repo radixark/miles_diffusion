@@ -14,13 +14,20 @@ resolution off the prompt or its dataset metadata instead of drawing one.
 
 from __future__ import annotations
 
+import functools
 from argparse import Namespace
 
 import numpy as np
 
 from miles.utils.types import Sample
 
-__all__ = ["weighted_buckets", "parse_resolution_buckets", "parse_resolution_weights"]
+__all__ = [
+    "RESOLUTION_GRANULARITY",
+    "check_resolution",
+    "parse_resolution_buckets",
+    "parse_resolution_weights",
+    "weighted_buckets",
+]
 
 # A latent token covers 16 px: qwen_image's VAE downsamples 8x and the DiT packs 2x2
 # latent patches into one token. sgl-d validates a t2i height / width as positive and
@@ -29,6 +36,15 @@ __all__ = ["weighted_buckets", "parse_resolution_buckets", "parse_resolution_wei
 # place that rejection happens. TODO: let TrainPipelineConfig declare the granularity when a
 # second family opts into mixed resolution -- sgl-d requires 32 for qwen_image21.
 RESOLUTION_GRANULARITY = 16
+
+
+def check_resolution(height: int, width: int, *, source: str) -> None:
+    """Reject a size sgl-d would silently floor to the latent grid."""
+    for name, value in (("height", height), ("width", width)):
+        if value <= 0 or value % RESOLUTION_GRANULARITY != 0:
+            raise ValueError(
+                f"{source} gives {name} {value}; each side must be a positive multiple of {RESOLUTION_GRANULARITY}"
+            )
 
 
 def parse_resolution_buckets(raw: str | None) -> list[tuple[int, int]]:
@@ -50,12 +66,7 @@ def parse_resolution_buckets(raw: str | None) -> list[tuple[int, int]]:
             height, width = (int(dim) for dim in dims)
         except ValueError:
             raise ValueError(f"--diffusion-resolution-buckets entry must be 'HxW' integers, got {token!r}") from None
-        for name, value in (("height", height), ("width", width)):
-            if value <= 0 or value % RESOLUTION_GRANULARITY != 0:
-                raise ValueError(
-                    f"--diffusion-resolution-buckets {token!r} has {name} {value}; "
-                    f"each side must be a positive multiple of {RESOLUTION_GRANULARITY}"
-                )
+        check_resolution(height, width, source=f"--diffusion-resolution-buckets {token!r}")
         buckets.append((height, width))
     if not buckets:
         raise ValueError(f"--diffusion-resolution-buckets {raw!r} lists no bucket")
@@ -87,11 +98,20 @@ def parse_resolution_weights(raw: str | None, num_buckets: int) -> list[float] |
     return [weight / total for weight in weights]
 
 
+@functools.lru_cache(maxsize=8)
+def _bucket_distribution(
+    raw_buckets: str | None, raw_weights: str | None
+) -> tuple[tuple[tuple[int, int], ...], tuple[float, ...] | None]:
+    """Parse once per (buckets, weights) pair rather than once per prompt group."""
+    buckets = parse_resolution_buckets(raw_buckets)
+    weights = parse_resolution_weights(raw_weights, len(buckets))
+    return tuple(buckets), None if weights is None else tuple(weights)
+
+
 def weighted_buckets(args: Namespace, sample: Sample, seed: int) -> tuple[int, int]:
     """Draw one ``--diffusion-resolution-buckets`` entry, weighted by
     ``--diffusion-resolution-weights`` (uniform when unset)."""
-    buckets = parse_resolution_buckets(args.diffusion_resolution_buckets)
-    probabilities = parse_resolution_weights(args.diffusion_resolution_weights, len(buckets))
+    buckets, probabilities = _bucket_distribution(args.diffusion_resolution_buckets, args.diffusion_resolution_weights)
     rng = np.random.default_rng(seed)
     index = int(rng.choice(len(buckets), p=probabilities))
     return buckets[index]

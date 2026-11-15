@@ -232,7 +232,7 @@ def check_generated_resolution(sample: Sample) -> None:
     if (height, width) != (int(sample.height), int(sample.width)):
         raise ValueError(
             f"rollout returned a {height}x{width} sample for a {sample.height}x{sample.width} "
-            f"request (prompt {sample.prompt[:60]!r}); the resolution strategy and the engine disagree"
+            f"request (prompt {str(sample.prompt)[:60]!r}); the resolution strategy and the engine disagree"
         )
 
 
