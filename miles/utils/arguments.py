@@ -2107,18 +2107,16 @@ def validate_resolution_strategy(args, cfg_cls) -> None:
             "A family qualifies once its train forward takes the grid from each sample's own "
             "rollout cond instead of the global height and width."
         )
-    # The microbatch stacks train pairs of whichever samples land next to each other, and
-    # a family's ability to batch across resolutions is its own question (some cannot batch
-    # at all, some only within one resolution, some could pad). Until TrainPipelineConfig
-    # declares that, one pair per forward is the only safe width.
-    if args.micro_batch_size != 1:
+    # A micro-batch must hold one resolution (the train actor checks every one; see
+    # check_single_resolution). The flat sample-major schedule keeps it inside one prompt group
+    # when --micro-batch-size divides a group's pairs on a rank. The legacy sample x timestep
+    # tiling instead gathers --micro-batch-size-sample different samples per tile, which spans
+    # groups -- and so resolutions -- whenever it exceeds a group's samples on a rank.
+    if args.micro_batch_size_sample is not None and args.micro_batch_size_sample > 1:
         raise ValueError(
-            f"--diffusion-resolution-strategy-path needs --micro-batch-size 1, got {args.micro_batch_size}"
-            + (
-                " (from --micro-batch-size-sample x --micro-batch-size-tstep)"
-                if args.micro_batch_size_sample is not None
-                else ""
-            )
+            "--diffusion-resolution-strategy-path does not take --micro-batch-size-sample "
+            f"{args.micro_batch_size_sample}: its tiles span prompt groups of different resolutions; "
+            "set --micro-batch-size instead"
         )
 
     # Fail at startup rather than in the first rollout actor.

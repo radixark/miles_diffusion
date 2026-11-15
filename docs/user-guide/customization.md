@@ -158,8 +158,15 @@ Two guards, both at arg validation:
   each sample's grid from the rollout's `img_shapes`). A family that builds positions from the
   global height and width would not raise — 1024x768 and 768x1024 hold the same token count, so
   the latents still stack while every token's position is wrong.
-- `--micro-batch-size 1`, until `TrainPipelineConfig` declares how a family batches across
-  resolutions.
+- no `--micro-batch-size-sample` / `--micro-batch-size-tstep`: a legacy tile gathers that many
+  different samples, which spans prompt groups and so resolutions.
+
+And one at train time: every micro-batch must hold a single resolution, which the actor checks
+(`check_single_resolution`). Two resolutions of the same token count would otherwise stack, and
+qwen_image's RoPE builds the whole batch's positions from the first sample's grid. With the flat
+sample-major schedule a micro-batch stays inside one prompt group when `--micro-batch-size`
+divides the group's pairs on a rank -- under `--train-dp-split-mode stride` that is
+`n_samples_per_prompt / dp_size` samples times the SDE steps each.
 
 Engine side, two things are worth knowing. Concurrent requests at different sizes never merge
 into one denoising schedule — height and width are part of sgl-d's dynamic-batch signature. And
