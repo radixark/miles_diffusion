@@ -91,6 +91,9 @@ def _build_per_sample_features(
         "sample_index": sample.index,
         "prompt": sample.prompt,
         "raw_reward": float(raw_reward),
+        # None unless --diffusion-resolution-strategy-path drew one; the train actor keeps
+        # each micro-batch to a single value (check_single_resolution).
+        "resolution": None if sample.height is None else (int(sample.height), int(sample.width)),
     }
 
 

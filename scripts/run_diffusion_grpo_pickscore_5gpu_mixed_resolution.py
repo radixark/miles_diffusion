@@ -6,9 +6,11 @@ with one change: each prompt group draws its own resolution from
 at one size. Buckets vary the aspect ratio at a near-constant token count, which keeps the
 per-group cost comparable; eval stays at --diffusion-height / --diffusion-width.
 
-It also drops --micro-batch-size-sample / --micro-batch-size-tstep, because a mixed-resolution
-rollout needs --micro-batch-size 1 until TrainPipelineConfig declares how a family batches
-across resolutions. That is more DiT forwards for the same work.
+It also trades --micro-batch-size-sample 8 / --micro-batch-size-tstep 1 for a flat
+--micro-batch-size 8: a train micro-batch must hold one resolution, and a legacy tile of 8
+samples spans two prompt groups. The flat sample-major schedule does not -- under stride DP
+split each rank holds 16 / 4 = 4 samples x 2 SDE steps = 8 pairs of every group, so a
+micro-batch of 8 is exactly one group's pairs on that rank.
 
 Per rollout: 32 prompts x 16 samples = 512 samples. num_steps_per_rollout=2 gives 256
 samples per optimizer step.
@@ -121,8 +123,9 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         "--train-backend fsdp --fsdp-master-dtype fp32 --fsdp-reduce-dtype fp32 --diffusion-forward-dtype bf16 "
     )
 
-    # one train pair per DiT forward: a microbatch may hold two resolutions otherwise
-    perf_args = "--gradient-checkpointing --micro-batch-size 1 "
+    # 8 = one prompt group's pairs per rank (16 samples / 4 ranks x 2 SDE steps), so every
+    # micro-batch holds a single resolution; the train actor checks it
+    perf_args = "--gradient-checkpointing --micro-batch-size 8 "
 
     misc_args = (
         "--actor-num-gpus-per-node 4 "

@@ -25,6 +25,7 @@ from miles.utils.timer import Timer, inverse_timer, timer
 from miles.utils.tracking_utils import init_tracking
 from miles.utils.train_data_utils import (
     build_microbatch_schedule,
+    check_single_resolution,
     validate_same_microbatch_counts_across_train_ranks,
     validate_sample_aligned_windows,
 )
@@ -522,6 +523,7 @@ class FSDPTrainRayActor(TrainRayActor):
     ) -> torch.Tensor | None:
         """Run one prepared diffusion micro-batch: number ``microbatch_id`` of the rollout, in optimizer step
         ``optim_step_idx``."""
+        check_single_resolution(batch)
         prepared = self.loss_hooks.prepare(
             ctx, batch, microbatch_id=microbatch_id, optim_step_idx=optim_step_idx, pad_to_len=pad_to_len
         )

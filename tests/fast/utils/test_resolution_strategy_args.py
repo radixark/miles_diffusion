@@ -2,7 +2,7 @@
 
     family declares supports_mixed_resolution     ─► allowed
     family does not                               ─► rejected (its RoPE reads the global size)
-    --micro-batch-size > 1                        ─► rejected (cross-resolution batching is per family)
+    --micro-batch-size-sample > 1 (legacy tiles)  ─► rejected (a tile spans prompt groups)
     weighted_buckets without buckets / bad buckets ─► rejected at startup, not in the rollout actor
     no strategy at all                            ─► nothing is checked
 """
@@ -56,7 +56,11 @@ def test_no_strategy_checks_nothing():
     "overrides, cfg_cls, match",
     [
         (dict(), _FixedResolutionConfig, "supports_mixed_resolution=False"),
-        (dict(micro_batch_size=8), _MixedResolutionConfig, "--micro-batch-size 1"),
+        (
+            dict(micro_batch_size=8, micro_batch_size_sample=8, micro_batch_size_tstep=1),
+            _MixedResolutionConfig,
+            "span prompt groups",
+        ),
         (dict(diffusion_resolution_buckets=None), _MixedResolutionConfig, "needs --diffusion-resolution-buckets"),
         (dict(diffusion_resolution_buckets="512x500"), _MixedResolutionConfig, "multiple of 16"),
         (dict(diffusion_resolution_weights="1,1"), _MixedResolutionConfig, "one weight per bucket"),
@@ -67,10 +71,9 @@ def test_rejects_rollouts_training_cannot_replay(overrides, cfg_cls, match):
         validate_resolution_strategy(_args(**overrides), cfg_cls)
 
 
-def test_folded_micro_batch_size_names_the_flags_that_set_it():
-    args = _args(micro_batch_size=8, micro_batch_size_sample=8, micro_batch_size_tstep=1)
-    with pytest.raises(ValueError, match="--micro-batch-size-sample"):
-        validate_resolution_strategy(args, _MixedResolutionConfig)
+def test_a_flat_micro_batch_is_accepted():
+    # the train actor checks each micro-batch holds one resolution (check_single_resolution)
+    validate_resolution_strategy(_args(micro_batch_size=8), _MixedResolutionConfig)
 
 
 def test_a_custom_strategy_needs_no_buckets():
