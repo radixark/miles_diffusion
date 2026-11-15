@@ -113,3 +113,20 @@ def test_group_shares_one_resolution_on_request_and_samples():
     # every microgroup copies this body, so one draw covers the group
     assert (sampling_params["height"], sampling_params["width"]) == (384, 672)
     assert [(s.height, s.width) for s in group] == [(384, 672)] * 4
+
+
+def test_an_off_grid_custom_strategy_is_rejected_before_the_request():
+    # sgl-d would floor 1000 to 992 silently; catch it before a full generation runs
+    group = [Sample(prompt="p") for _ in range(2)]
+    sampling_params = {"height": 512, "width": 512}
+
+    with pytest.raises(ValueError, match="multiple of 16"):
+        apply_resolution_strategy(
+            _args(),
+            group,
+            sampling_params,
+            resolution_strategy_fn=lambda args, sample, seed: (1000, 512),
+            seed=0,
+        )
+    assert (sampling_params["height"], sampling_params["width"]) == (512, 512)
+    assert all(s.height is None for s in group)

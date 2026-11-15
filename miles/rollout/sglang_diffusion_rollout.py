@@ -16,6 +16,7 @@ from tqdm import tqdm
 from miles.dashboard import hooks
 from miles.rollout.base_types import RolloutFnEvalOutput, RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
+from miles.rollout.resolution_strategy_hub import check_resolution
 from miles.utils.async_utils import run
 from miles.utils.diffusion_data import Dataset as DiffusionDataset
 from miles.utils.diffusion_rollout_response import RolloutImageResponseParserActor, read_generated_outputs
@@ -354,6 +355,9 @@ def apply_resolution_strategy(
     """
     height, width = resolution_strategy_fn(args, group[0], seed)
     height, width = int(height), int(width)
+    # A custom strategy is not covered by the bucket check at startup; catch an off-grid size
+    # before the engine floors it and the response check fails after a full generation.
+    check_resolution(height, width, source=f"resolution strategy {getattr(resolution_strategy_fn, '__name__', '?')}")
     sampling_params["height"] = height
     sampling_params["width"] = width
     # The response parser cross-checks these against the media the engine returns.
@@ -375,7 +379,8 @@ async def generate_and_rm_group(
     seed_base = (args.rollout_seed + group_index * n_per_prompt) % (2**31)
 
     # Before the per-microgroup copies below, so every microgroup of this group agrees.
-    # Eval holds --diffusion-height / --diffusion-width fixed (it never reaches here).
+    # Eval holds --diffusion-height / --diffusion-width fixed; it has its own entry point
+    # today, and the evaluation guard keeps that true if it is ever routed through here.
     if not evaluation and state.resolution_strategy_fn is not None:
         apply_resolution_strategy(
             args,
