@@ -93,8 +93,13 @@ def _build_per_sample_features(
         "raw_reward": float(raw_reward),
         # None unless --diffusion-resolution-strategy-path drew one; the train actor keeps
         # each micro-batch to a single value (check_single_resolution).
-        "resolution": None if sample.height is None else (int(sample.height), int(sample.width)),
+        "resolution": _sample_resolution(sample),
     }
+
+
+def _sample_resolution(sample: Sample) -> tuple[int, int] | None:
+    height, width = getattr(sample, "height", None), getattr(sample, "width", None)
+    return None if height is None or width is None else (int(height), int(width))
 
 
 def _build_per_timestep_features(
