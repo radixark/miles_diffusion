@@ -146,6 +146,9 @@ a reward model's resolution preference into the advantage instead of the sample'
 The drawn resolution lands on each `Sample` (`height` / `width`), is cross-checked against the
 media the engine returns, and is reported per bucket as
 `rollout/resolution/<HxW>_reward_mean`. Eval keeps `--diffusion-height` / `--diffusion-width`.
+With `--diffusion-resolution-buckets` the train side also splits the rollout-vs-train log-prob
+drift as `train/log_prob_mean_abs_diff_res_<HxW>`: a RoPE or `img_shapes` mismatch at one bucket
+would otherwise show only as a fraction of its size in the overall `train/log_prob_mean_abs_diff`.
 
 | Stock | Behavior |
 |---|---|
