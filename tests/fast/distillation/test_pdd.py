@@ -296,6 +296,44 @@ def test_h3_rollout_splits_video_and_padded_audio_rows():
         split(packed, env)
 
 
+def test_h3_engine_heads_and_packed_rollout_round_trip_through_the_converter():
+    """The engine side of pdd_h3 without sglang: the cached head layout, then the packed trajectory."""
+    from miles.backends.sglang_diffusion_utils.monkey_patches.patch_pdd_h3 import PDDHeads, heads_at, pack_audio
+
+    torch.manual_seed(3)
+    heads = PDDHeads(nn.Linear(8, 6))
+    hidden = torch.randn(5, 8)
+    block, bias = heads(hidden)
+    assert bias is None and block.shape == (5, 32 * 6)
+    for k in (0, 5, 31):
+        torch.testing.assert_close(heads_at(block, k), heads.parallel(hidden)[k], rtol=0, atol=0)
+
+    videos, audios = 6, 3
+    video, audio = torch.randn(33, videos, 96), torch.randn(33, audios, 32)
+    grids = {"visual": integration.h3_grid(32, 12.0), "audio": integration.h3_grid(32, 3.0)}
+    trajectory = SimpleNamespace(
+        latents=video.unsqueeze(0), sigmas=grids["visual"].clone(), latent_step_indices=torch.arange(33)
+    )
+    pack_audio(trajectory, list(audio), grids["audio"].tolist())
+    layout = {"update_mask": torch.ones(videos, dtype=torch.bool), "audio_pos": torch.arange(audios)}
+    sample = SimpleNamespace(
+        index=4,
+        denoising_env=SimpleNamespace(pos_cond_kwargs=SimpleNamespace(h3_packed_layout=layout)),
+        dit_trajectory=SimpleNamespace(
+            sigmas=trajectory.sigmas, latents=trajectory.latents[0], latent_step_indices=trajectory.latent_step_indices
+        ),
+    )
+    args = SimpleNamespace(
+        diffusion_model_family="h3", pdd_num_intervals=32, diffusion_flow_shift=12.0, diffusion_audio_flow_shift=3.0
+    )
+    streams = pdd_rollout.convert_samples_to_train_data(args, [sample])["train_data"][0]["pdd_trajectory"]
+    assert torch.equal(streams["visual"], video) and torch.equal(streams["audio"], audio)
+    # An engine whose audio schedule drifted from the trainer's grid is rejected.
+    args.diffusion_audio_flow_shift = 4.0
+    with pytest.raises(ValueError, match="sigma grid"):
+        pdd_rollout.convert_samples_to_train_data(args, [sample])
+
+
 def test_h3_student_gets_video_and_audio_heads():
     model = nn.Module()
     model.proj_out, model.audio_proj_out = nn.Linear(8, 4), nn.Linear(8, 2)

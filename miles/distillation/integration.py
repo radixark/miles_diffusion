@@ -96,8 +96,9 @@ class PDDFamily:
 
     ``heads`` maps each latent stream to the Diffusers transformer's output layer that becomes N heads;
     ``grids(args)`` gives each stream's (N+1)-point sigma grid; ``model_time`` / ``teacher_time`` turn a grid
-    sigma into the student's and the teacher's ``timesteps_for_model``; ``split_states`` cuts the rollout's
-    per-interval states into streams; ``validate`` checks the family's rollout settings.
+    sigma into the student's and the teacher's ``timesteps_for_model``; ``split_states`` / ``split_sigmas`` cut
+    the rollout's per-interval states and recorded grid into streams; ``validate`` checks the family's
+    rollout settings. Streams share one loss; each contributes its per-element mean interval loss.
     """
 
     task: str
@@ -110,6 +111,7 @@ class PDDFamily:
     model_time: Callable[[Any, str, torch.Tensor], torch.Tensor]
     teacher_time: Callable[[Any, str, torch.Tensor], torch.Tensor]
     split_states: Callable[[torch.Tensor, Any], dict[str, torch.Tensor]]
+    split_sigmas: Callable[[torch.Tensor], dict[str, torch.Tensor]]
     validate: Callable[[Any], None]
     cond_extras: dict[str, Any] = field(default_factory=dict)
 
@@ -128,6 +130,14 @@ def _h3_split_states(states, env):
     if states[:, videos:, H3_AUDIO_CHANNELS:].any():
         raise ValueError("H3 PDD audio rows carry data beyond the audio width")
     return {"visual": states[:, :videos], "audio": states[:, videos:, :H3_AUDIO_CHANNELS]}
+
+
+def _h3_split_sigmas(sigmas):
+    """The H3 rollout records the video grid followed by the audio grid."""
+    if sigmas.ndim != 1 or len(sigmas) % 2:
+        raise ValueError("H3 PDD rollout must record the video and audio grids")
+    video, audio = sigmas.chunk(2)
+    return {"visual": video, "audio": audio}
 
 
 def _h3_validate(args):
@@ -150,6 +160,7 @@ PDD_FAMILIES = {
         model_time=lambda args, stream, sigma: embedded_sigmas(engine_timesteps(sigma)),
         teacher_time=lambda args, stream, sigma: sigma,
         split_states=lambda states, env: {"visual": states},
+        split_sigmas=lambda sigmas: {"visual": sigmas},
         validate=_qwen_validate,
     ),
     "h3": PDDFamily(
@@ -166,6 +177,7 @@ PDD_FAMILIES = {
         model_time=lambda args, stream, sigma: sigma * 1000.0,
         teacher_time=lambda args, stream, sigma: sigma * 1000.0,
         split_states=_h3_split_states,
+        split_sigmas=_h3_split_sigmas,
         validate=_h3_validate,
         # Audio rows are PDD targets: the H3 forward returns their prediction only for a soundtrack target.
         cond_extras={"h3_target_has_soundtrack": True},

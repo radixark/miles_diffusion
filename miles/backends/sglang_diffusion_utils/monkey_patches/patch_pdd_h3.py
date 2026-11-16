@@ -4,8 +4,11 @@ The native video and audio output projections become 32 heads each. The loop ste
 32 intervals of the shifted grids (one per H3 grid point of a 32-step request): the first
 interval of each block runs the DiT and caches every head, the block's other three step on
 the cache without a forward. The rollout trajectory returns each interval's start state of
-both streams: video target rows, then audio rows zero-padded to the video width, which the
-trainer's ``split_states`` cuts back apart.
+both streams: video target rows, then audio rows zero-padded to the video width; its sigmas
+are the video grid followed by the audio grid. The trainer's family hooks cut both back apart.
+
+The block cache lives on the model, so an engine must run one request at a time (PDD validates
+one GPU per engine and rollout microgroup size 1).
 """
 
 import torch
@@ -25,6 +28,27 @@ class PDDHeads(nn.Module):
 
     def forward(self, hidden):
         return self.parallel(hidden).permute(1, 0, 2).flatten(1), None
+
+
+def heads_at(block, step_index):
+    """Interval ``step_index``'s prediction from a block's cached [rows, N*C] head output."""
+    return block.unflatten(-1, (INTERVALS, -1))[:, step_index].contiguous()
+
+
+def pack_audio(trajectory, audio_steps, audio_sigmas):
+    """Append the recorded audio rows (zero-padded to the video width) and the audio grid to the trajectory."""
+    video = trajectory.latents
+    if trajectory.latent_step_indices.tolist() != list(range(len(audio_steps))):
+        raise ValueError("H3 PDD needs the full trajectory of both streams")
+    if len(audio_sigmas) != len(audio_steps):
+        raise ValueError("H3 PDD audio grid and audio states differ in length")
+    audio = torch.stack(audio_steps).to(video.dtype).unsqueeze(0)
+    padded = audio.new_zeros(*audio.shape[:-1], video.shape[-1])
+    padded[..., : audio.shape[-1]] = audio
+    trajectory.latents = torch.cat((video, padded), dim=2)
+    audio_sigmas = torch.tensor([float(s) for s in audio_sigmas], dtype=trajectory.sigmas.dtype)
+    trajectory.sigmas = torch.cat((trajectory.sigmas, audio_sigmas))
+    return trajectory
 
 
 def apply():
@@ -68,9 +92,9 @@ def apply():
     def forward_dit(self, model, call_kwargs, step_index, **kwargs):
         if step_index % BLOCK == 0:
             video, audio = original_forward(self, model, call_kwargs, step_index, **kwargs)
-            model._miles_pdd_block = (video.unflatten(-1, (INTERVALS, -1)), audio.unflatten(-1, (INTERVALS, -1)))
+            model._miles_pdd_block = (video, audio)
         video, audio = model._miles_pdd_block
-        return video[:, step_index].contiguous(), audio[:, step_index].contiguous()
+        return heads_at(video, step_index), heads_at(audio, step_index)
 
     def loop(*, positive, initial_audio_rows, on_step=None, rollout_ctx=None, **kwargs):
         if rollout_ctx is None:
@@ -78,6 +102,7 @@ def apply():
         audio_target = positive.audio_target_slice
         collector = rollout_ctx.collector
         collector.audio_steps = [initial_audio_rows[audio_target].detach().float().cpu().clone()]
+        collector.audio_sigmas = list(kwargs["sigmas_audio"])
 
         def record(step, video_rows, audio_rows):
             # Called after both streams moved, so this is the audio state at interval step + 1.
@@ -95,17 +120,8 @@ def apply():
 
     def build(self):
         data = original_build(self)
-        audio = getattr(self, "audio_steps", None)
-        if audio is None:
-            return data
-        trajectory = data.dit_trajectory
-        video = trajectory.latents
-        if trajectory.latent_step_indices.tolist() != list(range(len(audio))):
-            raise ValueError("H3 PDD needs the full trajectory of both streams")
-        audio = torch.stack(audio).to(video.dtype).unsqueeze(0)
-        padded = audio.new_zeros(*audio.shape[:-1], video.shape[-1])
-        padded[..., : audio.shape[-1]] = audio
-        trajectory.latents = torch.cat((video, padded), dim=2)
+        if getattr(self, "audio_steps", None) is not None:
+            pack_audio(data.dit_trajectory, self.audio_steps, self.audio_sigmas)
         return data
 
     MiniMaxH3DiTModel.post_load_weights = post_load

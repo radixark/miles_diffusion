@@ -21,15 +21,16 @@ async def no_reward(args, samples, **kwargs):
 
 def convert_samples_to_train_data(args, samples):
     family = pdd_family(args)
-    # The rollout records its trajectory on the video grid; H3's audio grid only differs in shift.
-    grid = family.grids(args)["visual"]
+    grids = family.grids(args)
     states_count = args.pdd_num_intervals + 1
     pairs = []
     for sample in samples:
         traj, env = sample.dit_trajectory, sample.denoising_env
         if traj is None or env is None or env.pos_cond_kwargs is None:
             raise ValueError("PDD requires SGLang trajectory and positive conditioning")
-        if traj.sigmas is None or not torch.equal(traj.sigmas.cpu().float(), grid):
+        # Every stream's recorded grid must equal the trainer's, bit for bit.
+        sigmas = family.split_sigmas(traj.sigmas.cpu().float()) if traj.sigmas is not None else {}
+        if set(sigmas) != set(grids) or not all(torch.equal(sigmas[s], grids[s]) for s in grids):
             raise ValueError("PDD rollout sigma grid differs from training")
         # Require every interval start + the endpoint, never silently index a
         # filtered trajectory as if it were a complete one.

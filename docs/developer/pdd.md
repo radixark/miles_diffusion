@@ -80,7 +80,8 @@ are disabled because they are verified only for BF16 engine weights.
 every fourth point of H3's shifted grid, as for a native 8-step request). The native
 rollout collector records video target rows; the patch also records the audio rows
 after each step and appends them, zero-padded to the video width, to the trajectory,
-which the family's `split_states` cuts back apart. Native fused PDD heads
+which the family's `split_states` cuts back apart. It also appends the engine's audio grid
+to the recorded video grid, and the converter checks both against the trainer's grids. Native fused PDD heads
 (`pdd_fused_heads`) are rejected: training needs the live, unfused heads.
 
 ## Train and resume
@@ -157,9 +158,13 @@ PDD uses the standard FSDP checkpoint (model, optimizer, scheduler, RNG, dataset
 cursor), written at rollout boundaries; interval selection is a hash of seed,
 rollout, lane and block, so it does not depend on RNG state.
 
-`train/pdd_next_latent_mae` and `train/pdd_update_relative_error` (H3 also
-`train/pdd_audio_*` and the per-stream `train/pdd_{visual,audio}_loss`) compare the
-trainer's next block state with the one SGLang recorded. Block 0 measures pure
+`train/pdd_next_latent_mae` and `train/pdd_update_relative_error` compare the
+trainer's next block state with the one SGLang recorded. They keep their Qwen names for
+the video stream; H3 adds `train/pdd_audio_next_latent_mae` and
+`train/pdd_audio_update_relative_error`, and logs each stream's share of `train/loss` as
+`train/pdd_visual_loss` / `train/pdd_audio_loss`. The streams' per-element mean interval
+losses are summed without weights; H3's audio loss is about 30× smaller than its video
+loss, so the video stream dominates the gradient. Block 0 measures pure
 engine/trainer parity; later blocks also include rollout staleness.
 
 ## Verification and limits
