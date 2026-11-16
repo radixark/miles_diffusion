@@ -39,6 +39,20 @@ class _CheckpointComponent(torch.nn.Module):
         return model
 
 
+class _PinnedComponent(torch.nn.Module):
+    _keep_in_fp32_modules = ["norm"]
+
+    def __init__(self):
+        super().__init__()
+        self.proj = torch.nn.Linear(2, 2)
+        self.norm = torch.nn.LayerNorm(2)
+
+    @classmethod
+    def from_pretrained(cls, checkpoint_path, *, torch_dtype, **kwargs):
+        assert cls._keep_in_fp32_modules is None
+        return cls().to(torch_dtype)
+
+
 class TestBackendHierarchy:
     def test_concrete_backends_are_sibling_implementations(self):
         assert issubclass(MilesModelBackend, BaseModelBackend)
@@ -83,3 +97,21 @@ class TestBackendHierarchy:
             "torch_dtype": torch.float32,
             "low_cpu_mem_usage": True,
         }
+
+    def test_a_component_built_without_weights_keeps_its_fp32_modules(self, tmp_path):
+        # Every rank may build on meta, so rank 0's loaded dtypes are not there to copy the fp32 pin from.
+        (tmp_path / "model_index.json").write_text(
+            json.dumps({"_class_name": "DiffusionPipeline", "transformer": [__name__, "_PinnedComponent"]})
+        )
+
+        model = DiffusersModelBackend(None).load_component(
+            "transformer", checkpoint_path=str(tmp_path), master_dtype=torch.bfloat16, materialize_weights=False
+        )
+
+        assert {name: parameter.dtype for name, parameter in model.named_parameters()} == {
+            "proj.weight": torch.bfloat16,
+            "proj.bias": torch.bfloat16,
+            "norm.weight": torch.float32,
+            "norm.bias": torch.float32,
+        }
+        assert _PinnedComponent._keep_in_fp32_modules == ["norm"]

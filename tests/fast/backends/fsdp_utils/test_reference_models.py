@@ -204,6 +204,7 @@ def unsharded_model_loader(monkeypatch):
     calls = []
     monkeypatch.setattr(model_loader.dist, "get_rank", lambda: 0)
     monkeypatch.setattr(model_loader.checkpoint, "sync_model_dtypes", lambda model: None)
+    monkeypatch.setattr(model_loader.checkpoint, "all_ranks_agree", lambda flag: flag)
     monkeypatch.setattr(model_loader.checkpoint, "broadcast_full_state_to_fsdp", lambda *args, **kwargs: None)
 
     def record_fsdp(model, plan, *, mesh, cpu_offload, args):

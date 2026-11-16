@@ -4,6 +4,7 @@ import logging
 import warnings
 from argparse import Namespace
 from contextlib import contextmanager
+from functools import partial
 
 import torch
 import torch.distributed as dist
@@ -27,31 +28,33 @@ def load_fsdp_models(
     trainable: bool = False,
     cpu_offload: bool = False,
 ) -> dict[str, torch.nn.Module]:
-    materialize_weights = dist.get_rank() == 0
-    master_dtype = parse_dtype_from_str(args.fsdp_master_dtype)
     models = {}
     for component_index, component in enumerate(args.update_weight_target_modules):
-        with model_init_context(materialize_weights=materialize_weights):
-            model = model_backend.load_component(
-                component,
-                checkpoint_path=checkpoint_path,
-                master_dtype=master_dtype,
-                materialize_weights=materialize_weights,
-            )
-        if args.fsdp_attention_backend is not None:
-            model_backend.set_attention_backend(model, args.fsdp_attention_backend)
-        if trainable and args.gradient_checkpointing:
-            model_backend.enable_gradient_checkpointing(model)
-        if lora_adapter_paths is not None:
-            model = load_lora_adapter(model, lora_adapter_paths[component_index], trainable=trainable)
-        elif trainable and args.use_lora:
-            model = apply_lora(model, args, train_pipeline_config)
-        model.train(trainable)
-        if not trainable:
-            model.requires_grad_(False)
-
-        if not materialize_weights and any(not parameter.is_meta for parameter in model.parameters()):
-            raise RuntimeError(f"{component} did not honor meta initialization")
+        build = partial(
+            build_component,
+            args,
+            model_backend,
+            train_pipeline_config,
+            component,
+            checkpoint_path=checkpoint_path,
+            lora_adapter_path=None if lora_adapter_paths is None else lora_adapter_paths[component_index],
+            trainable=trainable,
+        )
+        # Without LoRA every rank reads its own shards from the safetensors files; else rank 0 loads and broadcasts.
+        use_lora = lora_adapter_paths is not None or (trainable and args.use_lora)
+        safetensors = None if use_lora else checkpoint.safetensors_folder(checkpoint_path, component)
+        materialize_weights = safetensors is None and dist.get_rank() == 0
+        model = build(materialize_weights=materialize_weights)
+        if not use_lora and not checkpoint.all_ranks_agree(
+            safetensors is not None and checkpoint.safetensors_hold_state(model, safetensors)
+        ):
+            if safetensors is not None and dist.get_rank() == 0:
+                materialize_weights = True
+                model = build(materialize_weights=True)
+            safetensors = None
+        if dist.get_rank() == 0:
+            source = f"every rank reads {safetensors}" if safetensors is not None else "rank 0 loads and broadcasts"
+            logger.info(f"FSDP: {component} weights of {checkpoint_path}: {source}")
         checkpoint.sync_model_dtypes(model)
         full_state = model.state_dict() if materialize_weights else {}
         model = apply_fsdp2(
@@ -61,7 +64,10 @@ def load_fsdp_models(
             cpu_offload=cpu_offload,
             args=args,
         )
-        checkpoint.broadcast_full_state_to_fsdp(model, full_state, cpu_offload=cpu_offload)
+        if safetensors is not None:
+            checkpoint.load_safetensors_to_fsdp(model, safetensors, cpu_offload=cpu_offload)
+        else:
+            checkpoint.broadcast_full_state_to_fsdp(model, full_state, cpu_offload=cpu_offload)
         del full_state
         train_pipeline_config.postprocess_model_after_materialize(model)
         if parallel_state.get_optional_mesh("sp") is not None:
@@ -77,6 +83,40 @@ def load_fsdp_models(
             move_model(model, "cpu")
         models[component] = model
     return models
+
+
+def build_component(
+    args: Namespace,
+    model_backend,
+    train_pipeline_config,
+    component: str,
+    *,
+    checkpoint_path: str,
+    lora_adapter_path: str | None,
+    trainable: bool,
+    materialize_weights: bool,
+) -> torch.nn.Module:
+    with model_init_context(materialize_weights=materialize_weights):
+        model = model_backend.load_component(
+            component,
+            checkpoint_path=checkpoint_path,
+            master_dtype=parse_dtype_from_str(args.fsdp_master_dtype),
+            materialize_weights=materialize_weights,
+        )
+    if args.fsdp_attention_backend is not None:
+        model_backend.set_attention_backend(model, args.fsdp_attention_backend)
+    if trainable and args.gradient_checkpointing:
+        model_backend.enable_gradient_checkpointing(model)
+    if lora_adapter_path is not None:
+        model = load_lora_adapter(model, lora_adapter_path, trainable=trainable)
+    elif trainable and args.use_lora:
+        model = apply_lora(model, args, train_pipeline_config)
+    model.train(trainable)
+    if not trainable:
+        model.requires_grad_(False)
+    if not materialize_weights and any(not parameter.is_meta for parameter in model.parameters()):
+        raise RuntimeError(f"{component} did not honor meta initialization")
+    return model
 
 
 def finish_fsdp_lazy_init(model: torch.nn.Module) -> None:

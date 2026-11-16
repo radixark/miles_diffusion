@@ -204,10 +204,15 @@ class DiffusersModelBackend(BaseModelBackend):
         if not materialize_weights and keep_in_fp32 is not None:
             model_cls._keep_in_fp32_modules = None
         try:
-            return model_cls.from_pretrained(checkpoint_path, **kwargs)
+            model = model_cls.from_pretrained(checkpoint_path, **kwargs)
         finally:
             if not materialize_weights and keep_in_fp32 is not None:
                 model_cls._keep_in_fp32_modules = keep_in_fp32
+        if not materialize_weights and keep_in_fp32 is not None:
+            for name, param in model.named_parameters():
+                if any(module in name.split(".") for module in keep_in_fp32):
+                    param.data = param.data.to(torch.float32)
+        return model
 
     @classmethod
     def _resolve_component_class(cls, checkpoint_path: str, component: str):
