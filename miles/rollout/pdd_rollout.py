@@ -1,6 +1,7 @@
 """PDD rollout hooks: validate SGLang trajectories for the block-ordered updates.
 
-SGLang returns the start state of all 32 intervals plus the endpoint. The actor
+SGLang returns the start state of all 32 intervals plus the endpoint, per latent
+stream (the family's ``split_states`` cuts a packed H3 trajectory). The actor
 expands each trajectory into its eight blocks after DP splitting; block j trains
 from the rollout state at its first interval, and the teacher target starts from the
 rollout state at the sampled interval. Uses the shared rollout engine, response
@@ -9,7 +10,7 @@ parser, dataset cursor and weight sync.
 
 import torch
 
-from miles.distillation.integration import pdd_grid
+from miles.distillation.integration import pdd_family
 
 
 async def no_reward(args, samples, **kwargs):
@@ -19,7 +20,9 @@ async def no_reward(args, samples, **kwargs):
 
 
 def convert_samples_to_train_data(args, samples):
-    grid = pdd_grid(args)
+    family = pdd_family(args)
+    # The rollout records its trajectory on the video grid; H3's audio grid only differs in shift.
+    grid = family.grids(args)["visual"]
     states_count = args.pdd_num_intervals + 1
     pairs = []
     for sample in samples:
@@ -39,7 +42,9 @@ def convert_samples_to_train_data(args, samples):
             raise ValueError(f"PDD expects per-sample packed latent tokens [{states_count}, S, C]")
         if not torch.isfinite(states).all():
             raise ValueError("PDD rollout contains nonfinite states")
-        pairs.append(dict(sample_index=sample.index, pdd_trajectory=states, denoising_env=env))
+        pairs.append(
+            dict(sample_index=sample.index, pdd_trajectory=family.split_states(states, env), denoising_env=env)
+        )
     if not pairs:
         raise ValueError("PDD rollout produced no training samples")
     return {"train_data": pairs}

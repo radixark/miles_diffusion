@@ -1,5 +1,6 @@
-"""PDD on CPU: the interval math, the engine's cached-head steps, and eight block updates from rollout
-states against an independent optimizer loop. The tests play the actor where it would run the teacher."""
+"""PDD on CPU: the interval math, the engine's cached-head steps, eight block updates from rollout
+states against an independent optimizer loop, and H3's two latent streams. The tests play the actor
+where it would run the teacher."""
 
 from tests.ci.ci_register import register_cpu_ci
 
@@ -104,9 +105,9 @@ def test_converter_accepts_only_the_full_trajectory_on_the_training_grid():
         denoising_env=SimpleNamespace(pos_cond_kwargs={}),
         dit_trajectory=SimpleNamespace(sigmas=GRID, latents=torch.randn(33, 4, 2), latent_step_indices=None),
     )
-    args = SimpleNamespace(hf_checkpoint="unused", pdd_num_intervals=32)
+    args = SimpleNamespace(hf_checkpoint="unused", pdd_num_intervals=32, diffusion_model_family="qwen_image21")
     pair = pdd_rollout.convert_samples_to_train_data(args, [sample])["train_data"][0]
-    torch.testing.assert_close(pair["pdd_trajectory"], sample.dit_trajectory.latents)
+    torch.testing.assert_close(pair["pdd_trajectory"]["visual"], sample.dit_trajectory.latents)
     for field, value in [
         ("sigmas", GRID + 0.01),
         ("latents", torch.randn(9, 4, 2)),
@@ -153,7 +154,9 @@ class Metrics:
 
 
 def context(student, rollout=0):
-    args = SimpleNamespace(hf_checkpoint="unused", pdd_num_intervals=32, pdd_block_size=4, seed=42)
+    args = SimpleNamespace(
+        hf_checkpoint="unused", pdd_num_intervals=32, pdd_block_size=4, seed=42, diffusion_model_family="qwen_image21"
+    )
     return DiffusionLossContext(
         models={"transformer": student},
         train_pipeline_config=Config(),
@@ -167,7 +170,9 @@ def context(student, rollout=0):
 
 def rollout_pair(index):
     return dict(
-        sample_index=index, pdd_trajectory=torch.randn(33, 4, 2), denoising_env=SimpleNamespace(pos_cond_kwargs={})
+        sample_index=index,
+        pdd_trajectory={"visual": torch.randn(33, 4, 2)},
+        denoising_env=SimpleNamespace(pos_cond_kwargs={}),
     )
 
 
@@ -188,12 +193,12 @@ def test_eight_block_updates_from_rollout_states_match_an_independent_loop():
             k = prepared.extras["selected"]
             x, sigma = prepared.latents["visual"], prepared.timesteps_for_model["visual"]
             assert prepared.extras["start"] == 4 * step <= k < 4 * step + 4
-            torch.testing.assert_close(x[0], pair["pdd_trajectory"][4 * step], rtol=0, atol=0)
+            torch.testing.assert_close(x[0], pair["pdd_trajectory"]["visual"][4 * step], rtol=0, atol=0)
             # What the actor does: run the frozen teacher through the prepare hook's solver, without grad.
             with torch.no_grad():
                 target = prepared.teacher_solver(lambda lat, ts: {"visual": teacher(lat["visual"], ts["visual"])})
             # The teacher starts from the rollout's state at the sampled interval.
-            torch.testing.assert_close(teacher.inputs[-2][0], pair["pdd_trajectory"][k], rtol=0, atol=0)
+            torch.testing.assert_close(teacher.inputs[-2][0], pair["pdd_trajectory"]["visual"][k], rtol=0, atol=0)
             loss = pdd_loss_formula(
                 ctx,
                 [pair],
@@ -206,7 +211,7 @@ def test_eight_block_updates_from_rollout_states_match_an_independent_loop():
                 optim_step_idx=0,
                 train_output_inputs=[],
             )
-            x_k = pair["pdd_trajectory"][k].unsqueeze(0)
+            x_k = pair["pdd_trajectory"]["visual"][k].unsqueeze(0)
             expected = teacher_mean_velocity(lambda s, t: teacher(s, t.expand(1)), x_k, GRID[k], GRID.diff()[k])
             refloss = interval_loss(reference(x, sigma), k, expected).sum()
             torch.testing.assert_close(loss, refloss, rtol=0, atol=0)
@@ -246,7 +251,9 @@ def test_lora_student_trains_adapters_and_full_heads_and_checkpoints_both():
     with torch.device("meta"):  # non-zero ranks build the student on meta before FSDP sharding
         model = get_peft_model(Tiny(), LoraConfig(r=2, lora_alpha=2, target_modules=["to_q"]))
     # The loader's order: LoRA first, then the model-transform hook on the unwrapped model.
-    install_student(model.get_base_model(), SimpleNamespace(pdd_num_intervals=32))
+    install_student(
+        model.get_base_model(), SimpleNamespace(diffusion_model_family="qwen_image21", pdd_num_intervals=32)
+    )
     assert all(p.is_meta for p in model.parameters())
     assert model.base_model.model.proj_out.parallel.weight.shape == (32, 2, 4)
     trainable = {name for name, p in model.named_parameters() if p.requires_grad}
@@ -258,6 +265,115 @@ def test_lora_student_trains_adapters_and_full_heads_and_checkpoints_both():
     }
     state = ModelState(model, lora_only=True)
     assert {name for name in dict(model.named_parameters()) if state._saved(name)} == trainable
+
+
+# --- MiniMax H3: video and audio streams ----------------------------------------------------------------
+
+
+def test_h3_grid_matches_the_sglang_schedule_and_its_blocks():
+    # sgl-d's minimax_h3_time_shift_sigmas, in fp32: shift * t / (1 + (shift - 1) * t).
+    for shift in (12.0, 3.0):
+        grid = integration.h3_grid(32, shift)
+        base = torch.linspace(1.0, 0.0, 33, dtype=torch.float32)
+        assert torch.equal(grid, shift * base / (1 + (shift - 1) * base))
+        # An 8-step request's block boundaries are every 4th point of the 32-interval grid.
+        torch.testing.assert_close(grid[::4], integration.h3_grid(8, shift), rtol=0, atol=1e-6)
+
+
+def test_h3_rollout_splits_video_and_padded_audio_rows():
+    videos, audios = 6, 3
+    layout = {"update_mask": torch.ones(videos, dtype=torch.bool), "audio_pos": torch.arange(audios)}
+    env = SimpleNamespace(pos_cond_kwargs=SimpleNamespace(h3_packed_layout=layout))
+    video, audio = torch.randn(33, videos, 96), torch.randn(33, audios, 32)
+    packed = torch.cat((video, nn.functional.pad(audio, (0, 64))), dim=1)
+    split = integration.PDD_FAMILIES["h3"].split_states
+    streams = split(packed, env)
+    assert torch.equal(streams["visual"], video) and torch.equal(streams["audio"], audio)
+    with pytest.raises(ValueError):
+        split(packed[:, 1:], env)
+    packed[:, -1, 40] = 1.0
+    with pytest.raises(ValueError):
+        split(packed, env)
+
+
+def test_h3_student_gets_video_and_audio_heads():
+    model = nn.Module()
+    model.proj_out, model.audio_proj_out = nn.Linear(8, 4), nn.Linear(8, 2)
+    install_student(model, SimpleNamespace(diffusion_model_family="h3", pdd_num_intervals=32))
+    assert model.proj_out.parallel.weight.shape == (32, 4, 8)
+    assert model.audio_proj_out.parallel.weight.shape == (32, 2, 8)
+    assert model.proj_out(torch.randn(1, 5, 8)).shape == (1, 5, 32 * 4)
+
+
+def test_h3_streams_share_one_interval_and_one_joint_teacher_call():
+    from miles.backends.fsdp_utils.metrics import SCHEMA
+
+    torch.manual_seed(5)
+    heads = {"visual": ParallelLinear(nn.Linear(2, 2), 32), "audio": ParallelLinear(nn.Linear(2, 2), 32)}
+    args = SimpleNamespace(
+        diffusion_model_family="h3",
+        pdd_num_intervals=32,
+        pdd_block_size=4,
+        seed=42,
+        diffusion_flow_shift=12.0,
+        diffusion_audio_flow_shift=3.0,
+    )
+    ctx = DiffusionLossContext(
+        models={"transformer": nn.Identity()},
+        train_pipeline_config=Config(),
+        sde_backend=None,
+        device=torch.device("cpu"),
+        forward_dtype=torch.float32,
+        args=args,
+        rollout_id=3,
+    )
+    trajectory = {"visual": torch.randn(33, 4, 2), "audio": torch.randn(33, 3, 2)}
+    pair = dict(
+        sample_index=1, pdd_start=8, pdd_trajectory=trajectory, denoising_env=SimpleNamespace(pos_cond_kwargs={})
+    )
+    prepared = prepare_pdd_batch(ctx, [pair], microbatch_id=0, optim_step_idx=0)
+    grids, k = prepared.extras["grids"], prepared.extras["selected"]
+    assert prepared.pos_cond["h3_target_has_soundtrack"] is True
+    assert torch.equal(grids["visual"], integration.h3_grid(32, 12.0))
+    assert torch.equal(grids["audio"], integration.h3_grid(32, 3.0))
+    for stream in heads:
+        assert torch.equal(prepared.latents[stream][0], trajectory[stream][8])
+        assert torch.equal(prepared.timesteps_for_model[stream], grids[stream][8].reshape(1) * 1000)
+
+    calls = []
+
+    def forward(latents, timesteps):
+        calls.append({stream: float(t) for stream, t in timesteps.items()})
+        return {stream: 0.5 * x + timesteps[stream] / 1000 for stream, x in latents.items()}
+
+    target = prepared.teacher_solver(forward)
+    # One joint teacher call per midpoint stage, each stream at its own grid sigma.
+    assert len(calls) == 2 and calls[0] == {s: float(grids[s][k] * 1000) for s in heads}
+    for stream in heads:
+        expected = teacher_mean_velocity(
+            lambda x, t: 0.5 * x + t, trajectory[stream][k].unsqueeze(0), grids[stream][k], grids[stream].diff()[k]
+        )
+        torch.testing.assert_close(target[stream], expected)
+
+    class SchemaMetrics:
+        def emit_mean(self, name, *, total, count):
+            assert name in SCHEMA, name
+
+    predictions = {stream: head(prepared.latents[stream]) for stream, head in heads.items()}
+    loss = pdd_loss_formula(
+        ctx,
+        [pair],
+        prepared,
+        new_pred={stream: p.permute(1, 2, 0, 3).flatten(2) for stream, p in predictions.items()},
+        old_pred=None,
+        ref_pred=None,
+        teacher_pred=target,
+        metrics=SchemaMetrics(),
+        optim_step_idx=0,
+        train_output_inputs=[],
+    )
+    expected = sum(interval_loss(predictions[s], k, target[s]) for s in heads).sum()
+    torch.testing.assert_close(loss, expected, rtol=0, atol=0)
 
 
 # --- arguments -----------------------------------------------------------------------------------------
@@ -330,6 +446,38 @@ def test_defaults_select_the_sglang_rollout_and_eight_updates_per_rollout():
         pdd_loss_formula,
         expand_train_pairs,
     )
+
+
+H3_ARGS = dict(
+    diffusion_model_family="h3",
+    diffusion_task="t2va",
+    sglang_dit_precision="bf16",
+    diffusion_flow_shift=12.0,
+    diffusion_audio_flow_shift=3.0,
+    sglang_tp_size=1,
+    sglang_sp_degree=1,
+    colocate=False,
+    lora_ipc_weight_sync=False,
+)
+
+
+def test_h3_defaults_keep_the_family_fsdp_plan_and_select_its_patch_group():
+    args = configured(**H3_ARGS)
+    assert args.fsdp_param_dtype is None and args.rollout_patch_groups == ["pdd_h3"]
+
+
+@pytest.mark.parametrize(
+    "name,value",
+    [
+        ("sglang_dit_precision", "fp32"),
+        ("diffusion_audio_flow_shift", None),
+        ("sglang_tp_size", 2),
+        ("diffusion_task", "t2i"),
+    ],
+)
+def test_h3_unvalidated_modes_fail(name, value):
+    with pytest.raises(ValueError):
+        configured(**{**H3_ARGS, name: value})
 
 
 @pytest.mark.parametrize(
