@@ -67,14 +67,27 @@ def adapter_shards(models):
     }
 
 
+def adapter_delta(inputs, index, *, saved):
+    """What the adapter adds to the projection: lora_alpha / r = 2 times B A, and a new adapter's B is zero."""
+    if not saved:
+        return torch.zeros(2, 4)
+    lora_a, lora_b = torch.full((2, 3), 0.15 + 0.1 * index), torch.full((4, 2), 0.25 + 0.1 * index)
+    return 2 * (inputs @ lora_a.T) @ lora_b.T
+
+
 def check_lora(mesh, root, rank, cpu_offload, **kwargs):
     # read per rank
     torch.manual_seed(0)
     models, materialize_requests = load(mesh, root / "state", cpu_offload, **kwargs)
     assert materialize_requests == [False, False]
-    for component, model in models.items():
+    inputs = torch.ones(2, 3)
+    for index, (component, model) in enumerate(models.items()):
         base = model.base_model.model.block.proj.base_layer.weight.to_local().cpu()
         assert torch.equal(base, saved_weight(component).float()[2 * rank : 2 * rank + 2])
+        delta = adapter_delta(inputs, index, saved="lora_adapter_paths" in kwargs)
+        with torch.no_grad():
+            output = model(inputs.cuda()).cpu()
+        torch.testing.assert_close(output, (inputs @ saved_weight(component).float().T + delta).tanh())
     adapters, generator = adapter_shards(models), torch.get_rng_state()
     assert len(adapters) == 4 and any(shard.abs().sum() > 0 for shard in adapters.values())
     # rank 0 builds with weights, then the real broadcast
