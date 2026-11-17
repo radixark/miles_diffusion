@@ -11,10 +11,12 @@ register_cpu_ci(est_time=15, suite="stage-a-cpu", labels=[])
 import json
 from itertools import chain
 
+import httpx
 import pytest
 import torch
 from diffusers import ConfigMixin, ModelMixin, SD3Transformer2DModel, WanTransformer3DModel
 from diffusers.configuration_utils import register_to_config
+from huggingface_hub.errors import LocalEntryNotFoundError, RepositoryNotFoundError
 
 from miles.backends.fsdp_utils.model_backend import BaseModelBackend, DiffusersModelBackend, MilesModelBackend
 from miles.backends.fsdp_utils.model_loader import model_init_context
@@ -241,6 +243,27 @@ class TestBackendHierarchy:
         # load_component then reports the path, as it does without this hook.
         backend = DiffusersModelBackend(None)
         assert backend.safetensors_files("transformer", checkpoint_path=str(tmp_path / "missing")) is None
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            pytest.param(LocalEntryNotFoundError("no cached snapshot"), id="offline and not in the cache"),
+            pytest.param(
+                RepositoryNotFoundError(
+                    "404", response=httpx.Response(404, request=httpx.Request("GET", "https://huggingface.co"))
+                ),
+                id="no such repo",
+            ),
+        ],
+    )
+    def test_a_repo_id_that_does_not_resolve_names_no_files(self, monkeypatch, error):
+        # A mistyped relative folder such as ckpts/h3 parses as a repo id; load_component names it in its error.
+        def snapshot_download(repo_id, *, allow_patterns):
+            raise error
+
+        monkeypatch.setattr("huggingface_hub.snapshot_download", snapshot_download)
+
+        assert DiffusersModelBackend(None).safetensors_files("transformer", checkpoint_path="ckpts/h3") is None
 
     def test_a_backend_that_loads_other_weights_names_no_files(self, tmp_path):
         # Rank 0's load_component result was broadcast; the files must not replace what a subclass loads.
