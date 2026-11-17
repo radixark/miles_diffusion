@@ -1,6 +1,7 @@
 """Two ranks read their own halves of a safetensors checkpoint, or fall back to rank 0's broadcast together.
 
     files hold the state dict --> both ranks on meta --> rows [0:2] on rank 0, rows [2:4] on rank 1, GPU or CPU offload
+                                  a buffer no file holds --> rank 0's value on both ranks
     another name in the files --> rank 0 builds again with weights --> the broadcast value on both ranks
 """
 
@@ -23,9 +24,18 @@ from torch.distributed.device_mesh import init_device_mesh
 from miles.backends.fsdp_utils.model_loader import load_fsdp_models
 
 
+class RankTaggedBackend(FileBackend):
+    """A buffer outside the state dict whose constructor value differs between the ranks."""
+
+    def load_component(self, component, **kwargs):
+        model = super().load_component(component, **kwargs)
+        model.register_buffer("built_on_rank", torch.tensor(float(dist.get_rank())), persistent=False)
+        return model
+
+
 def load(mesh, path, cpu_offload):
     parallel = SimpleNamespace(get_mesh=lambda name: mesh, get_optional_mesh=lambda name: None)
-    args, backend = make_model_loader_args(), FileBackend()
+    args, backend = make_model_loader_args(), RankTaggedBackend()
     args.use_lora = False
     models = load_fsdp_models(
         args, backend, TinyPipelineConfig(), parallel, checkpoint_path=str(path), cpu_offload=cpu_offload
@@ -35,6 +45,7 @@ def load(mesh, path, cpu_offload):
         assert shard.shape == (2, 3) and shard.dtype == torch.float32
         assert shard.device.type == ("cpu" if cpu_offload else "cuda")
         assert model.forward_count.device.type == "cuda" and model.forward_count.item() == 0
+        assert model.built_on_rank.device.type == "cuda" and model.built_on_rank.item() == 0
     return models, backend.materialize_requests
 
 
