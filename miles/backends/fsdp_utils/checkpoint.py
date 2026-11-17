@@ -67,15 +67,24 @@ def broadcast_full_state_to_fsdp(
             buffer.data = buffer.data.to(torch.cuda.current_device())
 
 
-def safetensors_hold_state(model: torch.nn.Module, files: list[Path]) -> bool:
-    """Whether the files hold the model's state dict: the same names, each with the same shape."""
+def base_state(model: torch.nn.Module) -> dict[str, torch.Tensor]:
+    """The state dict without LoRA adapters, under the names the base checkpoint gives its tensors."""
+    return {
+        name.removeprefix("base_model.model.").replace(".base_layer.", "."): tensor
+        for name, tensor in model.state_dict().items()
+        if not is_lora_param_name(name)
+    }
+
+
+def safetensors_hold_state(state: dict[str, torch.Tensor], files: list[Path]) -> bool:
+    """Whether the files hold the state dict: the same names, each with the same shape."""
     from safetensors import safe_open
 
     saved = {}
     for file in files:
         with safe_open(file, framework="pt") as tensors:
             saved.update({name: tuple(tensors.get_slice(name).get_shape()) for name in tensors.keys()})
-    return saved == {name: tuple(tensor.shape) for name, tensor in model.state_dict().items()}
+    return saved == {name: tuple(tensor.shape) for name, tensor in state.items()}
 
 
 def all_ranks_agree(flag: bool) -> bool:
@@ -84,27 +93,38 @@ def all_ranks_agree(flag: bool) -> bool:
     return all(flags)
 
 
+def rank0_rng_state() -> torch.Tensor:
+    """The state of rank 0's default generator, on every rank."""
+    states = [torch.get_rng_state() if dist.get_rank() == 0 else None]
+    dist.broadcast_object_list(states, src=0)
+    return states[0]
+
+
 @torch.no_grad()
 def load_safetensors_to_fsdp(model: torch.nn.Module, files: list[Path], *, cpu_offload: bool) -> None:
-    """Materialize FSDP2 shards by reading each rank's own slice of every parameter from the files."""
+    """Materialize FSDP2 shards by reading each rank's own slice of every base parameter from the files."""
     device = torch.cuda.current_device()
-    # Buffers were computed for real on every rank; to_empty would wipe them.
+    # Buffers and LoRA adapters were computed for real on every rank; to_empty would wipe them.
     buffers = dict(model.named_buffers())
+    adapters = {name: p.to_local().clone() for name, p in model.named_parameters() if is_lora_param_name(name)}
     model.to_empty(device="cpu" if cpu_offload else device)
     for name, buffer in model.named_buffers():
         buffer.copy_(buffers[name])
+    for name, parameter in model.named_parameters():
+        if name in adapters:
+            parameter.to_local().copy_(adapters[name])
     # The reader takes every safetensors file of one folder, and the files' own folder may hold others (a variant).
     with tempfile.TemporaryDirectory() as folder:
         for file in files:
             os.symlink(file.resolve(), Path(folder) / file.name)
-        dcp.load(model.state_dict(), storage_reader=dcp.HuggingFaceStorageReader(folder, thread_count=4))
+        dcp.load(base_state(model), storage_reader=dcp.HuggingFaceStorageReader(folder, thread_count=4))
     if cpu_offload:
         # CPUOffloadPolicy manages params only; buffers must live on GPU for forward.
         for buffer in model.buffers():
             buffer.data = buffer.data.to(device)
 
 
-def _is_lora_param_name(name: str) -> bool:
+def is_lora_param_name(name: str) -> bool:
     return "lora_" in name
 
 
@@ -119,7 +139,7 @@ class ModelState(Stateful):
     def state_dict(self):
         model_state_dict, _ = get_state_dict(self.model, optimizers=[])
         if self.lora_only:
-            model_state_dict = {k: v for k, v in model_state_dict.items() if _is_lora_param_name(k)}
+            model_state_dict = {k: v for k, v in model_state_dict.items() if is_lora_param_name(k)}
         return {"model": model_state_dict}
 
     def load_state_dict(self, state_dict):
@@ -133,7 +153,7 @@ class ModelState(Stateful):
         )
         # strict=False swallows mismatches; lora_only expects missing base keys, anything else is a bad checkpoint
         unclaimed = list(incompatible.unexpected_keys)
-        unfilled = [k for k in incompatible.missing_keys if not self.lora_only or _is_lora_param_name(k)]
+        unfilled = [k for k in incompatible.missing_keys if not self.lora_only or is_lora_param_name(k)]
         if unclaimed or unfilled:
             logger.error(
                 f"[FSDP] Checkpoint mismatch: {len(unclaimed)} unclaimed checkpoint keys, "
