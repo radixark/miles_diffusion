@@ -157,6 +157,9 @@ def build_component(
             master_dtype=parse_dtype_from_str(args.fsdp_master_dtype),
             materialize_weights=materialize_weights,
         )
+    # Before the adapter step, which leaves every base parameter on meta whatever the backend built.
+    if not materialize_weights and any(not parameter.is_meta for parameter in model.parameters()):
+        raise RuntimeError(f"{component} did not honor meta initialization")
     if args.fsdp_attention_backend is not None:
         model_backend.set_attention_backend(model, args.fsdp_attention_backend)
     if trainable and args.gradient_checkpointing:
@@ -170,12 +173,10 @@ def build_component(
     model.train(trainable)
     if not trainable:
         model.requires_grad_(False)
-    if not materialize_weights and any(
-        not parameter.is_meta
-        for name, parameter in model.named_parameters()
-        if not (lora_on_every_rank and checkpoint.is_lora_param_name(name))
+    if not materialize_lora and any(
+        not parameter.is_meta for name, parameter in model.named_parameters() if checkpoint.is_lora_param_name(name)
     ):
-        raise RuntimeError(f"{component} did not honor meta initialization")
+        raise RuntimeError(f"the adapter of {component} did not honor meta initialization")
     return model
 
 

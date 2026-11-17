@@ -341,6 +341,19 @@ def test_a_saved_adapter_is_built_on_every_rank_only_when_it_holds_lora_tensors_
     assert model_loader.lora_needs_no_base_weights(make_model_loader_args(), adapter_path) is builds_on_every_rank
 
 
+def test_a_base_built_with_weights_is_refused_before_the_adapter_step_would_hide_it(tmp_path, monkeypatch):
+    class RealBaseBackend(FileBackend):
+        def load_component(self, component, **kwargs):
+            model = super().load_component(component, **kwargs)
+            # Past the ambient init_empty_weights, which would put a parameter registered here on meta.
+            model.block.proj._parameters["weight"] = torch.nn.Parameter(torch.zeros(4, 3))
+            return model
+
+    save_checkpoint(tmp_path)
+    with pytest.raises(RuntimeError, match="did not honor meta initialization"):
+        load(monkeypatch, tmp_path, lora_init="gaussian", trainable=True, backend_cls=RealBaseBackend)
+
+
 def lora_weights(state):
     return {name: tensor for name, tensor in state.items() if "lora_" in name}
 
