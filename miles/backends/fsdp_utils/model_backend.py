@@ -20,11 +20,15 @@ from __future__ import annotations
 import abc
 import functools
 import importlib
+import json
 import logging
+import os
 from dataclasses import replace
 
 import torch
-from diffusers import DiffusionPipeline
+from diffusers import DiffusionPipeline, ModularPipeline
+from huggingface_hub import hf_hub_download
+from huggingface_hub.errors import EntryNotFoundError
 
 from .models.parallel_plan import FSDPParallelPlan
 from .sequence_parallel.diffusers_dispatch import install_diffusers_usp_patch
@@ -189,9 +193,9 @@ class DiffusersModelBackend(BaseModelBackend):
         master_dtype: torch.dtype,
         materialize_weights: bool,
     ) -> torch.nn.Module:
-        model_cls = self._resolve_component_class(checkpoint_path, component)
+        model_cls, subfolder = self._resolve_component(checkpoint_path, component)
         kwargs = {
-            "subfolder": component,
+            "subfolder": subfolder,
             "torch_dtype": master_dtype,
             "low_cpu_mem_usage": materialize_weights,
         }
@@ -210,8 +214,13 @@ class DiffusersModelBackend(BaseModelBackend):
                 model_cls._keep_in_fp32_modules = keep_in_fp32
 
     @classmethod
-    def _resolve_component_class(cls, checkpoint_path: str, component: str):
-        """Resolve ``component``'s class from ``model_index.json``.
+    def _resolve_component(cls, checkpoint_path: str, component: str) -> tuple[type, str]:
+        """``component``'s class and its folder under ``checkpoint_path``, from the checkpoint's index.
+
+        A checkpoint that ships ``modular_model_index.json`` is read from it, as diffusers' modular loader does:
+        its root ``model_index.json`` may describe another layout of the same weights (MiniMax-H3-Image's names the
+        engine's native classes). The folder is the one the component's loading spec names, else the component's
+        name. The repository a loading spec names is not followed: weights come from ``checkpoint_path``.
 
         Components load individually via ``cls.from_pretrained(subfolder=...)`` rather
         than through ``DiffusionPipeline.from_pretrained`` with the siblings passed as
@@ -221,16 +230,42 @@ class DiffusersModelBackend(BaseModelBackend):
         loaded from disk anyway — on every rank, and with ``low_cpu_mem_usage=False``
         it also trips diffusers' ``_keep_in_fp32_modules`` guard.
         """
-        config = DiffusionPipeline.load_config(checkpoint_path)
+        index_name = ModularPipeline.config_name
+        config = cls._read_modular_index(checkpoint_path)
+        if config is None:
+            index_name = DiffusionPipeline.config_name
+            config = DiffusionPipeline.load_config(checkpoint_path)
         if component not in config:
-            raise ValueError(f"pipeline {checkpoint_path} has no component {component!r}")
-        component_cls = cls._component_class(config[component])
+            raise ValueError(f"{index_name} of {checkpoint_path} has no component {component!r}")
+        spec = config[component]
+        component_cls = cls._component_class(spec)
         if component_cls is None:
             raise ValueError(
                 f"cannot resolve the class for component {component!r} of {checkpoint_path} "
-                f"from spec {config[component]!r}; remote-code components are not supported"
+                f"from spec {spec!r}; remote-code components are not supported"
             )
-        return component_cls
+        if len(spec) == 2:
+            return component_cls, component
+        subfolder = spec[2].get("subfolder") if isinstance(spec[2], dict) else None
+        if not isinstance(subfolder, str) or not subfolder:
+            raise ValueError(f"component {component!r} of {checkpoint_path} names no subfolder in its spec {spec!r}")
+        return component_cls, subfolder
+
+    @staticmethod
+    def _read_modular_index(checkpoint_path: str) -> dict | None:
+        """``modular_model_index.json`` of a local or Hub checkpoint; None when it ships none."""
+        if os.path.isdir(checkpoint_path):
+            index_file = os.path.join(checkpoint_path, ModularPipeline.config_name)
+            if not os.path.isfile(index_file):
+                return None
+        else:
+            try:
+                index_file = hf_hub_download(checkpoint_path, ModularPipeline.config_name)
+            # an unreachable Hub still raises
+            except EntryNotFoundError:
+                return None
+        with open(index_file) as f:
+            return json.load(f)
 
     @staticmethod
     def _component_class(spec):

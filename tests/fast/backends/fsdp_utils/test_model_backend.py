@@ -10,10 +10,53 @@ register_cpu_ci(est_time=15, suite="stage-a-cpu", labels=[])
 
 import json
 
+import diffusers
+import pytest
 import torch
+from huggingface_hub.errors import EntryNotFoundError
 
+from miles.backends.fsdp_utils import model_backend
 from miles.backends.fsdp_utils.model_backend import BaseModelBackend, DiffusersModelBackend, MilesModelBackend
 from miles.backends.fsdp_utils.models.diffusers import load_fsdp_parallel_plan
+
+# MiniMaxAI/MiniMax-H3-Image at 8ced6006: transformer/ holds the engine's native layout
+_H3_IMAGE_INDEX = {"_class_name": "MiniMaxH3ImagePipeline", "transformer": ["diffusers", "MiniMaxH3DiTModel"]}
+_H3_IMAGE_MODULAR_INDEX = {
+    "_class_name": "MiniMaxH3ImageModularPipeline",
+    "transformer": [
+        "diffusers",
+        "MiniMaxH3ImageTransformer2DModel",
+        {
+            "type_hint": ["diffusers", "MiniMaxH3ImageTransformer2DModel"],
+            "pretrained_model_name_or_path": "MiniMaxAI/MiniMax-H3-Image",
+            "subfolder": "transformer_diffusers",
+            "variant": None,
+            "revision": None,
+        },
+    ],
+}
+# MiniMaxAI/MiniMax-H3 at 42ed227e: both index files carry these entries
+_H3_INDEX = {
+    "_class_name": "MiniMaxH3ModularPipeline",
+    "transformer_ref": [
+        "diffusers",
+        "MiniMaxH3Transformer3DModel",
+        {
+            "type_hint": ["diffusers", "MiniMaxH3Transformer3DModel"],
+            "pretrained_model_name_or_path": "MiniMaxAI/MiniMax-H3",
+            "subfolder": "transformer_ref",
+            "variant": None,
+            "revision": None,
+        },
+    ],
+}
+
+
+def _write_checkpoint(path, index, modular_index=None):
+    (path / "model_index.json").write_text(json.dumps(index))
+    if modular_index is not None:
+        (path / "modular_model_index.json").write_text(json.dumps(modular_index))
+    return str(path)
 
 
 class _RecordingModel(torch.nn.Module):
@@ -83,3 +126,71 @@ class TestBackendHierarchy:
             "torch_dtype": torch.float32,
             "low_cpu_mem_usage": True,
         }
+
+    @pytest.mark.parametrize(
+        ("index", "modular_index", "component", "expected"),
+        [
+            (
+                _H3_IMAGE_INDEX,
+                _H3_IMAGE_MODULAR_INDEX,
+                "transformer",
+                (diffusers.MiniMaxH3ImageTransformer2DModel, "transformer_diffusers"),
+            ),
+            (_H3_INDEX, _H3_INDEX, "transformer_ref", (diffusers.MiniMaxH3Transformer3DModel, "transformer_ref")),
+        ],
+        ids=["h3-image", "h3"],
+    )
+    def test_modular_index_names_the_class_and_the_folder(self, tmp_path, index, modular_index, component, expected):
+        """MiniMax-H3-Image's root index names classes diffusers does not have, in a folder of another layout."""
+        checkpoint = _write_checkpoint(tmp_path, index, modular_index)
+
+        assert DiffusersModelBackend._resolve_component(checkpoint, component) == expected
+
+    def test_component_loads_from_the_checkpoint_not_the_repository_its_spec_names(self, tmp_path):
+        """A local mirror or a fine-tuned copy keeps the release's index; following it would train the release."""
+        spec = {"pretrained_model_name_or_path": "org/release", "subfolder": "transformer_diffusers"}
+        checkpoint = _write_checkpoint(
+            tmp_path, _H3_IMAGE_INDEX, {"transformer": [__name__, "_CheckpointComponent", spec]}
+        )
+
+        model = DiffusersModelBackend(None).load_component(
+            "transformer", checkpoint_path=checkpoint, master_dtype=torch.float32, materialize_weights=True
+        )
+
+        assert model.checkpoint_path == checkpoint
+        assert model.load_kwargs["subfolder"] == "transformer_diffusers"
+
+    def test_loading_spec_without_a_subfolder_is_rejected(self, tmp_path):
+        checkpoint = _write_checkpoint(
+            tmp_path, _H3_IMAGE_INDEX, {"transformer": [__name__, "_CheckpointComponent", {"subfolder": None}]}
+        )
+
+        with pytest.raises(ValueError, match="names no subfolder"):
+            DiffusersModelBackend._resolve_component(checkpoint, "transformer")
+
+    def test_hub_checkpoint_without_a_modular_index_reads_model_index(self, monkeypatch):
+        def raise_entry_not_found(repo_id, filename):
+            raise EntryNotFoundError(f"{repo_id} has no {filename}")
+
+        monkeypatch.setattr(model_backend, "hf_hub_download", raise_entry_not_found)
+        monkeypatch.setattr(
+            model_backend.DiffusionPipeline,
+            "load_config",
+            lambda checkpoint_path: {"transformer": [__name__, "_CheckpointComponent"]},
+        )
+
+        assert DiffusersModelBackend._resolve_component("org/classic", "transformer") == (
+            _CheckpointComponent,
+            "transformer",
+        )
+
+    def test_hub_failure_reading_the_modular_index_is_not_taken_for_its_absence(self, monkeypatch):
+        """An outage read as "no modular index" would resolve the root index's layout instead."""
+
+        def raise_connection_error(repo_id, filename):
+            raise ConnectionError("hub unreachable")
+
+        monkeypatch.setattr(model_backend, "hf_hub_download", raise_connection_error)
+
+        with pytest.raises(ConnectionError):
+            DiffusersModelBackend._resolve_component("org/release", "transformer")
