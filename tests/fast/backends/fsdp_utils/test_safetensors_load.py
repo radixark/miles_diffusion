@@ -3,8 +3,8 @@
     the index's files, or the single file, hold the state dict's names and shapes --> every rank on meta --> dcp.load
     a variant file beside them                                                    --> not read
     listed file missing / other name / other shape / a rank that disagrees        --> rank 0 loads and broadcasts
-    LoRA, saved or new --> every rank builds the adapter as rank 0 does, on a base without weights, and reads the base
-    LoRA whose initialization decomposes the base weights (PiSSA)                  --> rank 0 loads and broadcasts
+    LoRA, saved or new --> rank 0 builds the adapter on a base without weights and broadcasts it; the base is read
+    LoRA that reads the base weights (PiSSA, DoRA) or saves more than adapter tensors --> rank 0 loads and broadcasts
 
 FSDP2 is real on a one-rank CPU mesh and the broadcast is recorded; the CUDA worker splits the shards over two ranks.
 """
@@ -257,51 +257,56 @@ def test_a_buffer_two_modules_share_keeps_its_value_on_both(tmp_path, monkeypatc
         assert torch.equal(model.table, torch.arange(3.0)) and torch.equal(model.block.table, torch.arange(3.0))
 
 
-def test_one_rank_that_cannot_see_the_files_sends_every_rank_to_the_broadcast(tmp_path, monkeypatch):
+def test_one_rank_that_cannot_read_the_files_sends_every_rank_to_the_broadcast(tmp_path, monkeypatch):
     save_checkpoint(tmp_path)
     conditions = []
     _, materialize_requests, broadcasts = load(
         monkeypatch, tmp_path, holds=lambda condition: conditions.append(condition) or False
     )
-    assert conditions == [True, True] and materialize_requests == [True, True] and len(broadcasts) == 2
-
-
-def holds_for_the_files_only():
-    """Every rank sees the files; then one of them finds another state dict in its copy."""
-    answers = []
-    return lambda condition: answers.append(condition) or len(answers) % 2 == 1
-
-
-def test_one_rank_whose_files_hold_another_state_sends_every_rank_to_the_broadcast(tmp_path, monkeypatch):
-    save_checkpoint(tmp_path)
-    _, materialize_requests, broadcasts = load(monkeypatch, tmp_path, holds=holds_for_the_files_only())
-    assert materialize_requests == [False, True, False, True] and len(broadcasts) == 2
+    assert conditions == [True, True] and materialize_requests == [False, True, False, True] and len(broadcasts) == 2
 
 
 def test_a_model_without_an_adapter_skips_the_adapter_step(tmp_path, monkeypatch):
-    # The step gives every base parameter storage and runs a collective: neither is for a model with no adapter.
     save_checkpoint(tmp_path)
     monkeypatch.setattr(
-        model_loader.checkpoint, "rank0_rng_state", lambda: pytest.fail("no adapter is built on any rank")
-    )
-    monkeypatch.setattr(
-        model_loader, "replace_base_parameters", lambda model, data_of: pytest.fail("no parameter gets storage")
+        model_loader, "replace_base_parameters", lambda model, data_of: pytest.fail("no base gets a stand-in")
     )
     _, materialize_requests, broadcasts = load(monkeypatch, tmp_path)
     assert materialize_requests == [False, False] and broadcasts == []
 
 
-def test_the_base_takes_no_memory_while_the_adapter_is_built(monkeypatch):
-    # A full torch.empty is written through under --deterministic-mode: a copy of the model on every rank.
-    monkeypatch.setattr(model_loader.checkpoint, "rank0_rng_state", torch.get_rng_state)
-    monkeypatch.setattr(model_loader.dist, "get_rank", lambda: 0)
+def test_a_frozen_model_without_an_adapter_reads_per_rank_whatever_the_actor_s_lora_flags(tmp_path, monkeypatch):
+    # --use-lora and --lora-init-weights describe the trainable model's new adapter, not a frozen role's base.
+    save_checkpoint(tmp_path)
+    monkeypatch.setattr(
+        model_loader, "replace_base_parameters", lambda model, data_of: pytest.fail("no base gets a stand-in")
+    )
+    _, materialize_requests, broadcasts = load(monkeypatch, tmp_path, lora_init="pissa", trainable=False)
+    assert materialize_requests == [False, False] and broadcasts == []
+
+
+def test_the_base_takes_no_memory_while_the_adapter_is_built():
+    # A full torch.empty is written through under --deterministic-mode: a copy of the model in host memory.
     with model_loader.model_init_context(materialize_weights=False):
         model = TinyComponent()
-    with model_loader.base_storage_for_lora(model, enabled=True):
+    with model_loader.base_stand_in_for_lora(model, enabled=True):
         weight = model.block.proj.weight
         assert weight.device.type == "cpu" and weight.shape == (4, 3)
         assert weight.untyped_storage().nbytes() == weight.element_size()
     assert model.block.proj.weight.is_meta
+
+
+def test_a_base_built_with_weights_is_refused_before_the_adapter_step_would_hide_it(tmp_path, monkeypatch):
+    class RealBaseBackend(FileBackend):
+        def load_component(self, component, **kwargs):
+            model = super().load_component(component, **kwargs)
+            # Past the ambient init_empty_weights, which would put a parameter registered here on meta.
+            model.block.proj._parameters["weight"] = torch.nn.Parameter(torch.zeros(4, 3))
+            return model
+
+    save_checkpoint(tmp_path)
+    with pytest.raises(RuntimeError, match="did not honor meta initialization"):
+        load(monkeypatch, tmp_path, lora_init="gaussian", trainable=True, backend_cls=RealBaseBackend)
 
 
 class BiasedBlock(torch.nn.Module):
@@ -322,7 +327,7 @@ def save_adapter(path, config, *, init_lora_weights=None):
 
 
 @pytest.mark.parametrize(
-    "config, init_lora_weights, builds_on_every_rank",
+    "config, init_lora_weights, built_without_base_weights",
     [
         pytest.param(LoraConfig(r=2, target_modules=["proj"]), None, True, id="adapter tensors only"),
         pytest.param(LoraConfig(r=2, target_modules=["proj"], bias="all"), None, False, id="a bias of the base"),
@@ -335,49 +340,28 @@ def save_adapter(path, config, *, init_lora_weights=None):
         ),
     ],
 )
-def test_a_saved_adapter_is_built_on_every_rank_only_when_it_holds_lora_tensors_alone(
-    tmp_path, config, init_lora_weights, builds_on_every_rank
+def test_a_saved_adapter_is_built_without_base_weights_only_when_it_holds_lora_tensors_alone(
+    tmp_path, config, init_lora_weights, built_without_base_weights
 ):
     # PEFT loads a bias or a saved module into the base, and the read of the base checkpoint would replace it;
-    # DoRA's magnitude is the norm of the base weights, which no rank holds while it builds the adapter.
+    # DoRA's magnitude is the norm of the base weights, which rank 0 does not hold while it builds the adapter.
     adapter_path = save_adapter(tmp_path, config, init_lora_weights=init_lora_weights)
-    assert model_loader.lora_needs_no_base_weights(make_model_loader_args(), adapter_path) is builds_on_every_rank
+    assert (
+        model_loader.lora_needs_no_base_weights(make_model_loader_args(), adapter_path) is built_without_base_weights
+    )
 
 
-def test_a_base_built_with_weights_is_refused_before_the_adapter_step_would_hide_it(tmp_path, monkeypatch):
-    class RealBaseBackend(FileBackend):
-        def load_component(self, component, **kwargs):
-            model = super().load_component(component, **kwargs)
-            # Past the ambient init_empty_weights, which would put a parameter registered here on meta.
-            model.block.proj._parameters["weight"] = torch.nn.Parameter(torch.zeros(4, 3))
-            return model
-
-    save_checkpoint(tmp_path)
-    with pytest.raises(RuntimeError, match="did not honor meta initialization"):
-        load(monkeypatch, tmp_path, lora_init="gaussian", trainable=True, backend_cls=RealBaseBackend)
-
-
-def test_a_saved_adapter_in_another_file_format_is_not_built_on_every_rank(tmp_path):
+def test_a_saved_adapter_in_another_file_format_is_not_built_without_base_weights(tmp_path):
     adapter_path = save_adapter(tmp_path, LoraConfig(r=2, target_modules=["proj"]))
     (tmp_path / "adapter_model.safetensors").rename(tmp_path / "adapter_model.bin")
     assert model_loader.lora_needs_no_base_weights(make_model_loader_args(), adapter_path) is False
-
-
-def test_a_frozen_model_without_an_adapter_reads_per_rank_whatever_the_actor_s_lora_flags(tmp_path, monkeypatch):
-    # --use-lora and --lora-init-weights describe the trainable model's new adapter, not a frozen role's base.
-    save_checkpoint(tmp_path)
-    monkeypatch.setattr(
-        model_loader.checkpoint, "rank0_rng_state", lambda: pytest.fail("no adapter is built on any rank")
-    )
-    _, materialize_requests, broadcasts = load(monkeypatch, tmp_path, lora_init="pissa", trainable=False)
-    assert materialize_requests == [False, False] and broadcasts == []
 
 
 def lora_weights(state):
     return {name: tensor for name, tensor in state.items() if "lora_" in name}
 
 
-def test_saved_adapters_are_built_on_every_rank_and_the_base_is_read_from_the_files(tmp_path, monkeypatch):
+def test_saved_adapters_are_built_by_rank_0_alone_and_the_base_is_read_from_the_files(tmp_path, monkeypatch):
     save_checkpoint(tmp_path)
     adapter_paths = save_component_lora_adapters(tmp_path / "adapters")
     models, materialize_requests, broadcasts = load(monkeypatch, tmp_path, lora_adapter_paths=adapter_paths)
@@ -403,7 +387,7 @@ def test_a_new_adapter_gets_the_values_and_leaves_the_generator_as_rank_0_does_w
 
     torch.manual_seed(0)
     _, materialize_requests, with_weights = load(
-        monkeypatch, tmp_path, lora_init=lora_init, trainable=True, holds=holds_for_the_files_only()
+        monkeypatch, tmp_path, lora_init=lora_init, trainable=True, holds=lambda condition: False
     )
     assert materialize_requests == [False, True, False, True] and torch.equal(torch.get_rng_state(), generator)
     for (component, model), state in zip(models.items(), with_weights, strict=True):
@@ -430,7 +414,7 @@ def test_an_adapter_initialized_from_the_base_weights_is_built_by_rank_0_and_bro
         holds=lambda condition: conditions.append(condition) or condition,
         backend_cls=NeverAsked,
     )
-    # Every rank still says that it reads no files, so no rank waits in a collective the others skip.
+    # Every rank still answers that it reads no files, so no rank waits in a collective the others skip.
     assert conditions == [False, False] and materialize_requests == [True, True] and len(broadcasts) == 2
     assert all(len(lora_weights(state)) == 2 for state in broadcasts)
 

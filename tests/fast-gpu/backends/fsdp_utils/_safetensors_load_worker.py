@@ -4,7 +4,7 @@
                                   a buffer no file holds --> rank 0's value on both ranks
     another name in the files --> rank 0 builds again with weights --> the broadcast value on both ranks
     another name on rank 1 only --> the same: the ranks agree before either reads
-    LoRA, saved or new        --> the adapter shards and the generator the broadcast leaves, on both ranks
+    LoRA, saved or new        --> rank 0's adapter on both ranks: the shards and the generator the broadcast leaves
 """
 
 import os
@@ -93,7 +93,7 @@ def check_lora(mesh, root, rank, cpu_offload, **kwargs):
     # rank 0 builds with weights, then the real broadcast
     torch.manual_seed(0)
     models, materialize_requests = load(mesh, root / "renamed", cpu_offload, **kwargs)
-    assert materialize_requests == ([False, True, False, True] if rank == 0 else [False, False, False, False])
+    assert materialize_requests == ([False, True, False, True] if rank == 0 else [False, False])
     broadcast = adapter_shards(models)
     assert adapters.keys() == broadcast.keys() and all(torch.equal(adapters[key], broadcast[key]) for key in adapters)
     assert torch.equal(torch.get_rng_state(), generator)

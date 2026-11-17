@@ -32,6 +32,7 @@ def load_fsdp_models(
     models = {}
     for component_index, component in enumerate(args.update_weight_target_modules):
         lora_adapter_path = None if lora_adapter_paths is None else lora_adapter_paths[component_index]
+        has_lora = lora_adapter_path is not None or (trainable and args.use_lora)
         build = partial(
             build_component,
             args,
@@ -40,29 +41,25 @@ def load_fsdp_models(
             component,
             checkpoint_path=checkpoint_path,
             lora_adapter_path=lora_adapter_path,
+            has_lora=has_lora,
             trainable=trainable,
         )
-        # Every rank reads its own shards from the safetensors files; else rank 0 loads and broadcasts.
-        has_lora = lora_adapter_path is not None or (trainable and args.use_lora)
-        read_per_rank = not has_lora or lora_needs_no_base_weights(args, lora_adapter_path)
+        # Every rank reads its own shards of the base from the safetensors files; else rank 0 loads and broadcasts.
         safetensors_files = None
-        if read_per_rank:
+        if not has_lora or lora_needs_no_base_weights(args, lora_adapter_path):
             safetensors_files = model_backend.safetensors_files(component, checkpoint_path=checkpoint_path)
-        # Each rank reads its own adapter config and files, and the collectives below depend on the answer.
-        if not checkpoint.holds_on_every_rank(safetensors_files is not None):
-            safetensors_files = None
         materialize_weights = safetensors_files is None and dist.get_rank() == 0
         rng_state = torch.get_rng_state()
-        lora_on_every_rank = has_lora and safetensors_files is not None
-        model = build(materialize_weights=materialize_weights, lora_on_every_rank=lora_on_every_rank)
-        if safetensors_files is not None and not checkpoint.holds_on_every_rank(
-            checkpoint.safetensors_hold_state(model, safetensors_files)
+        model = build(materialize_weights=materialize_weights)
+        # Every rank answers, with files or without: each one read its own adapter config to get here.
+        if not checkpoint.holds_on_every_rank(
+            safetensors_files is not None and checkpoint.safetensors_hold_state(model, safetensors_files)
         ):
-            if has_lora or dist.get_rank() == 0:
+            if safetensors_files is not None and dist.get_rank() == 0:
                 # A constructor may draw random numbers: the second build draws what the first one did.
                 torch.set_rng_state(rng_state)
-                materialize_weights = dist.get_rank() == 0
-                model = build(materialize_weights=materialize_weights, lora_on_every_rank=False)
+                materialize_weights = True
+                model = build(materialize_weights=True)
             safetensors_files = None
         if dist.get_rank() == 0:
             source = "rank 0 loads and broadcasts"
@@ -73,6 +70,8 @@ def load_fsdp_models(
             logger.info(f"FSDP: {component} weights of {checkpoint_path}: {source}")
         checkpoint.sync_model_dtypes(model)
         full_state = model.state_dict() if materialize_weights else {}
+        # With the base read from the files, the adapter rank 0 built is what is left to broadcast.
+        adapter_state = checkpoint.adapter_state(model) if dist.get_rank() == 0 else {}
         model = apply_fsdp2(
             model,
             model_backend.fsdp_parallel_plan(model),
@@ -81,10 +80,10 @@ def load_fsdp_models(
             args=args,
         )
         if safetensors_files is not None:
-            checkpoint.load_safetensors_to_fsdp(model, safetensors_files, cpu_offload=cpu_offload)
+            checkpoint.load_safetensors_to_fsdp(model, safetensors_files, adapter_state, cpu_offload=cpu_offload)
         else:
             checkpoint.broadcast_full_state_to_fsdp(model, full_state, cpu_offload=cpu_offload)
-        del full_state
+        del full_state, adapter_state
         train_pipeline_config.postprocess_model_after_materialize(model)
         if parallel_state.get_optional_mesh("sp") is not None:
             apply_sequence_parallel(
@@ -111,7 +110,7 @@ def peft_init_lora_weights(args: Namespace) -> bool | str:
 
 
 def lora_needs_no_base_weights(args: Namespace, lora_adapter_path: str | None) -> bool:
-    """Whether every rank can build the adapter on a base that has no weights.
+    """Whether rank 0 can build the adapter on a base that has no weights, the base being read from the files.
 
     PEFT must not read the base weights' values while it builds the adapter: PiSSA, OLoRA, LoftQ... decompose
     them, and DoRA takes their norm. A saved adapter must also be a LoRA whose file holds adapter tensors only:
@@ -143,14 +142,10 @@ def build_component(
     *,
     checkpoint_path: str,
     lora_adapter_path: str | None,
+    has_lora: bool,
     trainable: bool,
     materialize_weights: bool,
-    lora_on_every_rank: bool,
 ) -> torch.nn.Module:
-    """``lora_on_every_rank``: every rank builds the adapter's values as rank 0 does, on a base without weights.
-
-    It is for a model that has an adapter, and for all ranks at once: the build then runs a collective.
-    """
     with model_init_context(materialize_weights=materialize_weights):
         model = model_backend.load_component(
             component,
@@ -158,56 +153,45 @@ def build_component(
             master_dtype=parse_dtype_from_str(args.fsdp_master_dtype),
             materialize_weights=materialize_weights,
         )
-    # Before the adapter step, which leaves every base parameter on meta whatever the backend built.
+    # Before the adapter step, which leaves rank 0's base on meta whatever the backend built.
     if not materialize_weights and any(not parameter.is_meta for parameter in model.parameters()):
         raise RuntimeError(f"{component} did not honor meta initialization")
     if args.fsdp_attention_backend is not None:
         model_backend.set_attention_backend(model, args.fsdp_attention_backend)
     if trainable and args.gradient_checkpointing:
         model_backend.enable_gradient_checkpointing(model)
-    materialize_lora = lora_on_every_rank or dist.get_rank() == 0
-    with base_storage_for_lora(model, enabled=lora_on_every_rank):
-        if lora_adapter_path is not None:
-            model = load_lora_adapter(model, lora_adapter_path, trainable=trainable, materialize=materialize_lora)
-        elif trainable and args.use_lora:
-            model = apply_lora(model, args, train_pipeline_config, materialize=materialize_lora)
+    if has_lora:
+        # Rank 0 builds the adapter's values, as before, also when its base has no weights.
+        with base_stand_in_for_lora(model, enabled=dist.get_rank() == 0 and not materialize_weights):
+            if lora_adapter_path is not None:
+                model = load_lora_adapter(model, lora_adapter_path, trainable=trainable)
+            else:
+                model = apply_lora(model, args, train_pipeline_config)
     model.train(trainable)
     if not trainable:
         model.requires_grad_(False)
-    if not materialize_lora and any(
-        not parameter.is_meta for name, parameter in model.named_parameters() if checkpoint.is_lora_param_name(name)
-    ):
+    if dist.get_rank() != 0 and any(not parameter.is_meta for parameter in model.parameters()):
         raise RuntimeError(f"the adapter of {component} did not honor meta initialization")
     return model
 
 
 @contextmanager
-def base_storage_for_lora(model: torch.nn.Module, *, enabled: bool):
-    """Give a meta base a CPU stand-in while PEFT builds an adapter on it, from rank 0's generator state.
+def base_stand_in_for_lora(model: torch.nn.Module, *, enabled: bool):
+    """Give a meta base a CPU stand-in while PEFT builds an adapter on it.
 
     PEFT moves a new adapter to its base layer's device, and meta would drop the adapter's values. For the
     adapters ``lora_needs_no_base_weights`` lets through it reads the base layer's device and dtype only, so each
     base parameter stands in as one uninitialized element expanded to its shape: a full ``torch.empty`` is written
-    through under ``--deterministic-mode`` (the NaN fill), a copy of the model on every rank.
-
-    PEFT's initialization draws, and only rank 0 has run it so far: the other ranks draw the same values from
-    rank 0's generator state and keep their own. An adapter on an ``nn.Embedding`` is the one case where they do
-    not end as before: PEFT draws for it even on meta, in the build these ranks no longer run.
-
-    Each rank builds from its own copy of the adapter's files, as it reads its own copy of the base's.
+    through under ``--deterministic-mode`` (the NaN fill), a copy of the model in host memory.
     """
     if not enabled:
         yield
         return
-    rng_state = torch.get_rng_state()
-    torch.set_rng_state(checkpoint.rank0_rng_state())
     replace_base_parameters(model, lambda parameter: torch.empty((), dtype=parameter.dtype).expand(parameter.shape))
     try:
         yield
     finally:
         replace_base_parameters(model, lambda parameter: parameter.data.to("meta"))
-        if dist.get_rank() != 0:
-            torch.set_rng_state(rng_state)
 
 
 def replace_base_parameters(model: torch.nn.Module, data_of) -> None:
@@ -245,22 +229,21 @@ def model_init_context(*, materialize_weights: bool):
         yield
 
 
-def load_lora_adapter(model, adapter_path: str, *, trainable: bool, materialize: bool):
+def load_lora_adapter(model, adapter_path: str, *, trainable: bool):
     from peft import PeftConfig, PeftModel, get_peft_model
 
-    if materialize:
+    if dist.get_rank() == 0:
         return PeftModel.from_pretrained(model, adapter_path, is_trainable=trainable, autocast_adapter_dtype=False)
     config = PeftConfig.from_pretrained(adapter_path)
     config.inference_mode = not trainable
     return get_peft_model(model, config, low_cpu_mem_usage=True, autocast_adapter_dtype=False)
 
 
-def apply_lora(
-    model: torch.nn.Module, args: Namespace, train_pipeline_config, *, materialize: bool
-) -> torch.nn.Module:
-    """Apply PEFT LoRA; without ``materialize`` the adapters stay uninitialized on meta."""
+def apply_lora(model: torch.nn.Module, args: Namespace, train_pipeline_config) -> torch.nn.Module:
+    """Apply PEFT LoRA, leaving non-rank0 adapters uninitialized on meta."""
     from peft import LoraConfig, get_peft_model
 
+    on_meta = dist.get_rank() != 0
     # Per-model fallback when --lora-target-modules is unset (runtime inference: depends on loaded pipeline).
     targets = args.lora_target_modules or train_pipeline_config.lora_target_modules
     model = get_peft_model(
@@ -269,9 +252,9 @@ def apply_lora(
             r=args.lora_rank,
             lora_alpha=args.lora_alpha,
             target_modules=targets,
-            init_lora_weights=peft_init_lora_weights(args) if materialize else False,
+            init_lora_weights=False if on_meta else peft_init_lora_weights(args),
         ),
-        low_cpu_mem_usage=not materialize,
+        low_cpu_mem_usage=on_meta,
     )
     if dist.get_rank() == 0:
         model.print_trainable_parameters()

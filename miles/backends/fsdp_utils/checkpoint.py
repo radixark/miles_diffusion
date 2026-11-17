@@ -74,6 +74,11 @@ def base_state(model: torch.nn.Module) -> dict[str, torch.Tensor]:
     return {to_hf_name(name): tensor for name, tensor in model.state_dict().items() if not is_lora_param_name(name)}
 
 
+def adapter_state(model: torch.nn.Module) -> dict[str, torch.Tensor]:
+    """The LoRA adapters' part of the state dict; empty for a model without one."""
+    return {name: tensor for name, tensor in model.state_dict().items() if is_lora_param_name(name)}
+
+
 def safetensors_hold_state(model: torch.nn.Module, files: list[Path]) -> bool:
     """Whether the files hold the model's state dict without its LoRA adapters: the same names and shapes.
 
@@ -97,37 +102,37 @@ def holds_on_every_rank(condition: bool) -> bool:
     return all(conditions)
 
 
-def rank0_rng_state() -> torch.Tensor:
-    """The state of rank 0's default generator, on every rank."""
-    states = [torch.get_rng_state() if dist.get_rank() == 0 else None]
-    dist.broadcast_object_list(states, src=0)
-    return states[0]
-
-
 @torch.no_grad()
-def load_safetensors_to_fsdp(model: torch.nn.Module, files: list[Path], *, cpu_offload: bool) -> None:
+def load_safetensors_to_fsdp(
+    model: torch.nn.Module, files: list[Path], rank0_adapter_state: dict[str, torch.Tensor], *, cpu_offload: bool
+) -> None:
     """Materialize FSDP2 shards by reading each rank's own slice of every base parameter from the files.
 
-    A buffer outside the state dict is in no file: every rank ends with the value rank 0's constructor computed.
+    A LoRA adapter is in none of them: every rank takes its shards of the one rank 0 built
+    (``rank0_adapter_state``, empty on the other ranks). A buffer outside the state dict is in no file either:
+    every rank ends with the value rank 0's constructor computed.
     """
+    from torch.distributed.checkpoint.state_dict import set_model_state_dict
+
     device = torch.cuda.current_device()
-    # Buffers and LoRA adapters were computed for real on every rank; to_empty would wipe them. A buffer still on
-    # meta is in the state dict, and the read fills it. to_empty splits a tensor two modules share, so each name
-    # keeps its own entry.
+    # Buffers were computed for real on every rank; to_empty would wipe them. One still on meta is in the state
+    # dict, and the read fills it. to_empty splits a tensor two modules share, so each name keeps its own entry.
     buffers = dict(model.named_buffers(remove_duplicate=False))
-    adapters = {name: p.to_local().clone() for name, p in model.named_parameters() if is_lora_param_name(name)}
     model.to_empty(device="cpu" if cpu_offload else device)
     for name, buffer in model.named_buffers(remove_duplicate=False):
         if not buffers[name].is_meta:
             buffer.copy_(buffers[name])
-    for name, parameter in model.named_parameters():
-        if name in adapters:
-            parameter.to_local().copy_(adapters[name])
     # The reader takes every safetensors file of one folder, and the files' own folder may hold others (a variant).
     with tempfile.TemporaryDirectory() as folder:
         for file in files:
             os.symlink(file.resolve(), Path(folder) / file.name)
         dcp.load(base_state(model), storage_reader=dcp.HuggingFaceStorageReader(folder, thread_count=4))
+    if adapter_state(model):
+        # Before the buffers move below: the broadcast wants every tensor of the model on one device.
+        options = StateDictOptions(
+            full_state_dict=True, broadcast_from_rank0=True, strict=False, cpu_offload=cpu_offload
+        )
+        set_model_state_dict(model, rank0_adapter_state, options=options)
     if cpu_offload:
         # CPUOffloadPolicy manages params only; buffers must live on GPU for forward.
         for buffer in model.buffers():

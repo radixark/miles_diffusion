@@ -2,7 +2,7 @@
 
     files hold the state dict --> rows [0:2] on rank 0, rows [2:4] on rank 1, GPU-resident and CPU-offloaded
     another name in the files --> the value rank 0 loaded, on both ranks
-    LoRA, saved or new        --> the adapter shards and the generator the broadcast leaves, on both ranks
+    LoRA, saved or new        --> rank 0's adapter on both ranks: the shards and the generator the broadcast leaves
 """
 
 from tests.ci.ci_register import register_cuda_ci
