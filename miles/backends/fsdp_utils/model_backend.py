@@ -93,6 +93,8 @@ class BaseModelBackend(abc.ABC):
         """Local safetensors files every rank can read its shards of the component from; None: rank 0 loads it.
 
         They hold what ``load_component`` loads: a backend that loads other weights names its own files or none.
+        A backend that names files gives every tensor its final dtype when it builds without weights: the file
+        values are cast into those dtypes, and no rank loads a model the others could copy them from.
         """
         return None
 

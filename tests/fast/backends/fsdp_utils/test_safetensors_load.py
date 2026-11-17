@@ -221,11 +221,17 @@ def backend_of(component_cls):
 
 
 def save_row_sums(path):
+    """The weight in one file and the buffer in another: the state dict is the union of what the index lists."""
     for component in make_model_loader_args().update_weight_target_modules:
-        file = path / component / "diffusion_pytorch_model.safetensors"
-        folder_state = {"block.proj.weight": saved_weight(component), "row_sums": saved_weight(component).sum(dim=1)}
-        file.parent.mkdir(parents=True)
-        save_file(folder_state, file)
+        folder = path / component
+        folder.mkdir(parents=True)
+        files = {
+            "block.proj.weight": "diffusion_pytorch_model-00001-of-00002.safetensors",
+            "row_sums": "diffusion_pytorch_model-00002-of-00002.safetensors",
+        }
+        save_file({"block.proj.weight": saved_weight(component)}, folder / files["block.proj.weight"])
+        save_file({"row_sums": saved_weight(component).sum(dim=1)}, folder / files["row_sums"])
+        (folder / "diffusion_pytorch_model.safetensors.index.json").write_text(json.dumps({"weight_map": files}))
 
 
 def test_a_state_dict_buffer_the_constructor_left_on_meta_is_read_from_the_files(tmp_path, monkeypatch):
