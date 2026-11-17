@@ -15,6 +15,8 @@ import torch.distributed.checkpoint as dcp
 from torch.distributed.checkpoint.state_dict import StateDictOptions, get_state_dict, set_state_dict
 from torch.distributed.checkpoint.stateful import Stateful
 
+from .hf_weight_iterator import to_hf_name
+
 logger = logging.getLogger(__name__)
 
 
@@ -69,11 +71,7 @@ def broadcast_full_state_to_fsdp(
 
 def base_state(model: torch.nn.Module) -> dict[str, torch.Tensor]:
     """The state dict without LoRA adapters, under the names the base checkpoint gives its tensors."""
-    return {
-        name.removeprefix("base_model.model.").replace(".base_layer.", "."): tensor
-        for name, tensor in model.state_dict().items()
-        if not is_lora_param_name(name)
-    }
+    return {to_hf_name(name): tensor for name, tensor in model.state_dict().items() if not is_lora_param_name(name)}
 
 
 def safetensors_hold_state(model: torch.nn.Module, files: list[Path]) -> bool:
