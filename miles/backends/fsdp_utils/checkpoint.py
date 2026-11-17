@@ -68,14 +68,20 @@ def broadcast_full_state_to_fsdp(
 
 
 def safetensors_hold_state(model: torch.nn.Module, files: list[Path]) -> bool:
-    """Whether the files hold the model's state dict: the same names, each with the same shape."""
+    """Whether the files hold the model's state dict: the same names, each with the same shape.
+
+    A buffer outside the state dict is in no file, so it must hold the value its constructor computed.
+    """
     from safetensors import safe_open
 
+    state = model.state_dict()
+    if any(buffer.is_meta for name, buffer in model.named_buffers() if name not in state):
+        return False
     saved = {}
     for file in files:
         with safe_open(file, framework="pt") as tensors:
             saved.update({name: tuple(tensors.get_slice(name).get_shape()) for name in tensors.keys()})
-    return saved == {name: tuple(tensor.shape) for name, tensor in model.state_dict().items()}
+    return saved == {name: tuple(tensor.shape) for name, tensor in state.items()}
 
 
 def all_ranks_agree(flag: bool) -> bool:
@@ -88,11 +94,13 @@ def all_ranks_agree(flag: bool) -> bool:
 def load_safetensors_to_fsdp(model: torch.nn.Module, files: list[Path], *, cpu_offload: bool) -> None:
     """Materialize FSDP2 shards by reading each rank's own slice of every parameter from the files."""
     device = torch.cuda.current_device()
-    # Buffers were computed for real on every rank; to_empty would wipe them.
-    buffers = dict(model.named_buffers())
+    # Buffers were computed for real on every rank; to_empty would wipe them. One still on meta is in the state
+    # dict, and the read fills it. to_empty splits a tensor two modules share, so each name keeps its own entry.
+    buffers = dict(model.named_buffers(remove_duplicate=False))
     model.to_empty(device="cpu" if cpu_offload else device)
-    for name, buffer in model.named_buffers():
-        buffer.copy_(buffers[name])
+    for name, buffer in model.named_buffers(remove_duplicate=False):
+        if not buffers[name].is_meta:
+            buffer.copy_(buffers[name])
     # The reader takes every safetensors file of one folder, and the files' own folder may hold others (a variant).
     with tempfile.TemporaryDirectory() as folder:
         for file in files:

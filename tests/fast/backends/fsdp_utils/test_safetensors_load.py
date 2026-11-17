@@ -21,6 +21,7 @@ import torch.distributed as dist
 from safetensors.torch import save_file
 from tests.fast.backends.fsdp_utils.test_reference_models import (
     TinyBackend,
+    TinyComponent,
     TinyPipelineConfig,
     make_model_loader_args,
 )
@@ -68,7 +69,7 @@ def save_checkpoint(path, *, name="block.proj.weight", shape=(4, 3), sharded=Tru
         )
 
 
-def load(monkeypatch, path, *, agree=lambda flag: flag, **kwargs):
+def load(monkeypatch, path, *, agree=lambda flag: flag, backend_cls=None, **kwargs):
     broadcasts = []
     monkeypatch.setattr(model_loader.checkpoint, "all_ranks_agree", agree)
     monkeypatch.setattr(model_loader.checkpoint, "sync_model_dtypes", lambda model: None)
@@ -80,7 +81,7 @@ def load(monkeypatch, path, *, agree=lambda flag: flag, **kwargs):
     try:
         mesh = init_device_mesh("cpu", (1,))
         parallel = SimpleNamespace(get_mesh=lambda name: mesh, get_optional_mesh=lambda name: None)
-        args, backend = make_model_loader_args(), FileBackend()
+        args, backend = make_model_loader_args(), (backend_cls or FileBackend)()
         args.use_lora = False
         models = model_loader.load_fsdp_models(
             args, backend, TinyPipelineConfig(), parallel, checkpoint_path=str(path), **kwargs
@@ -170,6 +171,80 @@ def test_rank_0_built_twice_leaves_the_generator_where_one_build_does(tmp_path, 
         states[path] = (materialize_requests, torch.get_rng_state())
     assert states["renamed"][0] == [False, True, False, True] and states["no files"][0] == [True, True]
     assert torch.equal(states["renamed"][1], states["no files"][1])
+
+
+class DerivedBufferComponent(TinyComponent):
+    """A buffer the constructor derives from a parameter: on meta when the component is built without weights."""
+
+    persistent = True
+
+    def __init__(self):
+        super().__init__()
+        self.register_buffer("row_sums", self.block.proj.weight.sum(dim=1), persistent=self.persistent)
+
+
+class TransientDerivedBufferComponent(DerivedBufferComponent):
+    persistent = False
+
+
+class SharedBufferComponent(TinyComponent):
+    """One tensor registered as a buffer of two modules."""
+
+    def __init__(self):
+        super().__init__()
+        table = torch.arange(3.0)
+        self.block.register_buffer("table", table, persistent=False)
+        self.register_buffer("table", table, persistent=False)
+
+
+def backend_of(component_cls):
+    class Backend(FileBackend):
+        def load_component(self, component, *, checkpoint_path, master_dtype, materialize_weights):
+            self.materialize_requests.append(materialize_weights)
+            model = component_cls().to(dtype=master_dtype)
+            if materialize_weights:
+                with torch.no_grad():
+                    model.block.proj.weight.fill_(BROADCAST_VALUE)
+            return model
+
+    return Backend
+
+
+def save_row_sums(path):
+    for component in make_model_loader_args().update_weight_target_modules:
+        file = path / component / "diffusion_pytorch_model.safetensors"
+        folder_state = {"block.proj.weight": saved_weight(component), "row_sums": saved_weight(component).sum(dim=1)}
+        file.parent.mkdir(parents=True)
+        save_file(folder_state, file)
+
+
+def test_a_state_dict_buffer_the_constructor_left_on_meta_is_read_from_the_files(tmp_path, monkeypatch):
+    save_row_sums(tmp_path)
+    models, materialize_requests, broadcasts = load(
+        monkeypatch, tmp_path, backend_cls=backend_of(DerivedBufferComponent)
+    )
+    assert materialize_requests == [False, False] and broadcasts == []
+    for component, model in models.items():
+        assert torch.equal(model.row_sums, saved_weight(component).sum(dim=1).float())
+        assert model.forward_count.item() == 0
+
+
+def test_a_buffer_on_meta_that_no_file_holds_sends_every_rank_to_the_broadcast(tmp_path, monkeypatch):
+    save_checkpoint(tmp_path)
+    _, materialize_requests, broadcasts = load(
+        monkeypatch, tmp_path, backend_cls=backend_of(TransientDerivedBufferComponent)
+    )
+    assert materialize_requests == [False, True, False, True] and len(broadcasts) == 2
+
+
+def test_a_buffer_two_modules_share_keeps_its_value_on_both(tmp_path, monkeypatch):
+    save_checkpoint(tmp_path)
+    models, materialize_requests, broadcasts = load(
+        monkeypatch, tmp_path, backend_cls=backend_of(SharedBufferComponent)
+    )
+    assert materialize_requests == [False, False] and broadcasts == []
+    for model in models.values():
+        assert torch.equal(model.table, torch.arange(3.0)) and torch.equal(model.block.table, torch.arange(3.0))
 
 
 def test_one_rank_that_cannot_read_the_files_sends_every_rank_to_the_broadcast(tmp_path, monkeypatch):
