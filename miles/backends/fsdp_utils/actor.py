@@ -170,6 +170,8 @@ class FSDPTrainRayActor(TrainRayActor):
 
         self.sde_backend = load_function(args.sde_step_backend_path)()
         self.loss_hooks = get_loss_hooks(args, role)
+        # a drawing strategy means every train pair must carry the resolution it was rendered at
+        self.resolution_labels_required = args.diffusion_resolution_strategy_path is not None
 
         if args.optimizer == "adam":
             self.optimizer = torch.optim.AdamW(
@@ -525,9 +527,7 @@ class FSDPTrainRayActor(TrainRayActor):
     ) -> torch.Tensor | None:
         """Run one prepared diffusion micro-batch: number ``microbatch_id`` of the rollout, in optimizer step
         ``optim_step_idx``."""
-        check_single_resolution(
-            batch, labels_required=self.args.diffusion_resolution_strategy_path is not None
-        )
+        check_single_resolution(batch, labels_required=self.resolution_labels_required)
         prepared = self.loss_hooks.prepare(
             ctx, batch, microbatch_id=microbatch_id, optim_step_idx=optim_step_idx, pad_to_len=pad_to_len
         )
