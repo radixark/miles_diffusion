@@ -38,6 +38,36 @@ from .sequence_parallel.plan import MILES_SP_PLAN_ATTR, SequenceParallelPlan
 logger = logging.getLogger(__name__)
 
 
+def diffusers_weight_files(checkpoint_path: str, component: str) -> list[Path] | None:
+    """The safetensors files ``from_pretrained`` reads a component from with no variant, or None for other weights.
+
+    The ones the component's index lists, else its single file; a Hub id is resolved to its snapshot first.
+    """
+    stem = SAFETENSORS_WEIGHTS_NAME.removesuffix(".safetensors")
+    is_local = os.path.isdir(checkpoint_path)
+    if not is_local:
+        from huggingface_hub import snapshot_download
+        from huggingface_hub.errors import HFValidationError
+
+        patterns = [f"{component}/{SAFETENSORS_WEIGHTS_NAME}*", f"{component}/{stem}-*.safetensors"]
+        try:
+            checkpoint_path = snapshot_download(checkpoint_path, allow_patterns=patterns)
+        except HFValidationError:
+            # Neither a folder nor a repo id: load_component says so.
+            return None
+    folder = Path(checkpoint_path) / component
+    index = folder / SAFE_WEIGHTS_INDEX_NAME
+    if index.is_file():
+        names = set(json.loads(index.read_text())["weight_map"].values())
+    elif is_local and (Path(checkpoint_path) / SAFETENSORS_WEIGHTS_NAME).is_file():
+        # In a local folder from_pretrained takes a single weights file at the root before the component's.
+        return None
+    else:
+        names = {SAFETENSORS_WEIGHTS_NAME}
+    files = [folder / name for name in sorted(names)]
+    return files if all(file.is_file() for file in files) else None
+
+
 class BaseModelBackend(abc.ABC):
     """Contract consumed by the FSDP actor for model-family integration."""
 
@@ -238,30 +268,10 @@ class DiffusersModelBackend(BaseModelBackend):
                 tensor.data = tensor.data.to(torch.float32 if pinned else master_dtype)
 
     def safetensors_files(self, component: str, *, checkpoint_path: str) -> list[Path] | None:
-        """The files ``from_pretrained`` reads with no variant: the ones the index lists, else the single file."""
-        stem = SAFETENSORS_WEIGHTS_NAME.removesuffix(".safetensors")
-        is_local = os.path.isdir(checkpoint_path)
-        if not is_local:
-            from huggingface_hub import snapshot_download
-            from huggingface_hub.errors import HFValidationError
-
-            patterns = [f"{component}/{SAFETENSORS_WEIGHTS_NAME}*", f"{component}/{stem}-*.safetensors"]
-            try:
-                checkpoint_path = snapshot_download(checkpoint_path, allow_patterns=patterns)
-            except HFValidationError:
-                # Neither a folder nor a repo id: load_component says so.
-                return None
-        folder = Path(checkpoint_path) / component
-        index = folder / SAFE_WEIGHTS_INDEX_NAME
-        if index.is_file():
-            names = set(json.loads(index.read_text())["weight_map"].values())
-        elif is_local and (Path(checkpoint_path) / SAFETENSORS_WEIGHTS_NAME).is_file():
-            # In a local folder from_pretrained takes a single weights file at the root before the component's.
+        # The files hold what this class's load_component loads; a subclass that loads other weights names its own.
+        if type(self).load_component is not DiffusersModelBackend.load_component:
             return None
-        else:
-            names = {SAFETENSORS_WEIGHTS_NAME}
-        files = [folder / name for name in sorted(names)]
-        return files if all(file.is_file() for file in files) else None
+        return diffusers_weight_files(checkpoint_path, component)
 
     @classmethod
     def _resolve_component_class(cls, checkpoint_path: str, component: str):

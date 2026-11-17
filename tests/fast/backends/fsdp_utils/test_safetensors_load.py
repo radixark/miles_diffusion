@@ -28,13 +28,14 @@ from tests.fast.backends.fsdp_utils.test_reference_models import (
 from torch.distributed.device_mesh import init_device_mesh
 
 from miles.backends.fsdp_utils import model_loader
-from miles.backends.fsdp_utils.model_backend import DiffusersModelBackend
+from miles.backends.fsdp_utils.model_backend import diffusers_weight_files
 
 BROADCAST_VALUE = 0.75
 
 
 class FileBackend(TinyBackend):
-    safetensors_files = DiffusersModelBackend.safetensors_files
+    def safetensors_files(self, component, *, checkpoint_path):
+        return diffusers_weight_files(checkpoint_path, component)
 
     def __init__(self):
         super().__init__()

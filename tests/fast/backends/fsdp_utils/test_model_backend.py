@@ -241,3 +241,17 @@ class TestBackendHierarchy:
         # load_component then reports the path, as it does without this hook.
         backend = DiffusersModelBackend(None)
         assert backend.safetensors_files("transformer", checkpoint_path=str(tmp_path / "missing")) is None
+
+    def test_a_backend_that_loads_other_weights_names_no_files(self, tmp_path):
+        # Rank 0's load_component result was broadcast; the files must not replace what a subclass loads.
+        class OtherWeightsBackend(DiffusersModelBackend):
+            def load_component(self, component, **kwargs):
+                raise NotImplementedError
+
+        (tmp_path / "transformer").mkdir()
+        (tmp_path / "transformer" / "diffusion_pytorch_model.safetensors").touch()
+
+        assert DiffusersModelBackend(None).safetensors_files("transformer", checkpoint_path=str(tmp_path)) == [
+            tmp_path / "transformer" / "diffusion_pytorch_model.safetensors"
+        ]
+        assert OtherWeightsBackend(None).safetensors_files("transformer", checkpoint_path=str(tmp_path)) is None
