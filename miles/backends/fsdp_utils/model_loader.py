@@ -42,23 +42,27 @@ def load_fsdp_models(
         )
         # Without LoRA every rank reads its own shards from the safetensors files; else rank 0 loads and broadcasts.
         use_lora = lora_adapter_paths is not None or (trainable and args.use_lora)
-        safetensors = None if use_lora else model_backend.safetensors_files(component, checkpoint_path=checkpoint_path)
-        materialize_weights = safetensors is None and dist.get_rank() == 0
+        safetensors_files = (
+            None if use_lora else model_backend.safetensors_files(component, checkpoint_path=checkpoint_path)
+        )
+        materialize_weights = safetensors_files is None and dist.get_rank() == 0
         rng_state = torch.get_rng_state()
         model = build(materialize_weights=materialize_weights)
-        if not use_lora and not checkpoint.all_ranks_agree(
-            safetensors is not None and checkpoint.safetensors_hold_state(model, safetensors)
+        if not use_lora and not checkpoint.holds_on_every_rank(
+            safetensors_files is not None and checkpoint.safetensors_hold_state(model, safetensors_files)
         ):
-            if safetensors is not None and dist.get_rank() == 0:
+            if safetensors_files is not None and dist.get_rank() == 0:
                 # A constructor may draw random numbers: the second build draws what the first one did.
                 torch.set_rng_state(rng_state)
                 materialize_weights = True
                 model = build(materialize_weights=True)
-            safetensors = None
+            safetensors_files = None
         if dist.get_rank() == 0:
             source = "rank 0 loads and broadcasts"
-            if safetensors is not None:
-                source = f"every rank reads {len(safetensors)} safetensors files of {safetensors[0].parent}"
+            if safetensors_files is not None:
+                source = (
+                    f"every rank reads {len(safetensors_files)} safetensors files of {safetensors_files[0].parent}"
+                )
             logger.info(f"FSDP: {component} weights of {checkpoint_path}: {source}")
         checkpoint.sync_model_dtypes(model)
         full_state = model.state_dict() if materialize_weights else {}
@@ -69,8 +73,8 @@ def load_fsdp_models(
             cpu_offload=cpu_offload,
             args=args,
         )
-        if safetensors is not None:
-            checkpoint.load_safetensors_to_fsdp(model, safetensors, cpu_offload=cpu_offload)
+        if safetensors_files is not None:
+            checkpoint.load_safetensors_to_fsdp(model, safetensors_files, cpu_offload=cpu_offload)
         else:
             checkpoint.broadcast_full_state_to_fsdp(model, full_state, cpu_offload=cpu_offload)
         del full_state

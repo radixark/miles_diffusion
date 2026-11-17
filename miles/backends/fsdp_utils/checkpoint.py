@@ -84,10 +84,10 @@ def safetensors_hold_state(model: torch.nn.Module, files: list[Path]) -> bool:
     return saved == {name: tuple(tensor.shape) for name, tensor in state.items()}
 
 
-def all_ranks_agree(flag: bool) -> bool:
-    flags = [None] * dist.get_world_size()
-    dist.all_gather_object(flags, flag)
-    return all(flags)
+def holds_on_every_rank(condition: bool) -> bool:
+    conditions = [None] * dist.get_world_size()
+    dist.all_gather_object(conditions, condition)
+    return all(conditions)
 
 
 @torch.no_grad()

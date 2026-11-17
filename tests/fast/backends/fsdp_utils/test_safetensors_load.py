@@ -69,9 +69,9 @@ def save_checkpoint(path, *, name="block.proj.weight", shape=(4, 3), sharded=Tru
         )
 
 
-def load(monkeypatch, path, *, agree=lambda flag: flag, backend_cls=None, **kwargs):
+def load(monkeypatch, path, *, holds=lambda condition: condition, backend_cls=None, **kwargs):
     broadcasts = []
-    monkeypatch.setattr(model_loader.checkpoint, "all_ranks_agree", agree)
+    monkeypatch.setattr(model_loader.checkpoint, "holds_on_every_rank", holds)
     monkeypatch.setattr(model_loader.checkpoint, "sync_model_dtypes", lambda model: None)
     monkeypatch.setattr(
         model_loader.checkpoint, "broadcast_full_state_to_fsdp", lambda model, state, **_: broadcasts.append(state)
@@ -249,16 +249,18 @@ def test_a_buffer_two_modules_share_keeps_its_value_on_both(tmp_path, monkeypatc
 
 def test_one_rank_that_cannot_read_the_files_sends_every_rank_to_the_broadcast(tmp_path, monkeypatch):
     save_checkpoint(tmp_path)
-    flags = []
-    _, materialize_requests, broadcasts = load(monkeypatch, tmp_path, agree=lambda flag: flags.append(flag) or False)
-    assert flags == [True, True] and materialize_requests == [False, True, False, True] and len(broadcasts) == 2
+    conditions = []
+    _, materialize_requests, broadcasts = load(
+        monkeypatch, tmp_path, holds=lambda condition: conditions.append(condition) or False
+    )
+    assert conditions == [True, True] and materialize_requests == [False, True, False, True] and len(broadcasts) == 2
 
 
 def test_lora_models_are_broadcast(tmp_path, monkeypatch):
     save_checkpoint(tmp_path)
     monkeypatch.setattr(model_loader, "load_lora_adapter", lambda model, path, *, trainable: model)
-    agree = lambda flag: pytest.fail("LoRA loads are never read from the files")  # noqa: E731
-    _, materialize_requests, broadcasts = load(monkeypatch, tmp_path, agree=agree, lora_adapter_paths=["a", "b"])
+    holds = lambda condition: pytest.fail("LoRA loads are never read from the files")  # noqa: E731
+    _, materialize_requests, broadcasts = load(monkeypatch, tmp_path, holds=holds, lora_adapter_paths=["a", "b"])
     assert materialize_requests == [True, True] and len(broadcasts) == 2
 
 
