@@ -1,7 +1,9 @@
 """Two ranks read their own halves of a safetensors checkpoint, or fall back to rank 0's broadcast together.
 
     files hold the state dict --> both ranks on meta --> rows [0:2] on rank 0, rows [2:4] on rank 1, GPU or CPU offload
+                                  a buffer no file holds --> rank 0's value on both ranks
     another name in the files --> rank 0 builds again with weights --> the broadcast value on both ranks
+    another name on rank 1 only --> the same: the ranks agree before either reads
     LoRA, saved or new        --> the adapter shards and the generator the broadcast leaves, on both ranks
 """
 
@@ -28,9 +30,18 @@ from torch.distributed.device_mesh import init_device_mesh
 from miles.backends.fsdp_utils.model_loader import load_fsdp_models
 
 
+class RankTaggedBackend(FileBackend):
+    """A buffer outside the state dict whose constructor value differs between the ranks."""
+
+    def load_component(self, component, **kwargs):
+        model = super().load_component(component, **kwargs)
+        model.register_buffer("built_on_rank", torch.tensor(float(dist.get_rank())), persistent=False)
+        return model
+
+
 def load(mesh, path, cpu_offload, *, lora_init=None, **kwargs):
     parallel = SimpleNamespace(get_mesh=lambda name: mesh, get_optional_mesh=lambda name: None)
-    args, backend = make_model_loader_args(), FileBackend()
+    args, backend = make_model_loader_args(), RankTaggedBackend()
     args.use_lora = lora_init is not None
     args.lora_rank, args.lora_alpha, args.lora_target_modules, args.lora_init_weights = 2, 4, ["proj"], lora_init
     models = load_fsdp_models(
@@ -43,6 +54,7 @@ def load(mesh, path, cpu_offload, *, lora_init=None, **kwargs):
         assert shard.shape == (2, 3) and shard.dtype == torch.float32
         assert shard.device.type == ("cpu" if cpu_offload else "cuda")
         assert base.forward_count.device.type == "cuda" and base.forward_count.item() == 0
+        assert base.built_on_rank.device.type == "cuda" and base.built_on_rank.item() == 0
     return models, backend.materialize_requests
 
 
@@ -95,6 +107,12 @@ def main():
                 torch.testing.assert_close(model(inputs).cpu(), (inputs.cpu() @ expected.T).tanh())
 
         models, materialize_requests = load(mesh, root / "renamed", cpu_offload)
+        assert materialize_requests == ([False, True, False, True] if rank == 0 else [False, False])
+        for model in models.values():
+            assert torch.all(model.block.proj.weight.to_local() == BROADCAST_VALUE)
+
+        # Only rank 1's copy holds another name: rank 0 must not read its shards while rank 1 waits for a broadcast.
+        models, materialize_requests = load(mesh, root / ("renamed" if rank == 1 else "state"), cpu_offload)
         assert materialize_requests == ([False, True, False, True] if rank == 0 else [False, False])
         for model in models.values():
             assert torch.all(model.block.proj.weight.to_local() == BROADCAST_VALUE)

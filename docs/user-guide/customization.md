@@ -381,6 +381,10 @@ resolves to `qwen_image21`. `--diffusion-task` (e.g. `t2i`) must be one of the
 **Class** for loading components / FSDP. Default comes from the
 family config (usually a `DiffusersModelBackend`).
 
+`DiffusersModelBackend` lets every rank read its own shards of a component from the checkpoint's safetensors
+files (`safetensors_files`). A subclass that overrides `load_component` loads on rank 0 and broadcasts, as before,
+unless it also overrides `safetensors_files` to name the files that hold what it loads.
+
 ***
 
 ## Worked example

@@ -106,7 +106,10 @@ def rank0_rng_state() -> torch.Tensor:
 
 @torch.no_grad()
 def load_safetensors_to_fsdp(model: torch.nn.Module, files: list[Path], *, cpu_offload: bool) -> None:
-    """Materialize FSDP2 shards by reading each rank's own slice of every base parameter from the files."""
+    """Materialize FSDP2 shards by reading each rank's own slice of every base parameter from the files.
+
+    A buffer outside the state dict is in no file: every rank ends with the value rank 0's constructor computed.
+    """
     device = torch.cuda.current_device()
     # Buffers and LoRA adapters were computed for real on every rank; to_empty would wipe them. A buffer still on
     # meta is in the state dict, and the read fills it. to_empty splits a tensor two modules share, so each name
@@ -129,6 +132,11 @@ def load_safetensors_to_fsdp(model: torch.nn.Module, files: list[Path], *, cpu_o
         # CPUOffloadPolicy manages params only; buffers must live on GPU for forward.
         for buffer in model.buffers():
             buffer.data = buffer.data.to(device)
+    # As the broadcast leaves them: rank 0's values, should a constructor not compute the same on every rank.
+    state = model.state_dict()
+    for name, buffer in model.named_buffers(remove_duplicate=False):
+        if name not in state:
+            dist.broadcast(buffer, src=0)
 
 
 def is_lora_param_name(name: str) -> bool:

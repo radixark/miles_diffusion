@@ -32,13 +32,14 @@ from tests.fast.backends.fsdp_utils.test_reference_models import (
 from torch.distributed.device_mesh import init_device_mesh
 
 from miles.backends.fsdp_utils import model_loader
-from miles.backends.fsdp_utils.model_backend import DiffusersModelBackend
+from miles.backends.fsdp_utils.model_backend import diffusers_weight_files
 
 BROADCAST_VALUE = 0.75
 
 
 class FileBackend(TinyBackend):
-    safetensors_files = DiffusersModelBackend.safetensors_files
+    def safetensors_files(self, component, *, checkpoint_path):
+        return diffusers_weight_files(checkpoint_path, component)
 
     def __init__(self):
         super().__init__()
@@ -113,8 +114,9 @@ def build_with(load_component):
 def add_variant_file(path, *, sharded):
     save_checkpoint(path, sharded=sharded)
     for component in make_model_loader_args().update_weight_target_modules:
+        # Another shape: a reader that took the variant fails whichever file its folder lists last.
         save_file(
-            {"block.proj.weight": torch.zeros(4, 3)}, path / component / "diffusion_pytorch_model.fp16.safetensors"
+            {"block.proj.weight": torch.zeros(8, 3)}, path / component / "diffusion_pytorch_model.fp16.safetensors"
         )
 
 
