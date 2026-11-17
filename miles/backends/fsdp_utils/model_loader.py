@@ -186,9 +186,14 @@ def base_storage_for_lora(model: torch.nn.Module, *, enabled: bool):
 
     PEFT moves a new adapter to its base layer's device, and meta would drop the adapter's values. For the
     adapters ``lora_needs_no_base_weights`` lets through it reads the base layer's device and dtype only, so each
-    base parameter stands in as one uninitialized element expanded to its shape: a full ``torch.empty`` is written through under ``--deterministic-mode`` (the NaN fill), a copy of
-    the model on every rank. PEFT's initialization draws, and only rank 0 has run it so far: the other ranks draw
-    the same values from rank 0's generator state and keep their own.
+    base parameter stands in as one uninitialized element expanded to its shape: a full ``torch.empty`` is written
+    through under ``--deterministic-mode`` (the NaN fill), a copy of the model on every rank.
+
+    PEFT's initialization draws, and only rank 0 has run it so far: the other ranks draw the same values from
+    rank 0's generator state and keep their own. An adapter on an ``nn.Embedding`` is the one case where they do
+    not end as before: PEFT draws for it even on meta, in the build these ranks no longer run.
+
+    Each rank builds from its own copy of the adapter's files, as it reads its own copy of the base's.
     """
     if not enabled:
         yield
