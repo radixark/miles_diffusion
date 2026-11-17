@@ -21,8 +21,11 @@ from tests.fast.backends.fsdp_utils.test_reference_models import (
 )
 from tests.fast.backends.fsdp_utils.test_safetensors_load import (
     BROADCAST_VALUE,
+    DerivedBufferComponent,
     FileBackend,
+    backend_of,
     save_checkpoint,
+    save_row_sums,
     saved_weight,
 )
 from torch.distributed.device_mesh import init_device_mesh
@@ -39,9 +42,9 @@ class RankTaggedBackend(FileBackend):
         return model
 
 
-def load(mesh, path, cpu_offload, *, lora_init=None, **kwargs):
+def load(mesh, path, cpu_offload, *, lora_init=None, backend_cls=RankTaggedBackend, **kwargs):
     parallel = SimpleNamespace(get_mesh=lambda name: mesh, get_optional_mesh=lambda name: None)
-    args, backend = make_model_loader_args(), RankTaggedBackend()
+    args, backend = make_model_loader_args(), backend_cls()
     args.use_lora = lora_init is not None
     args.lora_rank, args.lora_alpha, args.lora_target_modules, args.lora_init_weights = 2, 4, ["proj"], lora_init
     models = load_fsdp_models(
@@ -54,7 +57,8 @@ def load(mesh, path, cpu_offload, *, lora_init=None, **kwargs):
         assert shard.shape == (2, 3) and shard.dtype == torch.float32
         assert shard.device.type == ("cpu" if cpu_offload else "cuda")
         assert base.forward_count.device.type == "cuda" and base.forward_count.item() == 0
-        assert base.built_on_rank.device.type == "cuda" and base.built_on_rank.item() == 0
+        if backend_cls is RankTaggedBackend:
+            assert base.built_on_rank.device.type == "cuda" and base.built_on_rank.item() == 0
     return models, backend.materialize_requests
 
 
@@ -108,6 +112,7 @@ def main():
         save_checkpoint(root / "state")
         save_checkpoint(root / "renamed", name="block.proj.kernel")
         save_component_lora_adapters(root / "adapters")
+        save_row_sums(root / "row_sums")
     dist.barrier()
     inputs = torch.ones(2, 3, device="cuda")
     for cpu_offload in (False, True):
@@ -133,6 +138,20 @@ def main():
         adapter_paths = [str(root / "adapters" / component) for component in ("transformer", "transformer_2")]
         check_lora(mesh, root, rank, cpu_offload, lora_adapter_paths=adapter_paths)
         check_lora(mesh, root, rank, cpu_offload, lora_init="gaussian", trainable=True)
+
+        # A buffer of the state dict with a dimension: the adapter broadcast wants it on the parameters' device,
+        # so under CPU offload it runs before the buffers move to the GPU.
+        models, _ = load(
+            mesh,
+            root / "row_sums",
+            cpu_offload,
+            backend_cls=backend_of(DerivedBufferComponent),
+            lora_adapter_paths=adapter_paths,
+        )
+        for component, model in models.items():
+            row_sums = model.base_model.model.row_sums
+            assert row_sums.device.type == "cuda"
+            assert torch.equal(row_sums.cpu(), saved_weight(component).sum(dim=1).float())
     dist.barrier()
     if rank == 0:
         print("OK")
