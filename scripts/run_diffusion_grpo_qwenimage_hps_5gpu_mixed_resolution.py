@@ -1,30 +1,22 @@
 """Qwen-Image HPSv2.1 GRPO over several resolutions.
 
 The flow_grpo-aligned 512x512 recipe (run_diffusion_grpo_pickscore_5gpu_flowgrpo_aligned.py)
-with two changes. Each prompt group draws its own resolution from
---diffusion-resolution-buckets, so the policy is optimized across aspect ratios instead of
-at one size; buckets vary the aspect ratio at a near-constant token count, which keeps the
-per-group cost comparable, and eval stays at --diffusion-height / --diffusion-width.
+with two changes. Each prompt group draws one of three buckets uniformly, varying the aspect
+ratio at a near-constant token count; eval stays at --diffusion-height / --diffusion-width.
+And the reward is HPSv2.1 rather than PickScore, whose CLIP processor center-crops to 224x224
+and so never sees ~43% of a 672x384 or 384x672 frame.
 
-The reward is HPSv2.1 rather than the baseline's PickScore, whose CLIP processor center-crops
-to 224x224 and so never sees ~43% of a 672x384 or 384x672 frame. HPSv2.1 resizes the long side
-and pads, so it scores the whole image whatever its aspect ratio.
+--micro-batch-size 8 is not free choice: a train micro-batch must hold one resolution, and
+under stride DP split each rank holds 16 samples / 4 ranks = 4 samples x 2 SDE steps = 8 pairs
+of every prompt group, so 8 is exactly one group's pairs on that rank. The legacy
+--micro-batch-size-sample 8 tiling the baseline uses would gather 8 different samples, which
+spans groups and so resolutions; arg validation rejects it.
 
-It also trades --micro-batch-size-sample 8 / --micro-batch-size-tstep 1 for a flat
---micro-batch-size 8: a train micro-batch must hold one resolution, and a legacy tile of 8
-samples spans two prompt groups. The flat sample-major schedule does not -- under stride DP
-split each rank holds 16 / 4 = 4 samples x 2 SDE steps = 8 pairs of every group, so a
-micro-batch of 8 is exactly one group's pairs on that rank.
-
-Measured, and worth knowing before copying this: over 60 rollouts against the fixed-512
-recipe on the same reward, this configuration bought nothing. The fixed-512 run improved the two
-non-square eval sizes it never trained on by +0.0081 / +0.0074 over the base model, matching
-this recipe's +0.0085 / +0.0076, while beating it at 512x512 (+0.0099 vs +0.0054) -- what 512
-learns transfers across aspect ratio, so the budget spent elsewhere does not pay for itself.
-The three buckets here are within 2% of each other in token count (1008-1024), which is a weak
-test of mixed-resolution training; buckets with a real scale difference, full fine-tuning, or a
-resolution-sensitive reward may behave differently. Treat this as a worked example of the
-mechanism, not a recommended configuration.
+Measured, and worth knowing before copying this: over 60 rollouts against the fixed-512 recipe
+on the same reward, this configuration bought nothing -- the fixed run gained as much at both
+non-square eval sizes and more at 512x512. The three buckets are within 2% of each other in
+token count, which makes this a weak test of mixed-resolution training rather than a
+recommended configuration. See the PR for the numbers.
 
 Per rollout: 32 prompts x 16 samples = 512 samples. num_steps_per_rollout=2 gives 256
 samples per optimizer step.
