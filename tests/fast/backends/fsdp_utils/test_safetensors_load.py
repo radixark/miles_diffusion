@@ -77,7 +77,9 @@ def save_checkpoint(path, *, name="block.proj.weight", shape=(4, 3), sharded=Tru
         )
 
 
-def load(monkeypatch, path, *, holds=lambda condition: condition, lora_init=None, backend_cls=None, **kwargs):
+def load(
+    monkeypatch, path, *, holds=lambda condition, same=None: condition, lora_init=None, backend_cls=None, **kwargs
+):
     broadcasts = []
     monkeypatch.setattr(model_loader.checkpoint, "holds_on_every_rank", holds)
     monkeypatch.setattr(model_loader.checkpoint, "sync_model_dtypes", lambda model: None)
@@ -267,7 +269,7 @@ def test_one_rank_that_cannot_read_the_files_sends_every_rank_to_the_broadcast(t
     save_checkpoint(tmp_path)
     conditions = []
     _, materialize_requests, broadcasts = load(
-        monkeypatch, tmp_path, holds=lambda condition: conditions.append(condition) or False
+        monkeypatch, tmp_path, holds=lambda condition, same=None: conditions.append(condition) or False
     )
     assert conditions == [True, True] and materialize_requests == [False, True, False, True] and len(broadcasts) == 2
 
@@ -363,6 +365,48 @@ def test_a_saved_adapter_in_another_file_format_is_not_built_without_base_weight
     assert model_loader.lora_needs_no_base_weights(make_model_loader_args(), adapter_path) is False
 
 
+def test_the_ranks_agree_on_the_adapter_s_tensors_before_rank_0_broadcasts_them(tmp_path, monkeypatch):
+    # The broadcast fills the names rank 0 sends; a rank whose own adapter config gave other tensors would keep
+    # them uninitialized. Such ranks go to the full broadcast instead, which names the missing keys.
+    save_checkpoint(tmp_path)
+    adapter_paths = save_component_lora_adapters(tmp_path / "adapters")
+    compared = []
+    load(
+        monkeypatch,
+        tmp_path,
+        lora_adapter_paths=adapter_paths,
+        holds=lambda condition, same=None: compared.append(same) or condition,
+    )
+    assert compared == [ADAPTER_SHAPES, ADAPTER_SHAPES]
+
+
+ADAPTER_SHAPES = {
+    "base_model.model.block.proj.lora_A.default.weight": (2, 3),
+    "base_model.model.block.proj.lora_B.default.weight": (4, 2),
+}
+
+
+@pytest.mark.parametrize(
+    "condition, other_rank, holds",
+    [
+        pytest.param(True, (True, ADAPTER_SHAPES), True, id="the same on both ranks"),
+        pytest.param(True, (False, ADAPTER_SHAPES), False, id="the other rank's condition fails"),
+        pytest.param(False, (False, ADAPTER_SHAPES), False, id="no rank's condition holds"),
+        pytest.param(
+            True, (True, {"base_model.model.other.lora_A.default.weight": (2, 3)}), False, id="other tensors"
+        ),
+        pytest.param(True, (True, ADAPTER_SHAPES | {"extra.lora_A.default.weight": (2, 3)}), False, id="one more"),
+    ],
+)
+def test_a_condition_holds_on_every_rank_only_with_the_same_value_beside_it(monkeypatch, condition, other_rank, holds):
+    def answers_of_two_ranks(answers, answer):
+        answers[:] = [answer, other_rank]
+
+    monkeypatch.setattr(dist, "get_world_size", lambda: 2)
+    monkeypatch.setattr(dist, "all_gather_object", answers_of_two_ranks)
+    assert model_loader.checkpoint.holds_on_every_rank(condition, same=ADAPTER_SHAPES) is holds
+
+
 def lora_weights(state):
     return {name: tensor for name, tensor in state.items() if "lora_" in name}
 
@@ -393,7 +437,7 @@ def test_a_new_adapter_gets_the_values_and_leaves_the_generator_as_rank_0_does_w
 
     torch.manual_seed(0)
     _, materialize_requests, with_weights = load(
-        monkeypatch, tmp_path, lora_init=lora_init, trainable=True, holds=lambda condition: False
+        monkeypatch, tmp_path, lora_init=lora_init, trainable=True, holds=lambda condition, same=None: False
     )
     assert materialize_requests == [False, True, False, True] and torch.equal(torch.get_rng_state(), generator)
     for (component, model), state in zip(models.items(), with_weights, strict=True):
@@ -417,7 +461,7 @@ def test_an_adapter_initialized_from_the_base_weights_is_built_by_rank_0_and_bro
         tmp_path,
         lora_init="pissa",
         trainable=True,
-        holds=lambda condition: conditions.append(condition) or condition,
+        holds=lambda condition, same=None: conditions.append(condition) or condition,
         backend_cls=NeverAsked,
     )
     # Every rank still answers that it reads no files, so no rank waits in a collective the others skip.

@@ -51,9 +51,11 @@ def load_fsdp_models(
         materialize_weights = safetensors_files is None and dist.get_rank() == 0
         rng_state = torch.get_rng_state()
         model = build(materialize_weights=materialize_weights)
-        # Every rank answers, with files or without: each one read its own adapter config to get here.
+        # Every rank answers, with files or without: each one read its own adapter config to get here, and built
+        # from it the adapter tensors that rank 0's broadcast has to fill one for one.
         if not checkpoint.holds_on_every_rank(
-            safetensors_files is not None and checkpoint.safetensors_hold_state(model, safetensors_files)
+            safetensors_files is not None and checkpoint.safetensors_hold_state(model, safetensors_files),
+            same=checkpoint.adapter_shapes(model),
         ):
             if safetensors_files is not None and dist.get_rank() == 0:
                 # A constructor may draw random numbers: the second build draws what the first one did.

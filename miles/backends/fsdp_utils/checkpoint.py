@@ -79,6 +79,10 @@ def adapter_state(model: torch.nn.Module) -> dict[str, torch.Tensor]:
     return {name: tensor for name, tensor in model.state_dict().items() if is_lora_param_name(name)}
 
 
+def adapter_shapes(model: torch.nn.Module) -> dict[str, tuple[int, ...]]:
+    return {name: tuple(tensor.shape) for name, tensor in adapter_state(model).items()}
+
+
 def safetensors_hold_state(model: torch.nn.Module, files: list[Path]) -> bool:
     """Whether the files hold the model's state dict without its LoRA adapters: the same names and shapes.
 
@@ -96,10 +100,11 @@ def safetensors_hold_state(model: torch.nn.Module, files: list[Path]) -> bool:
     return saved == {name: tuple(tensor.shape) for name, tensor in base_state(model).items()}
 
 
-def holds_on_every_rank(condition: bool) -> bool:
-    conditions = [None] * dist.get_world_size()
-    dist.all_gather_object(conditions, condition)
-    return all(conditions)
+def holds_on_every_rank(condition: bool, *, same: object = None) -> bool:
+    """Whether ``condition`` holds on every rank and every rank passes an equal ``same``."""
+    answers = [None] * dist.get_world_size()
+    dist.all_gather_object(answers, (condition, same))
+    return all(answer == (True, same) for answer in answers)
 
 
 @torch.no_grad()
@@ -128,7 +133,8 @@ def load_safetensors_to_fsdp(
             os.symlink(file.resolve(), Path(folder) / file.name)
         dcp.load(base_state(model), storage_reader=dcp.HuggingFaceStorageReader(folder, thread_count=4))
     if adapter_state(model):
-        # Before the buffers move below: the broadcast wants every tensor of the model on one device.
+        # Before the buffers move below: the broadcast wants every tensor of the model on one device. It fills the
+        # names rank 0 sends and reports nothing about the others: the ranks agreed on the adapter's names before.
         options = StateDictOptions(
             full_state_dict=True, broadcast_from_rank0=True, strict=False, cpu_offload=cpu_offload
         )
