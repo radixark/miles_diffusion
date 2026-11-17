@@ -43,6 +43,9 @@ class TestFamilyResolution:
             ("Wan-AI/Wan2.2-T2V-A14B", "wan2_2"),
             ("/data/ckpts/SD3.5-Medium-Finetune", "sd3"),
             ("krea/Krea-2-Raw", "krea2"),
+            ("MiniMaxAI/MiniMax-H3", "h3"),
+            # Longer pattern wins: "minimax-h3" is a substring of this id.
+            ("MiniMaxAI/MiniMax-H3-Image", "h3_image"),
         ],
     )
     def test_known_patterns(self, ref, family):
