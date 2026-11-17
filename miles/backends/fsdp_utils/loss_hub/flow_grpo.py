@@ -44,7 +44,10 @@ def prepare_flow_grpo_batch(
     next_sigmas = _stack_pair_field(batch, "next_sigma", device)
     sigma_max = _stack_pair_field(batch, "sigma_max", device)
     log_prob_old = _stack_pair_field(batch, "log_prob_old", device)
-    log_prob_rollout = _stack_pair_field(batch, "log_prob_rollout", device)
+    # Only the per-resolution replay metric reads this, so a conversion that does not write it
+    # (any custom one predating the field) keeps working; the metric says so if it is missing.
+    has_rollout_log_prob = all("log_prob_rollout" in pair for pair in batch)
+    log_prob_rollout = _stack_pair_field(batch, "log_prob_rollout", device) if has_rollout_log_prob else None
     advantage = torch.tensor(
         [float(pair["advantage"]) for pair in batch],
         device=device,
@@ -231,7 +234,14 @@ def flow_grpo_loss_formula(
         if resolution is not None:
             key = resolution_metric_key("log_prob_mean_abs_diff", resolution)
             if key in metrics:
-                replay_diff_sum = torch.abs(log_prob_new - prepared.extras["log_prob_rollout"]).sum()
+                rollout_log_prob = prepared.extras["log_prob_rollout"]
+                if rollout_log_prob is None:
+                    raise ValueError(
+                        "a train pair carries its rollout resolution but not the rollout's log-prob, so "
+                        f"{key} cannot measure how faithfully that bucket replays. A conversion declaring "
+                        "@miles.ray.data_conversion_hub.labels_rollout_resolution writes both."
+                    )
+                replay_diff_sum = torch.abs(log_prob_new - rollout_log_prob).sum()
                 metrics.emit_mean(key, total=replay_diff_sum, count=bsz)
 
         if rollout_prev_mean is not None:

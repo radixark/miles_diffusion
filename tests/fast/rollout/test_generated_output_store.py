@@ -139,7 +139,12 @@ async def test_every_call_site_rewards_tensors_read_inside_the_semaphore(monkeyp
     """A call site without the load would hand rewards store refs; a load outside the semaphore would let the
     store fill with outputs of more microgroups than there are generation slots."""
     store, backend, ref = _stored({"generated_output.0": _CHW, "generated_output.1": _CHW, _LATENTS: _CHW})
-    state = SimpleNamespace(semaphore=asyncio.Semaphore(1), dp_rank_context=contextlib.nullcontext, output_store=store)
+    state = SimpleNamespace(
+        semaphore=asyncio.Semaphore(1),
+        dp_rank_context=contextlib.nullcontext,
+        output_store=store,
+        resolution_strategy_fn=None,
+    )
     read_inside_semaphore = []
     read_many = store.read_many
 

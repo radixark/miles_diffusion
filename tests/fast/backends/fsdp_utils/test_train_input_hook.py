@@ -69,6 +69,7 @@ def _actor(train_input, train_output, forwarded, **args):
             debug_skip_optimizer_step=True,
             log_loss_sigma_bucket=0,
             diffusion_num_steps=4,
+            diffusion_resolution_bucket_list=(),
             **{"diffusion_recompute_old_log_prob": False, **args},
         ),
         _forward_dtype=torch.float32,
