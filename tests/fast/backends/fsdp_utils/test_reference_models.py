@@ -78,6 +78,9 @@ class TinyBackend:
                 model.block.proj.weight.fill_(value)
         return model
 
+    def safetensors_files(self, component, *, checkpoint_path):
+        return None
+
     def fsdp_parallel_plan(self, model):
         return FSDPParallelPlan(no_split_modules=("TinyBlock",))
 

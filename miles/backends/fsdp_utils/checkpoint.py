@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import tempfile
 import time
 from itertools import chain
 from pathlib import Path
@@ -65,22 +67,12 @@ def broadcast_full_state_to_fsdp(
             buffer.data = buffer.data.to(torch.cuda.current_device())
 
 
-def safetensors_folder(checkpoint_path: str, component: str) -> Path | None:
-    """The component folder when its safetensors files are exactly the ones its diffusers index lists."""
-    folder = Path(checkpoint_path) / component
-    index = folder / "diffusion_pytorch_model.safetensors.index.json"
-    if not index.is_file():
-        return None
-    listed = set(json.loads(index.read_text())["weight_map"].values())
-    return folder if {file.name for file in folder.glob("*.safetensors")} == listed else None
-
-
-def safetensors_hold_state(model: torch.nn.Module, folder: Path) -> bool:
+def safetensors_hold_state(model: torch.nn.Module, files: list[Path]) -> bool:
     """Whether the files hold the model's state dict: the same names, each with the same shape."""
     from safetensors import safe_open
 
     saved = {}
-    for file in folder.glob("*.safetensors"):
+    for file in files:
         with safe_open(file, framework="pt") as tensors:
             saved.update({name: tuple(tensors.get_slice(name).get_shape()) for name in tensors.keys()})
     return saved == {name: tuple(tensor.shape) for name, tensor in model.state_dict().items()}
@@ -93,7 +85,7 @@ def all_ranks_agree(flag: bool) -> bool:
 
 
 @torch.no_grad()
-def load_safetensors_to_fsdp(model: torch.nn.Module, folder: Path, *, cpu_offload: bool) -> None:
+def load_safetensors_to_fsdp(model: torch.nn.Module, files: list[Path], *, cpu_offload: bool) -> None:
     """Materialize FSDP2 shards by reading each rank's own slice of every parameter from the files."""
     device = torch.cuda.current_device()
     # Buffers were computed for real on every rank; to_empty would wipe them.
@@ -101,7 +93,11 @@ def load_safetensors_to_fsdp(model: torch.nn.Module, folder: Path, *, cpu_offloa
     model.to_empty(device="cpu" if cpu_offload else device)
     for name, buffer in model.named_buffers():
         buffer.copy_(buffers[name])
-    dcp.load(model.state_dict(), storage_reader=dcp.HuggingFaceStorageReader(str(folder), thread_count=4))
+    # The reader takes every safetensors file of one folder, and the files' own folder may hold others (a variant).
+    with tempfile.TemporaryDirectory() as folder:
+        for file in files:
+            os.symlink(file.resolve(), Path(folder) / file.name)
+        dcp.load(model.state_dict(), storage_reader=dcp.HuggingFaceStorageReader(folder, thread_count=4))
     if cpu_offload:
         # CPUOffloadPolicy manages params only; buffers must live on GPU for forward.
         for buffer in model.buffers():

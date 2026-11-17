@@ -20,11 +20,15 @@ from __future__ import annotations
 import abc
 import functools
 import importlib
+import json
 import logging
+import os
 from dataclasses import replace
+from pathlib import Path
 
 import torch
 from diffusers import DiffusionPipeline
+from diffusers.utils import SAFE_WEIGHTS_INDEX_NAME, SAFETENSORS_WEIGHTS_NAME
 
 from .models.parallel_plan import FSDPParallelPlan
 from .sequence_parallel.diffusers_dispatch import install_diffusers_usp_patch
@@ -53,6 +57,10 @@ class BaseModelBackend(abc.ABC):
         materialize_weights: bool,
     ) -> torch.nn.Module:
         raise NotImplementedError
+
+    def safetensors_files(self, component: str, *, checkpoint_path: str) -> list[Path] | None:
+        """Local safetensors files every rank can read its shards of the component from; None: rank 0 loads it."""
+        return None
 
     @abc.abstractmethod
     def enable_gradient_checkpointing(self, model: torch.nn.Module) -> None:
@@ -213,6 +221,22 @@ class DiffusersModelBackend(BaseModelBackend):
                 if any(module in name.split(".") for module in keep_in_fp32):
                     param.data = param.data.to(torch.float32)
         return model
+
+    def safetensors_files(self, component: str, *, checkpoint_path: str) -> list[Path] | None:
+        """The files ``from_pretrained`` reads with no variant: the ones the index lists, else the single file."""
+        stem = SAFETENSORS_WEIGHTS_NAME.removesuffix(".safetensors")
+        if not os.path.isdir(checkpoint_path):
+            from huggingface_hub import snapshot_download
+
+            patterns = [f"{component}/{SAFETENSORS_WEIGHTS_NAME}*", f"{component}/{stem}-*.safetensors"]
+            checkpoint_path = snapshot_download(checkpoint_path, allow_patterns=patterns)
+        folder = Path(checkpoint_path) / component
+        index = folder / SAFE_WEIGHTS_INDEX_NAME
+        names = {SAFETENSORS_WEIGHTS_NAME}
+        if index.is_file():
+            names = set(json.loads(index.read_text())["weight_map"].values())
+        files = [folder / name for name in sorted(names)]
+        return files if all(file.is_file() for file in files) else None
 
     @classmethod
     def _resolve_component_class(cls, checkpoint_path: str, component: str):

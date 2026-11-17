@@ -115,3 +115,29 @@ class TestBackendHierarchy:
             "norm.bias": torch.float32,
         }
         assert _PinnedComponent._keep_in_fp32_modules == ["norm"]
+
+    def test_a_hub_checkpoint_resolves_to_the_weight_files_of_its_snapshot(self, tmp_path, monkeypatch):
+        folder = tmp_path / "transformer"
+        folder.mkdir()
+        (folder / "diffusion_pytorch_model.safetensors").touch()
+        (folder / "diffusion_pytorch_model.fp16.safetensors").touch()
+        downloads = []
+
+        def snapshot_download(repo_id, *, allow_patterns):
+            downloads.append((repo_id, allow_patterns))
+            return str(tmp_path)
+
+        monkeypatch.setattr("huggingface_hub.snapshot_download", snapshot_download)
+
+        files = DiffusersModelBackend(None).safetensors_files("transformer", checkpoint_path="org/model")
+
+        assert files == [folder / "diffusion_pytorch_model.safetensors"]
+        assert downloads == [
+            (
+                "org/model",
+                [
+                    "transformer/diffusion_pytorch_model.safetensors*",
+                    "transformer/diffusion_pytorch_model-*.safetensors",
+                ],
+            )
+        ]

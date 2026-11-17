@@ -1,7 +1,8 @@
 """Every rank reads its own shards of a diffusers safetensors checkpoint.
 
-    index + exactly its files + the state dict's names and shapes --> every rank on meta --> dcp.load per shard
-    stray file / other name / other shape / a rank that disagrees / LoRA --> rank 0 loads and broadcasts
+    the index's files, or the single file, hold the state dict's names and shapes --> every rank on meta --> dcp.load
+    a variant file beside them                                                    --> not read
+    listed file missing / other name / other shape / a rank that disagrees / LoRA --> rank 0 loads and broadcasts
 
 FSDP2 is real on a one-rank CPU mesh and the broadcast is recorded; the CUDA worker splits the shards over two ranks.
 """
@@ -26,11 +27,14 @@ from tests.fast.backends.fsdp_utils.test_reference_models import (
 from torch.distributed.device_mesh import init_device_mesh
 
 from miles.backends.fsdp_utils import model_loader
+from miles.backends.fsdp_utils.model_backend import DiffusersModelBackend
 
 BROADCAST_VALUE = 0.75
 
 
 class FileBackend(TinyBackend):
+    safetensors_files = DiffusersModelBackend.safetensors_files
+
     def __init__(self):
         super().__init__()
         self.materialize_requests = []
@@ -50,10 +54,13 @@ def saved_weight(component):
     return torch.arange(12, dtype=torch.bfloat16).reshape(4, 3) + (100 if component == "transformer_2" else 0)
 
 
-def save_checkpoint(path, *, name="block.proj.weight", shape=(4, 3)):
+def save_checkpoint(path, *, name="block.proj.weight", shape=(4, 3), sharded=True):
     for component in make_model_loader_args().update_weight_target_modules:
         folder = path / component
         folder.mkdir(parents=True)
+        if not sharded:
+            save_file({name: saved_weight(component).reshape(shape)}, folder / "diffusion_pytorch_model.safetensors")
+            continue
         file = "diffusion_pytorch_model-00001-of-00001.safetensors"
         save_file({name: saved_weight(component).reshape(shape)}, folder / file)
         (folder / "diffusion_pytorch_model.safetensors.index.json").write_text(
@@ -83,8 +90,25 @@ def load(monkeypatch, path, *, agree=lambda flag: flag, **kwargs):
         dist.destroy_process_group()
 
 
-def test_every_rank_reads_its_shards_from_the_files(tmp_path, monkeypatch):
-    save_checkpoint(tmp_path)
+def add_variant_file(path, *, sharded):
+    save_checkpoint(path, sharded=sharded)
+    for component in make_model_loader_args().update_weight_target_modules:
+        save_file(
+            {"block.proj.weight": torch.zeros(4, 3)}, path / component / "diffusion_pytorch_model.fp16.safetensors"
+        )
+
+
+@pytest.mark.parametrize(
+    "save",
+    [
+        pytest.param(save_checkpoint, id="the files the index lists"),
+        pytest.param(lambda path: save_checkpoint(path, sharded=False), id="the single file"),
+        pytest.param(lambda path: add_variant_file(path, sharded=True), id="a variant beside the listed files"),
+        pytest.param(lambda path: add_variant_file(path, sharded=False), id="a variant beside the single file"),
+    ],
+)
+def test_every_rank_reads_its_shards_from_the_files(tmp_path, monkeypatch, save):
+    save(tmp_path)
     models, materialize_requests, broadcasts = load(monkeypatch, tmp_path)
     assert materialize_requests == [False, False] and broadcasts == []
     for component, model in models.items():
@@ -98,17 +122,15 @@ def test_every_rank_reads_its_shards_from_the_files(tmp_path, monkeypatch):
         assert model.forward_count.item() == 1
 
 
-def add_stray_file(path):
+def remove_a_listed_file(path):
     save_checkpoint(path)
-    save_file(
-        {"block.proj.weight": torch.zeros(4, 3)}, path / "transformer" / "diffusion_pytorch_model.fp16.safetensors"
-    )
+    (path / "transformer" / "diffusion_pytorch_model-00001-of-00001.safetensors").unlink()
 
 
 @pytest.mark.parametrize(
     "save, rebuilt",
     [
-        pytest.param(add_stray_file, False, id="a file the index does not list"),
+        pytest.param(remove_a_listed_file, False, id="a listed file is missing"),
         pytest.param(lambda path: save_checkpoint(path, name="block.proj.kernel"), True, id="another name"),
         pytest.param(lambda path: save_checkpoint(path, shape=(3, 4)), True, id="another shape"),
     ],
