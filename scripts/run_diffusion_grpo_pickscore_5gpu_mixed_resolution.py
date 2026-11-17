@@ -13,7 +13,8 @@ split each rank holds 16 / 4 = 4 samples x 2 SDE steps = 8 pairs of every group,
 micro-batch of 8 is exactly one group's pairs on that rank.
 
 Measured, and worth knowing before copying this: over 60 rollouts against the fixed-512
-recipe on HPSv2.1, this configuration bought nothing. The fixed-512 run improved the two
+recipe -- both run with --rm-type hps rather than the PickScore default below, so the reward
+saw the whole non-square frame -- this configuration bought nothing. The fixed-512 run improved the two
 non-square eval sizes it never trained on by +0.0081 / +0.0074 over the base model, matching
 this recipe's +0.0085 / +0.0076, while beating it at 512x512 (+0.0099 vs +0.0054) -- what 512
 learns transfers across aspect ratio, so the budget spent elsewhere does not pay for itself.
