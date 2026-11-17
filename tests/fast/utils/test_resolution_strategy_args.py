@@ -33,6 +33,7 @@ class _FixedResolutionConfig:
 
 def _args(**overrides):
     values = dict(
+        custom_expand_samples_to_train_pairs_path=None,
         diffusion_resolution_strategy_path=WEIGHTED_BUCKETS,
         diffusion_resolution_buckets="512x512,672x384,384x672",
         diffusion_resolution_weights=None,
@@ -124,3 +125,21 @@ def test_nothing_is_declared_without_a_bucket_list(overrides):
     validate_resolution_strategy(args, _MixedResolutionConfig)
 
     assert args.diffusion_resolution_bucket_list == ()
+
+
+@pytest.mark.parametrize("conversion", ["nft", "dmd2"])
+def test_a_conversion_that_does_not_label_pairs_is_rejected(conversion):
+    # --loss-type nft / dmd2 select these; their pairs carry no resolution, which would leave
+    # the train-side micro-batch check vacuous
+    path = f"miles.ray.data_conversion_hub.{conversion}.expand_samples_to_train_pairs"
+    with pytest.raises(ValueError, match="does not label train pairs"):
+        validate_resolution_strategy(
+            _args(custom_expand_samples_to_train_pairs_path=path), _MixedResolutionConfig
+        )
+
+
+def test_a_custom_conversion_is_left_to_the_train_side_check():
+    # it may well label its pairs; check_single_resolution verifies that where it can be seen
+    validate_resolution_strategy(
+        _args(custom_expand_samples_to_train_pairs_path="my_project.convert"), _MixedResolutionConfig
+    )

@@ -2139,6 +2139,22 @@ def validate_resolution_strategy(args, cfg_cls) -> None:
             "set --micro-batch-size instead"
         )
 
+    # Only the Flow-GRPO conversion labels train pairs with their resolution, and the train-side
+    # check reads that label; the two shipped alternatives would leave it vacuous. Named rather
+    # than inferred from --loss-type, so a custom conversion that does label stays allowed (the
+    # train side verifies the labels are there either way).
+    unlabeled = {
+        "miles.ray.data_conversion_hub.nft.expand_samples_to_train_pairs",
+        "miles.ray.data_conversion_hub.dmd2.expand_samples_to_train_pairs",
+    }
+    if args.custom_expand_samples_to_train_pairs_path in unlabeled:
+        raise ValueError(
+            f"--diffusion-resolution-strategy-path has no effect through "
+            f"{args.custom_expand_samples_to_train_pairs_path}: it does not label train pairs with the "
+            "resolution their sample was rendered at, so the train side cannot keep a micro-batch to "
+            "one resolution. Flow-GRPO is the conversion this supports today."
+        )
+
     # Fail at startup rather than in the first rollout actor.
     if args.diffusion_resolution_buckets is not None:
         buckets = parse_resolution_buckets(args.diffusion_resolution_buckets)
