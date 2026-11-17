@@ -44,11 +44,14 @@ def load_fsdp_models(
         use_lora = lora_adapter_paths is not None or (trainable and args.use_lora)
         safetensors = None if use_lora else model_backend.safetensors_files(component, checkpoint_path=checkpoint_path)
         materialize_weights = safetensors is None and dist.get_rank() == 0
+        rng_state = torch.get_rng_state()
         model = build(materialize_weights=materialize_weights)
         if not use_lora and not checkpoint.all_ranks_agree(
             safetensors is not None and checkpoint.safetensors_hold_state(model, safetensors)
         ):
             if safetensors is not None and dist.get_rank() == 0:
+                # A constructor may draw random numbers: the second build draws what the first one did.
+                torch.set_rng_state(rng_state)
                 materialize_weights = True
                 model = build(materialize_weights=True)
             safetensors = None

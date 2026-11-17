@@ -90,6 +90,17 @@ def load(monkeypatch, path, *, agree=lambda flag: flag, **kwargs):
         dist.destroy_process_group()
 
 
+def build_with(load_component):
+    """build_component with the backend's load_component replaced."""
+    build_component = model_loader.build_component
+
+    def build(args, model_backend, *rest, **kwargs):
+        model_backend.load_component = load_component.__get__(model_backend)
+        return build_component(args, model_backend, *rest, **kwargs)
+
+    return build
+
+
 def add_variant_file(path, *, sharded):
     save_checkpoint(path, sharded=sharded)
     for component in make_model_loader_args().update_weight_target_modules:
@@ -141,6 +152,24 @@ def test_files_that_are_not_the_state_dict_fall_back_to_the_broadcast(tmp_path, 
     assert materialize_requests[:2] == ([False, True] if rebuilt else [True, False])
     assert [set(state) for state in broadcasts[:1]] == [{"block.proj.weight"}]
     assert torch.all(broadcasts[0]["block.proj.weight"] == BROADCAST_VALUE)
+
+
+def test_rank_0_built_twice_leaves_the_generator_where_one_build_does(tmp_path, monkeypatch):
+    # Some diffusers constructors draw a parameter with torch.randn, on meta as with weights.
+    def drawing_load_component(self, component, **kwargs):
+        torch.randn(1)
+        return FileBackend.load_component(self, component, **kwargs)
+
+    save_checkpoint(tmp_path / "renamed", name="block.proj.kernel")
+    (tmp_path / "no files").mkdir()
+    states = {}
+    for path in ("renamed", "no files"):
+        monkeypatch.setattr(model_loader, "build_component", build_with(drawing_load_component))
+        torch.manual_seed(0)
+        _, materialize_requests, _ = load(monkeypatch, tmp_path / path)
+        states[path] = (materialize_requests, torch.get_rng_state())
+    assert states["renamed"][0] == [False, True, False, True] and states["no files"][0] == [True, True]
+    assert torch.equal(states["renamed"][1], states["no files"][1])
 
 
 def test_one_rank_that_cannot_read_the_files_sends_every_rank_to_the_broadcast(tmp_path, monkeypatch):
