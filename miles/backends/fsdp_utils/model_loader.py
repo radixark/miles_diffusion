@@ -113,9 +113,10 @@ def peft_init_lora_weights(args: Namespace) -> bool | str:
 def lora_needs_no_base_weights(args: Namespace, lora_adapter_path: str | None) -> bool:
     """Whether every rank can build the adapter on a base that has no weights.
 
-    PEFT's initialization must not read them. A saved adapter must also be a LoRA whose file holds adapter
-    tensors only: PEFT loads any other tensor it saved (a bias, a module to save) into the base, where the read
-    of the base checkpoint would replace it.
+    PEFT must not read the base weights' values while it builds the adapter: PiSSA, OLoRA, LoftQ... decompose
+    them, and DoRA takes their norm. A saved adapter must also be a LoRA whose file holds adapter tensors only:
+    PEFT loads any other tensor it saved (a bias, a module to save) into the base, where the read of the base
+    checkpoint would replace it.
     """
     if lora_adapter_path is None:
         return peft_init_lora_weights(args) in PEFT_INITS_WITHOUT_BASE_WEIGHTS
@@ -125,9 +126,9 @@ def lora_needs_no_base_weights(args: Namespace, lora_adapter_path: str | None) -
 
     config = PeftConfig.from_pretrained(lora_adapter_path)
     file = Path(lora_adapter_path) / SAFETENSORS_WEIGHTS_NAME
-    if not isinstance(config, LoraConfig) or config.init_lora_weights not in PEFT_INITS_WITHOUT_BASE_WEIGHTS:
+    if not isinstance(config, LoraConfig) or config.use_dora:
         return False
-    if not file.is_file():
+    if config.init_lora_weights not in PEFT_INITS_WITHOUT_BASE_WEIGHTS or not file.is_file():
         return False
     with safe_open(file, framework="pt") as tensors:
         return all(checkpoint.is_lora_param_name(name) for name in tensors.keys())
@@ -182,9 +183,9 @@ def build_component(
 def base_storage_for_lora(model: torch.nn.Module, *, enabled: bool):
     """Give a meta base a CPU stand-in while PEFT builds an adapter on it, from rank 0's generator state.
 
-    PEFT moves a new adapter to its base layer's device, and meta would drop the adapter's values. It reads the
-    base layer's device and dtype only, so each base parameter stands in as one uninitialized element expanded to
-    its shape: a full ``torch.empty`` is written through under ``--deterministic-mode`` (the NaN fill), a copy of
+    PEFT moves a new adapter to its base layer's device, and meta would drop the adapter's values. For the
+    adapters ``lora_needs_no_base_weights`` lets through it reads the base layer's device and dtype only, so each
+    base parameter stands in as one uninitialized element expanded to its shape: a full ``torch.empty`` is written through under ``--deterministic-mode`` (the NaN fill), a copy of
     the model on every rank. PEFT's initialization draws, and only rank 0 has run it so far: the other ranks draw
     the same values from rank 0's generator state and keep their own.
     """

@@ -326,13 +326,15 @@ def save_adapter(path, config, *, init_lora_weights=None):
         pytest.param(LoraConfig(r=2, target_modules=["proj"], bias="all"), None, False, id="a bias of the base"),
         pytest.param(LoraConfig(r=2, target_modules=["proj"], modules_to_save=["norm"]), None, False, id="a module"),
         pytest.param(LoraConfig(r=2, target_modules=["proj"]), "pissa", False, id="an init from the base weights"),
+        pytest.param(LoraConfig(r=2, target_modules=["proj"], use_dora=True), None, False, id="DoRA"),
         pytest.param(LoHaConfig(r=2, target_modules=["proj"]), None, False, id="not a LoRA"),
     ],
 )
 def test_a_saved_adapter_is_built_on_every_rank_only_when_it_holds_lora_tensors_alone(
     tmp_path, config, init_lora_weights, builds_on_every_rank
 ):
-    # PEFT loads a bias or a saved module into the base, and the read of the base checkpoint would replace it.
+    # PEFT loads a bias or a saved module into the base, and the read of the base checkpoint would replace it;
+    # DoRA's magnitude is the norm of the base weights, which no rank holds while it builds the adapter.
     adapter_path = save_adapter(tmp_path, config, init_lora_weights=init_lora_weights)
     assert model_loader.lora_needs_no_base_weights(make_model_loader_args(), adapter_path) is builds_on_every_rank
 
