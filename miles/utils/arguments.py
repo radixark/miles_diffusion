@@ -2105,11 +2105,14 @@ def validate_dmd2_args(args) -> None:
 def validate_resolution_strategy(args, cfg_cls) -> None:
     """Reject a mixed-resolution rollout the training side cannot replay.
 
-    Also derives ``args.diffusion_resolution_bucket_list``: the resolutions the run says up
-    front it can draw, which the train side declares its per-resolution metrics from. Empty
-    unless a strategy and a bucket list are both set.
+    Also derives the parsed form of the bucket list: ``args.diffusion_resolution_bucket_list``,
+    the resolutions the run says up front it can draw -- which the train side declares its
+    per-resolution metrics from and ``weighted_buckets`` samples -- and
+    ``args.diffusion_resolution_bucket_weights``, their normalized probabilities or None for
+    uniform. Empty unless a strategy and a bucket list are both set.
     """
     args.diffusion_resolution_bucket_list = ()
+    args.diffusion_resolution_bucket_weights = None
     if args.diffusion_resolution_strategy_path is None:
         return
 
@@ -2162,11 +2165,13 @@ def validate_resolution_strategy(args, cfg_cls) -> None:
             "declares it with @miles.ray.data_conversion_hub.labels_rollout_resolution."
         )
 
-    # Fail at startup rather than in the first rollout actor.
+    # Parse here, once: the buckets a run can draw are also what the train side declares its
+    # per-resolution metrics from, and weighted_buckets then only samples.
     if args.diffusion_resolution_buckets is not None:
         buckets = parse_resolution_buckets(args.diffusion_resolution_buckets)
-        parse_resolution_weights(args.diffusion_resolution_weights, len(buckets))
+        weights = parse_resolution_weights(args.diffusion_resolution_weights, len(buckets))
         args.diffusion_resolution_bucket_list = tuple(buckets)
+        args.diffusion_resolution_bucket_weights = None if weights is None else tuple(weights)
     elif load_function(args.diffusion_resolution_strategy_path) is weighted_buckets:
         raise ValueError("miles.rollout.resolution_strategy_hub.weighted_buckets needs --diffusion-resolution-buckets")
     elif args.diffusion_resolution_weights is not None:
