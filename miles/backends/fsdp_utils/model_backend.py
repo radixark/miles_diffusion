@@ -24,6 +24,7 @@ import json
 import logging
 import os
 from dataclasses import replace
+from itertools import chain
 from pathlib import Path
 
 import torch
@@ -204,10 +205,9 @@ class DiffusersModelBackend(BaseModelBackend):
             "low_cpu_mem_usage": materialize_weights,
         }
 
-        # Non-rank0 loads with low_cpu_mem_usage=False so the ambient meta-device
-        # context keeps params on meta; diffusers forbids that combination when the
-        # class pins modules to fp32, so disable the pin for the duration (dtypes are
-        # re-synced from rank0 afterwards, see ``sync_model_dtypes``).
+        # A build without weights loads with low_cpu_mem_usage=False so the ambient meta-device context keeps
+        # the parameters on meta; diffusers forbids that combination when the class pins modules to fp32, so the
+        # pin is off for the call and applied afterwards.
         keep_in_fp32 = getattr(model_cls, "_keep_in_fp32_modules", None)
         if not materialize_weights and keep_in_fp32 is not None:
             model_cls._keep_in_fp32_modules = None
@@ -216,11 +216,23 @@ class DiffusersModelBackend(BaseModelBackend):
         finally:
             if not materialize_weights and keep_in_fp32 is not None:
                 model_cls._keep_in_fp32_modules = keep_in_fp32
-        if not materialize_weights and keep_in_fp32 is not None:
-            for name, param in model.named_parameters():
-                if any(module in name.split(".") for module in keep_in_fp32):
-                    param.data = param.data.to(torch.float32)
+        if not materialize_weights:
+            self._cast_state_as_a_load_does(model, master_dtype, keep_in_fp32 or [])
         return model
+
+    @staticmethod
+    def _cast_state_as_a_load_does(model: torch.nn.Module, master_dtype: torch.dtype, keep_in_fp32: list[str]) -> None:
+        """Give every floating tensor of the state dict the dtype a load with weights gives it.
+
+        diffusers casts each one to the master dtype, or to fp32 under the class's pin
+        (``load_model_dict_into_meta``). A build without weights has the constructor's dtypes, and every rank may
+        be built that way, so no rank's loaded model is there to copy them from.
+        """
+        saved = set(model.state_dict())
+        for name, tensor in chain(model.named_parameters(), model.named_buffers()):
+            if name in saved and tensor.is_floating_point():
+                pinned = any(module in name.split(".") for module in keep_in_fp32)
+                tensor.data = tensor.data.to(torch.float32 if pinned else master_dtype)
 
     def safetensors_files(self, component: str, *, checkpoint_path: str) -> list[Path] | None:
         """The files ``from_pretrained`` reads with no variant: the ones the index lists, else the single file."""
