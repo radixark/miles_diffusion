@@ -3,6 +3,7 @@
     files hold the state dict --> both ranks on meta --> rows [0:2] on rank 0, rows [2:4] on rank 1, GPU or CPU offload
                                   a buffer no file holds --> rank 0's value on both ranks
     another name in the files --> rank 0 builds again with weights --> the broadcast value on both ranks
+    another name on rank 1 only --> the same: the ranks agree before either reads
 """
 
 import os
@@ -69,6 +70,12 @@ def main():
                 torch.testing.assert_close(model(inputs).cpu(), (inputs.cpu() @ expected.T).tanh())
 
         models, materialize_requests = load(mesh, root / "renamed", cpu_offload)
+        assert materialize_requests == ([False, True, False, True] if rank == 0 else [False, False])
+        for model in models.values():
+            assert torch.all(model.block.proj.weight.to_local() == BROADCAST_VALUE)
+
+        # Only rank 1's copy holds another name: rank 0 must not read its shards while rank 1 waits for a broadcast.
+        models, materialize_requests = load(mesh, root / ("renamed" if rank == 1 else "state"), cpu_offload)
         assert materialize_requests == ([False, True, False, True] if rank == 0 else [False, False])
         for model in models.values():
             assert torch.all(model.block.proj.weight.to_local() == BROADCAST_VALUE)
