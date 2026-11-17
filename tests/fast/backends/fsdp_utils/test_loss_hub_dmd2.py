@@ -145,6 +145,7 @@ def _forward(config, model, prepared, *, use_cfg, cfg_batching, guidance_scale):
         model=model,
         latents_input=prepared.latents,
         timesteps_input=prepared.timesteps_for_model,
+        denoising_step_indices=prepared.denoising_step_indices,
         pos_cond=prepared.pos_cond,
         neg_cond=prepared.neg_cond,
         joint_cond=prepared.joint_cond,

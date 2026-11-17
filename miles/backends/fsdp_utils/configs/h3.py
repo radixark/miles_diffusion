@@ -125,6 +125,7 @@ class H3TrainPipelineConfig(TrainPipelineConfig):
         model: torch.nn.Module,
         latents_input: dict[str, torch.Tensor],
         timesteps_input: dict[str, torch.Tensor],
+        denoising_step_indices: torch.Tensor | None,
         pos_cond: dict | None,
         neg_cond: dict | None,
         joint_cond: dict | None,
@@ -145,7 +146,7 @@ class H3TrainPipelineConfig(TrainPipelineConfig):
 
         RL feeds the visual stream alone, so its audio rows stay zero at the video time.
         """
-        del neg_cond, joint_cond, use_cfg, cfg_batching, guidance_scale, true_cfg_scale
+        del denoising_step_indices, neg_cond, joint_cond, use_cfg, cfg_batching, guidance_scale, true_cfg_scale
         cond = pos_cond
         visual = latents_input["visual"]
         device, dtype = visual.device, visual.dtype

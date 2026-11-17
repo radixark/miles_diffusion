@@ -296,7 +296,9 @@ counts from 0; the old-log-prob recompute of windows 1.. passes their training f
 `timesteps_for_model` are keyed by latent stream name: `"visual"`, plus e.g.
 `"audio"` for joint audio-video models. `PreparedBatch.teacher_guidance_scale` asks the trunk to run the frozen
 teacher (`--teacher-load`) without grad on this micro-batch at that CFG scale, over `neg_cond` / `joint_cond`, before
-the training forward; the formula receives it as `teacher_pred`.
+the training forward; the formula receives it as `teacher_pred`. `PreparedBatch.denoising_step_indices` hands the
+family's forward each row's step number in its rollout's schedule; leave it unset when the loss samples its own noise
+levels.
 
 ### `--custom-loss-function-path`
 

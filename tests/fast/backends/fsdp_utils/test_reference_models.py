@@ -157,6 +157,7 @@ def make_actor_forward_harness(
     teacher_models=None,
     teacher_guidance_scale=None,
     true_cfg_scale=None,
+    denoising_step_indices=None,
 ):
     observed = {}
     prepared = SimpleNamespace(
@@ -172,6 +173,7 @@ def make_actor_forward_harness(
         guidance_scale=1.0,
         true_cfg_scale=true_cfg_scale,
         teacher_guidance_scale=teacher_guidance_scale,
+        denoising_step_indices=denoising_step_indices,
     )
 
     def prepare(ctx, batch, **kwargs):
@@ -581,6 +583,24 @@ def test_the_teacher_runs_first_without_grad_with_its_own_cfg(cfg_batching):
     assert teacher_call["true_cfg_scale"] is None
     assert (actor_call["use_cfg"], actor_call["cfg_batching"], actor_call["guidance_scale"]) == (False, False, 1.0)
     assert actor_call["true_cfg_scale"] == 7.0
+
+
+def test_the_family_forward_receives_the_prepared_denoising_steps():
+    """A DiT with one output head per step runs the wrong head if the actor drops the step numbers."""
+    denoising_step_indices = torch.tensor([3, 4])
+    harness, _ = make_actor_forward_harness(
+        {"transformer": TinyComponent()},
+        {},
+        "transformer",
+        torch.ones(2, 3),
+        None,
+        denoising_step_indices=denoising_step_indices,
+    )
+
+    _run_forward(harness)
+
+    [(_, actor_call)] = harness.train_pipeline_config.noise_pred_calls
+    assert actor_call["denoising_step_indices"] is denoising_step_indices
 
 
 def test_an_unguided_teacher_runs_without_cfg():

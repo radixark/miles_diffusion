@@ -143,6 +143,7 @@ class TrainPipelineConfig(abc.ABC):
         model: torch.nn.Module,
         latents_input: dict[str, torch.Tensor],
         timesteps_input: dict[str, torch.Tensor],
+        denoising_step_indices: torch.Tensor | None,
         pos_cond: dict | None,
         neg_cond: dict | None,
         joint_cond: dict | None,
@@ -151,7 +152,11 @@ class TrainPipelineConfig(abc.ABC):
         guidance_scale: float,
         true_cfg_scale: float | None,
     ) -> dict[str, torch.Tensor]:
-        """Default diffusers forward with CFG over the visual stream; families with a different forward override."""
+        """Default diffusers forward with CFG over the visual stream; families with a different forward override.
+
+        ``denoising_step_indices`` is each row's step number in its rollout's schedule, for a DiT whose forward
+        depends on the step; None when the loss samples its own noise levels.
+        """
         latents = latents_input["visual"]
         timesteps = timesteps_input["visual"]
 

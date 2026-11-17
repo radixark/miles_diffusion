@@ -554,6 +554,7 @@ class FSDPTrainRayActor(TrainRayActor):
                     model=model,
                     latents_input=latents_in,
                     timesteps_input=timesteps_in,
+                    denoising_step_indices=prepared.denoising_step_indices,
                     pos_cond=pos_cond_in,
                     neg_cond=neg_cond_in,
                     joint_cond=joint_cond_in,

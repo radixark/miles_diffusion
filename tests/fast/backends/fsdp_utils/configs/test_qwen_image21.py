@@ -88,6 +88,7 @@ def test_compute_noise_pred_keeps_target_tail():
         model=_TailDiT(),
         latents_input={"visual": latents},
         timesteps_input={"visual": torch.tensor([0.5])},
+        denoising_step_indices=None,
         pos_cond={},
         neg_cond=None,
         joint_cond=None,
