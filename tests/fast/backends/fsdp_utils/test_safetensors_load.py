@@ -20,6 +20,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 import torch.distributed as dist
+from peft import LoHaConfig, LoraConfig, get_peft_model
 from safetensors.torch import save_file
 from tests.fast.backends.fsdp_utils.test_reference_models import (
     TinyBackend,
@@ -299,6 +300,41 @@ def test_the_base_takes_no_memory_while_the_adapter_is_built(monkeypatch):
         assert weight.device.type == "cpu" and weight.shape == (4, 3)
         assert weight.untyped_storage().nbytes() == weight.element_size()
     assert model.block.proj.weight.is_meta
+
+
+class BiasedBlock(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.proj = torch.nn.Linear(3, 4)
+        self.norm = torch.nn.LayerNorm(4)
+
+
+def save_adapter(path, config, *, init_lora_weights=None):
+    get_peft_model(BiasedBlock(), config).save_pretrained(path)
+    if init_lora_weights is not None:
+        adapter_config = json.loads((path / "adapter_config.json").read_text())
+        (path / "adapter_config.json").write_text(
+            json.dumps(adapter_config | {"init_lora_weights": init_lora_weights})
+        )
+    return str(path)
+
+
+@pytest.mark.parametrize(
+    "config, init_lora_weights, builds_on_every_rank",
+    [
+        pytest.param(LoraConfig(r=2, target_modules=["proj"]), None, True, id="adapter tensors only"),
+        pytest.param(LoraConfig(r=2, target_modules=["proj"], bias="all"), None, False, id="a bias of the base"),
+        pytest.param(LoraConfig(r=2, target_modules=["proj"], modules_to_save=["norm"]), None, False, id="a module"),
+        pytest.param(LoraConfig(r=2, target_modules=["proj"]), "pissa", False, id="an init from the base weights"),
+        pytest.param(LoHaConfig(r=2, target_modules=["proj"]), None, False, id="not a LoRA"),
+    ],
+)
+def test_a_saved_adapter_is_built_on_every_rank_only_when_it_holds_lora_tensors_alone(
+    tmp_path, config, init_lora_weights, builds_on_every_rank
+):
+    # PEFT loads a bias or a saved module into the base, and the read of the base checkpoint would replace it.
+    adapter_path = save_adapter(tmp_path, config, init_lora_weights=init_lora_weights)
+    assert model_loader.lora_needs_no_base_weights(make_model_loader_args(), adapter_path) is builds_on_every_rank
 
 
 def lora_weights(state):

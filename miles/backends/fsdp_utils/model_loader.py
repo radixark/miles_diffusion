@@ -5,6 +5,7 @@ import warnings
 from argparse import Namespace
 from contextlib import contextmanager
 from functools import partial
+from pathlib import Path
 
 import torch
 import torch.distributed as dist
@@ -100,16 +101,36 @@ def load_fsdp_models(
     return models
 
 
-LORA_INITS_WITHOUT_BASE_WEIGHTS = ("gaussian", "kaiming-uniform")
+# PEFT's LoraConfig.init_lora_weights values that never read the base weights; PiSSA, OLoRA, LoftQ... decompose them.
+PEFT_INITS_WITHOUT_BASE_WEIGHTS = (True, False, "gaussian")
+
+
+def peft_init_lora_weights(args: Namespace) -> bool | str:
+    """``--lora-init-weights`` as PEFT's ``LoraConfig.init_lora_weights``."""
+    return True if args.lora_init_weights == "kaiming-uniform" else args.lora_init_weights
 
 
 def lora_needs_no_base_weights(args: Namespace, lora_adapter_path: str | None) -> bool:
-    """Whether PEFT builds the adapter without reading the base weights (PiSSA, OLoRA, LoftQ... decompose them)."""
-    if lora_adapter_path is None:
-        return args.lora_init_weights in LORA_INITS_WITHOUT_BASE_WEIGHTS
-    from peft import PeftConfig
+    """Whether every rank can build the adapter on a base that has no weights.
 
-    return PeftConfig.from_pretrained(lora_adapter_path).init_lora_weights in (True, False, "gaussian")
+    PEFT's initialization must not read them. A saved adapter must also be a LoRA whose file holds adapter
+    tensors only: PEFT loads any other tensor it saved (a bias, a module to save) into the base, where the read
+    of the base checkpoint would replace it.
+    """
+    if lora_adapter_path is None:
+        return peft_init_lora_weights(args) in PEFT_INITS_WITHOUT_BASE_WEIGHTS
+    from peft import LoraConfig, PeftConfig
+    from peft.utils import SAFETENSORS_WEIGHTS_NAME
+    from safetensors import safe_open
+
+    config = PeftConfig.from_pretrained(lora_adapter_path)
+    file = Path(lora_adapter_path) / SAFETENSORS_WEIGHTS_NAME
+    if not isinstance(config, LoraConfig) or config.init_lora_weights not in PEFT_INITS_WITHOUT_BASE_WEIGHTS:
+        return False
+    if not file.is_file():
+        return False
+    with safe_open(file, framework="pt") as tensors:
+        return all(checkpoint.is_lora_param_name(name) for name in tensors.keys())
 
 
 def build_component(
@@ -234,16 +255,13 @@ def apply_lora(
 
     # Per-model fallback when --lora-target-modules is unset (runtime inference: depends on loaded pipeline).
     targets = args.lora_target_modules or train_pipeline_config.lora_target_modules
-    init_lora_weight = args.lora_init_weights
-    if init_lora_weight == "kaiming-uniform":
-        init_lora_weight = True  # namely kaiming-uniform
     model = get_peft_model(
         model,
         LoraConfig(
             r=args.lora_rank,
             lora_alpha=args.lora_alpha,
             target_modules=targets,
-            init_lora_weights=init_lora_weight if materialize else False,
+            init_lora_weights=peft_init_lora_weights(args) if materialize else False,
         ),
         low_cpu_mem_usage=not materialize,
     )
