@@ -243,9 +243,14 @@ class DiffusersModelBackend(BaseModelBackend):
         is_local = os.path.isdir(checkpoint_path)
         if not is_local:
             from huggingface_hub import snapshot_download
+            from huggingface_hub.errors import HFValidationError
 
             patterns = [f"{component}/{SAFETENSORS_WEIGHTS_NAME}*", f"{component}/{stem}-*.safetensors"]
-            checkpoint_path = snapshot_download(checkpoint_path, allow_patterns=patterns)
+            try:
+                checkpoint_path = snapshot_download(checkpoint_path, allow_patterns=patterns)
+            except HFValidationError:
+                # Neither a folder nor a repo id: load_component says so.
+                return None
         folder = Path(checkpoint_path) / component
         index = folder / SAFE_WEIGHTS_INDEX_NAME
         if index.is_file():

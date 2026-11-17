@@ -236,3 +236,8 @@ class TestBackendHierarchy:
         (tmp_path / "diffusion_pytorch_model.safetensors").touch()
 
         assert backend.safetensors_files("transformer", checkpoint_path=str(tmp_path)) is None
+
+    def test_a_checkpoint_that_is_neither_a_folder_nor_a_repo_id_names_no_files(self, tmp_path):
+        # load_component then reports the path, as it does without this hook.
+        backend = DiffusersModelBackend(None)
+        assert backend.safetensors_files("transformer", checkpoint_path=str(tmp_path / "missing")) is None
