@@ -137,43 +137,58 @@ def strategy(args, sample, seed) -> tuple[int, int]:
     ...
 ```
 
-The rollout calls it once per prompt group, with the group's own `seed_base`, and sends the
-result as the request's `height` / `width` — so a run reproduces, and every microgroup of the
-group agrees. GRPO normalizes rewards inside a group: a group that mixed resolutions would push
-a reward model's resolution preference into the advantage instead of the sample's own quality.
-The drawn resolution lands on each `Sample` (`height` / `width`), is cross-checked against the
-media the engine returns, and is reported per bucket as
-`rollout/resolution/<HxW>_reward_mean`. Eval keeps `--diffusion-height` / `--diffusion-width`.
-With `--diffusion-resolution-buckets` the train side also splits the rollout-vs-train log-prob
-drift as `train/log_prob_mean_abs_diff_res_<HxW>`: a RoPE or `img_shapes` mismatch at one bucket
-would otherwise show only as a fraction of its size in the overall `train/log_prob_mean_abs_diff`.
-The per-bucket metric always compares against the log-prob the rollout reported, so it keeps
-that meaning under `--diffusion-recompute-old-log-prob` — which replaces the old log-prob with a
-train-side one, equal to the new log-prob on the first optimizer step, and so turns the overall
-metric into a flat zero there rather than a replay measurement.
+The rollout calls it once per prompt group, before the per-microgroup requests, so every
+microgroup of the group renders at one resolution. The draw is seeded from the group's
+`seed_base` so a run reproduces — through `stable_hash`, because `seed_base` is also the first
+microgroup's request seed and the SDE step strategy draws its window from that, which would tie
+each resolution to one window start. The drawn size lands on each `Sample` and is cross-checked
+against the media the engine returns. Eval keeps `--diffusion-height` / `--diffusion-width`.
+
+GRPO normalizes rewards inside a prompt group, which is why the draw is per group rather than
+per request: a group that mixed resolutions would push a reward model's resolution preference
+into the advantage instead of the sample's own quality.
 
 | Stock | Behavior |
 |---|---|
 | `weighted_buckets` | Draw from `--diffusion-resolution-buckets`, weighted by `--diffusion-resolution-weights` (uniform when unset) |
 
 The strategy receives the group's first `Sample`, so a custom one can read the resolution off
-the prompt or its dataset metadata rather than drawing it.
+the prompt or its dataset metadata rather than drawing it. Arg validation parses the buckets
+once onto `args.diffusion_resolution_bucket_list` and their normalized weights onto
+`args.diffusion_resolution_bucket_weights`, which is what `weighted_buckets` samples.
 
-Two guards, both at arg validation:
+#### Metrics
+
+`rollout/resolution/<HxW>_reward_mean` splits the reward by bucket. With
+`--diffusion-resolution-buckets` the train side also splits the rollout-vs-train log-prob drift
+as `train/log_prob_mean_abs_diff_res_<HxW>`: a RoPE or `img_shapes` mismatch at one bucket would
+otherwise show only as a fraction of its size in the overall `train/log_prob_mean_abs_diff`. The
+per-bucket metric always compares against the log-prob the rollout reported, so it keeps that
+meaning under `--diffusion-recompute-old-log-prob` — which replaces the old log-prob with a
+train-side one, equal to the new log-prob on the first optimizer step, and so turns the overall
+metric into a flat zero there rather than a replay measurement.
+
+#### What it requires
+
+Three checks at arg validation:
 
 - the family must set `supports_mixed_resolution` (today `qwen_image`, whose train forward takes
   each sample's grid from the rollout's `img_shapes`). A family that builds positions from the
   global height and width would not raise — 1024x768 and 768x1024 hold the same token count, so
   the latents still stack while every token's position is wrong.
-- `--micro-batch-size-sample` greater than 1: a legacy tile gathers that many *different*
+- `--micro-batch-size-sample` must not exceed 1: a legacy tile gathers that many *different*
   samples, which spans prompt groups and so resolutions. A tile of one sample across timesteps
   (`--micro-batch-size-sample 1`) stays on one resolution and is allowed.
+- the train-pair conversion must declare `@miles.ray.data_conversion_hub.labels_rollout_resolution`,
+  which says it copies each sample's resolution and the rollout's log-prob onto its pairs. The
+  Flow-GRPO conversion does; the NFT and DMD2 ones do not, so `--loss-type nft` / `dmd2` are
+  rejected — their pairs would leave the train-time check below reading nothing and passing.
 
 And one at train time: every micro-batch must hold a single resolution, which the actor checks
 (`check_single_resolution`). Two resolutions of the same token count would otherwise stack, and
 qwen_image's RoPE builds the whole batch's positions from the first sample's grid. With the flat
 sample-major schedule a micro-batch stays inside one prompt group when `--micro-batch-size`
-divides the group's pairs on a rank -- under `--train-dp-split-mode stride` that is
+divides the group's pairs on a rank — under `--train-dp-split-mode stride` that is
 `n_samples_per_prompt / dp_size` samples times the SDE steps each.
 
 Engine side, two things are worth knowing. Concurrent requests at different sizes never merge

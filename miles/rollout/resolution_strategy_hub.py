@@ -10,6 +10,12 @@ request keeps ``--diffusion-height`` / ``--diffusion-width``.
 
 The strategy receives the group's first ``Sample``, so a strategy can read the
 resolution off the prompt or its dataset metadata instead of drawing one.
+
+``weighted_buckets`` reads the parsed form of ``--diffusion-resolution-buckets``
+and ``--diffusion-resolution-weights`` that ``validate_resolution_strategy``
+leaves on ``args`` (``diffusion_resolution_bucket_list`` and
+``diffusion_resolution_bucket_weights``), so the strings are parsed once at
+startup rather than once per prompt group.
 """
 
 from __future__ import annotations
