@@ -44,6 +44,7 @@ def prepare_flow_grpo_batch(
     next_sigmas = _stack_pair_field(batch, "next_sigma", device)
     sigma_max = _stack_pair_field(batch, "sigma_max", device)
     log_prob_old = _stack_pair_field(batch, "log_prob_old", device)
+    log_prob_rollout = _stack_pair_field(batch, "log_prob_rollout", device)
     advantage = torch.tensor(
         [float(pair["advantage"]) for pair in batch],
         device=device,
@@ -112,6 +113,7 @@ def prepare_flow_grpo_batch(
             "next_sigmas": next_sigmas,
             "sigma_max": sigma_max,
             "log_prob_old": log_prob_old,
+            "log_prob_rollout": log_prob_rollout,
         },
     )
 
@@ -220,12 +222,17 @@ def flow_grpo_loss_formula(
                 total=log_prob_abs_diff_sum,
                 count=bsz,
             )
-        # one resolution per micro-batch (check_single_resolution); only the declared buckets
+        # One resolution per micro-batch (check_single_resolution); only the declared buckets.
+        # Against the rollout's own log-prob, not log_prob_old: this metric exists to show the
+        # trainer replays each bucket's rollout, and --diffusion-recompute-old-log-prob leaves
+        # log_prob_old holding a train-side value (identical to log_prob_new on the first
+        # optimizer step, which would read as a flat zero rather than as no measurement).
         resolution = batch[0].get("resolution")
         if resolution is not None:
             key = resolution_metric_key("log_prob_mean_abs_diff", resolution)
             if key in metrics:
-                metrics.emit_mean(key, total=log_prob_abs_diff_sum, count=bsz)
+                replay_diff_sum = torch.abs(log_prob_new - prepared.extras["log_prob_rollout"]).sum()
+                metrics.emit_mean(key, total=replay_diff_sum, count=bsz)
 
         if rollout_prev_mean is not None:
             record_prev_mean_diff_over_noise_std(metrics, rollout_prev_mean, step_out.prev_mean, step_out.noise_std)

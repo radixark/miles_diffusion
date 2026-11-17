@@ -149,6 +149,10 @@ def _build_per_timestep_features(
         # The first sigma below 1 on this sample's grid; the SDE kernel substitutes it at sigma == 1.
         "sigma_max": sigmas[1].expand(len(idx)),
         "log_prob_old": rollout_log_probs[idx],
+        # the same values, kept where --diffusion-recompute-old-log-prob will not overwrite
+        # them: measuring how faithfully the trainer replays the rollout needs the rollout's
+        # own log-prob, and the recompute pass replaces "log_prob_old" with a train-side one.
+        "log_prob_rollout": rollout_log_probs[idx],
     }, idx
 
 
