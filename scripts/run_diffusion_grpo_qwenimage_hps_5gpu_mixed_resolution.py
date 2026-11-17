@@ -1,10 +1,14 @@
-"""Qwen-Image PickScore GRPO over several resolutions.
+"""Qwen-Image HPSv2.1 GRPO over several resolutions.
 
 The flow_grpo-aligned 512x512 recipe (run_diffusion_grpo_pickscore_5gpu_flowgrpo_aligned.py)
-with one change: each prompt group draws its own resolution from
+with two changes. Each prompt group draws its own resolution from
 --diffusion-resolution-buckets, so the policy is optimized across aspect ratios instead of
-at one size. Buckets vary the aspect ratio at a near-constant token count, which keeps the
-per-group cost comparable; eval stays at --diffusion-height / --diffusion-width.
+at one size; buckets vary the aspect ratio at a near-constant token count, which keeps the
+per-group cost comparable, and eval stays at --diffusion-height / --diffusion-width.
+
+The reward is HPSv2.1 rather than the baseline's PickScore, whose CLIP processor center-crops
+to 224x224 and so never sees ~43% of a 672x384 or 384x672 frame. HPSv2.1 resizes the long side
+and pads, so it scores the whole image whatever its aspect ratio.
 
 It also trades --micro-batch-size-sample 8 / --micro-batch-size-tstep 1 for a flat
 --micro-batch-size 8: a train micro-batch must hold one resolution, and a legacy tile of 8
@@ -13,8 +17,7 @@ split each rank holds 16 / 4 = 4 samples x 2 SDE steps = 8 pairs of every group,
 micro-batch of 8 is exactly one group's pairs on that rank.
 
 Measured, and worth knowing before copying this: over 60 rollouts against the fixed-512
-recipe -- both run with --rm-type hps rather than the PickScore default below, so the reward
-saw the whole non-square frame -- this configuration bought nothing. The fixed-512 run improved the two
+recipe on the same reward, this configuration bought nothing. The fixed-512 run improved the two
 non-square eval sizes it never trained on by +0.0081 / +0.0074 over the base model, matching
 this recipe's +0.0085 / +0.0076, while beating it at 512x512 (+0.0099 vs +0.0054) -- what 512
 learns transfers across aspect ratio, so the budget spent elsewhere does not pay for itself.
@@ -27,10 +30,10 @@ Per rollout: 32 prompts x 16 samples = 512 samples. num_steps_per_rollout=2 give
 samples per optimizer step.
 
 Layout: the first four GPUs in CUDA_VISIBLE_DEVICES are train+sgld colocate, the fifth is
-a dedicated pickscore reward worker.
+a dedicated HPS reward worker.
 
 Usage:
-    python3 scripts/run_diffusion_grpo_pickscore_5gpu_mixed_resolution.py
+    python3 scripts/run_diffusion_grpo_qwenimage_hps_5gpu_mixed_resolution.py
 """
 
 from dataclasses import dataclass
@@ -58,7 +61,7 @@ def prepare(args: ScriptArgs) -> str:
 
 
 def execute(args: ScriptArgs, data_dir: str) -> None:
-    run_name = f"diffusion_grpo_pickscore_5gpu_mixed_resolution_{U.create_run_id()}"
+    run_name = f"diffusion_grpo_qwenimage_hps_5gpu_mixed_resolution_{U.create_run_id()}"
 
     ckpt_args = (
         f"--hf-checkpoint {MODEL} --diffusion-task t2i --save {args.output_dir}/{run_name}/ckpt --save-interval 10 "
@@ -109,12 +112,11 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
     )
 
     reward_args = (
-        "--rm-type pickscore "
-        "--pickscore-num-workers 1 "
-        "--pickscore-num-gpus-per-worker 1.0 "
-        "--pickscore-batch-size 8 "
-        "--pickscore-processor-path laion/CLIP-ViT-H-14-laion2B-s32B-b79K "
-        "--pickscore-model-path yuvalkirstain/PickScore_v1 "
+        "--rm-type hps "
+        "--hps-version v2.1 "
+        "--hps-num-workers 1 "
+        "--hps-num-gpus-per-worker 1.0 "
+        "--hps-batch-size 8 "
     )
 
     wandb_args = U.get_default_wandb_args(
