@@ -95,6 +95,7 @@ def _state(store, *, media_outputs_left=0):
         output_store=store,
         output_reader=StoredTensorReader(store) if store is not None else None,
         media_outputs_left=media_outputs_left,
+        resolution_strategy_fn=None,
     )
 
 

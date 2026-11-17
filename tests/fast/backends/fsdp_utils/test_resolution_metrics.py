@@ -63,7 +63,11 @@ def _run_loss(metrics, resolution, log_prob_new, log_prob_old, log_prob_rollout=
         extras={
             "next_latents": torch.zeros(bsz, 1),
             "log_prob_old": torch.tensor(log_prob_old),
-            "log_prob_rollout": torch.tensor(log_prob_rollout if log_prob_rollout is not None else log_prob_old),
+            "log_prob_rollout": (
+                None
+                if log_prob_rollout == "absent"
+                else torch.tensor(log_prob_rollout if log_prob_rollout is not None else log_prob_old)
+            ),
             "sigmas": torch.zeros(bsz),
             "next_sigmas": torch.zeros(bsz),
             "sigma_max": torch.ones(bsz),
@@ -140,3 +144,12 @@ def test_the_drift_measures_replay_even_when_old_log_probs_are_recomputed():
     out = metrics.reduce()
     assert out["log_prob_mean_abs_diff_res_512x512"] == pytest.approx(0.3)
     assert out[OVERALL] == pytest.approx(0.0)  # the overall metric keeps its existing meaning
+
+
+def test_a_bucket_without_the_rollout_log_prob_says_so():
+    """A conversion that labels resolutions but not rollout log-probs cannot support the metric;
+    silently falling back to log_prob_old would misreport replay under recompute."""
+    metrics = _buffer(_declared((512, 512)))
+
+    with pytest.raises(ValueError, match="cannot measure how faithfully"):
+        _run_loss(metrics, (512, 512), log_prob_new=[1.0], log_prob_old=[0.5], log_prob_rollout="absent")
