@@ -2113,6 +2113,10 @@ def validate_resolution_strategy(args, cfg_cls) -> None:
     if args.diffusion_resolution_strategy_path is None:
         return
 
+    from miles.ray.data_conversion_hub import conversion_labels_rollout_resolution
+    from miles.ray.data_conversion_hub.flow_grpo import (
+        expand_samples_to_train_pairs as flow_grpo_expand_samples_to_train_pairs,
+    )
     from miles.rollout.resolution_strategy_hub import (
         parse_resolution_buckets,
         parse_resolution_weights,
@@ -2139,20 +2143,23 @@ def validate_resolution_strategy(args, cfg_cls) -> None:
             "set --micro-batch-size instead"
         )
 
-    # Only the Flow-GRPO conversion labels train pairs with their resolution, and the train-side
-    # check reads that label; the two shipped alternatives would leave it vacuous. Named rather
-    # than inferred from --loss-type, so a custom conversion that does label stays allowed (the
-    # train side verifies the labels are there either way).
-    unlabeled = {
-        "miles.ray.data_conversion_hub.nft.expand_samples_to_train_pairs",
-        "miles.ray.data_conversion_hub.dmd2.expand_samples_to_train_pairs",
-    }
-    if args.custom_expand_samples_to_train_pairs_path in unlabeled:
+    # The train side keeps a micro-batch to one resolution by reading the label the conversion
+    # writes on each train pair, so a conversion that does not write one makes that check
+    # vacuous. Conversions declare this (@labels_rollout_resolution) rather than being listed
+    # here, so one that has not thought about it is unsupported by default.
+    # unset means the Flow-GRPO conversion, which RolloutManager falls back to
+    conversion = (
+        load_function(args.custom_expand_samples_to_train_pairs_path)
+        if args.custom_expand_samples_to_train_pairs_path
+        else flow_grpo_expand_samples_to_train_pairs
+    )
+    if not conversion_labels_rollout_resolution(conversion):
+        where = args.custom_expand_samples_to_train_pairs_path or "the Flow-GRPO conversion"
         raise ValueError(
-            f"--diffusion-resolution-strategy-path has no effect through "
-            f"{args.custom_expand_samples_to_train_pairs_path}: it does not label train pairs with the "
-            "resolution their sample was rendered at, so the train side cannot keep a micro-batch to "
-            "one resolution. Flow-GRPO is the conversion this supports today."
+            f"--diffusion-resolution-strategy-path has no effect through {where}: it does not "
+            "label train pairs with the resolution their sample was rendered at, so the train side "
+            "cannot keep a micro-batch to one resolution. A conversion that does label its pairs "
+            "declares it with @miles.ray.data_conversion_hub.labels_rollout_resolution."
         )
 
     # Fail at startup rather than in the first rollout actor.

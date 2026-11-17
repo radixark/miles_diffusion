@@ -4,9 +4,11 @@ from typing import Any
 
 import torch
 
+from miles.ray.data_conversion_hub import labels_rollout_resolution
 from miles.utils.types import RolloutDebugTensors, Sample
 
 
+@labels_rollout_resolution
 def expand_samples_to_train_pairs(
     args,
     samples: list[Sample],

@@ -14,6 +14,7 @@ from tests.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=5, suite="stage-a-cpu", labels=[])
 
+import sys
 from argparse import Namespace
 
 import pytest
@@ -85,7 +86,7 @@ def test_a_custom_strategy_needs_no_buckets():
     validate_resolution_strategy(
         _args(diffusion_resolution_strategy_path="miles.utils.misc.load_function", diffusion_resolution_buckets=None),
         _MixedResolutionConfig,
-    )
+    )  # the conversion stays the declaring default
 
 
 def test_weights_without_buckets_are_rejected():
@@ -127,8 +128,13 @@ def test_nothing_is_declared_without_a_bucket_list(overrides):
     assert args.diffusion_resolution_bucket_list == ()
 
 
+def test_the_default_conversion_labels_its_pairs():
+    # unset means Flow-GRPO, which declares it
+    validate_resolution_strategy(_args(), _MixedResolutionConfig)
+
+
 @pytest.mark.parametrize("conversion", ["nft", "dmd2"])
-def test_a_conversion_that_does_not_label_pairs_is_rejected(conversion):
+def test_a_conversion_that_does_not_declare_labelling_is_rejected(conversion):
     # --loss-type nft / dmd2 select these; their pairs carry no resolution, which would leave
     # the train-side micro-batch check vacuous
     path = f"miles.ray.data_conversion_hub.{conversion}.expand_samples_to_train_pairs"
@@ -138,8 +144,24 @@ def test_a_conversion_that_does_not_label_pairs_is_rejected(conversion):
         )
 
 
-def test_a_custom_conversion_is_left_to_the_train_side_check():
-    # it may well label its pairs; check_single_resolution verifies that where it can be seen
+def test_a_conversion_is_unsupported_until_it_declares_itself():
+    # the safe default: a conversion that has not thought about resolution is rejected, rather
+    # than silently making the train-side check vacuous
+    with pytest.raises(ValueError, match="does not label train pairs"):
+        validate_resolution_strategy(
+            _args(custom_expand_samples_to_train_pairs_path="miles.utils.misc.load_function"),
+            _MixedResolutionConfig,
+        )
+
+
+def test_a_declaring_conversion_is_accepted():
+    from miles.ray.data_conversion_hub import labels_rollout_resolution
+
+    @labels_rollout_resolution
+    def convert(args, samples, rewards, raw_rewards):
+        raise NotImplementedError
+
+    sys.modules[__name__].convert = convert
     validate_resolution_strategy(
-        _args(custom_expand_samples_to_train_pairs_path="my_project.convert"), _MixedResolutionConfig
+        _args(custom_expand_samples_to_train_pairs_path=f"{__name__}.convert"), _MixedResolutionConfig
     )
