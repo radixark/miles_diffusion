@@ -23,6 +23,7 @@ import torch.distributed as dist
 from safetensors.torch import save_file
 from tests.fast.backends.fsdp_utils.test_reference_models import (
     TinyBackend,
+    TinyComponent,
     TinyPipelineConfig,
     make_model_loader_args,
     save_component_lora_adapters,
@@ -74,9 +75,9 @@ def save_checkpoint(path, *, name="block.proj.weight", shape=(4, 3), sharded=Tru
         )
 
 
-def load(monkeypatch, path, *, agree=lambda flag: flag, lora_init=None, backend_cls=None, **kwargs):
+def load(monkeypatch, path, *, holds=lambda condition: condition, lora_init=None, backend_cls=None, **kwargs):
     broadcasts = []
-    monkeypatch.setattr(model_loader.checkpoint, "all_ranks_agree", agree)
+    monkeypatch.setattr(model_loader.checkpoint, "holds_on_every_rank", holds)
     monkeypatch.setattr(model_loader.checkpoint, "sync_model_dtypes", lambda model: None)
     monkeypatch.setattr(
         model_loader.checkpoint, "broadcast_full_state_to_fsdp", lambda model, state, **_: broadcasts.append(state)
@@ -179,22 +180,98 @@ def test_rank_0_built_twice_leaves_the_generator_where_one_build_does(tmp_path, 
     assert torch.equal(states["renamed"][1], states["no files"][1])
 
 
+class DerivedBufferComponent(TinyComponent):
+    """A buffer the constructor derives from a parameter: on meta when the component is built without weights."""
+
+    persistent = True
+
+    def __init__(self):
+        super().__init__()
+        self.register_buffer("row_sums", self.block.proj.weight.sum(dim=1), persistent=self.persistent)
+
+
+class TransientDerivedBufferComponent(DerivedBufferComponent):
+    persistent = False
+
+
+class SharedBufferComponent(TinyComponent):
+    """One tensor registered as a buffer of two modules."""
+
+    def __init__(self):
+        super().__init__()
+        table = torch.arange(3.0)
+        self.block.register_buffer("table", table, persistent=False)
+        self.register_buffer("table", table, persistent=False)
+
+
+def backend_of(component_cls):
+    class Backend(FileBackend):
+        def load_component(self, component, *, checkpoint_path, master_dtype, materialize_weights):
+            self.materialize_requests.append(materialize_weights)
+            model = component_cls().to(dtype=master_dtype)
+            if materialize_weights:
+                with torch.no_grad():
+                    model.block.proj.weight.fill_(BROADCAST_VALUE)
+            return model
+
+    return Backend
+
+
+def save_row_sums(path):
+    for component in make_model_loader_args().update_weight_target_modules:
+        file = path / component / "diffusion_pytorch_model.safetensors"
+        folder_state = {"block.proj.weight": saved_weight(component), "row_sums": saved_weight(component).sum(dim=1)}
+        file.parent.mkdir(parents=True)
+        save_file(folder_state, file)
+
+
+def test_a_state_dict_buffer_the_constructor_left_on_meta_is_read_from_the_files(tmp_path, monkeypatch):
+    save_row_sums(tmp_path)
+    models, materialize_requests, broadcasts = load(
+        monkeypatch, tmp_path, backend_cls=backend_of(DerivedBufferComponent)
+    )
+    assert materialize_requests == [False, False] and broadcasts == []
+    for component, model in models.items():
+        assert torch.equal(model.row_sums, saved_weight(component).sum(dim=1).float())
+        assert model.forward_count.item() == 0
+
+
+def test_a_buffer_on_meta_that_no_file_holds_sends_every_rank_to_the_broadcast(tmp_path, monkeypatch):
+    save_checkpoint(tmp_path)
+    _, materialize_requests, broadcasts = load(
+        monkeypatch, tmp_path, backend_cls=backend_of(TransientDerivedBufferComponent)
+    )
+    assert materialize_requests == [False, True, False, True] and len(broadcasts) == 2
+
+
+def test_a_buffer_two_modules_share_keeps_its_value_on_both(tmp_path, monkeypatch):
+    save_checkpoint(tmp_path)
+    models, materialize_requests, broadcasts = load(
+        monkeypatch, tmp_path, backend_cls=backend_of(SharedBufferComponent)
+    )
+    assert materialize_requests == [False, False] and broadcasts == []
+    for model in models.values():
+        assert torch.equal(model.table, torch.arange(3.0)) and torch.equal(model.block.table, torch.arange(3.0))
+
+
 def test_one_rank_that_cannot_see_the_files_sends_every_rank_to_the_broadcast(tmp_path, monkeypatch):
     save_checkpoint(tmp_path)
-    flags = []
-    _, materialize_requests, broadcasts = load(monkeypatch, tmp_path, agree=lambda flag: flags.append(flag) or False)
-    assert flags == [True, True] and materialize_requests == [True, True] and len(broadcasts) == 2
+    conditions = []
+    _, materialize_requests, broadcasts = load(
+        monkeypatch, tmp_path, holds=lambda condition: conditions.append(condition) or False
+    )
+    assert conditions == [True, True] and materialize_requests == [True, True] and len(broadcasts) == 2
 
 
-def agree_on_the_files_only():
+def holds_for_the_files_only():
     """Every rank sees the files; then one of them finds another state dict in its copy."""
     answers = []
-    return lambda flag: answers.append(flag) or len(answers) % 2 == 1
+    return lambda condition: answers.append(condition) or len(answers) % 2 == 1
 
 
 def test_one_rank_whose_files_hold_another_state_sends_every_rank_to_the_broadcast(tmp_path, monkeypatch):
     save_checkpoint(tmp_path)
-    _, materialize_requests, broadcasts = load(monkeypatch, tmp_path, agree=agree_on_the_files_only())
+    _, materialize_requests, broadcasts = load(monkeypatch, tmp_path, holds=holds_for_the_files_only())
     assert materialize_requests == [False, True, False, True] and len(broadcasts) == 2
 
 
@@ -228,7 +305,7 @@ def test_a_new_adapter_gets_the_values_and_leaves_the_generator_as_rank_0_does_w
 
     torch.manual_seed(0)
     _, materialize_requests, with_weights = load(
-        monkeypatch, tmp_path, lora_init=lora_init, trainable=True, agree=agree_on_the_files_only()
+        monkeypatch, tmp_path, lora_init=lora_init, trainable=True, holds=holds_for_the_files_only()
     )
     assert materialize_requests == [False, True, False, True] and torch.equal(torch.get_rng_state(), generator)
     for (component, model), state in zip(models.items(), with_weights, strict=True):
@@ -246,9 +323,9 @@ def test_an_adapter_initialized_from_the_base_weights_is_built_by_rank_0_and_bro
             pytest.fail("PiSSA decomposes the base weights, which only rank 0 holds")
 
     save_checkpoint(tmp_path)
-    agree = lambda flag: pytest.fail("no rank reads the files")  # noqa: E731
+    holds = lambda condition: pytest.fail("no rank reads the files")  # noqa: E731
     _, materialize_requests, broadcasts = load(
-        monkeypatch, tmp_path, lora_init="pissa", trainable=True, agree=agree, backend_cls=NeverAsked
+        monkeypatch, tmp_path, lora_init="pissa", trainable=True, holds=holds, backend_cls=NeverAsked
     )
     assert materialize_requests == [True, True] and len(broadcasts) == 2
     assert all(len(lora_weights(state)) == 2 for state in broadcasts)

@@ -76,21 +76,27 @@ def base_state(model: torch.nn.Module) -> dict[str, torch.Tensor]:
     }
 
 
-def safetensors_hold_state(state: dict[str, torch.Tensor], files: list[Path]) -> bool:
-    """Whether the files hold the state dict: the same names, each with the same shape."""
+def safetensors_hold_state(model: torch.nn.Module, files: list[Path]) -> bool:
+    """Whether the files hold the model's state dict without its LoRA adapters: the same names and shapes.
+
+    A buffer outside the state dict is in no file, so it must hold the value its constructor computed.
+    """
     from safetensors import safe_open
 
+    state = model.state_dict()
+    if any(buffer.is_meta for name, buffer in model.named_buffers() if name not in state):
+        return False
     saved = {}
     for file in files:
         with safe_open(file, framework="pt") as tensors:
             saved.update({name: tuple(tensors.get_slice(name).get_shape()) for name in tensors.keys()})
-    return saved == {name: tuple(tensor.shape) for name, tensor in state.items()}
+    return saved == {name: tuple(tensor.shape) for name, tensor in base_state(model).items()}
 
 
-def all_ranks_agree(flag: bool) -> bool:
-    flags = [None] * dist.get_world_size()
-    dist.all_gather_object(flags, flag)
-    return all(flags)
+def holds_on_every_rank(condition: bool) -> bool:
+    conditions = [None] * dist.get_world_size()
+    dist.all_gather_object(conditions, condition)
+    return all(conditions)
 
 
 def rank0_rng_state() -> torch.Tensor:
@@ -104,12 +110,15 @@ def rank0_rng_state() -> torch.Tensor:
 def load_safetensors_to_fsdp(model: torch.nn.Module, files: list[Path], *, cpu_offload: bool) -> None:
     """Materialize FSDP2 shards by reading each rank's own slice of every base parameter from the files."""
     device = torch.cuda.current_device()
-    # Buffers and LoRA adapters were computed for real on every rank; to_empty would wipe them.
-    buffers = dict(model.named_buffers())
+    # Buffers and LoRA adapters were computed for real on every rank; to_empty would wipe them. A buffer still on
+    # meta is in the state dict, and the read fills it. to_empty splits a tensor two modules share, so each name
+    # keeps its own entry.
+    buffers = dict(model.named_buffers(remove_duplicate=False))
     adapters = {name: p.to_local().clone() for name, p in model.named_parameters() if is_lora_param_name(name)}
     model.to_empty(device="cpu" if cpu_offload else device)
-    for name, buffer in model.named_buffers():
-        buffer.copy_(buffers[name])
+    for name, buffer in model.named_buffers(remove_duplicate=False):
+        if not buffers[name].is_meta:
+            buffer.copy_(buffers[name])
     for name, parameter in model.named_parameters():
         if name in adapters:
             parameter.to_local().copy_(adapters[name])

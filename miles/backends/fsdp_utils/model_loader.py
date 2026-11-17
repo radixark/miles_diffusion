@@ -44,27 +44,29 @@ def load_fsdp_models(
         # Every rank reads its own shards from the safetensors files; else rank 0 loads and broadcasts.
         has_lora = lora_adapter_path is not None or (trainable and args.use_lora)
         read_per_rank = not has_lora or lora_needs_no_base_weights(args, lora_adapter_path)
-        safetensors = None
+        safetensors_files = None
         if read_per_rank:
-            safetensors = model_backend.safetensors_files(component, checkpoint_path=checkpoint_path)
-            if not checkpoint.all_ranks_agree(safetensors is not None):
-                safetensors = None
-        materialize_weights = safetensors is None and dist.get_rank() == 0
+            safetensors_files = model_backend.safetensors_files(component, checkpoint_path=checkpoint_path)
+            if not checkpoint.holds_on_every_rank(safetensors_files is not None):
+                safetensors_files = None
+        materialize_weights = safetensors_files is None and dist.get_rank() == 0
         rng_state = torch.get_rng_state()
-        model = build(materialize_weights=materialize_weights, lora_on_every_rank=safetensors is not None)
-        if safetensors is not None and not checkpoint.all_ranks_agree(
-            checkpoint.safetensors_hold_state(checkpoint.base_state(model), safetensors)
+        model = build(materialize_weights=materialize_weights, lora_on_every_rank=safetensors_files is not None)
+        if safetensors_files is not None and not checkpoint.holds_on_every_rank(
+            checkpoint.safetensors_hold_state(model, safetensors_files)
         ):
             if has_lora or dist.get_rank() == 0:
                 # A constructor may draw random numbers: the second build draws what the first one did.
                 torch.set_rng_state(rng_state)
                 materialize_weights = dist.get_rank() == 0
                 model = build(materialize_weights=materialize_weights, lora_on_every_rank=False)
-            safetensors = None
+            safetensors_files = None
         if dist.get_rank() == 0:
             source = "rank 0 loads and broadcasts"
-            if safetensors is not None:
-                source = f"every rank reads {len(safetensors)} safetensors files of {safetensors[0].parent}"
+            if safetensors_files is not None:
+                source = (
+                    f"every rank reads {len(safetensors_files)} safetensors files of {safetensors_files[0].parent}"
+                )
             logger.info(f"FSDP: {component} weights of {checkpoint_path}: {source}")
         checkpoint.sync_model_dtypes(model)
         full_state = model.state_dict() if materialize_weights else {}
@@ -75,8 +77,8 @@ def load_fsdp_models(
             cpu_offload=cpu_offload,
             args=args,
         )
-        if safetensors is not None:
-            checkpoint.load_safetensors_to_fsdp(model, safetensors, cpu_offload=cpu_offload)
+        if safetensors_files is not None:
+            checkpoint.load_safetensors_to_fsdp(model, safetensors_files, cpu_offload=cpu_offload)
         else:
             checkpoint.broadcast_full_state_to_fsdp(model, full_state, cpu_offload=cpu_offload)
         del full_state
