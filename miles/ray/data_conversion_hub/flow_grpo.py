@@ -98,8 +98,9 @@ def _build_per_sample_features(
 
 
 def _sample_resolution(sample: Sample) -> tuple[int, int] | None:
-    height, width = getattr(sample, "height", None), getattr(sample, "width", None)
-    return None if height is None or width is None else (int(height), int(width))
+    if sample.height is None or sample.width is None:
+        return None
+    return (int(sample.height), int(sample.width))
 
 
 def _build_per_timestep_features(

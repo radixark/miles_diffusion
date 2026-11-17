@@ -1,6 +1,6 @@
 """Train-vs-rollout log-prob drift is also logged per rollout resolution.
 
-    --diffusion-resolution-buckets 512x512,672x384  ─► schema declares ..._res_512x512, ..._res_672x384
+    args.diffusion_resolution_bucket_list           ─► schema declares ..._res_512x512, ..._res_672x384
     a micro-batch of 672x384 pairs                  ─► feeds ..._res_672x384 (and the overall metric)
     a resolution the buckets do not list            ─► only the overall metric (custom strategies)
     a fixed-resolution run                          ─► no per-resolution keys at all
@@ -19,9 +19,7 @@ import torch
 from miles.backends.fsdp_utils.loss_hub.flow_grpo import flow_grpo_loss_formula
 from miles.backends.fsdp_utils.metrics import new_metric_buffer
 from miles.backends.fsdp_utils.sde_step_backend import SdeStepOutput
-from miles.rollout.resolution_strategy_hub import declared_resolutions
 
-BUCKETS = "512x512,672x384"
 OVERALL = "log_prob_mean_abs_diff"
 
 
@@ -40,14 +38,9 @@ class _FixedLogProbBackend:
         )
 
 
-def _strategy_args(**overrides):
-    values = dict(
-        diffusion_resolution_strategy_path="miles.rollout.resolution_strategy_hub.weighted_buckets",
-        diffusion_resolution_buckets=BUCKETS,
-        diffusion_resolution_weights=None,
-    )
-    values.update(overrides)
-    return Namespace(**values)
+def _declared(*buckets):
+    """What arg validation leaves on args.diffusion_resolution_bucket_list."""
+    return Namespace(diffusion_resolution_bucket_list=tuple(buckets))
 
 
 def _run_loss(metrics, resolution, log_prob_new, log_prob_old):
@@ -90,26 +83,13 @@ def _run_loss(metrics, resolution, log_prob_new, log_prob_old):
 
 
 def _buffer(args):
-    return new_metric_buffer(None, torch.device("cpu"), ["transformer"], resolutions=declared_resolutions(args))
-
-
-def test_buckets_are_declared_height_first():
-    assert declared_resolutions(_strategy_args()) == ((512, 512), (672, 384))
-
-
-@pytest.mark.parametrize(
-    "overrides",
-    [
-        dict(diffusion_resolution_strategy_path=None),  # fixed resolution
-        dict(diffusion_resolution_buckets=None),  # custom strategy without a bucket list
-    ],
-)
-def test_nothing_is_declared_without_a_bucket_list(overrides):
-    assert declared_resolutions(_strategy_args(**overrides)) == ()
+    return new_metric_buffer(
+        None, torch.device("cpu"), ["transformer"], resolutions=args.diffusion_resolution_bucket_list
+    )
 
 
 def test_drift_is_split_by_resolution():
-    metrics = _buffer(_strategy_args())
+    metrics = _buffer(_declared((512, 512), (672, 384)))
     _run_loss(metrics, (672, 384), log_prob_new=[1.0, 1.0], log_prob_old=[1.5, 0.5])  # |diff| 0.5 each
     _run_loss(metrics, (512, 512), log_prob_new=[2.0], log_prob_old=[1.9])  # |diff| 0.1
 
@@ -121,7 +101,7 @@ def test_drift_is_split_by_resolution():
 
 
 def test_an_undeclared_resolution_only_feeds_the_overall_metric():
-    metrics = _buffer(_strategy_args())
+    metrics = _buffer(_declared((512, 512), (672, 384)))
     _run_loss(metrics, (384, 672), log_prob_new=[1.0], log_prob_old=[0.75])
 
     out = metrics.reduce()
@@ -131,7 +111,7 @@ def test_an_undeclared_resolution_only_feeds_the_overall_metric():
 
 
 def test_a_fixed_resolution_run_logs_no_per_resolution_keys():
-    metrics = _buffer(_strategy_args(diffusion_resolution_strategy_path=None))
+    metrics = _buffer(_declared())
     _run_loss(metrics, None, log_prob_new=[1.0], log_prob_old=[0.5])
 
     out = metrics.reduce()
