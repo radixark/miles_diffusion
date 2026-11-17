@@ -60,7 +60,10 @@ class BaseModelBackend(abc.ABC):
         raise NotImplementedError
 
     def safetensors_files(self, component: str, *, checkpoint_path: str) -> list[Path] | None:
-        """Local safetensors files every rank can read its shards of the component from; None: rank 0 loads it."""
+        """Local safetensors files every rank can read its shards of the component from; None: rank 0 loads it.
+
+        They hold what ``load_component`` loads: a backend that loads other weights names its own files or none.
+        """
         return None
 
     @abc.abstractmethod
@@ -237,16 +240,21 @@ class DiffusersModelBackend(BaseModelBackend):
     def safetensors_files(self, component: str, *, checkpoint_path: str) -> list[Path] | None:
         """The files ``from_pretrained`` reads with no variant: the ones the index lists, else the single file."""
         stem = SAFETENSORS_WEIGHTS_NAME.removesuffix(".safetensors")
-        if not os.path.isdir(checkpoint_path):
+        is_local = os.path.isdir(checkpoint_path)
+        if not is_local:
             from huggingface_hub import snapshot_download
 
             patterns = [f"{component}/{SAFETENSORS_WEIGHTS_NAME}*", f"{component}/{stem}-*.safetensors"]
             checkpoint_path = snapshot_download(checkpoint_path, allow_patterns=patterns)
         folder = Path(checkpoint_path) / component
         index = folder / SAFE_WEIGHTS_INDEX_NAME
-        names = {SAFETENSORS_WEIGHTS_NAME}
         if index.is_file():
             names = set(json.loads(index.read_text())["weight_map"].values())
+        elif is_local and (Path(checkpoint_path) / SAFETENSORS_WEIGHTS_NAME).is_file():
+            # In a local folder from_pretrained takes a single weights file at the root before the component's.
+            return None
+        else:
+            names = {SAFETENSORS_WEIGHTS_NAME}
         files = [folder / name for name in sorted(names)]
         return files if all(file.is_file() for file in files) else None
 

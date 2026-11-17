@@ -223,3 +223,16 @@ class TestBackendHierarchy:
                 ],
             )
         ]
+
+    def test_a_weights_file_at_the_root_of_a_local_checkpoint_leaves_the_load_to_rank_0(self, tmp_path):
+        # from_pretrained reads <checkpoint>/diffusion_pytorch_model.safetensors before the component's own file.
+        (tmp_path / "transformer").mkdir()
+        (tmp_path / "transformer" / "diffusion_pytorch_model.safetensors").touch()
+        backend = DiffusersModelBackend(None)
+        assert backend.safetensors_files("transformer", checkpoint_path=str(tmp_path)) == [
+            tmp_path / "transformer" / "diffusion_pytorch_model.safetensors"
+        ]
+
+        (tmp_path / "diffusion_pytorch_model.safetensors").touch()
+
+        assert backend.safetensors_files("transformer", checkpoint_path=str(tmp_path)) is None
