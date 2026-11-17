@@ -149,6 +149,10 @@ media the engine returns, and is reported per bucket as
 With `--diffusion-resolution-buckets` the train side also splits the rollout-vs-train log-prob
 drift as `train/log_prob_mean_abs_diff_res_<HxW>`: a RoPE or `img_shapes` mismatch at one bucket
 would otherwise show only as a fraction of its size in the overall `train/log_prob_mean_abs_diff`.
+The per-bucket metric always compares against the log-prob the rollout reported, so it keeps
+that meaning under `--diffusion-recompute-old-log-prob` — which replaces the old log-prob with a
+train-side one, equal to the new log-prob on the first optimizer step, and so turns the overall
+metric into a flat zero there rather than a replay measurement.
 
 | Stock | Behavior |
 |---|---|

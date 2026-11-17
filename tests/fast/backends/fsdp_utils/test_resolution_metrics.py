@@ -43,7 +43,7 @@ def _declared(*buckets):
     return Namespace(diffusion_resolution_bucket_list=tuple(buckets))
 
 
-def _run_loss(metrics, resolution, log_prob_new, log_prob_old):
+def _run_loss(metrics, resolution, log_prob_new, log_prob_old, log_prob_rollout=None, **kwargs):
     bsz = len(log_prob_new)
     ctx = SimpleNamespace(
         args=Namespace(
@@ -63,6 +63,7 @@ def _run_loss(metrics, resolution, log_prob_new, log_prob_old):
         extras={
             "next_latents": torch.zeros(bsz, 1),
             "log_prob_old": torch.tensor(log_prob_old),
+            "log_prob_rollout": torch.tensor(log_prob_rollout if log_prob_rollout is not None else log_prob_old),
             "sigmas": torch.zeros(bsz),
             "next_sigmas": torch.zeros(bsz),
             "sigma_max": torch.ones(bsz),
@@ -79,6 +80,7 @@ def _run_loss(metrics, resolution, log_prob_new, log_prob_old):
         metrics=metrics,
         optim_step_idx=0,
         train_output_inputs=[],
+        **kwargs,
     )
 
 
@@ -118,3 +120,23 @@ def test_a_fixed_resolution_run_logs_no_per_resolution_keys():
 
     assert out[OVERALL] == pytest.approx(0.5)
     assert not [key for key in out if "_res_" in key]
+
+
+def test_the_drift_measures_replay_even_when_old_log_probs_are_recomputed():
+    """--diffusion-recompute-old-log-prob makes log_prob_old a train-side value -- on the first
+    optimizer step, log_prob_new itself. Reading it would show a flat zero, which looks like
+    perfect alignment rather than like no measurement."""
+    metrics = _buffer(_declared((512, 512)))
+
+    _run_loss(
+        metrics,
+        (512, 512),
+        log_prob_new=[1.0],
+        log_prob_old=[1.0],  # what recompute leaves behind
+        log_prob_rollout=[0.7],  # what the rollout actually reported
+        old_log_prob_from_new=True,
+    )
+
+    out = metrics.reduce()
+    assert out["log_prob_mean_abs_diff_res_512x512"] == pytest.approx(0.3)
+    assert out[OVERALL] == pytest.approx(0.0)  # the overall metric keeps its existing meaning
