@@ -20,7 +20,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 import torch.distributed as dist
-from peft import LoHaConfig, LoraConfig, get_peft_model
+from peft import AdaLoraConfig, LoHaConfig, LoraConfig, get_peft_model
 from safetensors.torch import save_file
 from tests.fast.backends.fsdp_utils.test_reference_models import (
     TinyBackend,
@@ -330,6 +330,9 @@ def save_adapter(path, config, *, init_lora_weights=None):
         pytest.param(LoraConfig(r=2, target_modules=["proj"]), "pissa", False, id="an init from the base weights"),
         pytest.param(LoraConfig(r=2, target_modules=["proj"], use_dora=True), None, False, id="DoRA"),
         pytest.param(LoHaConfig(r=2, target_modules=["proj"]), None, False, id="not a LoRA"),
+        pytest.param(
+            AdaLoraConfig(init_r=2, target_r=1, total_step=10, target_modules=["proj"]), None, False, id="AdaLoRA"
+        ),
     ],
 )
 def test_a_saved_adapter_is_built_on_every_rank_only_when_it_holds_lora_tensors_alone(

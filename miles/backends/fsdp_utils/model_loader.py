@@ -120,13 +120,14 @@ def lora_needs_no_base_weights(args: Namespace, lora_adapter_path: str | None) -
     """
     if lora_adapter_path is None:
         return peft_init_lora_weights(args) in PEFT_INITS_WITHOUT_BASE_WEIGHTS
-    from peft import LoraConfig, PeftConfig
+    from peft import PeftConfig, PeftType
     from peft.utils import SAFETENSORS_WEIGHTS_NAME
     from safetensors import safe_open
 
     config = PeftConfig.from_pretrained(lora_adapter_path)
     file = Path(lora_adapter_path) / SAFETENSORS_WEIGHTS_NAME
-    if not isinstance(config, LoraConfig) or config.use_dora:
+    # AdaLoRA's config is a LoraConfig too, with tensors of its own: the type says which adapter this is.
+    if config.peft_type != PeftType.LORA or config.use_dora:
         return False
     if config.init_lora_weights not in PEFT_INITS_WITHOUT_BASE_WEIGHTS or not file.is_file():
         return False
