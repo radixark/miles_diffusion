@@ -447,11 +447,8 @@ class FSDPTrainRayActor(TrainRayActor):
                     device,
                     self.models,
                     sigma_buckets=self.args.log_loss_sigma_bucket,
-<<<<<<< HEAD
                     num_rollout_steps=self.args.diffusion_num_steps,
-=======
                     resolutions=declared_resolutions(self.args),
->>>>>>> 1ea11496 (feat(train): log the train-vs-rollout log-prob drift per resolution)
                 )
 
                 for pair_lo, pair_hi in microbatch_ranges:
