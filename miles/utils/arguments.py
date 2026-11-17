@@ -2150,8 +2150,8 @@ def validate_resolution_strategy(args, cfg_cls) -> None:
     # writes on each train pair, so a conversion that does not write one makes that check
     # vacuous. Conversions declare this (@labels_rollout_resolution) rather than being listed
     # here, so one that has not thought about it is unsupported by default.
-    # unset means the Flow-GRPO conversion, which RolloutManager falls back to
     conversion = (
+        # unset means the Flow-GRPO conversion, which RolloutManager falls back to
         load_function(args.custom_expand_samples_to_train_pairs_path)
         if args.custom_expand_samples_to_train_pairs_path
         else flow_grpo_expand_samples_to_train_pairs
