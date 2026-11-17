@@ -17,6 +17,7 @@ import torch
 from diffusers import ConfigMixin, ModelMixin, SD3Transformer2DModel, WanTransformer3DModel
 from diffusers.configuration_utils import register_to_config
 from huggingface_hub.errors import LocalEntryNotFoundError, RepositoryNotFoundError
+from safetensors.torch import load_file, save_file
 
 from miles.backends.fsdp_utils.model_backend import BaseModelBackend, DiffusersModelBackend, MilesModelBackend
 from miles.backends.fsdp_utils.model_loader import model_init_context
@@ -58,6 +59,9 @@ class _PinnedComponent(torch.nn.Module):
     def from_pretrained(cls, checkpoint_path, *, torch_dtype, **kwargs):
         assert cls._keep_in_fp32_modules is None
         return cls().to(torch_dtype)
+
+
+WEIGHTS_FILE = "diffusion_pytorch_model.safetensors"
 
 
 class _PinnedBufferModel(ModelMixin, ConfigMixin):
@@ -135,6 +139,46 @@ def test_a_component_built_without_weights_has_the_dtypes_a_load_with_weights_gi
         tensors = chain(model.named_parameters(), model.named_buffers())
         dtypes[materialize_weights] = {name: tensor.dtype for name, tensor in tensors}
     assert dtypes[False] == dtypes[True]
+
+
+def _save_as_pipeline(model, path, **kwargs):
+    model.save_pretrained(path / "transformer", **kwargs)
+    (path / "model_index.json").write_text(
+        json.dumps({"_class_name": "DiffusionPipeline", "transformer": ["diffusers", "SD3Transformer2DModel"]})
+    )
+
+
+def _load_with_weights(path):
+    with model_init_context(materialize_weights=True):
+        return DiffusersModelBackend(None).load_component(
+            "transformer", checkpoint_path=str(path), master_dtype=torch.float32, materialize_weights=True
+        )
+
+
+@pytest.mark.parametrize("sharded", [False, True], ids=["the single file", "the files the index lists"])
+@pytest.mark.parametrize("variant", [False, True], ids=["alone", "beside a variant with other weights"])
+def test_the_named_files_hold_the_state_a_load_with_weights_gives(tmp_path, sharded, variant):
+    # safetensors_files mirrors which files diffusers' from_pretrained reads; this ties it to diffusers itself.
+    _save_as_pipeline(_tiny_sd3(), tmp_path, max_shard_size="20KB" if sharded else "10GB")
+    if variant:
+        _tiny_sd3().save_pretrained(tmp_path / "transformer", variant="fp16")
+
+    files = DiffusersModelBackend(None).safetensors_files("transformer", checkpoint_path=str(tmp_path))
+
+    assert (len(files) > 1) is sharded
+    named = {name: tensor for file in files for name, tensor in load_file(file).items()}
+    loaded = _load_with_weights(tmp_path).state_dict()
+    assert named.keys() == loaded.keys() and all(torch.equal(named[name], loaded[name]) for name in named)
+
+
+def test_a_load_with_weights_reads_the_weights_file_at_the_root_of_a_local_checkpoint(tmp_path):
+    # Why such a checkpoint names no files: diffusers reads the root's file, not the component's.
+    _save_as_pipeline(_tiny_sd3(), tmp_path)
+    component = load_file(tmp_path / "transformer" / "diffusion_pytorch_model.safetensors")
+    save_file({name: torch.zeros_like(tensor) for name, tensor in component.items()}, tmp_path / WEIGHTS_FILE)
+
+    assert DiffusersModelBackend(None).safetensors_files("transformer", checkpoint_path=str(tmp_path)) is None
+    assert all(tensor.count_nonzero() == 0 for tensor in _load_with_weights(tmp_path).state_dict().values())
 
 
 class TestBackendHierarchy:
