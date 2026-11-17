@@ -51,7 +51,8 @@ def load_fsdp_models(
                 safetensors_files = None
         materialize_weights = safetensors_files is None and dist.get_rank() == 0
         rng_state = torch.get_rng_state()
-        model = build(materialize_weights=materialize_weights, lora_on_every_rank=safetensors_files is not None)
+        lora_on_every_rank = has_lora and safetensors_files is not None
+        model = build(materialize_weights=materialize_weights, lora_on_every_rank=lora_on_every_rank)
         if safetensors_files is not None and not checkpoint.holds_on_every_rank(
             checkpoint.safetensors_hold_state(model, safetensors_files)
         ):
@@ -122,7 +123,10 @@ def build_component(
     materialize_weights: bool,
     lora_on_every_rank: bool,
 ) -> torch.nn.Module:
-    """``lora_on_every_rank``: every rank builds the adapter's values as rank 0 does, on a base without weights."""
+    """``lora_on_every_rank``: every rank builds the adapter's values as rank 0 does, on a base without weights.
+
+    It is for a model that has an adapter, and for all ranks at once: the build then runs a collective.
+    """
     with model_init_context(materialize_weights=materialize_weights):
         model = model_backend.load_component(
             component,
@@ -135,7 +139,7 @@ def build_component(
     if trainable and args.gradient_checkpointing:
         model_backend.enable_gradient_checkpointing(model)
     materialize_lora = lora_on_every_rank or dist.get_rank() == 0
-    with base_storage_for_lora(model, enabled=materialize_lora and not materialize_weights):
+    with base_storage_for_lora(model, enabled=lora_on_every_rank):
         if lora_adapter_path is not None:
             model = load_lora_adapter(model, lora_adapter_path, trainable=trainable, materialize=materialize_lora)
         elif trainable and args.use_lora:

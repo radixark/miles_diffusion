@@ -275,6 +275,19 @@ def test_one_rank_whose_files_hold_another_state_sends_every_rank_to_the_broadca
     assert materialize_requests == [False, True, False, True] and len(broadcasts) == 2
 
 
+def test_a_model_without_an_adapter_skips_the_adapter_step(tmp_path, monkeypatch):
+    # The step gives every base parameter storage and runs a collective: neither is for a model with no adapter.
+    save_checkpoint(tmp_path)
+    monkeypatch.setattr(
+        model_loader.checkpoint, "rank0_rng_state", lambda: pytest.fail("no adapter is built on any rank")
+    )
+    monkeypatch.setattr(
+        model_loader, "replace_base_parameters", lambda model, data_of: pytest.fail("no parameter gets storage")
+    )
+    _, materialize_requests, broadcasts = load(monkeypatch, tmp_path)
+    assert materialize_requests == [False, False] and broadcasts == []
+
+
 def lora_weights(state):
     return {name: tensor for name, tensor in state.items() if "lora_" in name}
 
