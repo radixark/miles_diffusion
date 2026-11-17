@@ -357,6 +357,22 @@ def test_a_base_built_with_weights_is_refused_before_the_adapter_step_would_hide
         load(monkeypatch, tmp_path, lora_init="gaussian", trainable=True, backend_cls=RealBaseBackend)
 
 
+def test_a_saved_adapter_in_another_file_format_is_not_built_on_every_rank(tmp_path):
+    adapter_path = save_adapter(tmp_path, LoraConfig(r=2, target_modules=["proj"]))
+    (tmp_path / "adapter_model.safetensors").rename(tmp_path / "adapter_model.bin")
+    assert model_loader.lora_needs_no_base_weights(make_model_loader_args(), adapter_path) is False
+
+
+def test_a_frozen_model_without_an_adapter_reads_per_rank_whatever_the_actor_s_lora_flags(tmp_path, monkeypatch):
+    # --use-lora and --lora-init-weights describe the trainable model's new adapter, not a frozen role's base.
+    save_checkpoint(tmp_path)
+    monkeypatch.setattr(
+        model_loader.checkpoint, "rank0_rng_state", lambda: pytest.fail("no adapter is built on any rank")
+    )
+    _, materialize_requests, broadcasts = load(monkeypatch, tmp_path, lora_init="pissa", trainable=False)
+    assert materialize_requests == [False, False] and broadcasts == []
+
+
 def lora_weights(state):
     return {name: tensor for name, tensor in state.items() if "lora_" in name}
 
