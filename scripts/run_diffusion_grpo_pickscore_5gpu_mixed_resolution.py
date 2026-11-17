@@ -12,6 +12,16 @@ samples spans two prompt groups. The flat sample-major schedule does not -- unde
 split each rank holds 16 / 4 = 4 samples x 2 SDE steps = 8 pairs of every group, so a
 micro-batch of 8 is exactly one group's pairs on that rank.
 
+Measured, and worth knowing before copying this: over 60 rollouts against the fixed-512
+recipe on HPSv2.1, this configuration bought nothing. The fixed-512 run improved the two
+non-square eval sizes it never trained on by +0.0081 / +0.0074 over the base model, matching
+this recipe's +0.0085 / +0.0076, while beating it at 512x512 (+0.0099 vs +0.0054) -- what 512
+learns transfers across aspect ratio, so the budget spent elsewhere does not pay for itself.
+The three buckets here are within 2% of each other in token count (1008-1024), which is a weak
+test of mixed-resolution training; buckets with a real scale difference, full fine-tuning, or a
+resolution-sensitive reward may behave differently. Treat this as a worked example of the
+mechanism, not a recommended configuration.
+
 Per rollout: 32 prompts x 16 samples = 512 samples. num_steps_per_rollout=2 gives 256
 samples per optimizer step.
 
