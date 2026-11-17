@@ -106,8 +106,9 @@ def build_with(load_component):
 def add_variant_file(path, *, sharded):
     save_checkpoint(path, sharded=sharded)
     for component in make_model_loader_args().update_weight_target_modules:
+        # Another shape: a reader that took the variant fails whichever file its folder lists last.
         save_file(
-            {"block.proj.weight": torch.zeros(4, 3)}, path / component / "diffusion_pytorch_model.fp16.safetensors"
+            {"block.proj.weight": torch.zeros(8, 3)}, path / component / "diffusion_pytorch_model.fp16.safetensors"
         )
 
 
