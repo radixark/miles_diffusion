@@ -76,6 +76,16 @@ class _PinnedBufferModel(ModelMixin, ConfigMixin):
         self.norm = torch.nn.BatchNorm1d(2)
 
 
+class _TransientBufferModel(ModelMixin, ConfigMixin):
+    """A buffer outside the state dict, made in fp32 whatever the default dtype (H3's and Cosmos3's inv_freq)."""
+
+    @register_to_config
+    def __init__(self):
+        super().__init__()
+        self.proj = torch.nn.Linear(2, 2)
+        self.register_buffer("inv_freq", torch.arange(4, dtype=torch.float32) / 10, persistent=False)
+
+
 def _tiny_sd3():
     # Its pos_embed is a persistent buffer the constructor makes in fp32 whatever the default dtype.
     return SD3Transformer2DModel(
@@ -116,6 +126,7 @@ def _tiny_wan():
         pytest.param(_tiny_sd3, ["diffusers", "SD3Transformer2DModel"], id="a persistent buffer made in fp32"),
         pytest.param(_tiny_wan, ["diffusers", "WanTransformer3DModel"], id="modules pinned to fp32"),
         pytest.param(_PinnedBufferModel, [__name__, "_PinnedBufferModel"], id="a persistent buffer under the pin"),
+        pytest.param(_TransientBufferModel, [__name__, "_TransientBufferModel"], id="a buffer no load casts"),
     ],
 )
 @pytest.mark.parametrize("master_dtype", [torch.bfloat16, torch.float16, torch.float32])

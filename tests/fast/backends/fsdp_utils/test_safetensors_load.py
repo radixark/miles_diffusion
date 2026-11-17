@@ -70,7 +70,7 @@ def save_checkpoint(path, *, name="block.proj.weight", shape=(4, 3), sharded=Tru
         )
 
 
-def load(monkeypatch, path, *, holds=lambda condition: condition, backend_cls=None, **kwargs):
+def load(monkeypatch, path, *, holds=lambda condition: condition, backend_cls=None, use_lora=False, **kwargs):
     broadcasts = []
     monkeypatch.setattr(model_loader.checkpoint, "holds_on_every_rank", holds)
     monkeypatch.setattr(model_loader.checkpoint, "sync_model_dtypes", lambda model: None)
@@ -83,7 +83,7 @@ def load(monkeypatch, path, *, holds=lambda condition: condition, backend_cls=No
         mesh = init_device_mesh("cpu", (1,))
         parallel = SimpleNamespace(get_mesh=lambda name: mesh, get_optional_mesh=lambda name: None)
         args, backend = make_model_loader_args(), (backend_cls or FileBackend)()
-        args.use_lora = False
+        args.use_lora = use_lora
         models = model_loader.load_fsdp_models(
             args, backend, TinyPipelineConfig(), parallel, checkpoint_path=str(path), **kwargs
         )
@@ -213,11 +213,17 @@ def backend_of(component_cls):
 
 
 def save_row_sums(path):
+    """The weight in one file and the buffer in another: the state dict is the union of what the index lists."""
     for component in make_model_loader_args().update_weight_target_modules:
-        file = path / component / "diffusion_pytorch_model.safetensors"
-        folder_state = {"block.proj.weight": saved_weight(component), "row_sums": saved_weight(component).sum(dim=1)}
-        file.parent.mkdir(parents=True)
-        save_file(folder_state, file)
+        folder = path / component
+        folder.mkdir(parents=True)
+        files = {
+            "block.proj.weight": "diffusion_pytorch_model-00001-of-00002.safetensors",
+            "row_sums": "diffusion_pytorch_model-00002-of-00002.safetensors",
+        }
+        save_file({"block.proj.weight": saved_weight(component)}, folder / files["block.proj.weight"])
+        save_file({"row_sums": saved_weight(component).sum(dim=1)}, folder / files["row_sums"])
+        (folder / "diffusion_pytorch_model.safetensors.index.json").write_text(json.dumps({"weight_map": files}))
 
 
 def test_a_state_dict_buffer_the_constructor_left_on_meta_is_read_from_the_files(tmp_path, monkeypatch):
@@ -256,6 +262,13 @@ def test_one_rank_that_cannot_read_the_files_sends_every_rank_to_the_broadcast(t
         monkeypatch, tmp_path, holds=lambda condition: conditions.append(condition) or False
     )
     assert conditions == [True, True] and materialize_requests == [False, True, False, True] and len(broadcasts) == 2
+
+
+def test_a_frozen_model_reads_its_shards_in_a_run_that_trains_a_lora(tmp_path, monkeypatch):
+    # --use-lora describes the trainable model; a frozen role without adapter paths has no LoRA.
+    save_checkpoint(tmp_path)
+    _, materialize_requests, broadcasts = load(monkeypatch, tmp_path, use_lora=True, trainable=False)
+    assert materialize_requests == [False, False] and broadcasts == []
 
 
 def test_lora_models_are_broadcast(tmp_path, monkeypatch):
