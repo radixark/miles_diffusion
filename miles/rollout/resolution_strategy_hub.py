@@ -14,7 +14,7 @@ resolution off the prompt or its dataset metadata instead of drawing one.
 
 from __future__ import annotations
 
-import functools
+import math
 from argparse import Namespace
 
 import numpy as np
@@ -90,28 +90,24 @@ def parse_resolution_weights(raw: str | None, num_buckets: int) -> list[float] |
             f"--diffusion-resolution-weights has {len(weights)} entries for {num_buckets} "
             "--diffusion-resolution-buckets; pass one weight per bucket or none at all"
         )
+    # nan and inf survive float() and reach numpy as probabilities it refuses ("inf,1" normalizes
+    # to [nan, 0.0]); a sum that overflows to inf turns every finite weight into 0.0. Reject them
+    # here rather than in the first rollout actor.
+    if any(not math.isfinite(weight) for weight in weights):
+        raise ValueError(f"--diffusion-resolution-weights must all be finite, got {raw!r}")
     if any(weight < 0 for weight in weights):
         raise ValueError(f"--diffusion-resolution-weights must be non-negative, got {raw!r}")
     total = sum(weights)
+    if not math.isfinite(total):
+        raise ValueError(f"--diffusion-resolution-weights sum to infinity, got {raw!r}")
     if total <= 0:
         raise ValueError(f"--diffusion-resolution-weights must not sum to 0, got {raw!r}")
     return [weight / total for weight in weights]
 
 
-@functools.lru_cache(maxsize=8)
-def _bucket_distribution(
-    raw_buckets: str | None, raw_weights: str | None
-) -> tuple[tuple[tuple[int, int], ...], tuple[float, ...] | None]:
-    """Parse once per (buckets, weights) pair rather than once per prompt group."""
-    buckets = parse_resolution_buckets(raw_buckets)
-    weights = parse_resolution_weights(raw_weights, len(buckets))
-    return tuple(buckets), None if weights is None else tuple(weights)
-
-
 def weighted_buckets(args: Namespace, sample: Sample, seed: int) -> tuple[int, int]:
-    """Draw one ``--diffusion-resolution-buckets`` entry, weighted by
-    ``--diffusion-resolution-weights`` (uniform when unset)."""
-    buckets, probabilities = _bucket_distribution(args.diffusion_resolution_buckets, args.diffusion_resolution_weights)
-    rng = np.random.default_rng(seed)
-    index = int(rng.choice(len(buckets), p=probabilities))
+    """Draw one of the buckets arg validation parsed, by the weights it normalized."""
+    buckets = args.diffusion_resolution_bucket_list
+    probabilities = args.diffusion_resolution_bucket_weights
+    index = int(np.random.default_rng(seed).choice(len(buckets), p=probabilities))
     return buckets[index]

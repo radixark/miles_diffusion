@@ -22,8 +22,9 @@ from miles.utils.hash_utils import stable_hash
 from miles.utils.types import Sample
 
 
-def _args(**overrides):
-    values = dict(diffusion_resolution_buckets="512x512,672x384,384x672", diffusion_resolution_weights=None)
+def _args(buckets=((512, 512), (672, 384), (384, 672)), weights=None, **overrides):
+    """What arg validation leaves on args: parsed buckets and normalized probabilities."""
+    values = dict(diffusion_resolution_bucket_list=buckets, diffusion_resolution_bucket_weights=weights)
     values.update(overrides)
     return Namespace(**values)
 
@@ -64,6 +65,9 @@ def test_weights_are_normalized_to_probabilities():
 @pytest.mark.parametrize(
     "raw, match",
     [
+        ("nan,1,1", "must all be finite"),
+        ("inf,1,1", "must all be finite"),
+        ("1e308,1e308,1", "sum to infinity"),
         ("1,1", "one weight per bucket"),
         ("1,-1,1", "non-negative"),
         ("0,0,0", "must not sum to 0"),
@@ -84,12 +88,12 @@ def test_draw_is_a_bucket_and_reproducible_from_the_seed():
     args = _args()
     drawn = weighted_buckets(args, Sample(), seed=7)
 
-    assert drawn in parse_resolution_buckets(args.diffusion_resolution_buckets)
+    assert drawn in args.diffusion_resolution_bucket_list
     assert weighted_buckets(args, Sample(), seed=7) == drawn
 
 
 def test_a_zero_weight_bucket_is_never_drawn():
-    args = _args(diffusion_resolution_weights="1,0,0")
+    args = _args(weights=(1.0, 0.0, 0.0))
 
     assert {weighted_buckets(args, Sample(), seed=seed) for seed in range(32)} == {(512, 512)}
 
@@ -144,7 +148,7 @@ def test_the_draw_does_not_track_the_sde_window():
     window from. Seeding both with it pairs each bucket with one window start forever, so a
     group of one microgroup would only ever train that bucket at that step."""
     step_args = Namespace(diffusion_num_sde_steps=1, diffusion_sde_window_range="3,5")
-    res_args = _args(diffusion_resolution_buckets="512x512,672x384")
+    res_args = _args(buckets=((512, 512), (672, 384)))
 
     pairs = set()
     for group_index in range(200):
