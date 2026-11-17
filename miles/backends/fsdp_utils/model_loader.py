@@ -47,8 +47,9 @@ def load_fsdp_models(
         safetensors_files = None
         if read_per_rank:
             safetensors_files = model_backend.safetensors_files(component, checkpoint_path=checkpoint_path)
-            if not checkpoint.holds_on_every_rank(safetensors_files is not None):
-                safetensors_files = None
+        # Each rank reads its own adapter config and files, and the collectives below depend on the answer.
+        if not checkpoint.holds_on_every_rank(safetensors_files is not None):
+            safetensors_files = None
         materialize_weights = safetensors_files is None and dist.get_rank() == 0
         rng_state = torch.get_rng_state()
         lora_on_every_rank = has_lora and safetensors_files is not None

@@ -336,11 +336,17 @@ def test_an_adapter_initialized_from_the_base_weights_is_built_by_rank_0_and_bro
             pytest.fail("PiSSA decomposes the base weights, which only rank 0 holds")
 
     save_checkpoint(tmp_path)
-    holds = lambda condition: pytest.fail("no rank reads the files")  # noqa: E731
+    conditions = []
     _, materialize_requests, broadcasts = load(
-        monkeypatch, tmp_path, lora_init="pissa", trainable=True, holds=holds, backend_cls=NeverAsked
+        monkeypatch,
+        tmp_path,
+        lora_init="pissa",
+        trainable=True,
+        holds=lambda condition: conditions.append(condition) or condition,
+        backend_cls=NeverAsked,
     )
-    assert materialize_requests == [True, True] and len(broadcasts) == 2
+    # Every rank still says that it reads no files, so no rank waits in a collective the others skip.
+    assert conditions == [False, False] and materialize_requests == [True, True] and len(broadcasts) == 2
     assert all(len(lora_weights(state)) == 2 for state in broadcasts)
 
 
