@@ -4,6 +4,7 @@
                                   a buffer no file holds --> rank 0's value on both ranks
     another name in the files --> rank 0 builds again with weights --> the broadcast value on both ranks
     another name on rank 1 only --> the same: the ranks agree before either reads
+    LoRA, saved or new        --> rank 0's adapter on both ranks: the shards and the generator the broadcast leaves
 """
 
 import os
@@ -13,11 +14,18 @@ from types import SimpleNamespace
 
 import torch
 import torch.distributed as dist
-from tests.fast.backends.fsdp_utils.test_reference_models import TinyPipelineConfig, make_model_loader_args
+from tests.fast.backends.fsdp_utils.test_reference_models import (
+    TinyPipelineConfig,
+    make_model_loader_args,
+    save_component_lora_adapters,
+)
 from tests.fast.backends.fsdp_utils.test_safetensors_load import (
     BROADCAST_VALUE,
+    DerivedBufferComponent,
     FileBackend,
+    backend_of,
     save_checkpoint,
+    save_row_sums,
     saved_weight,
 )
 from torch.distributed.device_mesh import init_device_mesh
@@ -34,20 +42,65 @@ class RankTaggedBackend(FileBackend):
         return model
 
 
-def load(mesh, path, cpu_offload):
+def load(mesh, path, cpu_offload, *, lora_init=None, backend_cls=RankTaggedBackend, **kwargs):
     parallel = SimpleNamespace(get_mesh=lambda name: mesh, get_optional_mesh=lambda name: None)
-    args, backend = make_model_loader_args(), RankTaggedBackend()
-    args.use_lora = False
+    args, backend = make_model_loader_args(), backend_cls()
+    args.use_lora = lora_init is not None
+    args.lora_rank, args.lora_alpha, args.lora_target_modules, args.lora_init_weights = 2, 4, ["proj"], lora_init
     models = load_fsdp_models(
-        args, backend, TinyPipelineConfig(), parallel, checkpoint_path=str(path), cpu_offload=cpu_offload
+        args, backend, TinyPipelineConfig(), parallel, checkpoint_path=str(path), cpu_offload=cpu_offload, **kwargs
     )
     for model in models.values():
-        shard = model.block.proj.weight.to_local()
+        base = model.base_model.model if kwargs else model
+        weight = base.block.proj.base_layer.weight if kwargs else base.block.proj.weight
+        shard = weight.to_local()
         assert shard.shape == (2, 3) and shard.dtype == torch.float32
         assert shard.device.type == ("cpu" if cpu_offload else "cuda")
-        assert model.forward_count.device.type == "cuda" and model.forward_count.item() == 0
-        assert model.built_on_rank.device.type == "cuda" and model.built_on_rank.item() == 0
+        assert base.forward_count.device.type == "cuda" and base.forward_count.item() == 0
+        if backend_cls is RankTaggedBackend:
+            assert base.built_on_rank.device.type == "cuda" and base.built_on_rank.item() == 0
     return models, backend.materialize_requests
+
+
+def adapter_shards(models):
+    return {
+        (component, name): parameter.to_local().cpu()
+        for component, model in models.items()
+        for name, parameter in model.named_parameters()
+        if "lora_" in name
+    }
+
+
+def adapter_delta(inputs, index, *, saved):
+    """What the adapter adds to the projection: lora_alpha / r = 2 times B A, and a new adapter's B is zero."""
+    if not saved:
+        return torch.zeros(2, 4)
+    lora_a, lora_b = torch.full((2, 3), 0.15 + 0.1 * index), torch.full((4, 2), 0.25 + 0.1 * index)
+    return 2 * (inputs @ lora_a.T) @ lora_b.T
+
+
+def check_lora(mesh, root, rank, cpu_offload, **kwargs):
+    # read per rank
+    torch.manual_seed(0)
+    models, materialize_requests = load(mesh, root / "state", cpu_offload, **kwargs)
+    assert materialize_requests == [False, False]
+    inputs = torch.ones(2, 3)
+    for index, (component, model) in enumerate(models.items()):
+        base = model.base_model.model.block.proj.base_layer.weight.to_local().cpu()
+        assert torch.equal(base, saved_weight(component).float()[2 * rank : 2 * rank + 2])
+        delta = adapter_delta(inputs, index, saved="lora_adapter_paths" in kwargs)
+        with torch.no_grad():
+            output = model(inputs.cuda()).cpu()
+        torch.testing.assert_close(output, (inputs @ saved_weight(component).float().T + delta).tanh())
+    adapters, generator = adapter_shards(models), torch.get_rng_state()
+    assert len(adapters) == 4 and any(shard.abs().sum() > 0 for shard in adapters.values())
+    # rank 0 builds with weights, then the real broadcast
+    torch.manual_seed(0)
+    models, materialize_requests = load(mesh, root / "renamed", cpu_offload, **kwargs)
+    assert materialize_requests == ([False, True, False, True] if rank == 0 else [False, False])
+    broadcast = adapter_shards(models)
+    assert adapters.keys() == broadcast.keys() and all(torch.equal(adapters[key], broadcast[key]) for key in adapters)
+    assert torch.equal(torch.get_rng_state(), generator)
 
 
 def main():
@@ -58,6 +111,8 @@ def main():
     if rank == 0:
         save_checkpoint(root / "state")
         save_checkpoint(root / "renamed", name="block.proj.kernel")
+        save_component_lora_adapters(root / "adapters")
+        save_row_sums(root / "row_sums")
     dist.barrier()
     inputs = torch.ones(2, 3, device="cuda")
     for cpu_offload in (False, True):
@@ -79,6 +134,24 @@ def main():
         assert materialize_requests == ([False, True, False, True] if rank == 0 else [False, False])
         for model in models.values():
             assert torch.all(model.block.proj.weight.to_local() == BROADCAST_VALUE)
+
+        adapter_paths = [str(root / "adapters" / component) for component in ("transformer", "transformer_2")]
+        check_lora(mesh, root, rank, cpu_offload, lora_adapter_paths=adapter_paths)
+        check_lora(mesh, root, rank, cpu_offload, lora_init="gaussian", trainable=True)
+
+        # A buffer of the state dict with a dimension: the adapter broadcast wants it on the parameters' device,
+        # so under CPU offload it runs before the buffers move to the GPU.
+        models, _ = load(
+            mesh,
+            root / "row_sums",
+            cpu_offload,
+            backend_cls=backend_of(DerivedBufferComponent),
+            lora_adapter_paths=adapter_paths,
+        )
+        for component, model in models.items():
+            row_sums = model.base_model.model.row_sums
+            assert row_sums.device.type == "cuda"
+            assert torch.equal(row_sums.cpu(), saved_weight(component).sum(dim=1).float())
     dist.barrier()
     if rank == 0:
         print("OK")

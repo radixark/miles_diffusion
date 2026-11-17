@@ -15,6 +15,8 @@ import torch.distributed.checkpoint as dcp
 from torch.distributed.checkpoint.state_dict import StateDictOptions, get_state_dict, set_state_dict
 from torch.distributed.checkpoint.stateful import Stateful
 
+from .hf_weight_iterator import to_hf_name
+
 logger = logging.getLogger(__name__)
 
 
@@ -67,8 +69,22 @@ def broadcast_full_state_to_fsdp(
             buffer.data = buffer.data.to(torch.cuda.current_device())
 
 
+def base_state(model: torch.nn.Module) -> dict[str, torch.Tensor]:
+    """The state dict without LoRA adapters, under the names the base checkpoint gives its tensors."""
+    return {to_hf_name(name): tensor for name, tensor in model.state_dict().items() if not is_lora_param_name(name)}
+
+
+def adapter_state(model: torch.nn.Module) -> dict[str, torch.Tensor]:
+    """The LoRA adapters' part of the state dict; empty for a model without one."""
+    return {name: tensor for name, tensor in model.state_dict().items() if is_lora_param_name(name)}
+
+
+def adapter_shapes(model: torch.nn.Module) -> dict[str, tuple[int, ...]]:
+    return {name: tuple(tensor.shape) for name, tensor in adapter_state(model).items()}
+
+
 def safetensors_hold_state(model: torch.nn.Module, files: list[Path]) -> bool:
-    """Whether the files hold the model's state dict: the same names, each with the same shape.
+    """Whether the files hold the model's state dict without its LoRA adapters: the same names and shapes.
 
     A buffer outside the state dict is in no file, so it must hold the value its constructor computed.
     """
@@ -81,21 +97,28 @@ def safetensors_hold_state(model: torch.nn.Module, files: list[Path]) -> bool:
     for file in files:
         with safe_open(file, framework="pt") as tensors:
             saved.update({name: tuple(tensors.get_slice(name).get_shape()) for name in tensors.keys()})
-    return saved == {name: tuple(tensor.shape) for name, tensor in state.items()}
+    return saved == {name: tuple(tensor.shape) for name, tensor in base_state(model).items()}
 
 
-def holds_on_every_rank(condition: bool) -> bool:
-    conditions = [None] * dist.get_world_size()
-    dist.all_gather_object(conditions, condition)
-    return all(conditions)
+def holds_on_every_rank(condition: bool, *, same: object = None) -> bool:
+    """Whether ``condition`` holds on every rank and every rank passes an equal ``same``."""
+    answers = [None] * dist.get_world_size()
+    dist.all_gather_object(answers, (condition, same))
+    return all(answer == (True, same) for answer in answers)
 
 
 @torch.no_grad()
-def load_safetensors_to_fsdp(model: torch.nn.Module, files: list[Path], *, cpu_offload: bool) -> None:
-    """Materialize FSDP2 shards by reading each rank's own slice of every parameter from the files.
+def load_safetensors_to_fsdp(
+    model: torch.nn.Module, files: list[Path], rank0_adapter_state: dict[str, torch.Tensor], *, cpu_offload: bool
+) -> None:
+    """Materialize FSDP2 shards by reading each rank's own slice of every base parameter from the files.
 
-    A buffer outside the state dict is in no file: every rank ends with the value rank 0's constructor computed.
+    A LoRA adapter is in none of them: every rank takes its shards of the one rank 0 built
+    (``rank0_adapter_state``, empty on the other ranks). A buffer outside the state dict is in no file either:
+    every rank ends with the value rank 0's constructor computed.
     """
+    from torch.distributed.checkpoint.state_dict import set_model_state_dict
+
     device = torch.cuda.current_device()
     # Buffers were computed for real on every rank; to_empty would wipe them. One still on meta is in the state
     # dict, and the read fills it. to_empty splits a tensor two modules share, so each name keeps its own entry.
@@ -108,7 +131,14 @@ def load_safetensors_to_fsdp(model: torch.nn.Module, files: list[Path], *, cpu_o
     with tempfile.TemporaryDirectory() as folder:
         for file in files:
             os.symlink(file.resolve(), Path(folder) / file.name)
-        dcp.load(model.state_dict(), storage_reader=dcp.HuggingFaceStorageReader(folder, thread_count=4))
+        dcp.load(base_state(model), storage_reader=dcp.HuggingFaceStorageReader(folder, thread_count=4))
+    if adapter_state(model):
+        # Before the buffers move below: the broadcast wants every tensor of the model on one device. It fills the
+        # names rank 0 sends and reports nothing about the others: the ranks agreed on the adapter's names before.
+        options = StateDictOptions(
+            full_state_dict=True, broadcast_from_rank0=True, strict=False, cpu_offload=cpu_offload
+        )
+        set_model_state_dict(model, rank0_adapter_state, options=options)
     if cpu_offload:
         # CPUOffloadPolicy manages params only; buffers must live on GPU for forward.
         for buffer in model.buffers():
@@ -120,7 +150,7 @@ def load_safetensors_to_fsdp(model: torch.nn.Module, files: list[Path], *, cpu_o
             dist.broadcast(buffer, src=0)
 
 
-def _is_lora_param_name(name: str) -> bool:
+def is_lora_param_name(name: str) -> bool:
     return "lora_" in name
 
 
@@ -135,7 +165,7 @@ class ModelState(Stateful):
     def state_dict(self):
         model_state_dict, _ = get_state_dict(self.model, optimizers=[])
         if self.lora_only:
-            model_state_dict = {k: v for k, v in model_state_dict.items() if _is_lora_param_name(k)}
+            model_state_dict = {k: v for k, v in model_state_dict.items() if is_lora_param_name(k)}
         return {"model": model_state_dict}
 
     def load_state_dict(self, state_dict):
@@ -149,7 +179,7 @@ class ModelState(Stateful):
         )
         # strict=False swallows mismatches; lora_only expects missing base keys, anything else is a bad checkpoint
         unclaimed = list(incompatible.unexpected_keys)
-        unfilled = [k for k in incompatible.missing_keys if not self.lora_only or _is_lora_param_name(k)]
+        unfilled = [k for k in incompatible.missing_keys if not self.lora_only or is_lora_param_name(k)]
         if unclaimed or unfilled:
             logger.error(
                 f"[FSDP] Checkpoint mismatch: {len(unclaimed)} unclaimed checkpoint keys, "

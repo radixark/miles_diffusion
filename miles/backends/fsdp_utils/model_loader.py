@@ -5,6 +5,7 @@ import warnings
 from argparse import Namespace
 from contextlib import contextmanager
 from functools import partial
+from pathlib import Path
 
 import torch
 import torch.distributed as dist
@@ -30,6 +31,8 @@ def load_fsdp_models(
 ) -> dict[str, torch.nn.Module]:
     models = {}
     for component_index, component in enumerate(args.update_weight_target_modules):
+        lora_adapter_path = None if lora_adapter_paths is None else lora_adapter_paths[component_index]
+        has_lora = lora_adapter_path is not None or (trainable and args.use_lora)
         build = partial(
             build_component,
             args,
@@ -37,19 +40,22 @@ def load_fsdp_models(
             train_pipeline_config,
             component,
             checkpoint_path=checkpoint_path,
-            lora_adapter_path=None if lora_adapter_paths is None else lora_adapter_paths[component_index],
+            lora_adapter_path=lora_adapter_path,
+            has_lora=has_lora,
             trainable=trainable,
         )
-        # Without LoRA every rank reads its own shards from the safetensors files; else rank 0 loads and broadcasts.
-        use_lora = lora_adapter_paths is not None or (trainable and args.use_lora)
-        safetensors_files = (
-            None if use_lora else model_backend.safetensors_files(component, checkpoint_path=checkpoint_path)
-        )
+        # Every rank reads its own shards of the base from the safetensors files; else rank 0 loads and broadcasts.
+        safetensors_files = None
+        if not has_lora or lora_needs_no_base_weights(args, lora_adapter_path):
+            safetensors_files = model_backend.safetensors_files(component, checkpoint_path=checkpoint_path)
         materialize_weights = safetensors_files is None and dist.get_rank() == 0
         rng_state = torch.get_rng_state()
         model = build(materialize_weights=materialize_weights)
-        if not use_lora and not checkpoint.holds_on_every_rank(
-            safetensors_files is not None and checkpoint.safetensors_hold_state(model, safetensors_files)
+        # Every rank answers, with files or without: each one read its own adapter config to get here, and built
+        # from it the adapter tensors that rank 0's broadcast has to fill one for one.
+        if not checkpoint.holds_on_every_rank(
+            safetensors_files is not None and checkpoint.safetensors_hold_state(model, safetensors_files),
+            same=checkpoint.adapter_shapes(model),
         ):
             if safetensors_files is not None and dist.get_rank() == 0:
                 # A constructor may draw random numbers: the second build draws what the first one did.
@@ -66,6 +72,8 @@ def load_fsdp_models(
             logger.info(f"FSDP: {component} weights of {checkpoint_path}: {source}")
         checkpoint.sync_model_dtypes(model)
         full_state = model.state_dict() if materialize_weights else {}
+        # With the base read from the files, the adapter rank 0 built is what is left to broadcast.
+        adapter_state = checkpoint.adapter_state(model) if dist.get_rank() == 0 else {}
         model = apply_fsdp2(
             model,
             model_backend.fsdp_parallel_plan(model),
@@ -74,10 +82,10 @@ def load_fsdp_models(
             args=args,
         )
         if safetensors_files is not None:
-            checkpoint.load_safetensors_to_fsdp(model, safetensors_files, cpu_offload=cpu_offload)
+            checkpoint.load_safetensors_to_fsdp(model, safetensors_files, adapter_state, cpu_offload=cpu_offload)
         else:
             checkpoint.broadcast_full_state_to_fsdp(model, full_state, cpu_offload=cpu_offload)
-        del full_state
+        del full_state, adapter_state
         train_pipeline_config.postprocess_model_after_materialize(model)
         if parallel_state.get_optional_mesh("sp") is not None:
             apply_sequence_parallel(
@@ -94,6 +102,40 @@ def load_fsdp_models(
     return models
 
 
+# PEFT's LoraConfig.init_lora_weights values that never read the base weights; PiSSA, OLoRA, LoftQ... decompose them.
+PEFT_INITS_WITHOUT_BASE_WEIGHTS = (True, False, "gaussian")
+
+
+def peft_init_lora_weights(args: Namespace) -> bool | str:
+    """``--lora-init-weights`` as PEFT's ``LoraConfig.init_lora_weights``."""
+    return True if args.lora_init_weights == "kaiming-uniform" else args.lora_init_weights
+
+
+def lora_needs_no_base_weights(args: Namespace, lora_adapter_path: str | None) -> bool:
+    """Whether rank 0 can build the adapter on a base that has no weights, the base being read from the files.
+
+    PEFT must not read the base weights' values while it builds the adapter: PiSSA, OLoRA, LoftQ... decompose
+    them, and DoRA takes their norm. A saved adapter must also be a LoRA whose file holds adapter tensors only:
+    PEFT loads any other tensor it saved (a bias, a module to save) into the base, where the read of the base
+    checkpoint would replace it.
+    """
+    if lora_adapter_path is None:
+        return peft_init_lora_weights(args) in PEFT_INITS_WITHOUT_BASE_WEIGHTS
+    from peft import PeftConfig, PeftType
+    from peft.utils import SAFETENSORS_WEIGHTS_NAME
+    from safetensors import safe_open
+
+    config = PeftConfig.from_pretrained(lora_adapter_path)
+    file = Path(lora_adapter_path) / SAFETENSORS_WEIGHTS_NAME
+    # AdaLoRA's config is a LoraConfig too, with tensors of its own: the type says which adapter this is.
+    if config.peft_type != PeftType.LORA or config.use_dora:
+        return False
+    if config.init_lora_weights not in PEFT_INITS_WITHOUT_BASE_WEIGHTS or not file.is_file():
+        return False
+    with safe_open(file, framework="pt") as tensors:
+        return all(checkpoint.is_lora_param_name(name) for name in tensors.keys())
+
+
 def build_component(
     args: Namespace,
     model_backend,
@@ -102,6 +144,7 @@ def build_component(
     *,
     checkpoint_path: str,
     lora_adapter_path: str | None,
+    has_lora: bool,
     trainable: bool,
     materialize_weights: bool,
 ) -> torch.nn.Module:
@@ -112,20 +155,54 @@ def build_component(
             master_dtype=parse_dtype_from_str(args.fsdp_master_dtype),
             materialize_weights=materialize_weights,
         )
+    # Before the adapter step, which leaves rank 0's base on meta whatever the backend built.
+    if not materialize_weights and any(not parameter.is_meta for parameter in model.parameters()):
+        raise RuntimeError(f"{component} did not honor meta initialization")
     if args.fsdp_attention_backend is not None:
         model_backend.set_attention_backend(model, args.fsdp_attention_backend)
     if trainable and args.gradient_checkpointing:
         model_backend.enable_gradient_checkpointing(model)
-    if lora_adapter_path is not None:
-        model = load_lora_adapter(model, lora_adapter_path, trainable=trainable)
-    elif trainable and args.use_lora:
-        model = apply_lora(model, args, train_pipeline_config)
+    if has_lora:
+        # Rank 0 builds the adapter's values, as before, also when its base has no weights.
+        with base_stand_in_for_lora(model, enabled=dist.get_rank() == 0 and not materialize_weights):
+            if lora_adapter_path is not None:
+                model = load_lora_adapter(model, lora_adapter_path, trainable=trainable)
+            else:
+                model = apply_lora(model, args, train_pipeline_config)
     model.train(trainable)
     if not trainable:
         model.requires_grad_(False)
-    if not materialize_weights and any(not parameter.is_meta for parameter in model.parameters()):
-        raise RuntimeError(f"{component} did not honor meta initialization")
+    if dist.get_rank() != 0 and any(not parameter.is_meta for parameter in model.parameters()):
+        raise RuntimeError(f"the adapter of {component} did not honor meta initialization")
     return model
+
+
+@contextmanager
+def base_stand_in_for_lora(model: torch.nn.Module, *, enabled: bool):
+    """Give a meta base a CPU stand-in while PEFT builds an adapter on it.
+
+    PEFT moves a new adapter to its base layer's device, and meta would drop the adapter's values. For the
+    adapters ``lora_needs_no_base_weights`` lets through it reads the base layer's device and dtype only, so each
+    base parameter stands in as one uninitialized element expanded to its shape: a full ``torch.empty`` is written
+    through under ``--deterministic-mode`` (the NaN fill), a copy of the model in host memory.
+    """
+    if not enabled:
+        yield
+        return
+    replace_base_parameters(model, lambda parameter: torch.empty((), dtype=parameter.dtype).expand(parameter.shape))
+    try:
+        yield
+    finally:
+        replace_base_parameters(model, lambda parameter: parameter.data.to("meta"))
+
+
+def replace_base_parameters(model: torch.nn.Module, data_of) -> None:
+    # A meta parameter cannot take CPU data in place (nor the reverse), so each one is registered anew.
+    for module_name, module in model.named_modules():
+        for name, parameter in list(module.named_parameters(recurse=False)):
+            if not checkpoint.is_lora_param_name(f"{module_name}.{name}"):
+                data = data_of(parameter)
+                module.register_parameter(name, torch.nn.Parameter(data, requires_grad=parameter.requires_grad))
 
 
 def finish_fsdp_lazy_init(model: torch.nn.Module) -> None:
@@ -171,16 +248,13 @@ def apply_lora(model: torch.nn.Module, args: Namespace, train_pipeline_config) -
     on_meta = dist.get_rank() != 0
     # Per-model fallback when --lora-target-modules is unset (runtime inference: depends on loaded pipeline).
     targets = args.lora_target_modules or train_pipeline_config.lora_target_modules
-    init_lora_weight = args.lora_init_weights
-    if init_lora_weight == "kaiming-uniform":
-        init_lora_weight = True  # namely kaiming-uniform
     model = get_peft_model(
         model,
         LoraConfig(
             r=args.lora_rank,
             lora_alpha=args.lora_alpha,
             target_modules=targets,
-            init_lora_weights=False if on_meta else init_lora_weight,
+            init_lora_weights=False if on_meta else peft_init_lora_weights(args),
         ),
         low_cpu_mem_usage=on_meta,
     )
