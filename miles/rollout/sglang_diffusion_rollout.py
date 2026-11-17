@@ -19,7 +19,11 @@ from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_fil
 from miles.rollout.resolution_strategy_hub import check_resolution
 from miles.utils.async_utils import run
 from miles.utils.diffusion_data import Dataset as DiffusionDataset
-from miles.utils.diffusion_rollout_response import RolloutImageResponseParserActor, read_generated_outputs
+from miles.utils.diffusion_rollout_response import (
+    RolloutImageResponseParserActor,
+    check_generated_resolution,
+    read_generated_outputs,
+)
 from miles.utils.eval_config import EvalDatasetConfig
 from miles.utils.http_utils import post
 from miles.utils.misc import SingletonMeta, load_function
@@ -281,6 +285,9 @@ async def load_generated_outputs(state: GenerateState, samples: list[Sample]) ->
     st.attach(stored)
     for sample, tensor in zip(stored, tensors, strict=True):
         sample.generated_output = tensor
+        # the inline path checks this in apply_rollout_image_response; a stored output is
+        # only a ref there, so it is checked here, once it is a tensor
+        check_generated_resolution(sample)
 
 
 async def generate_and_rm_microgroup(

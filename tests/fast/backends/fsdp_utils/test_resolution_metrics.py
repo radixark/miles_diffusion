@@ -18,6 +18,7 @@ import torch
 
 from miles.backends.fsdp_utils.loss_hub.flow_grpo import flow_grpo_loss_formula
 from miles.backends.fsdp_utils.metrics import new_metric_buffer
+from miles.backends.fsdp_utils.sde_step_backend import SdeStepOutput
 from miles.rollout.resolution_strategy_hub import declared_resolutions
 
 BUCKETS = "512x512,672x384"
@@ -29,7 +30,14 @@ class _FixedLogProbBackend:
 
     def sde_step_logprob(self, pred, latents, *, prev_sample, noise_level, sigmas, next_sigmas, sigma_max):
         log_prob = pred.reshape(pred.shape[0], -1)[:, 0]
-        return None, log_prob, pred, torch.ones_like(log_prob)
+        ones = torch.ones_like(log_prob)
+        return SdeStepOutput(
+            prev_sample=prev_sample,
+            log_prob=log_prob,
+            prev_mean=pred,
+            std_dev_t=ones,
+            noise_std=ones,
+        )
 
 
 def _strategy_args(**overrides):
@@ -45,7 +53,12 @@ def _strategy_args(**overrides):
 def _run_loss(metrics, resolution, log_prob_new, log_prob_old):
     bsz = len(log_prob_new)
     ctx = SimpleNamespace(
-        args=Namespace(diffusion_clip_range=1e-4, diffusion_noise_level=1.0, diffusion_kl_beta=0.0),
+        args=Namespace(
+            diffusion_clip_range=1e-4,
+            diffusion_noise_level=1.0,
+            diffusion_kl_beta=0.0,
+            diffusion_score_centering=False,
+        ),
         sde_backend=_FixedLogProbBackend(),
         models={"transformer": None},
         device=torch.device("cpu"),
@@ -71,6 +84,8 @@ def _run_loss(metrics, resolution, log_prob_new, log_prob_old):
         old_pred=None,
         ref_pred=None,
         metrics=metrics,
+        optim_step_idx=0,
+        train_output_inputs=[],
     )
 
 
