@@ -5,6 +5,9 @@
     --micro-batch-size-sample > 1 (legacy tiles)  ─► rejected (a tile spans prompt groups)
     weighted_buckets without buckets / bad buckets ─► rejected at startup, not in the rollout actor
     no strategy at all                            ─► nothing is checked
+
+Validation also derives args.diffusion_resolution_bucket_list, which is what the train side
+declares its per-resolution metrics from.
 """
 
 from tests.ci.ci_register import register_cpu_ci
@@ -94,3 +97,30 @@ def test_weights_without_buckets_are_rejected():
             ),
             _MixedResolutionConfig,
         )
+
+
+def test_validation_derives_the_declared_buckets():
+    args = _args()
+
+    validate_resolution_strategy(args, _MixedResolutionConfig)
+
+    assert args.diffusion_resolution_bucket_list == ((512, 512), (672, 384), (384, 672))
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        dict(diffusion_resolution_strategy_path=None),  # fixed resolution
+        # a custom strategy free to pick any size declares nothing
+        dict(
+            diffusion_resolution_strategy_path="miles.utils.misc.load_function",
+            diffusion_resolution_buckets=None,
+        ),
+    ],
+)
+def test_nothing_is_declared_without_a_bucket_list(overrides):
+    args = _args(**overrides)
+
+    validate_resolution_strategy(args, _MixedResolutionConfig)
+
+    assert args.diffusion_resolution_bucket_list == ()

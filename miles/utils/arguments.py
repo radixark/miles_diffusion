@@ -2089,7 +2089,13 @@ def validate_dmd2_args(args) -> None:
 
 
 def validate_resolution_strategy(args, cfg_cls) -> None:
-    """Reject a mixed-resolution rollout the training side cannot replay."""
+    """Reject a mixed-resolution rollout the training side cannot replay.
+
+    Also derives ``args.diffusion_resolution_bucket_list``: the resolutions the run says up
+    front it can draw, which the train side declares its per-resolution metrics from. Empty
+    unless a strategy and a bucket list are both set.
+    """
+    args.diffusion_resolution_bucket_list = ()
     if args.diffusion_resolution_strategy_path is None:
         return
 
@@ -2121,9 +2127,9 @@ def validate_resolution_strategy(args, cfg_cls) -> None:
 
     # Fail at startup rather than in the first rollout actor.
     if args.diffusion_resolution_buckets is not None:
-        parse_resolution_weights(
-            args.diffusion_resolution_weights, len(parse_resolution_buckets(args.diffusion_resolution_buckets))
-        )
+        buckets = parse_resolution_buckets(args.diffusion_resolution_buckets)
+        parse_resolution_weights(args.diffusion_resolution_weights, len(buckets))
+        args.diffusion_resolution_bucket_list = tuple(buckets)
     elif load_function(args.diffusion_resolution_strategy_path) is weighted_buckets:
         raise ValueError("miles.rollout.resolution_strategy_hub.weighted_buckets needs --diffusion-resolution-buckets")
     elif args.diffusion_resolution_weights is not None:

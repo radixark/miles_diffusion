@@ -13,7 +13,6 @@ import miles.backends.fsdp_utils.configs.qwen_image  # noqa: F401 — register p
 import miles.backends.fsdp_utils.configs.sd3  # noqa: F401 — register pipeline config
 import miles.backends.fsdp_utils.configs.wan2_2  # noqa: F401 — register pipeline config
 from miles.ray.train_actor import TrainRayActor
-from miles.rollout.resolution_strategy_hub import declared_resolutions
 from miles.utils import tracking_utils, train_metric_utils
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
@@ -409,7 +408,7 @@ class FSDPTrainRayActor(TrainRayActor):
                     device,
                     self.models,
                     sigma_buckets=self.args.log_loss_sigma_bucket,
-                    resolutions=declared_resolutions(self.args),
+                    resolutions=self.args.diffusion_resolution_bucket_list,
                 )
                 # Skip window 0: its training forward runs on the same pre-update weights and doubles as the recompute.
                 # Each later window's micro-batches get the ids and step index of their training forwards.
@@ -448,7 +447,7 @@ class FSDPTrainRayActor(TrainRayActor):
                     self.models,
                     sigma_buckets=self.args.log_loss_sigma_bucket,
                     num_rollout_steps=self.args.diffusion_num_steps,
-                    resolutions=declared_resolutions(self.args),
+                    resolutions=self.args.diffusion_resolution_bucket_list,
                 )
 
                 for pair_lo, pair_hi in microbatch_ranges:
