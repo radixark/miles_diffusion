@@ -25,6 +25,7 @@ from miles.utils.diffusion_rollout_response import (
     read_generated_outputs,
 )
 from miles.utils.eval_config import EvalDatasetConfig
+from miles.utils.hash_utils import stable_hash
 from miles.utils.http_utils import post
 from miles.utils.misc import SingletonMeta, load_function
 from miles.utils.output_store import StoredTensor, StoredTensorReader, connect_output_store, record_dropped_samples
@@ -388,13 +389,18 @@ async def generate_and_rm_group(
     # Before the per-microgroup copies below, so every microgroup of this group agrees.
     # Eval holds --diffusion-height / --diffusion-width fixed; it has its own entry point
     # today, and the evaluation guard keeps that true if it is ever routed through here.
+    #
+    # Its own stream: seed_base is also microgroup 0's request seed, which the step strategy
+    # draws its SDE window from, and the first draw off a seeded Generator is a function of
+    # the seed alone -- sharing it ties the resolution to the window, so two buckets and two
+    # window starts would only ever produce two of the four pairs.
     if not evaluation and state.resolution_strategy_fn is not None:
         apply_resolution_strategy(
             args,
             group,
             sampling_params,
             resolution_strategy_fn=state.resolution_strategy_fn,
-            seed=seed_base,
+            seed=stable_hash("resolution", seed_base),
         )
 
     tasks = []
