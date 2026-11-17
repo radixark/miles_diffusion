@@ -288,6 +288,19 @@ def test_a_model_without_an_adapter_skips_the_adapter_step(tmp_path, monkeypatch
     assert materialize_requests == [False, False] and broadcasts == []
 
 
+def test_the_base_takes_no_memory_while_the_adapter_is_built(monkeypatch):
+    # A full torch.empty is written through under --deterministic-mode: a copy of the model on every rank.
+    monkeypatch.setattr(model_loader.checkpoint, "rank0_rng_state", torch.get_rng_state)
+    monkeypatch.setattr(model_loader.dist, "get_rank", lambda: 0)
+    with model_loader.model_init_context(materialize_weights=False):
+        model = TinyComponent()
+    with model_loader.base_storage_for_lora(model, enabled=True):
+        weight = model.block.proj.weight
+        assert weight.device.type == "cpu" and weight.shape == (4, 3)
+        assert weight.untyped_storage().nbytes() == weight.element_size()
+    assert model.block.proj.weight.is_meta
+
+
 def lora_weights(state):
     return {name: tensor for name, tensor in state.items() if "lora_" in name}
 

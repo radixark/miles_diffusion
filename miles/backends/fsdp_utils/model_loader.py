@@ -159,18 +159,20 @@ def build_component(
 
 @contextmanager
 def base_storage_for_lora(model: torch.nn.Module, *, enabled: bool):
-    """Give a meta base uninitialized CPU storage while PEFT builds an adapter on it, from rank 0's generator.
+    """Give a meta base a CPU stand-in while PEFT builds an adapter on it, from rank 0's generator state.
 
-    PEFT moves a new adapter to its base layer's device, and meta would drop the adapter's values. Its
-    initialization draws, and only rank 0 has run it so far: the other ranks draw the same values from rank 0's
-    generator state and keep their own.
+    PEFT moves a new adapter to its base layer's device, and meta would drop the adapter's values. It reads the
+    base layer's device and dtype only, so each base parameter stands in as one uninitialized element expanded to
+    its shape: a full ``torch.empty`` is written through under ``--deterministic-mode`` (the NaN fill), a copy of
+    the model on every rank. PEFT's initialization draws, and only rank 0 has run it so far: the other ranks draw
+    the same values from rank 0's generator state and keep their own.
     """
     if not enabled:
         yield
         return
     rng_state = torch.get_rng_state()
     torch.set_rng_state(checkpoint.rank0_rng_state())
-    replace_base_parameters(model, lambda parameter: torch.empty(parameter.shape, dtype=parameter.dtype))
+    replace_base_parameters(model, lambda parameter: torch.empty((), dtype=parameter.dtype).expand(parameter.shape))
     try:
         yield
     finally:
