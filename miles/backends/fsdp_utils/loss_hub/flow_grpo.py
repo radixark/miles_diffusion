@@ -6,11 +6,11 @@ import torch
 
 from miles.backends.fsdp_utils.loss_hub.score_centering import score_centering_term
 from miles.backends.fsdp_utils.loss_hub.types import DiffusionLossContext, PreparedBatch
-<<<<<<< HEAD
-from miles.backends.fsdp_utils.metrics import record_prev_mean_diff_over_noise_std, record_rollout_train_abs_diff
-=======
-from miles.backends.fsdp_utils.metrics import record_rollout_train_abs_diff, resolution_metric_key
->>>>>>> 1ea11496 (feat(train): log the train-vs-rollout log-prob drift per resolution)
+from miles.backends.fsdp_utils.metrics import (
+    record_prev_mean_diff_over_noise_std,
+    record_rollout_train_abs_diff,
+    resolution_metric_key,
+)
 from miles.utils.metric_buffer import MetricBuffer
 from miles.utils.train_data_utils import stack_train_pair_rollout_debug
 
