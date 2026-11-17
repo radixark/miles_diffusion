@@ -17,6 +17,8 @@ import pytest
 
 from miles.rollout.resolution_strategy_hub import parse_resolution_buckets, parse_resolution_weights, weighted_buckets
 from miles.rollout.sglang_diffusion_rollout import apply_resolution_strategy
+from miles.rollout.step_strategy_hub import sde_window
+from miles.utils.hash_utils import stable_hash
 from miles.utils.types import Sample
 
 
@@ -130,3 +132,26 @@ def test_an_off_grid_custom_strategy_is_rejected_before_the_request():
         )
     assert (sampling_params["height"], sampling_params["width"]) == (512, 512)
     assert all(s.height is None for s in group)
+
+
+# ---------------------------------------------------------------------------
+# The resolution draw gets its own stream
+# ---------------------------------------------------------------------------
+
+
+def test_the_draw_does_not_track_the_sde_window():
+    """seed_base is also microgroup 0's request seed, which the step strategy draws its SDE
+    window from. Seeding both with it pairs each bucket with one window start forever, so a
+    group of one microgroup would only ever train that bucket at that step."""
+    step_args = Namespace(diffusion_num_sde_steps=1, diffusion_sde_window_range="3,5")
+    res_args = _args(diffusion_resolution_buckets="512x512,672x384")
+
+    pairs = set()
+    for group_index in range(200):
+        seed_base = (7 + group_index * 16) % (2**31)
+        bucket = weighted_buckets(res_args, Sample(), stable_hash("resolution", seed_base))
+        window, _, _ = sde_window(step_args, Sample(), 10, seed_base)
+        pairs.add((bucket, window[0]))
+
+    # 2 buckets x 2 window starts, and the draw must reach all four
+    assert len(pairs) == 4
