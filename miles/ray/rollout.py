@@ -449,12 +449,15 @@ class RolloutManager:
         reward_stats["rollout/step"] = compute_rollout_step(self.args, self.rollout_id)
         tracking_utils.log(self.args, reward_stats, step_key="rollout/step")
 
-        max_images = self.args.wandb_log_num_images
-        interval = self.args.wandb_log_image_interval
-        if max_images > 0 and self.rollout_id % interval == 0:
+        if tracking_utils.logs_rollout_media(self.args, self.rollout_id):
+            # with the output store on, only the samples the rollout kept for media hold a tensor
             self._log_images_async(
-                {"rollout_media/sample_images": samples},
-                max_images=max_images,
+                {
+                    "rollout_media/sample_images": [
+                        sample for sample in samples if isinstance(sample.generated_output, torch.Tensor)
+                    ]
+                },
+                max_images=self.args.wandb_log_num_images,
                 step_key="rollout/step",
                 step_value=compute_rollout_step(self.args, self.rollout_id),
                 reward_key=self.args.reward_key,

@@ -3,16 +3,25 @@
 from __future__ import annotations
 
 import dataclasses
+import itertools
 import json
+import logging
+import threading
 from argparse import Namespace
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
+
+import torch
 
 from miles.utils.types import Sample
 
 if TYPE_CHECKING:
-    from radix_transfer_plugins import OutputStore, StoreRef
+    from radix_transfer_plugins import FieldSpec, OutputStore, ReadBuffer, StoreRef
+
+S = TypeVar("S")
+
+logger = logging.getLogger(__name__)
 
 BACKEND = "mooncake"
 _SIZE_UNITS = {"kb": 1024, "mb": 1024**2, "gb": 1024**3, "k": 1024, "m": 1024**2, "g": 1024**3}
@@ -98,6 +107,94 @@ class StoredTensor:
 
     ref: StoreRef
     field: str
+
+
+def plugin_keeps_read_buffers() -> bool:
+    """Whether the installed radix_transfer_plugins has ``OutputStore.read_slot`` (sgl-project/sglang#50869)."""
+    try:
+        from radix_transfer_plugins import OutputStore
+    except ImportError:
+        return False
+    return hasattr(OutputStore, "read_slot")
+
+
+class StoredTensorReader:
+    """Reads stored tensors into one buffer that stays registered with the store.
+
+    ``OutputStore.read_many`` registers fresh memory on every call, and under RDMA a registration pins that memory.
+    The store's ``ReadSlot`` keeps the buffer, registering again only when a read needs more than it holds, for
+    the life of the process. Only fields stored uncompressed can be read; every tensor the engines store is.
+    """
+
+    def __init__(self, store: OutputStore) -> None:
+        self._slot = store.read_slot()
+        self._buffer = None
+        # a slot serves one read at a time, and API reward actors read from several threads
+        self._lock = threading.Lock()
+
+    def read(self, stored_tensors: list[StoredTensor]) -> list[torch.Tensor]:
+        """The tensors of ``stored_tensors`` in one store read; a field is read once, and the tensors of one read
+        share one allocation, which the caller owns."""
+        from radix_transfer_plugins.stashes.tensor_stash import TensorStash
+
+        wanted: dict[str, tuple[StoreRef, set[str]]] = {}
+        for stored in stored_tensors:
+            wanted.setdefault(stored.ref.key, (stored.ref, set()))[1].add(stored.field)
+        requests = [(ref, sorted(names)) for ref, names in wanted.values()]
+        with self._lock:
+            stashes = self._read_many(requests, stash_type=TensorStash)
+        tensors = {
+            (ref.key, name): tensor
+            for (ref, _), stash in zip(requests, stashes, strict=True)
+            for name, tensor in stash.tensors.items()
+        }
+        return [tensors[(stored.ref.key, stored.field)] for stored in stored_tensors]
+
+    def _read_many(self, requests: list[tuple[StoreRef, list[str]]], *, stash_type: type[S]) -> list[S]:
+        """``OutputStore.read_many`` through the kept buffer: every field in one range read, then one copy out,
+        which the read's stashes share, so that the next read may overwrite the buffer."""
+        from radix_transfer_plugins import RangeRead
+        from radix_transfer_plugins.schema import RawField
+
+        fields = [(ref, spec) for ref, names in requests for spec in _named_specs(ref, names)]
+        *offsets, total_nbytes = itertools.accumulate((spec.nbytes for _, spec in fields), initial=0)
+        # Backends store no empty values: an empty field lives only in its ref.
+        reads = [
+            RangeRead(ref=ref, field=spec.name, src_offset=0, nbytes=spec.nbytes, dst_offset=offset)
+            for (ref, spec), offset in zip(fields, offsets, strict=True)
+            if spec.nbytes
+        ]
+        if reads:
+            buffer = self._reserve(total_nbytes)
+            self._slot.store.read_ranges(reads, into=buffer)
+            # One allocation: a copy per field faults in its pages one by one, 3-10x slower than the read itself.
+            copy = memoryview(torch.frombuffer(buffer.view, dtype=torch.uint8, count=total_nbytes).clone().numpy())
+        raw = iter(
+            RawField(
+                dtype=spec.dtype,
+                shape=spec.shape,
+                data=copy[offset : offset + spec.nbytes] if spec.nbytes else memoryview(b""),
+            )
+            for (_, spec), offset in zip(fields, offsets, strict=True)
+        )
+        return [stash_type.from_fields({name: next(raw) for name in names}) for _, names in requests]
+
+    def _reserve(self, nbytes: int) -> ReadBuffer:
+        buffer = self._slot.reserve(nbytes)
+        if buffer is not self._buffer:
+            # the kept buffer is this process's pinned memory for the store; the size per rank is a run metric
+            logger.info("output store read buffer registered: %d bytes", buffer.nbytes)
+            self._buffer = buffer
+        return buffer
+
+
+def _named_specs(ref: StoreRef, names: list[str]) -> list[FieldSpec]:
+    """The specs of ``names`` in ``ref``, as the plugin's read_many looks them up: a shard asks one ref for
+    hundreds of its fields."""
+    specs = {spec.name: spec for spec in ref.fields}
+    if missing := [name for name in names if name not in specs]:
+        raise ValueError(f"{ref.key} has no field {missing}")
+    return [specs[name] for name in names]
 
 
 def store_refs_of(samples: Iterable[Any]) -> dict[str, StoreRef]:

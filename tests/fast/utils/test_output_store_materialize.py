@@ -25,7 +25,10 @@ class MemoryBackend(StorageBackend):
 
     def __init__(self):
         self.objects = {}
+        # what each get_many read, as [(key, [name])]; what each get_ranges read, as [(key, name)]
         self.reads = []
+        self.range_reads = []
+        self.registrations = 0
 
     def put_many(self, objects):
         keys = []
@@ -43,13 +46,18 @@ class MemoryBackend(StorageBackend):
         ]
 
     def register(self, memory):
-        pass
+        self.registrations += 1
 
     def unregister(self, memory):
         pass
 
     def get_ranges(self, reads, *, into):
-        raise NotImplementedError
+        self.range_reads.append(sorted((read.ref.key, read.field) for read in reads))
+        for read in reads:
+            data = self.objects[read.ref.key][read.field]
+            into[read.dst_offset : read.dst_offset + read.nbytes] = data[
+                read.src_offset : read.src_offset + read.nbytes
+            ]
 
     def delete_many(self, keys, *, parts):
         for key in keys:
