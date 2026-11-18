@@ -255,7 +255,7 @@ class DiffusersModelBackend(BaseModelBackend):
 
     @staticmethod
     def _read_modular_index(checkpoint_path: str) -> dict | None:
-        """``modular_model_index.json`` of a local or Hub checkpoint; None when neither the Hub nor the cache has one."""
+        """``modular_model_index.json`` of a checkpoint; None when it ships none, or the Hub cannot be asked and no copy is cached."""
         if os.path.isdir(checkpoint_path):
             index_file = os.path.join(checkpoint_path, ModularPipeline.config_name)
             if not os.path.isfile(index_file):
@@ -263,7 +263,7 @@ class DiffusersModelBackend(BaseModelBackend):
         else:
             try:
                 index_file = hf_hub_download(checkpoint_path, ModularPipeline.config_name)
-            # no cached copy and no answer (offline, gated, not a repo id): the cached snapshot holds none
+            # 404, or no answer (offline, gated, not a repo id) and no cached copy: the load goes on from the root index
             except (EntryNotFoundError, HfHubHTTPError, HFValidationError):
                 return None
         with open(index_file) as f:
