@@ -51,6 +51,7 @@ def test_pickscore_actor_truncates_and_averages_frames_per_sample():
     --pickscore-batch-size frames (the chunking the e2e standards were recorded with), not one sample."""
     actor = PickScoreRewardActor.__new__(PickScoreRewardActor)
     actor.frames_per_forward = 1
+    actor.num_frames = None
     forward_sizes = []
 
     def scorer(prompts, images):

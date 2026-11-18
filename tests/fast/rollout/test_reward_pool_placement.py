@@ -14,6 +14,8 @@ from tests.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=5, suite="stage-a-cpu", labels=[])
 
+from argparse import Namespace
+
 import pytest
 
 import miles.rollout.rm_hub.core as core_module
@@ -42,6 +44,7 @@ def _no_ray(monkeypatch):
 
 def _pool(actor_cls, *, num_workers, colocate, placement_group=None, slots=None):
     return AsyncRewardActorPool(
+        args=Namespace(use_output_store=False),
         actor_cls=actor_cls,
         actor_kwargs={},
         num_workers=num_workers,

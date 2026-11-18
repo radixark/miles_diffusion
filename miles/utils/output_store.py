@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import dataclasses
+import itertools
 import json
+import threading
 from argparse import Namespace
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+
+import torch
 
 from miles.utils.types import Sample
 
@@ -98,6 +102,56 @@ class StoredTensor:
 
     ref: StoreRef
     field: str
+
+
+class RegisteredTensorReader:
+    """Reads stored tensors into one buffer that stays registered with the store.
+
+    ``OutputStore.read_many`` registers fresh memory on every call, and under RDMA a registration pins that memory.
+    The buffer is registered when first needed and again only to grow, and stays for the life of the process. Only
+    fields that are not empty and stored uncompressed can be read; every tensor the engines store is.
+    """
+
+    def __init__(self, store: OutputStore) -> None:
+        self._store = store
+        self._buffer = None
+        # the store allows one read into a buffer at a time, and API reward actors read from several threads
+        self._lock = threading.Lock()
+
+    def read(self, stored_tensors: list[StoredTensor]) -> list[torch.Tensor]:
+        """The tensors of ``stored_tensors``, each a copy the caller owns, in one store read."""
+        from radix_transfer_plugins import RangeRead
+
+        specs = [
+            next(spec for spec in stored_tensor.ref.fields if spec.name == stored_tensor.field)
+            for stored_tensor in stored_tensors
+        ]
+        *offsets, total_nbytes = itertools.accumulate((spec.nbytes for spec in specs), initial=0)
+        range_reads = [
+            RangeRead(
+                ref=stored_tensor.ref,
+                field=stored_tensor.field,
+                src_offset=0,
+                nbytes=spec.nbytes,
+                dst_offset=offset,
+            )
+            for stored_tensor, spec, offset in zip(stored_tensors, specs, offsets, strict=True)
+        ]
+        with self._lock:
+            if self._buffer is None or self._buffer.nbytes < total_nbytes:
+                if self._buffer is not None:
+                    self._buffer.close()
+                self._buffer = self._store.read_buffer(total_nbytes)
+            self._store.read_ranges(range_reads, into=self._buffer)
+            tensors = []
+            for spec, offset in zip(specs, offsets, strict=True):
+                dtype = getattr(torch, spec.dtype)
+                tensor = torch.frombuffer(
+                    self._buffer.view, dtype=dtype, count=spec.nbytes // dtype.itemsize, offset=offset
+                )
+                # copied out: the next read overwrites the buffer
+                tensors.append(tensor.reshape(spec.shape).clone())
+        return tensors
 
 
 def store_refs_of(samples: Iterable[Any]) -> dict[str, StoreRef]:

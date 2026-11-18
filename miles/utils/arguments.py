@@ -591,8 +591,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=False,
                 help=(
                     "Rollout requests put their latents, debug and cond tensors and their generated output in "
-                    "the run's Mooncake (sglang-d --output-store-backend) and return a ref; the rollout reads the "
-                    "output back right after generation and the trainer reads the tensors."
+                    "the run's Mooncake (sglang-d --output-store-backend) and return a ref; the reward actors read "
+                    "the output and the trainer reads the tensors. In the rollout process a sample's "
+                    "generated_output is a StoredTensor until its reward and None after it, except the first "
+                    "--wandb-log-num-images scored samples of a rollout that logs media, which become tensors. "
+                    "Outputs wait in the store until scored; see --output-store-global-segment-size."
                 ),
             )
             parser.add_argument(
@@ -616,18 +619,24 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--output-store-global-segment-size",
                 type=str,
-                default="16gb",
+                default="72gb",
                 help=(
                     "Memory each training node lends the store, mounted by its first trainer actor; the run's "
-                    "stored objects live in these segments, so their sum bounds what a rollout can store."
+                    "stored objects live in these segments, so their sum bounds what a rollout can store. Outputs "
+                    "wait there until scored: the segments should hold one rollout's outputs plus two rollouts of "
+                    "latents, or a reward slower than generation fills the store and requests fail. The default "
+                    "holds an LTX-2.3 rollout of 64 float videos."
                 ),
             )
             parser.add_argument(
                 "--output-store-protocol",
                 type=str,
                 choices=("rdma", "tcp"),
-                default="tcp",
-                help="Mooncake transfer protocol of every output store client; rdma needs an RDMA device on every node.",
+                default="rdma",
+                help=(
+                    "Mooncake transfer protocol of every output store client. rdma needs an RDMA device on every "
+                    "node; tcp works without one and is much slower, above all for puts."
+                ),
             )
             parser.add_argument(
                 "--output-store-device-name",

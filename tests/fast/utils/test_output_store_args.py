@@ -48,7 +48,7 @@ def test_flags_parse(monkeypatch: pytest.MonkeyPatch) -> None:
     assert args.use_output_store
     assert args.output_store_mooncake_master == "10.0.0.1:50051"
     assert args.output_store_local_buffer_size == "2gb"
-    assert args.output_store_global_segment_size == "16gb"
+    assert args.output_store_global_segment_size == "72gb"
     assert args.output_store_protocol == "tcp"
     assert args.output_store_device_name == ""
 

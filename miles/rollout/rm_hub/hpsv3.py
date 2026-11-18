@@ -233,6 +233,7 @@ class AsyncHPSv3Pool(AsyncRewardActorPool, metaclass=SingletonMeta):
 
     def __init__(self, args, placement_group=None, slots=None) -> None:
         super().__init__(
+            args=args,
             actor_cls=HPSv3RewardActor,
             actor_kwargs={"checkpoint_path": args.hpsv3_checkpoint_path},
             num_workers=args.hpsv3_num_workers,

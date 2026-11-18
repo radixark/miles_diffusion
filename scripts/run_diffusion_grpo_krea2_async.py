@@ -99,6 +99,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         __file__, run_id=run_name, project=WANDB_PROJECT, wandb_log_num_images=8, wandb_log_image_interval=10
     )
 
+    # the launcher starts the Mooncake master on the --output-store-mooncake-master port
     sglang_args = (
         "--use-miles-router "
         "--sglang-server-concurrency 8 "
@@ -107,9 +108,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         "--sglang-dit-precision bf16 "
         "--sglang-vae-slicing "
         "--update-weight-buffer-size 2147483648 "
-        # the launcher starts the Mooncake master on this port; debug mode stores every step's debug tensors,
-        # ~12 GB per 240-sample rollout with two rollouts in flight, beyond the 16gb default segment
-        "--use-output-store --output-store-mooncake-master 127.0.0.1:50070 --output-store-global-segment-size 64gb "
+        "--use-output-store --output-store-mooncake-master 127.0.0.1:50070 "
     )
 
     train_backend_args = "--train-backend fsdp --diffusion-forward-dtype bf16 --micro-batch-size 2 "

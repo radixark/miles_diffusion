@@ -10,8 +10,7 @@ register_e2e_ci(
     est_time=1200,
     suite="stage-c-3-gpu-h200",
     script="scripts/run_diffusion_grpo_sd3_ocr_sglang.py",
-    # Inline on purpose: the legacy (no output store) gate for rollouts fetched in the parser actors.
-    args=["--num-rollout", "2"],
+    args=["--num-rollout", "2", "--extra-args", "--use-output-store --output-store-mooncake-master 127.0.0.1:50067"],
     metrics=[
         "rollout/reward/raw_num_samples",
         "rollout/reward/raw_mean",

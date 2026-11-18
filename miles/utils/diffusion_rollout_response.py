@@ -4,18 +4,15 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import msgpack
 import ray
 import torch
 
-from miles.utils.output_store import StoredTensor, materialize_stored_tensors
+from miles.utils.output_store import RegisteredTensorReader, StoredTensor
 from miles.utils.processing_utils import fhwc_to_cfhw
 from miles.utils.types import CondKwargs, DenoisingEnv, DiTTrajectory, RolloutDebugTensors, Sample, decode_tensor
-
-if TYPE_CHECKING:
-    from radix_transfer_plugins import OutputStore
 
 __all__ = [
     "apply_rollout_image_response",
@@ -80,11 +77,9 @@ def _normalize_generated_output(tensor: torch.Tensor | None) -> torch.Tensor | N
     return canonical.contiguous()
 
 
-def read_generated_outputs(store: OutputStore, outputs: list[StoredTensor]) -> list[torch.Tensor]:
+def read_generated_outputs(reader: RegisteredTensorReader, stored_outputs: list[StoredTensor]) -> list[torch.Tensor]:
     """Read stored outputs in one store read, in the ``[C, F, H, W]`` layout an inline output is parsed to."""
-    tensors = list(outputs)
-    materialize_stored_tensors(tensors, store=store)
-    return [_normalize_generated_output(tensor) for tensor in tensors]
+    return [_normalize_generated_output(tensor) for tensor in reader.read(stored_outputs)]
 
 
 def _parse_tensor_or_list(
