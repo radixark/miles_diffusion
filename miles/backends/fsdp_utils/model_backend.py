@@ -229,8 +229,9 @@ class DiffusersModelBackend(BaseModelBackend):
 
         A checkpoint that ships ``modular_model_index.json`` is read from it, as diffusers' modular loader does:
         its root ``model_index.json`` may describe another layout of the same weights (MiniMax-H3-Image's names the
-        engine's native classes). The folder is the one the component's loading spec names, else the component's
-        name. The repository a loading spec names is not followed: weights come from ``checkpoint_path``.
+        engine's native classes). The folder is the ``subfolder`` of the component's loading spec; an entry without
+        a loading spec uses the component's name. The repository a loading spec names is not followed: weights come
+        from ``checkpoint_path``.
         """
         index_name = ModularPipeline.config_name
         index = cls._read_modular_index(checkpoint_path)
