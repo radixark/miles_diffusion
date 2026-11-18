@@ -9,6 +9,8 @@ from tests.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=20, suite="stage-a-cpu", labels=[])
 
+import shlex
+import sys
 from argparse import Namespace
 
 import diffusers
@@ -18,9 +20,11 @@ from sglang.multimodal_gen.runtime.pipelines_core.stages.model_specific_stages.m
     minimax_h3_packed_sequence_ref2va_blocks,
 )
 
+from miles.backends.fsdp_utils.arguments import load_fsdp_args
 from miles.backends.fsdp_utils.configs.h3_image import H3ImageTrainPipelineConfig
 from miles.backends.fsdp_utils.mixed_precision import compile_param_dtype_maps
 from miles.backends.fsdp_utils.models.diffusers import load_fsdp_parallel_plan
+from miles.utils.arguments import get_miles_extra_args_provider, miles_validate_args, set_default_diffusion_args
 
 TEXT_LEN, LATENT_H, LATENT_W = 5, 8, 12
 NUM_IMAGE_ROWS = LATENT_H * LATENT_W // 4
@@ -157,8 +161,8 @@ def _grpo_args(**overrides):
         rollout_microgroup_size=1,
         diffusion_output_num_frames=1,
         micro_batch_size=1,
-        micro_batch_size_sample=1,
-        micro_batch_size_tstep=1,
+        micro_batch_size_sample=None,
+        micro_batch_size_tstep=None,
         diffusion_quality="exact",
         diffusion_true_cfg_scale=None,
     )
@@ -170,18 +174,55 @@ def test_lora_flow_grpo_is_accepted():
     H3ImageTrainPipelineConfig.validate_args(_grpo_args())
 
 
-@pytest.mark.parametrize("no_sync", ["train_only", "debug_rollout_only"])
-def test_a_run_that_syncs_no_weights_needs_no_lora(no_sync):
-    """The LoRA requirement is about what the engine can receive; a rollout-only smoke sends it nothing."""
-    H3ImageTrainPipelineConfig.validate_args(_grpo_args(use_lora=False, lora_ipc_weight_sync=False, **{no_sync: True}))
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        # no trainer: nothing is trained and nothing is synced
+        {"debug_rollout_only": True, "use_lora": False, "lora_ipc_weight_sync": False},
+        # a trainer without an engine: LoRA still, but no sync mode to hold it to
+        {"train_only": True, "lora_ipc_weight_sync": False, "colocate": True},
+        # the recipe's explicit one-pair tiles
+        {"micro_batch_size_sample": 1, "micro_batch_size_tstep": 1},
+        {"diffusion_eval_num_steps": 6},
+    ],
+    ids=["rollout-only", "train-only", "one-pair-tiles", "eval-steps-of-the-release"],
+)
+def test_supported_variations_are_accepted(overrides):
+    H3ImageTrainPipelineConfig.validate_args(_grpo_args(**overrides))
+
+
+def test_a_launch_with_the_required_flags_passes_the_real_parser(monkeypatch):
+    """validate_args reads the parser's defaults, which a namespace built by hand does not have."""
+    argv = (
+        "test --hf-checkpoint MiniMaxAI/MiniMax-H3-Image --diffusion-task t2i --prompt-data prompts.jsonl "
+        "--rollout-function-path miles.rollout.sglang_diffusion_rollout.generate_rollout --rm-type ocr "
+        "--rollout-batch-size 8 --n-samples-per-prompt 16 --num-steps-per-rollout 2 --num-rollout 1 "
+        "--actor-num-gpus-per-node 8 --rollout-num-gpus 8 --rollout-num-gpus-per-engine 2 --colocate "
+        "--diffusion-num-steps 6 --diffusion-guidance-scale 1.0 --diffusion-sde-type cps "
+        "--use-lora --lora-ipc-weight-sync"
+    )
+    monkeypatch.setattr(sys, "argv", shlex.split(argv))
+
+    args = load_fsdp_args(extra_args_provider=get_miles_extra_args_provider())
+    set_default_diffusion_args(args)
+    miles_validate_args(args)
+
+    assert args.diffusion_model_family == "h3_image"
+    assert (args.micro_batch_size_sample, args.micro_batch_size_tstep) == (None, None)
+
+
+def test_full_weight_training_is_rejected_even_without_an_engine():
+    """--train-only syncs nothing, but every rank would still give a different per-step head its gradient."""
+    with pytest.raises(ValueError, match="LoRA adapters only"):
+        H3ImageTrainPipelineConfig.validate_args(_grpo_args(train_only=True, use_lora=False))
 
 
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [
-        ({"use_lora": False}, "LoRA"),
+        ({"use_lora": False}, "LoRA adapters only"),
         # merged base weights carry the per-step heads too
-        ({"lora_ipc_weight_sync": False}, "LoRA"),
+        ({"lora_ipc_weight_sync": False}, "as adapters"),
         ({"loss_type": "nft"}, "policy_loss"),
         ({"diffusion_flow_shift": 3.0}, "flow-shift"),
         ({"sequence_parallel_size": 2}, "sequence"),

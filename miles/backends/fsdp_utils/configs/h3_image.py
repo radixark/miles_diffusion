@@ -28,11 +28,17 @@ class H3ImageTrainPipelineConfig(H3TrainPipelineConfig):
                 "H3 Image trains with --loss-type policy_loss only: its DiT picks an output head by the rollout's "
                 "denoising step, which no other loss provides"
             )
-        syncs_weights_to_rollout = not args.train_only and not args.debug_rollout_only
-        if syncs_weights_to_rollout and not rollout_merges_lora(args):
+        trains = not args.debug_rollout_only
+        if trains and not args.use_lora:
             raise ValueError(
-                "H3 Image trains LoRA adapters and syncs them as adapters (--use-lora --lora-ipc-weight-sync): "
-                "every other sync sends the DiT's per-step output heads, which the rollout engine cannot receive"
+                "H3 Image trains LoRA adapters only (--use-lora): full-weight training would update the DiT's "
+                "per-step output heads, each from the ranks whose pairs came from its step, which is untested"
+            )
+        if trains and not args.train_only and not rollout_merges_lora(args):
+            raise ValueError(
+                "H3 Image syncs its LoRA as adapters (--lora-ipc-weight-sync under --colocate, plain --use-lora "
+                "otherwise): a merged sync sends the DiT's per-step output heads, which the rollout engine cannot "
+                "receive"
             )
         if args.diffusion_flow_shift is not None:
             raise ValueError("H3 Image samples on its release's sigma grid; drop --diffusion-flow-shift")
