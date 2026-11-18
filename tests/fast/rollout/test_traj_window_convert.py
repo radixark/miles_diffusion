@@ -131,6 +131,8 @@ def test_prepared_batch_carries_each_pairs_rollout_step():
         for index, (sde, kept) in enumerate([([2, 3], [2, 3, 4]), ([6, 7], [6, 7, 8])])
     ]
     pairs = expand_samples_to_train_pairs(None, samples, [0.1, 0.2], [0.1, 0.2])["train_data"]
+    # a custom expander may emit the step as a plain int
+    pairs[1]["denoising_step_index"] = int(pairs[1]["denoising_step_index"])
     ctx = SimpleNamespace(
         args=SimpleNamespace(diffusion_adv_clip_max=5.0, diffusion_guidance_scale=1.0, diffusion_true_cfg_scale=None),
         device=torch.device("cpu"),
