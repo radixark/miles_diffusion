@@ -36,8 +36,12 @@ class FSDPHfWeightIterator(HfWeightIteratorBase):
             for adapter in module.lora_A
         }
 
-    def _iter_hf_param_units(self) -> Iterator[list[tuple[str, torch.Tensor]]]:
-        weights = ((name, param) for name, param in self.model.state_dict().items() if "lora_" not in name)
+    def _iter_hf_param_units(self, names: set[str] | None = None) -> Iterator[list[tuple[str, torch.Tensor]]]:
+        weights = (
+            (name, param)
+            for name, param in self.model.state_dict().items()
+            if "lora_" not in name and (names is None or name in names)
+        )
         for name, full in self._iter_full_params(weights):
             if name in self._lora_by_base_weight:
                 lora_A, lora_B, scaling = self._lora_by_base_weight[name]
@@ -47,6 +51,12 @@ class FSDPHfWeightIterator(HfWeightIteratorBase):
             hf_name = to_hf_name(name)
             expand = get_param_transform(hf_name, full, self.diffusion_model_family)
             yield [(hf_name, full)] if expand is None else list(expand(hf_name, full, self.model))
+
+    def _iter_hf_trained_units(self) -> Iterator[list[tuple[str, torch.Tensor]]]:
+        trained = {
+            name for name, param in self.model.named_parameters() if param.requires_grad and "lora_" not in name
+        }
+        return self._iter_hf_param_units(trained) if trained else iter(())
 
     def _iter_hf_adapter_units(self) -> Iterator[list[tuple[str, torch.Tensor]]]:
         """One unit per LoRA module: sglang-d's lora_merge applies its lora_A and lora_B as a pair."""

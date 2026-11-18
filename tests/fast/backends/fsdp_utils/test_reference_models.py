@@ -103,11 +103,13 @@ def make_model_loader_args():
         use_lora=True,
         update_weight_target_modules=["transformer", "transformer_2"],
         fsdp_master_dtype="fp32",
+        fsdp_param_dtype=None,
         fsdp_reduce_dtype="fp32",
         diffusion_forward_dtype="fp32",
         fsdp_attention_backend=None,
         gradient_checkpointing=False,
         offload_train=False,
+        custom_train_model_transform_path=None,
     )
 
 
@@ -156,6 +158,7 @@ def make_actor_forward_harness(
     ema_optimizer=None,
     teacher_models=None,
     teacher_guidance_scale=None,
+    teacher_solver=None,
     true_cfg_scale=None,
 ):
     observed = {}
@@ -172,6 +175,7 @@ def make_actor_forward_harness(
         guidance_scale=1.0,
         true_cfg_scale=true_cfg_scale,
         teacher_guidance_scale=teacher_guidance_scale,
+        teacher_solver=teacher_solver,
     )
 
     def prepare(ctx, batch, **kwargs):
@@ -531,7 +535,7 @@ def test_the_trunk_hands_the_hooks_their_own_counters_and_the_one_list():
     assert observed["formula_kwargs"]["train_output_inputs"] is train_output_inputs
 
 
-def _teacher_harness(teacher_guidance_scale, *, with_teacher=True, true_cfg_scale=None):
+def _teacher_harness(teacher_guidance_scale, *, with_teacher=True, true_cfg_scale=None, teacher_solver=None):
     actor, teacher = TinyComponent(), TinyComponent()
     order = []
     actor.register_forward_hook(lambda *_: order.append("actor"))
@@ -544,6 +548,7 @@ def _teacher_harness(teacher_guidance_scale, *, with_teacher=True, true_cfg_scal
         "none",
         teacher_models={"transformer": teacher} if with_teacher else None,
         teacher_guidance_scale=teacher_guidance_scale,
+        teacher_solver=teacher_solver,
         true_cfg_scale=true_cfg_scale,
     )
     observed["order"] = order
@@ -596,6 +601,30 @@ def test_an_unguided_teacher_runs_without_cfg():
         False,
         1.0,
     )
+
+
+def test_a_teacher_solver_runs_the_teacher_on_its_own_states_before_the_actor():
+    seen = []
+
+    def solver(forward):
+        # A two-stage solve: the second state depends on the first prediction.
+        first = forward({"visual": torch.full((2, 3), 2.0)}, {"visual": torch.full((2,), 0.5)})["visual"]
+        seen.append((first.requires_grad, torch.is_grad_enabled()))
+        return forward({"visual": torch.ones(2, 3) * first.mean()}, {"visual": torch.full((2,), 0.25)})
+
+    harness, observed, actor, teacher = _teacher_harness(1.0, teacher_solver=solver)
+    resharded = []
+
+    _run_forward(harness, reshard_model=resharded.append).backward()
+
+    assert observed["order"] == ["teacher", "teacher", "actor"]
+    assert seen == [(False, False)] and resharded == [teacher]
+    with torch.no_grad():
+        expected = teacher(torch.ones(2, 3) * teacher(torch.full((2, 3), 2.0)).mean())
+    torch.testing.assert_close(observed["teacher_pred"], expected)
+    teacher_calls = [call for model, call in harness.train_pipeline_config.noise_pred_calls if model is teacher]
+    assert [float(call["timesteps_input"]["visual"][0]) for call in teacher_calls] == [0.5, 0.25]
+    assert actor.block.proj.weight.grad is not None and teacher.block.proj.weight.grad is None
 
 
 def test_no_teacher_forward_unless_the_prepare_hook_asks():

@@ -77,8 +77,10 @@ class DiffusionUpdateWeight(abc.ABC):
         return self.hf_weight_iterators[target_module].iter_hf_weights()
 
     @abc.abstractmethod
-    def update_bucket_weights(self, named_tensors: list[tuple[str, torch.Tensor]], target_module: str) -> None:
-        pass
+    def update_bucket_weights(
+        self, named_tensors: list[tuple[str, torch.Tensor]], target_module: str, *, replace_weights: bool = False
+    ) -> None:
+        """``replace_weights`` sends plain weights even from a LoRA updater (its full-trained parameters)."""
 
 
 class DiffusionUpdateWeightFromTensor(DiffusionUpdateWeight):
@@ -107,7 +109,9 @@ class DiffusionUpdateWeightFromTensor(DiffusionUpdateWeight):
                 # Calculate TP rank within this SGLang engine group.
                 self.tp_rank = dist.get_rank() - start_rank
 
-    def update_bucket_weights(self, named_tensors: list[tuple[str, torch.Tensor]], target_module: str) -> None:
+    def update_bucket_weights(
+        self, named_tensors: list[tuple[str, torch.Tensor]], target_module: str, *, replace_weights: bool = False
+    ) -> None:
         monkey_patch_torch_reductions()
         logger.info("Using flattened tensor bucket (diffusion updater, module=%s)", target_module)
         named_tensors_by_dtypes = {}
@@ -160,7 +164,7 @@ class DiffusionUpdateWeightFromTensor(DiffusionUpdateWeight):
                     "target_modules": [target_module],
                     "weight_version": str(self.weight_version),
                 }
-                if self.sgl_d_weight_update_mode is not None:
+                if self.sgl_d_weight_update_mode is not None and not replace_weights:
                     model = self.models[target_module]
                     adapter_config = model.peft_config[model.active_adapter]
                     kwargs["weight_update_mode"] = self.sgl_d_weight_update_mode
@@ -264,6 +268,9 @@ class DiffusionUpdateWeightLoRA(DiffusionUpdateWeight):
             )
             if num_lora_tensors == 0:
                 logger.error("LoRA weight sync [%s]: no lora tensors found in training state_dict", target_module)
+        # Parameters trained in full beside the adapter replace the rollout's weights.
+        for bucket in self.hf_weight_iterators[target_module].iter_hf_trained_weights():
+            self.update_bucket_weights(bucket, target_module, replace_weights=True)
 
 
 class DiffusionUpdateWeightFromTensorLoRAIPC(DiffusionUpdateWeightLoRA, DiffusionUpdateWeightFromTensor):
@@ -351,11 +358,13 @@ class DiffusionUpdateWeightFromDistributed(DiffusionUpdateWeight):
             timeout=timedelta(minutes=self.args.distributed_timeout_minutes),
         )
 
-    def update_bucket_weights(self, named_tensors: list[tuple[str, torch.Tensor]], target_module: str) -> None:
+    def update_bucket_weights(
+        self, named_tensors: list[tuple[str, torch.Tensor]], target_module: str, *, replace_weights: bool = False
+    ) -> None:
         if dist.get_rank() != 0:
             return
         lora_kwargs = {}
-        if self.sgl_d_weight_update_mode is not None:
+        if self.sgl_d_weight_update_mode is not None and not replace_weights:
             model = self.models[target_module]
             adapter_config = model.peft_config[model.active_adapter]
             lora_kwargs = dict(

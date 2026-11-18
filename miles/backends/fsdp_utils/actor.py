@@ -540,6 +540,8 @@ class FSDPTrainRayActor(TrainRayActor):
         def _compute_noise_pred(
             model,
             *,
+            latents: dict[str, torch.Tensor] = latents_in,
+            timesteps: dict[str, torch.Tensor] = timesteps_in,
             use_cfg: bool = prepared.use_cfg,
             cfg_batching: bool = prepared.cfg_batching,
             guidance_scale: float = prepared.guidance_scale,
@@ -552,8 +554,8 @@ class FSDPTrainRayActor(TrainRayActor):
             ):
                 return train_pipeline_config.compute_noise_pred(
                     model=model,
-                    latents_input=latents_in,
-                    timesteps_input=timesteps_in,
+                    latents_input=latents,
+                    timesteps_input=timesteps,
                     pos_cond=pos_cond_in,
                     neg_cond=neg_cond_in,
                     joint_cond=joint_cond_in,
@@ -570,14 +572,29 @@ class FSDPTrainRayActor(TrainRayActor):
                 raise ValueError("the prepared batch asks for a teacher forward, which needs --teacher-load")
             teacher = self.teacher_models[prepared.component_name]
             use_cfg = prepared.teacher_guidance_scale > 1.0
-            with torch.no_grad():
-                teacher_pred = _compute_noise_pred(
+
+            def teacher_forward(latents=latents_in, timesteps=timesteps_in):
+                if latents is not latents_in:
+                    latents, timesteps, _ = apply_input_dtype_policy(
+                        train_pipeline_config.input_dtype_policy,
+                        latents=latents,
+                        timesteps=timesteps,
+                        conds=(None, None, None),
+                        default_dtype=forward_dtype,
+                    )
+                return _compute_noise_pred(
                     teacher,
+                    latents=latents,
+                    timesteps=timesteps,
                     use_cfg=use_cfg,
                     cfg_batching=use_cfg and train_pipeline_config.cfg_batching,
                     guidance_scale=prepared.teacher_guidance_scale,
                     true_cfg_scale=None,
                 )
+
+            with torch.no_grad():
+                solver = prepared.teacher_solver
+                teacher_pred = teacher_forward() if solver is None else solver(teacher_forward)
             # A no-grad forward leaves FSDP's root parameters gathered; sleep must move the shards.
             reshard_model(teacher)
 
