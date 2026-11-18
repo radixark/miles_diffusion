@@ -125,6 +125,7 @@ them. The canonical registry is `tests/ci/labels.py`:
 | `ray` | Actors and placement groups |
 | `router` | Routing decisions |
 | `arguments` | Top-level argparse / `validate_args` |
+| `basic` | Default e2e smoke set; these tests also carry `e2e` |
 | `e2e` | Opt-in full-recipe GPU e2e runs (heavy) |
 | `model-scripts` | `train_diffusion.py` + `scripts/*.py` smoke tests |
 
@@ -143,6 +144,7 @@ An e2e test declares the recipe to run, the arguments to run it with, and the me
 register_e2e_ci(
     est_time=1200,
     suite="stage-c-3-gpu-h200",
+    labels=["basic", "e2e"],
     script="scripts/run_diffusion_grpo_sd3_ocr_sglang.py",
     args=["--num-rollout", "2"],
     metrics=["rollout/reward/raw_mean", "train/grad_norm", ...],
