@@ -9,6 +9,7 @@ from tests.ci.e2e_metrics_registry import register_e2e_ci
 register_e2e_ci(
     est_time=1200,
     suite="stage-c-3-gpu-h200",
+    labels=["basic", "e2e"],
     script="scripts/run_diffusion_grpo_sd3_ocr_sglang.py",
     # Inline on purpose: the legacy (no output store) gate for rollouts fetched in the parser actors.
     args=["--num-rollout", "2"],

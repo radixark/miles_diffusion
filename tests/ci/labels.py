@@ -1,7 +1,7 @@
 """Canonical CI label registry.
 
-Tests declare a domain label set in `register_cuda_ci(..., labels=[...])` and
-`register_cpu_ci(..., labels=[...])`. The PR-side trigger for each label is
+Tests declare a domain label set in `register_cuda_ci(..., labels=[...])`,
+`register_cpu_ci(..., labels=[...])` and `register_e2e_ci(..., labels=[...])`. The PR-side trigger for each label is
 `run-ci-<key>`: each entry below MUST have a matching `run-ci-<key>` label in
 the GitHub repo (maintainer-managed).
 
@@ -11,14 +11,13 @@ Adding a new label:
    The workflow does not need editing -- the generic stage job filters tests
    by labels at runtime.
 
-The meta-labels are intentionally NOT listed here:
-* `run-ci-basic` authorizes CI but matches no domain, so only tests without
-  labels run.
-* `run-ci-image` / `run-ci-all` authorize CI and bypass the per-test labels
-  filter via `--match-all-labels` (handled in run_suite.py).
+The meta-labels `run-ci-image` / `run-ci-all` are intentionally NOT listed
+here: they bypass the per-test labels filter via `--match-all-labels`
+(handled in run_suite.py).
 """
 
 KNOWN_LABELS: dict[str, str] = {
+    "basic": "Default e2e smoke set (every basic test also carries e2e)",
     "sglang-diffusion": "sglang_diffusion_utils engine / monkey patch tests",
     "e2e": "Full-recipe GPU e2e runs (opt-in: heavy, ~30-40 min each)",
     "fsdp": "FSDP backend + config tests",
