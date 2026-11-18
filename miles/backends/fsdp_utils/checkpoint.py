@@ -65,6 +65,19 @@ def broadcast_full_state_to_fsdp(
             buffer.data = buffer.data.to(torch.cuda.current_device())
 
 
+def copy_state_to_fsdp(model: torch.nn.Module, source: torch.nn.Module, *, cpu_offload: bool) -> None:
+    """Materialize FSDP2 shards from an identically sharded model's shards and buffers."""
+    source_tensors = dict(chain(source.named_parameters(), source.named_buffers()))
+    device = torch.cuda.current_device()
+    model.to_empty(device="cpu" if cpu_offload else device)
+    with torch.no_grad():
+        for name, param in model.named_parameters():
+            param.to_local().copy_(source_tensors[name].to_local())
+        # Buffers live on the GPU in both cases, as after broadcast_full_state_to_fsdp.
+        for name, buffer in model.named_buffers():
+            buffer.data = source_tensors[name].to(device, copy=True)
+
+
 def _is_lora_param_name(name: str) -> bool:
     return "lora_" in name
 

@@ -112,6 +112,21 @@ class FSDPTrainRayActor(TrainRayActor):
         if args.deterministic_mode:
             # flash-attn is opaque to torch's determinism flag; backends patch their own dispatch.
             self.model_backend.enable_deterministic_attention(args.fsdp_attention_backend)
+        self.teacher_models = {}
+        if args.teacher_load is not None:
+            self.teacher_models = load_fsdp_models(
+                args,
+                self.model_backend,
+                self.train_pipeline_config,
+                self.parallel_state,
+                checkpoint_path=args.teacher_load,
+                lora_adapter_paths=args.teacher_lora_adapter_paths,
+                cpu_offload=args.teacher_cpu_offload,
+            )
+        # The DMD2 critic starts from the teacher's checkpoint: copy its shards instead of loading them again.
+        starts_from_teacher = (
+            args.hf_checkpoint == args.teacher_load and not args.use_lora and args.teacher_lora_adapter_paths is None
+        )
         self.models = load_fsdp_models(
             args,
             self.model_backend,
@@ -121,6 +136,7 @@ class FSDPTrainRayActor(TrainRayActor):
             lora_adapter_paths=args.lora_adapter_paths,
             trainable=True,
             cpu_offload=args.fsdp_cpu_offload,
+            copy_from=self.teacher_models if starts_from_teacher else None,
         )
         self.reference_models = {}
         if args.ref_load is not None:
@@ -132,17 +148,6 @@ class FSDPTrainRayActor(TrainRayActor):
                 checkpoint_path=args.ref_load,
                 lora_adapter_paths=args.ref_lora_adapter_paths,
                 cpu_offload=args.ref_cpu_offload,
-            )
-        self.teacher_models = {}
-        if args.teacher_load is not None:
-            self.teacher_models = load_fsdp_models(
-                args,
-                self.model_backend,
-                self.train_pipeline_config,
-                self.parallel_state,
-                checkpoint_path=args.teacher_load,
-                lora_adapter_paths=args.teacher_lora_adapter_paths,
-                cpu_offload=args.teacher_cpu_offload,
             )
         # A natively CPU-offloaded model never sleeps: its parameters stay on the host and its buffers on the GPU.
         self.actor_models_to_sleep = [] if args.fsdp_cpu_offload else list(self.models.values())
