@@ -268,7 +268,8 @@ def expand_samples_to_train_pairs(args, samples, rewards, raw_rewards) -> dict:
     ...
 ```
 
-Default for Flow-GRPO lives under `miles/ray/data_conversion_hub/flow_grpo.py`.
+Default for Flow-GRPO lives under `miles/ray/data_conversion_hub/flow_grpo.py`. Pairs that feed the built-in
+Flow-GRPO prepare hook carry `denoising_step_index`, the pair's 0-based step in its rollout's schedule.
 
 ### `--custom-convert-samples-to-train-data-path`
 
@@ -297,8 +298,8 @@ counts from 0; the old-log-prob recompute of windows 1.. passes their training f
 `"audio"` for joint audio-video models. `PreparedBatch.teacher_guidance_scale` asks the trunk to run the frozen
 teacher (`--teacher-load`) without grad on this micro-batch at that CFG scale, over `neg_cond` / `joint_cond`, before
 the training forward; the formula receives it as `teacher_pred`. `PreparedBatch.denoising_step_indices` hands the
-family's forward each row's step number in its rollout's schedule; leave it unset when the loss samples its own noise
-levels.
+family's forward each pair's 0-based denoising step in its rollout's schedule (`[B]` long); of the built-in hooks only
+Flow-GRPO's sets it, and a family whose forward needs it rejects a batch without it.
 
 ### `--custom-loss-function-path`
 

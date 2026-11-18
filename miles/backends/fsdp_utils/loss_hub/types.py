@@ -71,5 +71,5 @@ class PreparedBatch:
     extras: dict[str, Any] = field(default_factory=dict)
     # CFG scale of the frozen teacher's no-grad forward on this batch; None runs no teacher forward.
     teacher_guidance_scale: float | None = None
-    # each row's step number in its rollout's schedule; None when the loss samples its own noise levels
+    # [B] long, each pair's 0-based denoising step in its rollout's schedule; of the built-in hooks only Flow-GRPO's sets it
     denoising_step_indices: torch.Tensor | None = None

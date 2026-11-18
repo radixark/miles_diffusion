@@ -154,8 +154,9 @@ class TrainPipelineConfig(abc.ABC):
     ) -> dict[str, torch.Tensor]:
         """Default diffusers forward with CFG over the visual stream; families with a different forward override.
 
-        ``denoising_step_indices`` is each row's step number in its rollout's schedule, for a DiT whose forward
-        depends on the step; None when the loss samples its own noise levels.
+        ``denoising_step_indices`` is ``[B]`` long: each pair's 0-based denoising step in its rollout's schedule
+        (not doubled for the CFG joint batch), for a DiT whose forward depends on the step. None unless the
+        prepare hook sets it; of the built-in hooks only Flow-GRPO's does.
         """
         latents = latents_input["visual"]
         timesteps = timesteps_input["visual"]
