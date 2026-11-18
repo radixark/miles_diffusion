@@ -123,8 +123,9 @@ compile time.
 
 When any override exists, the actor swaps in `ParamDtypeMixedPrecisionPolicy` — a
 `MixedPrecisionPolicy` extended with a per-parameter `param_dtype_map` — and patches FSDP2's
-casting path to honour it. Because the patch reaches into FSDP2 internals, it is version-gated on
-`torch==2.11.0` and raises on any other version; `requirements.txt` pins the matching torch.
+casting path to honour it. Because the patch reaches into FSDP2 internals, it carries one implementation for torch 2.11.0 and
+one for torch 2.14, and raises on any other version; each implementation also verifies
+the source of every FSDP2 function it replaces before installing.
 
 ## 4. Verifying the result
 
