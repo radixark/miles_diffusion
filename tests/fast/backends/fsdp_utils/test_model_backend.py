@@ -11,9 +11,11 @@ register_cpu_ci(est_time=15, suite="stage-a-cpu", labels=[])
 import json
 
 import diffusers
+import httpx
+import huggingface_hub
 import pytest
 import torch
-from huggingface_hub.errors import EntryNotFoundError
+from huggingface_hub.errors import EntryNotFoundError, GatedRepoError
 
 from miles.backends.fsdp_utils import model_backend
 from miles.backends.fsdp_utils.model_backend import BaseModelBackend, DiffusersModelBackend, MilesModelBackend
@@ -184,13 +186,48 @@ class TestBackendHierarchy:
             "transformer",
         )
 
-    def test_hub_failure_reading_the_modular_index_is_not_taken_for_its_absence(self, monkeypatch):
-        """An outage read as "no modular index" would resolve the root index's layout instead."""
+    def test_cached_classic_checkpoint_resolves_while_the_hub_is_offline(self, monkeypatch, tmp_path):
+        """A classic checkpoint's cache never holds a modular index, so the probe has no copy to fall back to."""
+        monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_OFFLINE", True)
+        monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_CACHE", str(tmp_path))
+        monkeypatch.setattr(
+            model_backend.DiffusionPipeline,
+            "load_config",
+            lambda checkpoint_path: {"transformer": [__name__, "_CheckpointComponent"]},
+        )
 
-        def raise_connection_error(repo_id, filename):
-            raise ConnectionError("hub unreachable")
+        assert DiffusersModelBackend._resolve_component("org/classic", "transformer") == (
+            _CheckpointComponent,
+            "transformer",
+        )
 
-        monkeypatch.setattr(model_backend, "hf_hub_download", raise_connection_error)
+    def test_cached_classic_checkpoint_resolves_when_the_hub_refuses_the_probe(self, monkeypatch):
+        """A gated repo answers 401 without a token, also for a file it does not have."""
 
-        with pytest.raises(ConnectionError):
-            DiffusersModelBackend._resolve_component("org/release", "transformer")
+        def raise_gated(repo_id, filename):
+            response = httpx.Response(401, request=httpx.Request("HEAD", f"https://huggingface.co/{repo_id}"))
+            raise GatedRepoError(f"{repo_id} is gated", response=response)
+
+        monkeypatch.setattr(model_backend, "hf_hub_download", raise_gated)
+        monkeypatch.setattr(
+            model_backend.DiffusionPipeline,
+            "load_config",
+            lambda checkpoint_path: {"transformer": [__name__, "_CheckpointComponent"]},
+        )
+
+        assert DiffusersModelBackend._resolve_component("org/gated", "transformer") == (
+            _CheckpointComponent,
+            "transformer",
+        )
+
+    def test_missing_local_checkpoint_is_reported_as_a_missing_directory(self, tmp_path):
+        """A mistyped path is not a repo id; the probe must not turn it into a repo-id error."""
+        with pytest.raises(OSError, match="not the path to a directory containing a model_index.json"):
+            DiffusersModelBackend._resolve_component(str(tmp_path / "missing"), "transformer")
+
+    def test_unresolvable_class_names_the_index_it_was_read_from(self, tmp_path):
+        """With a partial cache the root index is read; its native class must not look like the modular one's."""
+        checkpoint = _write_checkpoint(tmp_path, {"transformer": ["diffusers", "NoSuchNativeModel"]})
+
+        with pytest.raises(ValueError, match="from model_index.json of"):
+            DiffusersModelBackend._resolve_component(checkpoint, "transformer")

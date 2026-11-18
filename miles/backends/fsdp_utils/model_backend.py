@@ -28,7 +28,7 @@ from dataclasses import replace
 import torch
 from diffusers import DiffusionPipeline, ModularPipeline
 from huggingface_hub import hf_hub_download
-from huggingface_hub.errors import EntryNotFoundError
+from huggingface_hub.errors import EntryNotFoundError, HfHubHTTPError, HFValidationError
 
 from .models.parallel_plan import FSDPParallelPlan
 from .sequence_parallel.diffusers_dispatch import install_diffusers_usp_patch
@@ -241,8 +241,8 @@ class DiffusersModelBackend(BaseModelBackend):
         component_cls = cls._component_class(spec)
         if component_cls is None:
             raise ValueError(
-                f"cannot resolve the class for component {component!r} of {checkpoint_path} "
-                f"from spec {spec!r}; remote-code components are not supported"
+                f"cannot resolve the class for component {component!r} from {index_name} of {checkpoint_path}: "
+                f"spec {spec!r}; remote-code components are not supported"
             )
         if len(spec) == 2:
             return component_cls, component
@@ -253,7 +253,7 @@ class DiffusersModelBackend(BaseModelBackend):
 
     @staticmethod
     def _read_modular_index(checkpoint_path: str) -> dict | None:
-        """``modular_model_index.json`` of a local or Hub checkpoint; None when it ships none."""
+        """``modular_model_index.json`` of a local or Hub checkpoint; None when neither the Hub nor the cache has one."""
         if os.path.isdir(checkpoint_path):
             index_file = os.path.join(checkpoint_path, ModularPipeline.config_name)
             if not os.path.isfile(index_file):
@@ -261,8 +261,8 @@ class DiffusersModelBackend(BaseModelBackend):
         else:
             try:
                 index_file = hf_hub_download(checkpoint_path, ModularPipeline.config_name)
-            # an unreachable Hub still raises
-            except EntryNotFoundError:
+            # no cached copy and no answer (offline, gated, not a repo id): the cached snapshot holds none
+            except (EntryNotFoundError, HfHubHTTPError, HFValidationError):
                 return None
         with open(index_file) as f:
             return json.load(f)
