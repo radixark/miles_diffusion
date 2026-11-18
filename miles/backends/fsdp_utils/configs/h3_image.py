@@ -26,15 +26,15 @@ class H3ImageTrainPipelineConfig(H3TrainPipelineConfig):
         if args.loss_type != "policy_loss":
             raise ValueError(
                 "H3 Image trains with --loss-type policy_loss only: its DiT picks an output head by the rollout's "
-                "denoising step, which no other loss provides"
+                "denoising step, which no other built-in loss sets, and custom_loss is untested"
             )
-        trains = not args.debug_rollout_only
-        if trains and not args.use_lora:
+        has_trainer = not args.debug_rollout_only
+        if has_trainer and not args.use_lora:
             raise ValueError(
-                "H3 Image trains LoRA adapters only (--use-lora): full-weight training would update the DiT's "
-                "per-step output heads, each from the ranks whose pairs came from its step, which is untested"
+                "H3 Image runs its trainer with LoRA adapters only (--use-lora): full-weight training would update "
+                "the DiT's per-step output heads, each from the ranks whose pairs came from its step, which is untested"
             )
-        if trains and not args.train_only and not rollout_merges_lora(args):
+        if has_trainer and not args.train_only and not rollout_merges_lora(args):
             raise ValueError(
                 "H3 Image syncs its LoRA as adapters (--lora-ipc-weight-sync under --colocate, plain --use-lora "
                 "otherwise): a merged sync sends the DiT's per-step output heads, which the rollout engine cannot "
@@ -57,7 +57,8 @@ class H3ImageTrainPipelineConfig(H3TrainPipelineConfig):
                 "H3 Image rollout serves one image per request; keep --rollout-microgroup-size and "
                 "--diffusion-output-num-frames at 1"
             )
-        if (args.micro_batch_size, args.micro_batch_size_sample or 1, args.micro_batch_size_tstep or 1) != (1, 1, 1):
+        # miles_validate_args has folded the sample x timestep tiles into micro_batch_size
+        if args.micro_batch_size != 1:
             raise ValueError(
                 "H3 Image's packed forward takes one pair; keep --micro-batch-size, --micro-batch-size-sample and "
                 "--micro-batch-size-tstep at 1"

@@ -181,11 +181,13 @@ def test_lora_flow_grpo_is_accepted():
         {"debug_rollout_only": True, "use_lora": False, "lora_ipc_weight_sync": False},
         # a trainer without an engine: LoRA still, but no sync mode to hold it to
         {"train_only": True, "lora_ipc_weight_sync": False, "colocate": True},
+        # engines on their own GPUs receive the adapters over NCCL
+        {"colocate": False, "lora_ipc_weight_sync": False},
         # the recipe's explicit one-pair tiles
         {"micro_batch_size_sample": 1, "micro_batch_size_tstep": 1},
         {"diffusion_eval_num_steps": 6},
     ],
-    ids=["rollout-only", "train-only", "one-pair-tiles", "eval-steps-of-the-release"],
+    ids=["rollout-only", "train-only", "adapters-over-nccl", "one-pair-tiles", "eval-steps-of-the-release"],
 )
 def test_supported_variations_are_accepted(overrides):
     H3ImageTrainPipelineConfig.validate_args(_grpo_args(**overrides))
@@ -235,7 +237,8 @@ def test_full_weight_training_is_rejected_even_without_an_engine():
         ({"diffusion_true_cfg_scale": 4.0}, "unguided"),
         # the forward raises on these at the first train step
         ({"micro_batch_size": 2}, "one pair"),
-        ({"micro_batch_size_tstep": 2}, "one pair"),
+        # the parser folds the tiles into micro_batch_size
+        ({"micro_batch_size": 2, "micro_batch_size_sample": 2, "micro_batch_size_tstep": 1}, "one pair"),
     ],
     ids=[
         "full-weight",
@@ -250,7 +253,7 @@ def test_full_weight_training_is_rejected_even_without_an_engine():
         "quality-high",
         "true-cfg",
         "micro-batch",
-        "micro-batch-tstep",
+        "micro-batch-tiles",
     ],
 )
 def test_unsupported_training_settings_are_rejected(overrides, message):
