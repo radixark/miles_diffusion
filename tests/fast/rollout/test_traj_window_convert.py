@@ -13,8 +13,9 @@ the full trajectory (1), full trajectories without provenance keep the legacy
 behaviour (2), a missing window latent raises instead of mispairing (3), a
 non-contiguous kept set still pairs correctly (4), NFT reads x0 off a
 final-step-only trajectory but rejects one ending anywhere else (5), the
-final SDE step pairs with next_sigma == 0 (6), and a pair carries its step's
-number in the rollout, not its position in the shipped window (7).
+final SDE step pairs with next_sigma == 0 (6), a pair carries its step's
+number in the rollout, not its position in the shipped window (7), and the
+trainer's prepare hook hands each row of a micro-batch its own pair's step (8).
 """
 
 from tests.ci.ci_register import register_cpu_ci
@@ -96,6 +97,52 @@ def test_pair_carries_the_rollout_step_number_not_the_window_position():
     """A window ships step 2 at position 0; a DiT with one output head per step needs the 2."""
     feats, _ = _build(_windowed(_full_traj(), [2, 3, 4]))
     assert feats["denoising_step_index"].tolist() == SDE
+
+
+def test_prepared_batch_carries_each_pairs_rollout_step():
+    """Samples with different SDE windows share a micro-batch; a row given a neighbour's step runs its head."""
+    from types import SimpleNamespace
+
+    from miles.backends.fsdp_utils.loss_hub.flow_grpo import prepare_flow_grpo_batch
+    from miles.ray.data_conversion_hub.flow_grpo import expand_samples_to_train_pairs
+    from miles.utils.types import DenoisingEnv
+
+    class _Family:
+        cfg_batching = False
+
+        def process_timestep_as_input(self, timesteps):
+            return timesteps
+
+        def prepare_cond_kwargs(self, cond, device):
+            return {}
+
+        def collate_cond_for_sample_batch(self, conds, device, pad_to_len=None):
+            return {}
+
+    samples = [
+        Sample(
+            index=index,
+            prompt="p",
+            train_metadata={"sde_step_indices": sde},
+            dit_trajectory=_windowed(_full_traj(), kept),
+            denoising_env=DenoisingEnv(),
+            rollout_log_probs=torch.zeros(T),
+        )
+        for index, (sde, kept) in enumerate([([2, 3], [2, 3, 4]), ([6, 7], [6, 7, 8])])
+    ]
+    pairs = expand_samples_to_train_pairs(None, samples, [0.1, 0.2], [0.1, 0.2])["train_data"]
+    ctx = SimpleNamespace(
+        args=SimpleNamespace(diffusion_adv_clip_max=5.0, diffusion_guidance_scale=1.0, diffusion_true_cfg_scale=None),
+        device=torch.device("cpu"),
+        train_pipeline_config=_Family(),
+        models={"transformer": torch.nn.Identity()},
+    )
+
+    prepared = prepare_flow_grpo_batch(ctx, pairs, microbatch_id=0, optim_step_idx=0)
+
+    assert prepared.denoising_step_indices.tolist() == [2, 3, 6, 7]
+    assert prepared.denoising_step_indices.dtype == torch.long
+    assert torch.equal(prepared.extras["sigmas"], _full_traj().sigmas[[2, 3, 6, 7]])
 
 
 def test_missing_window_latent_raises():

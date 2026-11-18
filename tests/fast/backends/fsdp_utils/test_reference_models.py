@@ -586,7 +586,7 @@ def test_the_teacher_runs_first_without_grad_with_its_own_cfg(cfg_batching):
 
 
 def test_the_family_forward_receives_the_prepared_denoising_steps():
-    """A DiT with one output head per step runs the wrong head if the actor drops the step numbers."""
+    """The actor passes the prepared steps through unchanged; a head-per-step DiT would run another step's head."""
     denoising_step_indices = torch.tensor([3, 4])
     harness, _ = make_actor_forward_harness(
         {"transformer": TinyComponent()},
