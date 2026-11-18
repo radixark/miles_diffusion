@@ -63,3 +63,4 @@ count as verification.
   - `run_diffusion_sft_wan22.py` — Wan2.2 4-GPU LoRA SFT.
   - `run_diffusion_sft_h3_ref2va.py` — MiniMax H3 8-GPU Ref2VA LoRA SFT.
   - `run_diffusion_dmd2_h3_t2va_16gpu_multinode.py` — MiniMax H3 16-GPU t2va 4-step DMD2.
+  - `run_diffusion_grpo_h3_image_ocr_8gpu.py` — MiniMax H3 Image 8-GPU colocated LoRA Flow-GRPO + OCR.
