@@ -24,7 +24,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-import pytest
 import torch
 
 from miles.backends.fsdp_utils.loss_hub.types import DiffusionLossContext
@@ -56,7 +55,7 @@ def _load_train_core():
 
 def _actor(train_input, train_output, forwarded, **args):
     lists = []  # the train_output_inputs object each forward received
-    return SimpleNamespace(
+    actor = SimpleNamespace(
         lists=lists,
         models={},
         reference_models={},
@@ -86,11 +85,19 @@ def _actor(train_input, train_output, forwarded, **args):
         ),
         _log_metrics=lambda rollout_id, metrics, step: None,
     )
-
-
-@pytest.fixture(autouse=True)
-def _cpu_device(monkeypatch):
-    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    actor._loss_context = lambda rollout_id, external_data: DiffusionLossContext(
+        models=actor.models,
+        reference_models=actor.reference_models,
+        train_pipeline_config=None,
+        sde_backend=None,
+        args=actor.args,
+        forward_dtype=torch.float32,
+        device=torch.device("cpu"),
+        rollout_id=rollout_id,
+        dp_rank=0,
+        external_data=external_data,
+    )
+    return actor
 
 
 def test_later_stages_see_the_preprocessed_pairs():

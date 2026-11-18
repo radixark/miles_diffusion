@@ -12,6 +12,8 @@ from miles.utils.tracking_utils import init_tracking
 
 def train(args):
     configure_logger()
+    if args.loss_type == "dmd2":
+        raise ValueError("--loss-type dmd2 orders its critic and actor within a rollout; run train_dmd2.py")
     logger = logging.getLogger(__name__)
     # allocate the GPUs
     logger.info("train: creating placement groups")

@@ -24,6 +24,7 @@ node's GPUs.
 | Command utilities | `miles/utils/external_utils/command_utils.py` | Starts Ray and submits the job |
 | Training entrypoint | `train_diffusion.py` | The train loop (~90 lines), run inside the Ray job |
 | SFT entrypoint | `train_sft.py` | The train-only loop with rollout prefetch; SFT recipes pass `train_script="train_sft.py"` |
+| DMD2 entrypoint | `train_dmd2.py` | The critic / actor order within a rollout; the DMD2 recipe passes `train_script="train_dmd2.py"` |
 
 ## The structure of a launch script
 

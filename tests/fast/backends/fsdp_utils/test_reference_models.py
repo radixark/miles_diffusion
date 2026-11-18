@@ -139,6 +139,7 @@ def load_actor_forward_method(reshard_model=reshard_model):
         reshard_model=reshard_model,
         apply_input_dtype_policy=apply_input_dtype_policy,
         DiffusionLossContext=object,
+        LossHooks=object,
         MetricBuffer=object,
     )
     exec(compile(ast.Module(body=[method], type_ignores=[]), str(path), "exec"), namespace)
@@ -529,6 +530,36 @@ def test_the_trunk_hands_the_hooks_their_own_counters_and_the_one_list():
     assert observed["prepare_kwargs"] == {"microbatch_id": 7, "optim_step_idx": 2, "pad_to_len": None}
     assert observed["formula_kwargs"]["optim_step_idx"] == 2
     assert observed["formula_kwargs"]["train_output_inputs"] is train_output_inputs
+
+
+def test_the_trunk_runs_the_hooks_it_is_handed_instead_of_the_groups():
+    model = torch.nn.Linear(3, 3)
+    harness, observed = make_actor_forward_harness({"block": model}, {}, "block", torch.ones(2, 3), "none")
+    seen = {}
+
+    def prepare(ctx, batch, **kwargs):
+        seen["prepare"] = kwargs
+        return harness.loss_hooks.prepare(ctx, batch, **kwargs)
+
+    def formula(ctx, batch, prepared, *, new_pred, **kwargs):
+        seen["formula"] = new_pred["visual"]
+        return None
+
+    result = load_actor_forward_method()(
+        harness,
+        None,
+        [],
+        microbatch_id=5,
+        optim_step_idx=1,
+        train_output_inputs=[],
+        metrics=None,
+        hooks=SimpleNamespace(prepare=prepare, formula=formula),
+    )
+
+    assert result is None
+    assert seen["prepare"] == {"microbatch_id": 5, "optim_step_idx": 1, "pad_to_len": None}
+    torch.testing.assert_close(seen["formula"], model(torch.ones(2, 3)))
+    assert "new_pred" not in observed  # the group's formula did not run
 
 
 def _teacher_harness(teacher_guidance_scale, *, with_teacher=True, true_cfg_scale=None):

@@ -115,13 +115,19 @@ def test_each_rank_receives_the_same_rank_output_of_earlier_groups():
     class _Handle:
         def __init__(self, rank):
             self.train = SimpleNamespace(remote=lambda *args: (rank, *args))
+            self.compute = SimpleNamespace(remote=lambda *args: (rank, "compute", *args))
 
     group = object.__new__(RayTrainGroup)
     group._actor_handlers = [_Handle(rank) for rank in range(2)]
     external_data = {"critic": ["critic_0", "critic_1"], "reward": ["reward_0", "reward_1"]}
 
     assert group.async_train(7, "data", external_data) == [
-        (0, 7, "data", {"critic": "critic_0", "reward": "reward_0"}),
-        (1, 7, "data", {"critic": "critic_1", "reward": "reward_1"}),
+        (0, 7, "data", {"critic": "critic_0", "reward": "reward_0"}, None),
+        (1, 7, "data", {"critic": "critic_1", "reward": "reward_1"}, None),
     ]
-    assert group.async_train(7, "data") == [(0, 7, "data", {}), (1, 7, "data", {})]
+    assert group.async_train(7, "data") == [(0, 7, "data", {}, None), (1, 7, "data", {}, None)]
+    assert group.async_train(7, "data", optim_steps=(1, 3)) == [(0, 7, "data", {}, (1, 3)), (1, 7, "data", {}, (1, 3))]
+    assert group.async_compute(7, "data", external_data, "critic-scoring") == [
+        (0, "compute", 7, "data", {"critic": "critic_0", "reward": "reward_0"}, "critic-scoring"),
+        (1, "compute", 7, "data", {"critic": "critic_1", "reward": "reward_1"}, "critic-scoring"),
+    ]

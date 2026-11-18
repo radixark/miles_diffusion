@@ -289,6 +289,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--dmd2-teacher-guidance-scale` | float | – | Required by `dmd2`: the teacher's CFG scale when scoring the student's samples; `1` runs it unguided. |
 | `--dmd2-score-sigma-range` | float float | `0.02 0.98` | `MIN MAX` of the unshifted sigma at which `dmd2` scores the student's samples: the last critic step draws grid points in this range and reads them through the visual `--fsdp-flow-shift`. The default is the reference DMD2 range. |
 | `--dmd2-critic-loss-space` | str | `velocity` | `velocity` or `x0`: the space of the critic's flow-matching loss. `x0` regresses x0 = x_σ − σ·v, which weights the velocity MSE by σ². |
+| `--dmd2-critic-scoring` | str | `reuse-critic-step` | How the critic scores its last step's samples. `reuse-critic-step`: that step's training forward, drawn in `--dmd2-score-sigma-range`, is the score. `original`: the reference's separate draw and critic forward before the critic trains on them (one more critic forward per scored sample; under `--offload-train`, one more sleep/wake of each group). |
 | `--critic-load` | str | `--teacher-load` | `dmd2` only: HF pipeline checkpoint the critic starts from. Its checkpoints go to the sibling `<--save>_critic` dir. |
 | `--critic-lr` | float | `--lr` | `dmd2` only: the critic's learning rate. |
 
