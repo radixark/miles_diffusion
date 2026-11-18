@@ -1,0 +1,164 @@
+"""Qwen-Image HPSv2.1 GRPO over several resolutions.
+
+The flow_grpo-aligned 512x512 recipe (run_diffusion_grpo_pickscore_5gpu_flowgrpo_aligned.py)
+with two changes. Each prompt group draws one of three buckets uniformly, varying the aspect
+ratio at a near-constant token count; eval stays at --diffusion-height / --diffusion-width.
+And the reward is HPSv2.1 rather than PickScore, whose CLIP processor center-crops to 224x224
+and so never sees ~43% of a 672x384 or 384x672 frame.
+
+--micro-batch-size 8 is not free choice: a train micro-batch must hold one resolution, and
+under stride DP split each rank holds 16 samples / 4 ranks = 4 samples x 2 SDE steps = 8 pairs
+of every prompt group, so 8 is exactly one group's pairs on that rank. The legacy
+--micro-batch-size-sample 8 tiling the baseline uses would gather 8 different samples, which
+spans groups and so resolutions; arg validation rejects it.
+
+Measured, and worth knowing before copying this: over 60 rollouts against the fixed-512 recipe
+on the same reward, this configuration bought nothing -- the fixed run gained as much at both
+non-square eval sizes and more at 512x512. The three buckets are within 2% of each other in
+token count, which makes this a weak test of mixed-resolution training rather than a
+recommended configuration. See the PR for the numbers.
+
+Per rollout: 32 prompts x 16 samples = 512 samples. num_steps_per_rollout=2 gives 256
+samples per optimizer step.
+
+Layout: the first four GPUs in CUDA_VISIBLE_DEVICES are train+sgld colocate, the fifth is
+a dedicated HPS reward worker.
+
+Usage:
+    python3 scripts/run_diffusion_grpo_qwenimage_hps_5gpu_mixed_resolution.py
+"""
+
+from dataclasses import dataclass
+
+import typer
+
+import miles.utils.external_utils.command_utils as U
+
+MODEL = "Qwen/Qwen-Image"
+DATASET = "rockdu/miles-diffusion-datasets"
+DATASET_SUBSET = "flowgrpo_pickscore"
+WANDB_PROJECT = "miles-diffusion-grpo"
+
+
+@dataclass
+class ScriptArgs(U.ExecuteTrainConfig):
+    num_rollout: int = 400
+    data_dir: str = "/root/datasets"
+    extra_args: str = ""
+
+
+def prepare(args: ScriptArgs) -> str:
+    local_dir = U.hf_download_dataset(DATASET, include=f"{DATASET_SUBSET}/**", data_dir=args.data_dir)
+    return f"{local_dir}/{DATASET_SUBSET}"
+
+
+def execute(args: ScriptArgs, data_dir: str) -> None:
+    run_name = f"diffusion_grpo_qwenimage_hps_5gpu_mixed_resolution_{U.create_run_id()}"
+
+    ckpt_args = (
+        f"--hf-checkpoint {MODEL} --diffusion-task t2i --save {args.output_dir}/{run_name}/ckpt --save-interval 10 "
+    )
+
+    rollout_args = (
+        "--rollout-function-path miles.rollout.sglang_diffusion_rollout.generate_rollout "
+        f"--prompt-data {data_dir}/train.jsonl "
+        "--input-key input "
+        "--rollout-batch-size 32 "
+        "--n-samples-per-prompt 16 "
+        f"--num-rollout {args.num_rollout} "
+        "--num-steps-per-rollout 2 "
+        "--rollout-microgroup-size 8 "
+        "--train-dp-split-mode stride "
+        "--diffusion-train-iter-order sample_major "
+        "--diffusion-num-steps 10 "
+        "--diffusion-guidance-scale 4.0 "
+        "--diffusion-negative-prompt ' ' "
+        "--diffusion-true-cfg-scale 4.0 "
+        "--diffusion-noise-level 1.2 "
+        # eval resolution, and the fallback for anything the strategy does not cover
+        "--diffusion-height 512 "
+        "--diffusion-width 512 "
+        "--diffusion-resolution-strategy-path miles.rollout.resolution_strategy_hub.weighted_buckets "
+        "--diffusion-resolution-buckets 512x512,672x384,384x672 "
+        "--diffusion-step-strategy-path miles.rollout.step_strategy_hub.sde_window "
+        "--diffusion-num-sde-steps 2 "
+        "--diffusion-sde-window-range 3,5 "
+        "--rollout-patch-group qwen_image "
+    )
+
+    eval_args = (
+        f"--eval-prompt-data pickscore_test {data_dir}/test.jsonl "
+        "--eval-interval 30 "
+        "--diffusion-eval-num-steps 50 "
+        "--skip-eval-before-train "
+    )
+
+    grpo_args = "--advantage-estimator grpo --globalize-reward-std --diffusion-clip-range 1e-4 "
+
+    optimizer_args = "--lr 3e-4 --adam-beta2 0.999 --weight-decay 1e-4 "
+
+    lora_args = (
+        "--use-lora --lora-ipc-weight-sync --lora-rank 64 --lora-alpha 128 --lora-init-weights gaussian "
+        # PEFT evaluates adapters unmerged; merging rounds differently in bf16.
+        "--sglang-lora-merge-mode dynamic "
+    )
+
+    reward_args = (
+        "--rm-type hps "
+        "--hps-version v2.1 "
+        "--hps-num-workers 1 "
+        "--hps-num-gpus-per-worker 1.0 "
+        "--hps-batch-size 8 "
+    )
+
+    wandb_args = U.get_default_wandb_args(
+        __file__, run_id=run_name, project=WANDB_PROJECT, wandb_log_num_images=8, wandb_log_image_interval=10
+    )
+
+    sglang_args = (
+        "--use-miles-router "
+        "--rollout-fetch-in-parser "
+        "--rollout-parser-num-workers 16 "
+        "--sglang-server-concurrency 4 "
+        "--sglang-attention-backend torch_sdpa "
+        "--update-weight-buffer-size 2147483648 "
+    )
+
+    train_backend_args = (
+        "--train-backend fsdp --fsdp-master-dtype fp32 --fsdp-reduce-dtype fp32 --diffusion-forward-dtype bf16 "
+    )
+
+    # 8 = one prompt group's pairs per rank (16 samples / 4 ranks x 2 SDE steps), so every
+    # micro-batch holds a single resolution; the train actor checks it
+    perf_args = "--gradient-checkpointing --micro-batch-size 8 "
+
+    misc_args = (
+        "--actor-num-gpus-per-node 4 "
+        "--rollout-num-gpus 4 "
+        "--rollout-num-gpus-per-engine 1 "
+        "--num-gpus-per-node 5 "
+        "--colocate "
+        "--deterministic-mode "
+        "--diffusion-debug-mode "
+    )
+
+    U.execute_train(
+        train_args=(
+            f"{ckpt_args} {rollout_args} {eval_args} {grpo_args} {optimizer_args} "
+            f"{lora_args} {reward_args} {wandb_args} {sglang_args} {train_backend_args} {perf_args} "
+            f"{misc_args} {args.extra_args}"
+        ),
+        num_gpus_per_node=5,
+        config=args,
+        extra_env_vars={"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"},
+    )
+
+
+@U.dataclass_cli
+def main(args: ScriptArgs) -> None:
+    data_dir = prepare(args)
+    execute(args, data_dir)
+
+
+if __name__ == "__main__":
+    typer.run(main)

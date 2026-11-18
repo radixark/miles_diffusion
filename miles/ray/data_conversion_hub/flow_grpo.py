@@ -4,9 +4,11 @@ from typing import Any
 
 import torch
 
+from miles.ray.data_conversion_hub import labels_rollout_resolution
 from miles.utils.types import RolloutDebugTensors, Sample
 
 
+@labels_rollout_resolution
 def expand_samples_to_train_pairs(
     args,
     samples: list[Sample],
@@ -91,7 +93,16 @@ def _build_per_sample_features(
         "sample_index": sample.index,
         "prompt": sample.prompt,
         "raw_reward": float(raw_reward),
+        # None unless --diffusion-resolution-strategy-path drew one; the train actor keeps
+        # each micro-batch to a single value (check_single_resolution).
+        "resolution": _sample_resolution(sample),
     }
+
+
+def _sample_resolution(sample: Sample) -> tuple[int, int] | None:
+    if sample.height is None or sample.width is None:
+        return None
+    return (int(sample.height), int(sample.width))
 
 
 def _build_per_timestep_features(
@@ -138,6 +149,10 @@ def _build_per_timestep_features(
         # The first sigma below 1 on this sample's grid; the SDE kernel substitutes it at sigma == 1.
         "sigma_max": sigmas[1].expand(len(idx)),
         "log_prob_old": rollout_log_probs[idx],
+        # the same values, kept where --diffusion-recompute-old-log-prob will not overwrite
+        # them: measuring how faithfully the trainer replays the rollout needs the rollout's
+        # own log-prob, and the recompute pass replaces "log_prob_old" with a train-side one.
+        "log_prob_rollout": rollout_log_probs[idx],
     }, idx
 
 

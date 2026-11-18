@@ -83,6 +83,7 @@ For how these batch arguments relate to each other, see
 | `--diffusion-noise-level` | `0.7` | SDE noise injected during rollout. |
 | `--diffusion-guidance-scale` | `4.0` | CFG scale. |
 | `--diffusion-height` / `--diffusion-width` | `512` | Output resolution. |
+| `--diffusion-resolution-strategy-path` | – | Draw a resolution per prompt group instead, e.g. `weighted_buckets`. |
 | `--diffusion-output-num-frames` | `1` | Frames — `1` for images. |
 | `--rollout-microgroup-size` | `1` | Samples per prompt sent in one `POST /rollout/generate`. |
 
@@ -201,6 +202,9 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--diffusion-sde-window-range` | `"lo,hi"` | – | For `sde_window`. Defaults to `[0, num_inference_steps)`. |
 | `--diffusion-sde-candidate-steps` | `"1,2,3"` | – | Required by `epoch_global_random_choice`. |
 | `--diffusion-step-strategy-path` | str | – | `(args, sample, num_steps, seed) -> (sde, ret, stop)` choosing the SDE, returned and last steps, e.g. `miles.rollout.step_strategy_hub.sde_window`. Flow-GRPO needs one. |
+| `--diffusion-resolution-strategy-path` | str | – | `(args, sample, seed) -> (height, width)`, drawn once per prompt group. Unset, the run stays at `--diffusion-height` / `--diffusion-width`, which eval keeps either way. See [mixed resolution](customization.md#--diffusion-resolution-strategy-path) for what it requires. |
+| `--diffusion-resolution-buckets` | `"HxW,HxW"` | – | Candidates for `weighted_buckets`, height first, e.g. `512x512,672x384,384x672`. Each side must be a positive multiple of 16 (8x VAE downsample x 2x2 patch packing). Parsed and validated at startup. |
+| `--diffusion-resolution-weights` | `"2,1,1"` | – | Draw weights for `--diffusion-resolution-buckets`, one per bucket, normalized. Unset draws uniformly. |
 | `--rollout-return-full-trajectory` | flag | off | Ask the engine for the whole denoising trajectory instead of only the steps the step strategy requests. The train tensors are identical; kept for debugging and A/B runs. |
 | `--diffusion-log-prob-no-const` | flag | off | Drop log-prob constants on the engine (pairs with the CPS backend). Forced on for `cps` / `ode`. |
 | `--diffusion-generator-device` | str | `cuda` | |

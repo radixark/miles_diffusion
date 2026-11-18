@@ -122,6 +122,8 @@ def _mk_sample(index: int, num_steps: int, sde_idx, chan: int = 4, with_debug=Tr
     return SimpleNamespace(
         index=index,
         prompt=f"prompt-{index}",
+        height=None,
+        width=None,
         dit_trajectory=traj,
         denoising_env=SimpleNamespace(tag=index),
         rollout_log_probs=rollout_log_probs,

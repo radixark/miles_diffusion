@@ -6,7 +6,11 @@ import torch
 
 from miles.backends.fsdp_utils.loss_hub.score_centering import score_centering_term
 from miles.backends.fsdp_utils.loss_hub.types import DiffusionLossContext, PreparedBatch
-from miles.backends.fsdp_utils.metrics import record_prev_mean_diff_over_noise_std, record_rollout_train_abs_diff
+from miles.backends.fsdp_utils.metrics import (
+    record_prev_mean_diff_over_noise_std,
+    record_rollout_train_abs_diff,
+    resolution_metric_key,
+)
 from miles.utils.metric_buffer import MetricBuffer
 from miles.utils.train_data_utils import stack_train_pair_rollout_debug
 
@@ -40,6 +44,10 @@ def prepare_flow_grpo_batch(
     next_sigmas = _stack_pair_field(batch, "next_sigma", device)
     sigma_max = _stack_pair_field(batch, "sigma_max", device)
     log_prob_old = _stack_pair_field(batch, "log_prob_old", device)
+    # Only the per-resolution replay metric reads this, so a conversion that does not write it
+    # (any custom one predating the field) keeps working; the metric says so if it is missing.
+    has_rollout_log_prob = all("log_prob_rollout" in pair for pair in batch)
+    log_prob_rollout = _stack_pair_field(batch, "log_prob_rollout", device) if has_rollout_log_prob else None
     advantage = torch.tensor(
         [float(pair["advantage"]) for pair in batch],
         device=device,
@@ -108,6 +116,7 @@ def prepare_flow_grpo_batch(
             "next_sigmas": next_sigmas,
             "sigma_max": sigma_max,
             "log_prob_old": log_prob_old,
+            "log_prob_rollout": log_prob_rollout,
         },
     )
 
@@ -216,6 +225,24 @@ def flow_grpo_loss_formula(
                 total=log_prob_abs_diff_sum,
                 count=bsz,
             )
+        # One resolution per micro-batch (check_single_resolution); only the declared buckets.
+        # Against the rollout's own log-prob, not log_prob_old: this metric exists to show the
+        # trainer replays each bucket's rollout, and --diffusion-recompute-old-log-prob leaves
+        # log_prob_old holding a train-side value (identical to log_prob_new on the first
+        # optimizer step, which would read as a flat zero rather than as no measurement).
+        resolution = batch[0].get("resolution")
+        if resolution is not None:
+            key = resolution_metric_key("log_prob_mean_abs_diff", resolution)
+            if key in metrics:
+                rollout_log_prob = prepared.extras["log_prob_rollout"]
+                if rollout_log_prob is None:
+                    raise ValueError(
+                        "a train pair carries its rollout resolution but not the rollout's log-prob, so "
+                        f"{key} cannot measure how faithfully that bucket replays. A conversion declaring "
+                        "@miles.ray.data_conversion_hub.labels_rollout_resolution writes both."
+                    )
+                replay_diff_sum = torch.abs(log_prob_new - rollout_log_prob).sum()
+                metrics.emit_mean(key, total=replay_diff_sum, count=bsz)
 
         if rollout_prev_mean is not None:
             record_prev_mean_diff_over_noise_std(metrics, rollout_prev_mean, step_out.prev_mean, step_out.noise_std)

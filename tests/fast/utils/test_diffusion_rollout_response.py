@@ -116,3 +116,32 @@ def test_response_audio_fills_the_sample():
     assert sample.audio_sample_rate == 48000
     silent = apply_rollout_image_response(Sample(), {}, deserialize_func=lambda value: value)
     assert silent.generated_audio is None and silent.audio_sample_rate is None
+
+def _body(height: int, width: int) -> dict:
+    # a (C, H, W) image the way _normalize_generated_output receives it
+    return {"generated_output": torch.zeros(3, height, width)}
+
+
+def test_resolution_strategy_request_is_checked_against_the_returned_media():
+    sample = Sample(height=384, width=672)
+
+    apply_rollout_image_response(sample, _body(384, 672), deserialize_func=lambda value: value)
+
+    assert sample.generated_output.shape[-2:] == (384, 672)
+
+
+def test_a_resolution_the_request_did_not_ask_for_is_rejected():
+    sample = Sample(prompt="p", height=384, width=672)
+
+    with pytest.raises(ValueError, match="672x384 sample for a 384x672 request"):
+        apply_rollout_image_response(sample, _body(672, 384), deserialize_func=lambda value: value)
+
+
+def test_a_fixed_resolution_sample_is_not_checked():
+    # height/width stay None without --diffusion-resolution-strategy-path; families whose
+    # request geometry is indirect (H3's aspect ratio) must not trip over this.
+    sample = Sample()
+
+    apply_rollout_image_response(sample, _body(480, 832), deserialize_func=lambda value: value)
+
+    assert sample.generated_output.shape[-2:] == (480, 832)

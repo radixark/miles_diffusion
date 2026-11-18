@@ -25,6 +25,7 @@ from miles.utils.timer import Timer, inverse_timer, timer
 from miles.utils.tracking_utils import init_tracking
 from miles.utils.train_data_utils import (
     build_microbatch_schedule,
+    check_single_resolution,
     validate_same_microbatch_counts_across_train_ranks,
     validate_sample_aligned_windows,
 )
@@ -169,6 +170,8 @@ class FSDPTrainRayActor(TrainRayActor):
 
         self.sde_backend = load_function(args.sde_step_backend_path)()
         self.loss_hooks = get_loss_hooks(args, role)
+        # a drawing strategy means every train pair must carry the resolution it was rendered at
+        self.resolution_labels_required = args.diffusion_resolution_strategy_path is not None
 
         if args.optimizer == "adam":
             self.optimizer = torch.optim.AdamW(
@@ -407,6 +410,7 @@ class FSDPTrainRayActor(TrainRayActor):
                     device,
                     self.models,
                     sigma_buckets=self.args.log_loss_sigma_bucket,
+                    resolutions=self.args.diffusion_resolution_bucket_list,
                 )
                 # Skip window 0: its training forward runs on the same pre-update weights and doubles as the recompute.
                 # Each later window's micro-batches get the ids and step index of their training forwards.
@@ -445,6 +449,7 @@ class FSDPTrainRayActor(TrainRayActor):
                     self.models,
                     sigma_buckets=self.args.log_loss_sigma_bucket,
                     num_rollout_steps=self.args.diffusion_num_steps,
+                    resolutions=self.args.diffusion_resolution_bucket_list,
                 )
 
                 for pair_lo, pair_hi in microbatch_ranges:
@@ -522,6 +527,7 @@ class FSDPTrainRayActor(TrainRayActor):
     ) -> torch.Tensor | None:
         """Run one prepared diffusion micro-batch: number ``microbatch_id`` of the rollout, in optimizer step
         ``optim_step_idx``."""
+        check_single_resolution(batch, labels_required=self.resolution_labels_required)
         prepared = self.loss_hooks.prepare(
             ctx, batch, microbatch_id=microbatch_id, optim_step_idx=optim_step_idx, pad_to_len=pad_to_len
         )
