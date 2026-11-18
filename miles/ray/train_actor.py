@@ -26,7 +26,7 @@ def get_local_gpu_id():
 
 
 class TrainRayActor(RayActor):
-    def __init__(self, world_size, rank, master_addr, master_port):
+    def __init__(self, world_size, rank, master_addr, master_port, master_port_start=20000):
         configure_logger()
 
         self._world_size = world_size
@@ -35,7 +35,7 @@ class TrainRayActor(RayActor):
             self.master_addr, self.master_port = master_addr, master_port
         else:
             self.master_addr, self.master_port = self._get_current_node_ip_and_free_port(
-                start_port=random.randint(20000, 21000)
+                start_port=random.randint(master_port_start, master_port_start + 999)
             )
 
         os.environ["MASTER_ADDR"] = self.master_addr
