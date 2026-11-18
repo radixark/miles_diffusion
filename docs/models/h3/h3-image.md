@@ -49,7 +49,7 @@ From `miles/backends/fsdp_utils/configs/h3_image.py`, a subclass of the [H3](h3.
 Canonical recipe: `scripts/run_diffusion_grpo_h3_image_ocr_8gpu.py` — FSDP DP=8 colocated with four TP2 rollout
 engines on 8 GPUs, 512×512, OCR reward, LoRA synced over CUDA IPC.
 
-**Status:** [○ NV — Not verified](../../user-guide/recipe-verification.md#nv)
+**Status:** [📈 V — Verified](../../user-guide/recipe-verification.md#v), see § 6.1.
 
 ```bash
 python3 scripts/run_diffusion_grpo_h3_image_ocr_8gpu.py
@@ -94,8 +94,8 @@ What to watch:
   engine's, 20-47% of the pairs are clipped before any update.
 - **lr 1e-4, 2 optimizer steps per rollout.** The learning rate decides whether the adapters generalize. At 2e-4 the
   recipe fits 8 fixed prompts 1.5 times as fast as at 1e-4, and on the full dataset gets worse on every prompt it has
-  not trained on: `eval/ocr_test` falls from 0.600 to 0.550 in 20 rollouts. At 1e-4 it rises to 0.621 (§ 6). lr 3e-4
-  with a 3e-4 clip range and 4 optimizer steps took it to 0.37 in 10 rollouts.
+  not trained on: `eval/ocr_test` falls from 0.600 to 0.550 in 20 rollouts. At 1e-4 it rises to 0.621, and to 0.830
+  after 200 (§ 6). lr 3e-4 with a 3e-4 clip range and 4 optimizer steps took it to 0.37 in 10 rollouts.
 - **Tune on `eval/ocr_test`, not on the reward of a fixed prompt set**, which rises fastest for the settings that
   generalize worst. For a reading before the next eval, run the frozen-weights control of § 4 once:
   `--deterministic-mode` gives rollout k the same prompts and noise in every run, so a run's
@@ -113,17 +113,23 @@ What to watch:
 
 ### 6.1 The recipe on the full dataset
 
-Recipe defaults with `--num-rollout 1000` on 8 H200, the first 100 rollouts (12,800 images, about 80 s per rollout
-with the evals):
+The recipe's 200 rollouts on 8 H200: 25,600 images, 4.4 hours at 79 s per rollout with the evals. They are the first
+200 of a `--num-rollout 1000` run; the learning rate is constant, so the two are the same run up to there.
 
-| Rollouts trained | 0 | 20 | 40 | 60 | 80 | 100 |
-|---|---|---|---|---|---|---|
-| `eval/ocr_test` | 0.6003 | 0.6213 | 0.6388 | 0.6365 | 0.6477 | 0.6795 |
+| Rollouts trained | 0 | 20 | 40 | 60 | 80 | 100 | 120 | 140 | 160 | 180 | 200 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| `eval/ocr_test` | 0.6003 | 0.6213 | 0.6388 | 0.6365 | 0.6477 | 0.6795 | 0.7970 | 0.8147 | 0.6956 | 0.8181 | 0.8303 |
 
 ![MiniMax H3 Image eval OCR](../../assets/images/h3/h3_image_ocr_eval.png)
 
-`train/model_output_mean_abs_diff` on a rollout's first optimizer step, averaged over 20 rollouts, stays between
-0.020 and 0.022. A second launch reproduced the first 20 rollouts' rewards and the eval after them exactly.
+- **The eval is not monotonic.** After 160 rollouts it is 0.696, 0.12 below the evals before and after it. The eval
+  has no sampling noise, so that is what the weights of that rollout score. A checkpoint is saved with every eval
+  (`--save-interval 20`): pick one by its eval, not the last one written.
+- **The trainer stays aligned with the engine.** `train/model_output_mean_abs_diff` on a rollout's first optimizer
+  step, averaged over 20 rollouts, stays between 0.020 and 0.025. `train/clipfrac` on the second optimizer step
+  averages 0.13 to 0.30.
+- **The run is reproducible.** A second launch reproduced the first 20 rollouts' rewards and the eval after them
+  exactly.
 
 ### 6.2 The first rollouts, by learning rate
 
