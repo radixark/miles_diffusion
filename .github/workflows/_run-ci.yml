@@ -308,6 +308,8 @@ jobs:
         shell: bash
         env:
           UV_SYSTEM_PYTHON: "1"
+          # The 724 MiB paddlepaddle-gpu wheel stalls past uv's 30 s default.
+          UV_HTTP_TIMEOUT: "300"
         run: |
           SGLANG_BUILD_RUST_EXTS=none uv pip install -e sglang/python --no-deps
           uv pip install -e sglang/radix_transfer_plugins --no-deps
