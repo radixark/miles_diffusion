@@ -26,8 +26,6 @@ name: PR Test
 on:
   pull_request:
     types: [synchronize, labeled, opened, reopened]
-  pull_request_review:
-    types: [submitted, dismissed]
   schedule:
     # 16:30 UTC = 09:30 PDT / 08:30 PST (cron is UTC, no DST).
     - cron: '30 16 * * *'
@@ -94,9 +92,11 @@ concurrency:
 # every enabled test in the suite.
 
 jobs:
-  # Keep unreviewed code off the expensive self-hosted runners. Review events
-  # retrigger this workflow, while schedule and manual runs remain trusted.
-  # The same gate also identifies documentation-only PRs.
+  # Keep unreviewed code off the expensive self-hosted runners. A PR runs when
+  # it carries a run-ci-* label and, unless its author has write access, a
+  # write-access reviewer has approved it. Reviews never start a run; schedule
+  # and manual runs remain trusted. The same gate also identifies
+  # documentation-only PRs.
   ci-gate:
     runs-on: ubuntu-latest
     outputs:
@@ -112,7 +112,7 @@ jobs:
           echo "docs_only=false" >> "$GITHUB_OUTPUT"
 
       - name: Check authorization and changed files
-        if: github.event_name == 'pull_request' || github.event_name == 'pull_request_review'
+        if: github.event_name == 'pull_request'
         id: pr
         uses: actions/github-script@v7
         with:
@@ -120,34 +120,44 @@ jobs:
             const pull_number = context.payload.pull_request.number;
             const owner = context.repo.owner;
             const repo = context.repo.repo;
+            // A re-run replays the event payload, so take the PR as it is now.
+            const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number });
 
-            const reviews = await github.paginate(
-              github.rest.pulls.listReviews,
-              { owner, repo, pull_number, per_page: 100 },
-            );
-            const trustedAssociations = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
-            const decisiveReviews = new Map();
-            for (const review of reviews) {
-              if (!review.user || !trustedAssociations.has(review.author_association)) {
-                continue;
+            // `permission` folds maintain and custom roles into their base permission.
+            const hasWriteAccess = async (username) => {
+              const { data } = await github.rest.repos.getCollaboratorPermissionLevel(
+                { owner, repo, username },
+              );
+              return ["write", "admin"].includes(data.permission);
+            };
+
+            const labelled = pr.labels.some((label) => label.name.startsWith("run-ci-"));
+            const authorHasWriteAccess = await hasWriteAccess(pr.user.login);
+            let approved = false;
+            if (!authorHasWriteAccess) {
+              const reviews = await github.paginate(
+                github.rest.pulls.listReviews,
+                { owner, repo, pull_number, per_page: 100 },
+              );
+              // The newest decisive review per reviewer is their current verdict.
+              const verdicts = new Map();
+              for (const review of reviews) {
+                if (!review.user || !["APPROVED", "CHANGES_REQUESTED", "DISMISSED"].includes(review.state)) {
+                  continue;
+                }
+                const previous = verdicts.get(review.user.id);
+                if (!previous || review.id > previous.id) {
+                  verdicts.set(review.user.id, review);
+                }
               }
-              if (!["APPROVED", "CHANGES_REQUESTED", "DISMISSED"].includes(review.state)) {
-                continue;
-              }
-              const previous = decisiveReviews.get(review.user.id);
-              if (!previous || review.id > previous.id) {
-                decisiveReviews.set(review.user.id, review);
+              for (const review of verdicts.values()) {
+                if (review.state === "APPROVED" && await hasWriteAccess(review.user.login)) {
+                  approved = true;
+                  break;
+                }
               }
             }
-            const reviewApproved = [...decisiveReviews.values()].some(
-              (review) => review.state === "APPROVED",
-            );
-            // Applying labels requires triage (or stronger) repository
-            // permission, so run-ci-* also acts as a maintainer authorization.
-            const labelAuthorized = context.payload.pull_request.labels.some(
-              (label) => label.name.startsWith("run-ci-"),
-            );
-            const authorized = reviewApproved || labelAuthorized;
+            const authorized = labelled && (authorHasWriteAccess || approved);
 
             const files = await github.paginate(
               github.rest.pulls.listFiles,
@@ -177,14 +187,19 @@ jobs:
             core.setOutput("authorized", String(authorized));
             core.setOutput("docs_only", String(docsOnly));
             core.info(
-              `CI gate: review_approved=${reviewApproved}, ` +
-                `label_authorized=${labelAuthorized}, docs_only=${docsOnly}, ` +
-                `changed_files=${files.length}`,
+              `CI gate: author=${pr.user.login} (write access: ${authorHasWriteAccess}), ` +
+                `labelled=${labelled}, approved=${approved}, authorized=${authorized}, ` +
+                `docs_only=${docsOnly}, changed_files=${files.length}`,
             );
             if (!authorized) {
-              core.setFailed(
-                "PR CI requires a trusted approval or a maintainer-applied run-ci-* label.",
-              );
+              const missing = [];
+              if (!labelled) {
+                missing.push("a run-ci-* label");
+              }
+              if (!authorHasWriteAccess && !approved) {
+                missing.push("a write-access reviewer's approval");
+              }
+              core.setFailed(`PR CI requires ${missing.join(" and ")}.`);
             }
 
   # Nothing rebuilds the CI image for a PR, so a docker PR would otherwise be tested inside the old `latest`.
@@ -201,8 +216,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # pull_request_review otherwise checks out the default branch.
-          ref: ${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
+          ref: ${{ github.event_name == 'pull_request' && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
           fetch-depth: 2
           persist-credentials: false
       - id: diff
@@ -231,7 +245,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
+          ref: ${{ github.event_name == 'pull_request' && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
 
       - name: Login to Docker Hub
         uses: docker/login-action@v3
@@ -268,7 +282,7 @@ jobs:
       - name: Checkout release lockfile
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha) }}
+          ref: ${{ inputs.ref || (github.event_name == 'pull_request' && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha) }}
           sparse-checkout: release-lock.json
           sparse-checkout-cone-mode: false
           persist-credentials: false
