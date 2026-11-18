@@ -46,6 +46,9 @@ class TestFamilyResolution:
             ("MiniMaxAI/MiniMax-H3", "h3"),
             # Longer pattern wins: "minimax-h3" is a substring of this id.
             ("MiniMaxAI/MiniMax-H3-Image", "h3_image"),
+            # H3's "/h3" matches both local spellings too.
+            ("/data/ckpts/h3-image", "h3_image"),
+            ("/data/ckpts/h3_image", "h3_image"),
         ],
     )
     def test_known_patterns(self, ref, family):

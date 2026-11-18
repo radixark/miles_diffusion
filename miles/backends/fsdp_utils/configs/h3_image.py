@@ -15,7 +15,9 @@ class H3ImageTrainPipelineConfig(H3TrainPipelineConfig):
     """MiniMax H3 Image: the H3 DiT without audio rows, with one output head per denoising step."""
 
     tasks = ("t2i",)
-    hf_ckpt_name_patterns = ("minimax-h3-image", "minimax_h3_image", "/h3-image")
+    hf_ckpt_name_patterns = ("minimax-h3-image", "minimax_h3_image", "/h3-image", "/h3_image")
+    # the release's sigma grid, one output head per step
+    num_denoising_steps = 6
 
     @classmethod
     def validate_args(cls, args: Namespace) -> None:
@@ -26,7 +28,8 @@ class H3ImageTrainPipelineConfig(H3TrainPipelineConfig):
                 "H3 Image trains with --loss-type policy_loss only: its DiT picks an output head by the rollout's "
                 "denoising step, which no other loss provides"
             )
-        if not args.train_only and not rollout_merges_lora(args):
+        syncs_weights_to_rollout = not args.train_only and not args.debug_rollout_only
+        if syncs_weights_to_rollout and not rollout_merges_lora(args):
             raise ValueError(
                 "H3 Image trains LoRA adapters and syncs them as adapters (--use-lora --lora-ipc-weight-sync): "
                 "every other sync sends the DiT's per-step output heads, which the rollout engine cannot receive"
@@ -35,6 +38,29 @@ class H3ImageTrainPipelineConfig(H3TrainPipelineConfig):
             raise ValueError("H3 Image samples on its release's sigma grid; drop --diffusion-flow-shift")
         if args.sequence_parallel_size != 1:
             raise ValueError("H3 Image is untested with trainer sequence parallelism; set --sequence-parallel-size 1")
+        if args.diffusion_num_steps != cls.num_denoising_steps or args.diffusion_eval_num_steps not in (
+            None,
+            cls.num_denoising_steps,
+        ):
+            raise ValueError(
+                f"H3 Image has one output head per step of its release's {cls.num_denoising_steps}-step grid; set "
+                f"--diffusion-num-steps {cls.num_denoising_steps} and drop --diffusion-eval-num-steps"
+            )
+        if args.rollout_microgroup_size != 1 or args.diffusion_output_num_frames != 1:
+            raise ValueError(
+                "H3 Image rollout serves one image per request; keep --rollout-microgroup-size and "
+                "--diffusion-output-num-frames at 1"
+            )
+        if (args.micro_batch_size, args.micro_batch_size_sample or 1, args.micro_batch_size_tstep or 1) != (1, 1, 1):
+            raise ValueError(
+                "H3 Image's packed forward takes one pair; keep --micro-batch-size, --micro-batch-size-sample and "
+                "--micro-batch-size-tstep at 1"
+            )
+        if args.diffusion_quality == "high" or args.diffusion_true_cfg_scale not in (None, 1.0):
+            raise ValueError(
+                "H3 Image rollout serves --diffusion-quality exact or lossless, unguided; "
+                "drop --diffusion-true-cfg-scale"
+            )
 
     @classmethod
     def apply_rollout_sampling_params(

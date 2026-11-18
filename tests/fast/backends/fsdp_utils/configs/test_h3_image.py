@@ -7,9 +7,8 @@
 
 from tests.ci.ci_register import register_cpu_ci
 
-register_cpu_ci(est_time=20, suite="stage-a-cpu", labels=["fsdp"])
+register_cpu_ci(est_time=20, suite="stage-a-cpu", labels=[])
 
-import fnmatch
 from argparse import Namespace
 
 import diffusers
@@ -20,6 +19,7 @@ from sglang.multimodal_gen.runtime.pipelines_core.stages.model_specific_stages.m
 )
 
 from miles.backends.fsdp_utils.configs.h3_image import H3ImageTrainPipelineConfig
+from miles.backends.fsdp_utils.mixed_precision import compile_param_dtype_maps
 from miles.backends.fsdp_utils.models.diffusers import load_fsdp_parallel_plan
 
 TEXT_LEN, LATENT_H, LATENT_W = 5, 8, 12
@@ -149,8 +149,18 @@ def _grpo_args(**overrides):
         lora_ipc_weight_sync=True,
         colocate=True,
         train_only=False,
+        debug_rollout_only=False,
         diffusion_flow_shift=None,
         sequence_parallel_size=1,
+        diffusion_num_steps=6,
+        diffusion_eval_num_steps=None,
+        rollout_microgroup_size=1,
+        diffusion_output_num_frames=1,
+        micro_batch_size=1,
+        micro_batch_size_sample=1,
+        micro_batch_size_tstep=1,
+        diffusion_quality="exact",
+        diffusion_true_cfg_scale=None,
     )
     vars(args).update(overrides)
     return args
@@ -158,6 +168,12 @@ def _grpo_args(**overrides):
 
 def test_lora_flow_grpo_is_accepted():
     H3ImageTrainPipelineConfig.validate_args(_grpo_args())
+
+
+@pytest.mark.parametrize("no_sync", ["train_only", "debug_rollout_only"])
+def test_a_run_that_syncs_no_weights_needs_no_lora(no_sync):
+    """The LoRA requirement is about what the engine can receive; a rollout-only smoke sends it nothing."""
+    H3ImageTrainPipelineConfig.validate_args(_grpo_args(use_lora=False, lora_ipc_weight_sync=False, **{no_sync: True}))
 
 
 @pytest.mark.parametrize(
@@ -169,8 +185,32 @@ def test_lora_flow_grpo_is_accepted():
         ({"loss_type": "nft"}, "policy_loss"),
         ({"diffusion_flow_shift": 3.0}, "flow-shift"),
         ({"sequence_parallel_size": 2}, "sequence"),
+        # the engine answers each of these with a 400 after both sides have loaded the DiT
+        ({"diffusion_num_steps": 10}, "6-step grid"),
+        ({"diffusion_eval_num_steps": 40}, "6-step grid"),
+        ({"rollout_microgroup_size": 4}, "one image per request"),
+        ({"diffusion_output_num_frames": 5}, "one image per request"),
+        ({"diffusion_quality": "high"}, "exact or lossless"),
+        ({"diffusion_true_cfg_scale": 4.0}, "unguided"),
+        # the forward raises on these at the first train step
+        ({"micro_batch_size": 2}, "one pair"),
+        ({"micro_batch_size_tstep": 2}, "one pair"),
     ],
-    ids=["full-weight", "lora-synced-as-merged-weights", "nft", "flow-shift", "sequence-parallel"],
+    ids=[
+        "full-weight",
+        "lora-synced-as-merged-weights",
+        "nft",
+        "flow-shift",
+        "sequence-parallel",
+        "rollout-steps",
+        "eval-steps",
+        "microgroup",
+        "frames",
+        "quality-high",
+        "true-cfg",
+        "micro-batch",
+        "micro-batch-tstep",
+    ],
 )
 def test_unsupported_training_settings_are_rejected(overrides, message):
     with pytest.raises(ValueError, match=message):
@@ -181,10 +221,9 @@ def test_parallel_plan_keeps_the_fp32_modules_in_fp32():
     """The plan is H3's: a module H3 Image pins to fp32 under another name would be sharded as bf16."""
     patterns = load_fsdp_parallel_plan("h3_image").param_dtype_patterns
     model = _tiny_h3_image()
-    fp32_names = [
-        name for name, _ in model.named_parameters() if name.split(".")[0] in model._keep_in_fp32_modules
-    ]
+    fp32_names = {name for name, _ in model.named_parameters() if name.split(".")[0] in model._keep_in_fp32_modules}
+
+    pinned = compile_param_dtype_maps(model, [], patterns, torch.bfloat16).root_map
 
     assert fp32_names
-    for name in fp32_names:
-        assert any(dtype == "fp32" and fnmatch.fnmatchcase(name, pattern) for pattern, dtype in patterns.items()), name
+    assert set(pinned) == fp32_names and set(pinned.values()) == {torch.float32}
