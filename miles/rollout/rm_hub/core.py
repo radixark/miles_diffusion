@@ -10,6 +10,7 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from miles.ray.utils import COLOCATED_REWARD_GPU
 from miles.utils.diffusion_rollout_response import read_generated_outputs
+from miles.utils.logging_utils import configure_logger
 from miles.utils.output_store import StoredTensor, StoredTensorReader, connect_output_store
 
 logger = logging.getLogger(__name__)
@@ -85,6 +86,8 @@ class _StoredOutputRewardActor:
     """A reward actor that reads the stored outputs it is given from the output store, then scores them."""
 
     def __init__(self, *, scorer_cls, scorer_kwargs: dict, args) -> None:
+        # like the train and rollout actors, so the reader's registrations are logged
+        configure_logger()
         self._scorer = scorer_cls(**scorer_kwargs)
         self._reader = StoredTensorReader(connect_output_store(args))
 
