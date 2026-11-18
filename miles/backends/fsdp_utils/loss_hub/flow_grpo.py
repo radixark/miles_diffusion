@@ -40,7 +40,7 @@ def prepare_flow_grpo_batch(
     next_sigmas = _stack_pair_field(batch, "next_sigma", device)
     sigma_max = _stack_pair_field(batch, "sigma_max", device)
     log_prob_old = _stack_pair_field(batch, "log_prob_old", device)
-    denoising_step_indices = torch.stack([pair["denoising_step_index"] for pair in batch]).to(device)
+    denoising_step_indices = torch.tensor([int(pair["denoising_step_index"]) for pair in batch], device=device)
     advantage = torch.tensor(
         [float(pair["advantage"]) for pair in batch],
         device=device,
