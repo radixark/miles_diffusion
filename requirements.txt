@@ -2,7 +2,9 @@ accelerate==1.12.0
 addict==2.4.0
 blobfile==3.0.0
 datasets==4.4.2
-diffusers==0.41.0
+# MiniMax-H3-Image's Diffusers classes (MiniMaxH3ImageTransformer2DModel,
+# AutoencoderKLMiniMaxH3Image) first ship in 0.43.0.
+diffusers==0.43.0
 fastapi==0.128.8
 httpx[http2]==0.28.1
 # miles/ray/rollout.py muxes eval audio through imageio_ffmpeg's bundled ffmpeg; the GPU image only had it
