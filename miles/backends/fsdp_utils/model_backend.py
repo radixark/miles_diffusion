@@ -193,6 +193,16 @@ class DiffusersModelBackend(BaseModelBackend):
         master_dtype: torch.dtype,
         materialize_weights: bool,
     ) -> torch.nn.Module:
+        """Load one component of a Diffusers checkpoint by itself.
+
+        Components load individually via ``cls.from_pretrained(subfolder=...)`` rather
+        than through ``DiffusionPipeline.from_pretrained`` with the siblings passed as
+        ``None``: pipelines that declare a component optional with a ``None`` default
+        (e.g. ``WanPipeline.transformer``/``transformer_2``) drop it from
+        ``expected_modules``, so the ``None`` is silently ignored and the sibling is
+        loaded from disk anyway — on every rank, and with ``low_cpu_mem_usage=False``
+        it also trips diffusers' ``_keep_in_fp32_modules`` guard.
+        """
         model_cls, subfolder = self._resolve_component(checkpoint_path, component)
         kwargs = {
             "subfolder": subfolder,
@@ -221,23 +231,15 @@ class DiffusersModelBackend(BaseModelBackend):
         its root ``model_index.json`` may describe another layout of the same weights (MiniMax-H3-Image's names the
         engine's native classes). The folder is the one the component's loading spec names, else the component's
         name. The repository a loading spec names is not followed: weights come from ``checkpoint_path``.
-
-        Components load individually via ``cls.from_pretrained(subfolder=...)`` rather
-        than through ``DiffusionPipeline.from_pretrained`` with the siblings passed as
-        ``None``: pipelines that declare a component optional with a ``None`` default
-        (e.g. ``WanPipeline.transformer``/``transformer_2``) drop it from
-        ``expected_modules``, so the ``None`` is silently ignored and the sibling is
-        loaded from disk anyway — on every rank, and with ``low_cpu_mem_usage=False``
-        it also trips diffusers' ``_keep_in_fp32_modules`` guard.
         """
         index_name = ModularPipeline.config_name
-        config = cls._read_modular_index(checkpoint_path)
-        if config is None:
+        index = cls._read_modular_index(checkpoint_path)
+        if index is None:
             index_name = DiffusionPipeline.config_name
-            config = DiffusionPipeline.load_config(checkpoint_path)
-        if component not in config:
+            index = DiffusionPipeline.load_config(checkpoint_path)
+        if component not in index:
             raise ValueError(f"{index_name} of {checkpoint_path} has no component {component!r}")
-        spec = config[component]
+        spec = index[component]
         component_cls = cls._component_class(spec)
         if component_cls is None:
             raise ValueError(
