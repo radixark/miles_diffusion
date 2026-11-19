@@ -116,18 +116,23 @@ class RolloutDataSource(DataSource):
             return
 
         path = os.path.join(self.args.load, f"rollout/global_dataset_state_dict_{rollout_id}.pt")
-        if not os.path.exists(path):
-            logger.info(f"Checkpoint {path} does not exist.")
-            return
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"Incomplete training resume: {path}")
 
         logger.info(f"load metadata from {path}")
-        logger.info(f"load metadata: {self.metadata}")
-        state_dict = torch.load(path)
-        self.sample_offset = state_dict.get("sample_offset", 0)
-        self.epoch_id = state_dict.get("epoch_id", 0)
-        self.sample_group_index = state_dict.get("sample_group_index", 0)
-        self.sample_index = state_dict.get("sample_index", 0)
-        self.metadata = state_dict.get("metadata", {})
+        state_dict = torch.load(path, map_location="cpu", weights_only=True)
+        counters = ("sample_offset", "epoch_id", "sample_group_index", "sample_index")
+        if not isinstance(state_dict, dict) or any(
+            type(state_dict.get(key)) is not int or state_dict[key] < 0 for key in counters
+        ):
+            raise ValueError("Training resume dataset cursor is missing valid counters")
+        if not isinstance(state_dict.get("metadata"), dict):
+            raise ValueError("Training resume dataset cursor is missing metadata")
+        self.sample_offset = state_dict["sample_offset"]
+        self.epoch_id = state_dict["epoch_id"]
+        self.sample_group_index = state_dict["sample_group_index"]
+        self.sample_index = state_dict["sample_index"]
+        self.metadata = state_dict["metadata"]
         # the permutation is a function of (seed, epoch), so restoring epoch_id restores the order
         if self.args.rollout_shuffle:
             self.dataset.shuffle(self.epoch_id)

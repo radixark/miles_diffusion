@@ -1,0 +1,12 @@
+# Install into the training/data environment; SGLang serves in a separate one.
+numpy==1.26.4
+opencv-python==4.10.0.84
+robosuite==1.4.1
+mujoco==3.1.6
+bddl==1.0.1
+easydict==1.13
+gym==0.25.2
+future==1.0.0
+matplotlib>=3.8
+cloudpickle>=3.0
+imageio-ffmpeg==0.6.0

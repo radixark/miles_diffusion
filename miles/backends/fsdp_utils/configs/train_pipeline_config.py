@@ -18,7 +18,6 @@ import os
 import torch
 from miles.utils.types import CondKwargs
 
-
 _REGISTRY: dict[str, type[TrainPipelineConfig]] = {}
 
 
@@ -103,6 +102,8 @@ class TrainPipelineConfig(abc.ABC):
     model_package: str | None = None
     # Flow-matching timestep range: timestep = sigma * num_train_timesteps.
     num_train_timesteps: int = 1000
+    sft_requires_visual_grid: bool = True
+    sft_streams: tuple[str, ...] = ("visual", "audio")
 
     @classmethod  # noqa: B027 — optional hook, deliberately non-abstract
     def validate_args(cls, args) -> None:

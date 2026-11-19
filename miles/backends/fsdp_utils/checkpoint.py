@@ -163,13 +163,7 @@ class LRSchedulerState(Stateful):
 
 
 def _read_checkpoint_metadata(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    try:
-        return json.loads(path.read_text())
-    except json.JSONDecodeError:
-        logger.warning(f"Failed to parse checkpoint metadata at {path}")
-        return {}
+    return json.loads(path.read_text())
 
 
 def _write_checkpoint_metadata(path: Path, metadata: dict[str, Any]) -> None:
@@ -179,22 +173,18 @@ def _write_checkpoint_metadata(path: Path, metadata: dict[str, Any]) -> None:
 
 
 def load(actor: Any) -> dict[str, Any] | None:
-    """Load model and EMA state independently of the optional training optimizer state."""
+    """Restore an explicitly requested checkpoint; propagate errors instead of starting fresh."""
     load_root = actor.args.load
     if load_root is None:
         return None
 
     root_path = Path(load_root).expanduser()
-    if not root_path.exists():
-        logger.info(f"[FSDP] Checkpoint directory {root_path} not found; skipping load.")
-        return None
+    if not root_path.is_dir():
+        raise FileNotFoundError(root_path)
 
     target_step = actor.args.ckpt_step
     if target_step is None:
         tracker_file = root_path / "latest_checkpointed_iteration.txt"
-        if not tracker_file.exists():
-            logger.info(f"[FSDP] No tracker file at {tracker_file}; skipping load.")
-            return None
         tracker_text = tracker_file.read_text().strip()
         target_step = int(tracker_text)
 
@@ -204,21 +194,29 @@ def load(actor: Any) -> dict[str, Any] | None:
     lr_scheduler_dir = checkpoint_dir / "lr_scheduler"
     ema_dir = checkpoint_dir / "ema"
 
-    if not model_dir.exists():
-        logger.info(f"[FSDP] Model checkpoint {model_dir} not found; skipping load.")
-        return None
+    required = [model_dir / ".metadata", checkpoint_dir / "meta.json"]
+    if not actor.args.no_load_optim:
+        required.extend([optimizer_dir / ".metadata", lr_scheduler_dir / ".metadata"])
+    if not getattr(actor.args, "no_load_rng", False):
+        required.append(checkpoint_dir / "rng.pt")
+    for path in required:
+        if not path.is_file():
+            raise FileNotFoundError(f"Incomplete training resume: {path}")
+    metadata = _read_checkpoint_metadata(checkpoint_dir / "meta.json")
+    if not {"global_step", "micro_step", "next_rollout_id"} <= metadata.keys():
+        raise ValueError("Training resume metadata is missing step/cursor fields")
+    if metadata["next_rollout_id"] != target_step:
+        raise ValueError("Training resume cursor does not match the checkpoint iteration")
+    # RolloutManager restores the cursor through the selected data source's load().
+    # Its storage format is owned by that data source, not the model checkpoint.
 
     # Load model weights (always)
     lora_only = actor.args.use_lora
     model_state = ModelState(actor.model, lora_only=lora_only)
     state_dict = {"model_state": model_state}
 
-    try:
-        dcp.load(state_dict=state_dict, checkpoint_id=str(model_dir))
-        logger.info(f"[FSDP] Loaded model from {model_dir}")
-    except Exception as e:
-        logger.error(f"[FSDP] Failed to load model from {model_dir}: {e}")
-        return None
+    dcp.load(state_dict=state_dict, checkpoint_id=str(model_dir))
+    logger.info(f"[FSDP] Loaded model from {model_dir}")
 
     if actor.ema_optimizer is not None:
         if ema_dir.exists():
@@ -242,37 +240,28 @@ def load(actor: Any) -> dict[str, Any] | None:
 
     # Load optimizer state (optional)
     load_optimizer = not actor.args.no_load_optim
-    if load_optimizer and (optimizer_dir / ".metadata").exists():
+    if load_optimizer:
         allowed_missing = actor.train_pipeline_config.optimizer_state_allowed_missing
         optimizer_state = OptimizerState(actor.model, actor.optimizer, allowed_missing=allowed_missing)
         optim_state_dict = {"optim_state": optimizer_state}
-        try:
-            dcp.load(state_dict=optim_state_dict, checkpoint_id=str(optimizer_dir))
-            logger.info(f"[FSDP] Loaded optimizer from {optimizer_dir}")
-        except Exception as e:
-            logger.warning(f"[FSDP] Failed to load optimizer from {optimizer_dir}: {e}")
-    elif load_optimizer:
-        logger.info(f"[FSDP] Optimizer checkpoint not found at {optimizer_dir}, skipping optimizer load.")
+        dcp.load(state_dict=optim_state_dict, checkpoint_id=str(optimizer_dir))
+        logger.info(f"[FSDP] Loaded optimizer from {optimizer_dir}")
 
-    # Load LR scheduler state (optional)
+    # --no-save-optim omits both Adam and scheduler. With --no-load-optim,
+    # retain the existing behavior: restore a scheduler if present, otherwise skip it.
     load_lr_scheduler = (lr_scheduler_dir / ".metadata").exists()
     if load_lr_scheduler:
         lr_scheduler_state = LRSchedulerState(actor.lr_scheduler)
         lr_scheduler_state_dict = {"lr_scheduler_state": lr_scheduler_state}
-        try:
-            dcp.load(state_dict=lr_scheduler_state_dict, checkpoint_id=str(lr_scheduler_dir))
-            logger.info(f"[FSDP] Loaded LR scheduler from {lr_scheduler_dir}")
-        except Exception as e:
-            logger.warning(f"[FSDP] Failed to load LR scheduler from {lr_scheduler_dir}: {e}")
+        dcp.load(state_dict=lr_scheduler_state_dict, checkpoint_id=str(lr_scheduler_dir))
+        logger.info(f"[FSDP] Loaded LR scheduler from {lr_scheduler_dir}")
     else:
         logger.info(f"[FSDP] LR scheduler checkpoint not found at {lr_scheduler_dir}, skipping LR scheduler load.")
 
     rng_state = None
     rng_path = checkpoint_dir / "rng.pt"
-    if rng_path.exists():
-        rng_state = torch.load(rng_path, map_location="cpu")
-
-    metadata = _read_checkpoint_metadata(checkpoint_dir / "meta.json")
+    if not getattr(actor.args, "no_load_rng", False):
+        rng_state = torch.load(rng_path, map_location="cpu", weights_only=True)
 
     return {
         "rng": rng_state,
