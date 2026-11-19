@@ -40,12 +40,14 @@ class LTXTrainPipelineConfig(TrainPipelineConfig):
                 "--rollout-patch-group ltx_av leaves the engine's audio-video cross-attention on, but the forward "
                 "trains video alone; add --rollout-extra-streams audio or use --rollout-patch-group ltx"
             )
-        # The engine fails a request whose audio latents it shards. Left unset, its SP degree takes whatever GPUs of
-        # the engine TP, DP and CFG parallelism leave over, so a multi-GPU engine has to pin it.
-        if trains_audio and args.rollout_num_gpus_per_engine > 1 and args.sglang_sp_degree != 1:
+        # The engine's audio rollout is validated without sequence parallelism. Left unset, the engine's SP degree is
+        # the GPUs of an engine that TP and CFG parallelism leave over.
+        tp_and_cfg = (args.sglang_tp_size or 1) * (2 if args.sglang_enable_cfg_parallel else 1)
+        sp_degree = args.sglang_sp_degree or args.rollout_num_gpus_per_engine // tp_and_cfg
+        if trains_audio and sp_degree > 1:
             raise ValueError(
-                "LTX audio rollout needs the audio latents unsharded: an engine over several GPUs must set "
-                f"--sglang-sp-degree 1, got {args.sglang_sp_degree}"
+                "LTX audio rollout is not validated under engine sequence parallelism: give every engine GPU to "
+                f"--sglang-tp-size, got an SP degree of {sp_degree}"
             )
 
     def configure(self, args: Namespace) -> None:
@@ -121,7 +123,7 @@ class LTXTrainPipelineConfig(TrainPipelineConfig):
         guidance_scale: float,
         true_cfg_scale: float | None,
     ) -> dict[str, torch.Tensor]:
-        # LTX trains unguided (supports_cfg_training=False): single velocity pass over video, plus audio if trained.
+        # LTX trains unguided (supports_cfg_training=False): one forward, no negative branch.
         latents = latents_input["visual"]
         cond = dict(pos_cond or {})
         if "context" not in cond:
@@ -151,7 +153,7 @@ class LTXTrainPipelineConfig(TrainPipelineConfig):
     ) -> dict[str, torch.Tensor]:
         """Noise prediction of the video stream, and of the audio stream when the input carries it."""
         video_latents = latents_input["visual"]
-        video_modality, video_sigma = self._modality(
+        video_modality = self._modality(
             video_latents, timesteps_input["visual"], cond["positions"].to(video_latents.dtype), cond["context"]
         )
         audio_modality = None
@@ -162,19 +164,21 @@ class LTXTrainPipelineConfig(TrainPipelineConfig):
             audio_positions = prepare_audio_positions(
                 batch_size=audio_latents.shape[0], num_frames=audio_latents.shape[1], device=audio_latents.device
             )
-            audio_modality, audio_sigma = self._modality(
+            audio_modality = self._modality(
                 audio_latents, timesteps_input["audio"], audio_positions, cond["audio_context"]
             )
         # Compute dtype comes from the trainer's ambient autocast around compute_noise_pred.
         video_velocity, audio_velocity = model(video=video_modality, audio=audio_modality, perturbations=None)
 
-        noise_pred = {"visual": self._noise_pred(video_latents, video_velocity, video_sigma)}
+        noise_pred = {"visual": _velocity_to_noise_pred(video_modality, video_velocity)}
         if audio_modality is not None:
-            noise_pred["audio"] = self._noise_pred(audio_latents, audio_velocity, audio_sigma)
+            noise_pred["audio"] = _velocity_to_noise_pred(audio_modality, audio_velocity)
         return noise_pred
 
-    def _modality(self, latents: torch.Tensor, timesteps: torch.Tensor, positions: torch.Tensor, context: torch.Tensor):
-        """One stream's ltx_core ``Modality`` and its sigma in [0, 1]."""
+    def _modality(
+        self, latents: torch.Tensor, timesteps: torch.Tensor, positions: torch.Tensor, context: torch.Tensor
+    ):
+        """One stream's ltx_core ``Modality``; its ``sigma`` is the stream's sigma in [0, 1]."""
         from ltx_core.model.transformer.modality import Modality
 
         dtype = latents.dtype
@@ -182,7 +186,7 @@ class LTXTrainPipelineConfig(TrainPipelineConfig):
         # Trajectory timesteps are σ×1000; ltx_core AdaLN expects σ∈[0,1] and
         # multiplies by timestep_scale_multiplier (1000) internally.
         sigma_unit = timesteps.to(dtype) / float(self.num_train_timesteps)
-        modality = Modality(
+        return Modality(
             enabled=True,
             latent=latents,
             sigma=sigma_unit.reshape(B),
@@ -191,19 +195,6 @@ class LTXTrainPipelineConfig(TrainPipelineConfig):
             context=context.to(dtype),
             context_mask=None,
         )
-        return modality, sigma_unit
-
-    @staticmethod
-    def _noise_pred(latents: torch.Tensor, velocity: torch.Tensor, sigma_unit: torch.Tensor) -> torch.Tensor:
-        from ltx_core.utils import to_denoised
-
-        dtype = latents.dtype
-        B = latents.shape[0]
-        # Keep the original fp32 denoised reconstruction path: although this is
-        # algebraically an identity for T2V, strict e2e metrics depend on its rounding.
-        x0_pred = to_denoised(latents, velocity, sigma_unit.view(B, 1).to(dtype).unsqueeze(-1)).float()
-        sigma_safe = torch.clamp(sigma_unit, min=1e-8).view(B, 1, 1)
-        return ((latents.float() - x0_pred) / sigma_safe).to(dtype)
 
     def cfg_combine(
         self,
@@ -216,3 +207,17 @@ class LTXTrainPipelineConfig(TrainPipelineConfig):
         if scale == 1.0:
             return noise_pred_pos
         return noise_pred_neg + scale * (noise_pred_pos - noise_pred_neg)
+
+
+def _velocity_to_noise_pred(modality, velocity: torch.Tensor) -> torch.Tensor:
+    """The noise prediction of one stream from the velocity the model returned for its ``modality``."""
+    from ltx_core.utils import to_denoised
+
+    latents, sigma_unit = modality.latent, modality.sigma
+    dtype = latents.dtype
+    B = latents.shape[0]
+    # Keep the original fp32 denoised reconstruction path: although this is
+    # algebraically an identity for T2V, strict e2e metrics depend on its rounding.
+    x0_pred = to_denoised(latents, velocity, sigma_unit.view(B, 1).to(dtype).unsqueeze(-1)).float()
+    sigma_safe = torch.clamp(sigma_unit, min=1e-8).view(B, 1, 1)
+    return ((latents.float() - x0_pred) / sigma_safe).to(dtype)
