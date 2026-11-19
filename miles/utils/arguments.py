@@ -2412,6 +2412,12 @@ def miles_validate_args(args):
                 f"implemented: {sorted(sde_step_backends)}; pass --sde-step-backend-path for a custom one"
             )
         args.sde_step_backend_path = sde_step_backends[args.diffusion_sde_type]
+    # Each stream of the run rolls out and is scored with its own settings; the checks above ran on the shared value.
+    streams = (args.primary_stream, *args.rollout_extra_streams)
+    args.diffusion_sde_type = dict.fromkeys(streams, args.diffusion_sde_type)
+    args.diffusion_noise_level = dict.fromkeys(streams, args.diffusion_noise_level)
+    args.diffusion_log_prob_no_const = dict.fromkeys(streams, args.diffusion_log_prob_no_const)
+    args.sde_step_backend_path = dict.fromkeys(streams, args.sde_step_backend_path)
 
     if args.num_steps_per_rollout is not None:
         samples_per_rollout = args.rollout_batch_size * args.n_samples_per_prompt
