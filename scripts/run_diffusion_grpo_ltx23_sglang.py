@@ -42,6 +42,9 @@ def prepare(args: ScriptArgs) -> str:
 
 def execute(args: ScriptArgs, data_dir: str) -> None:
     run_name = f"diffusion_grpo_ltx23{'_av' if args.audio else ''}_pickscore_{U.create_run_id()}"
+    stream_args = (
+        "--rollout-patch-group ltx_av --rollout-extra-streams audio " if args.audio else "--rollout-patch-group ltx "
+    )
 
     ckpt_args = (
         f"--hf-checkpoint {MODEL} --diffusion-task t2v --save {args.output_dir}/{run_name}/ckpt --save-interval 50 "
@@ -58,7 +61,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         "--rollout-microgroup-size 1 "
         "--train-dp-split-mode stride "
         "--diffusion-train-iter-order sample_major "
-        f"--rollout-patch-group {'ltx_av --rollout-extra-streams audio' if args.audio else 'ltx'} "
+        f"{stream_args}"
         "--diffusion-num-steps 24 "
         "--diffusion-output-num-frames 57 "
         "--diffusion-fps 24 "
