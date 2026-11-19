@@ -1,6 +1,6 @@
 ---
 title: LTX-2
-description: Video GRPO on LTX-2.3 — native model package, CPS-SDE, unguided forward.
+description: Video and audio-video GRPO on LTX-2.3 — native model package, CPS-SDE, unguided forward.
 ---
 ## 1. Model introduction
 
@@ -44,8 +44,8 @@ Registered in `miles/backends/fsdp_utils/configs/ltx.py`:
 | Precision | bf16 end to end (master, reduce, forward, engine); the trainer runs math-SDPA (`--fsdp-attention-backend sdpa_math`), the engine `torch_sdpa`, where LTX lets PyTorch pick its fused kernels (cuDNN first) | Math-SDPA keeps the training forward deterministic; the e2e standards are recorded with this pairing |
 | SDE | CPS kernel | Each train pair carries the σ the engine stepped with, so no scheduler lookup; log-prob is `−(x − μ)²`, without the Gaussian constants or the 1/(2σ²) scale |
 | LoRA targets | Attention + FFN: `to_q`, `to_k`, `to_v`, `to_out.0`, `net.0.proj`, `net.2` | |
-| Rollout patches | `--rollout-patch-group ltx`: `patch_ltx2_rollout_cond_kwargs`, `patch_ltx2_disable_av_cross`; with audio, `ltx_av`: `patch_ltx2_rollout_cond_kwargs` only | The engine's AV cross-attention must match the training forward: off for video alone, on for the joint forward. `validate_args` rejects a mismatch |
-| Audio positions | Audio RoPE bounds in seconds, kept in fp32 | The engine rounds only the video coordinates to the hidden dtype; bf16 audio timestamps put the audio prediction 20-40% off |
+| Rollout patches | `--rollout-patch-group ltx`: `patch_ltx2_rollout_cond_kwargs`, `patch_ltx2_disable_av_cross`; with audio, `ltx_av`: `patch_ltx2_rollout_cond_kwargs` only | The engine's AV cross-attention must match the training forward: off for video alone, on for the joint forward. `validate_args` rejects audio without `ltx_av`, and `ltx_av` without audio |
+| Audio positions | Audio RoPE coordinates in seconds, kept in fp32 | The engine rounds only the video coordinates to the hidden dtype; bf16 audio timestamps put the audio prediction about 17% off, against 1.7% in fp32 |
 
 ## 4. Launch
 
@@ -78,12 +78,15 @@ python3 scripts/run_diffusion_grpo_ltx23_sglang.py --audio
 - `--rollout-parser-num-workers 16`: 57-frame trajectory tensors are large enough that one
   deserializer actor starves the engines.
 - With `--audio`, a step's log-prob is the two streams' per-element means weighted by element
-  count: a pair holds 393,216 video and 7,552 audio latent elements, so the audio stream weighs
-  1.9% of the ratio. Both streams share one sigma grid, which the `cps` log-prob (no `1/σ²` scale)
+  count: a pair holds 393,216 video and 7,552 audio latent elements, so the audio stream carries
+  1.9% of the step's log-prob. Both streams share one sigma grid, which the `cps` log-prob (no `1/σ²` scale)
   needs for that weighting to be the joint action's mean. `train/log_prob_mean_abs_diff_visual`
   and `train/log_prob_mean_abs_diff_audio` report each stream's own gap.
 - PickScore scores video frames only, so with `--audio` the audio stream's advantage comes from
   the video's reward.
+- With `--audio`, an engine over several GPUs gives them all to TP: `validate_args` rejects audio
+  rollout under engine sequence parallelism. Only Flow-GRPO trains the audio stream; NFT, DMD2,
+  SFT and `--diffusion-score-centering` do not take `--rollout-extra-streams`.
 
 ## 6. Reference results
 
