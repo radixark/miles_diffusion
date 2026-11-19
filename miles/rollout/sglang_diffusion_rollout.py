@@ -70,6 +70,8 @@ def build_rollout_sampling_params(
         )
         if args.rollout_extra_streams:
             sampling_params["rollout_extra_streams"] = args.rollout_extra_streams
+        if args.rollout_extra_stream_sde_args:
+            sampling_params["rollout_extra_stream_sde_args"] = args.rollout_extra_stream_sde_args
         if args.use_output_store:
             sampling_params["rollout_return_outputs_via_store"] = True
         if args.rm_type == "none" and args.custom_rm_path is None:
@@ -178,6 +180,29 @@ class GenerateState(metaclass=SingletonMeta):
         self.remaining_batch_size += len(samples)
 
 
+def check_extra_stream_sde_args(args: Namespace, samples: list[Sample]) -> None:
+    """Reject a response whose extra stream was not rolled out with the settings the request gave it.
+
+    An engine without per-stream settings ignores the request field and echoes nothing; Flow-GRPO would score the
+    stream with settings the engine never used.
+    """
+    for sample in samples:
+        for stream_name, sde_args in args.rollout_extra_stream_sde_args.items():
+            # A stream the engine did not roll out at all is the converter's error to report.
+            if stream_name not in sample.extra_streams:
+                continue
+            echoed = sample.extra_streams[stream_name].rollout_sde_kernel
+            # An ode stream steps without noise, so the engine may report any noise level for it.
+            compared = [
+                key for key in sde_args if key != "rollout_noise_level" or sde_args["rollout_sde_type"] != "ode"
+            ]
+            if echoed is None or any(echoed.get(key) != sde_args[key] for key in compared):
+                raise ValueError(
+                    f"stream {stream_name!r} was rolled out with {echoed}, not {sde_args} "
+                    f"(sample_index={sample.index}); the engine must apply and echo rollout_extra_stream_sde_args"
+                )
+
+
 async def generate_microgroup(
     args: Namespace, microgroup: list[Sample], sampling_params: dict[str, Any], *, evaluation: bool = False
 ) -> list[Sample]:
@@ -238,6 +263,8 @@ async def generate_microgroup(
     for sample in microgroup:
         sample.parser_max_queue_depth = float(queued)
     st.attach(microgroup)
+    if not evaluation:
+        check_extra_stream_sde_args(args, microgroup)
 
     # Stash the SDE/training step indices on each sample so _train_core can
     # slice the full-length trajectory & rollout_log_probs down to the window.

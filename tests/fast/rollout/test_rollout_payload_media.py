@@ -32,6 +32,7 @@ def _args(**overrides):
         diffusion_debug_mode=False,
         rollout_video_dtype="uint8",
         rollout_extra_streams=[],
+        rollout_extra_stream_sde_args={},
         train_pipeline_config_path=None,
         rm_type="none",
         custom_rm_path=None,

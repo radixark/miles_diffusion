@@ -190,13 +190,13 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--diffusion-guidance-scale-2` | float | – | Wan2.2 low-noise expert; **required** when training it. |
 | `--diffusion-true-cfg-scale` | float | – | |
 | `--diffusion-negative-prompt` | str | – | Unset sends none, so the engine's per-model default applies; flow_grpo recipes pass `" "`. |
-| `--diffusion-noise-level` | float | `0.7` | |
+| `--diffusion-noise-level` | str | `0.7` | One value, or one per latent stream (`visual=0.7,audio=0.3`); an `ode` stream ignores it. |
 | `--diffusion-quality` | enum | `exact` | `exact` / `lossless` / `high`: sglang-diffusion request quality level. `exact` is the bit-identical reference path; the looser levels mount rounding-changing fusions. |
 | `--diffusion-height` / `--diffusion-width` | int | `512` | Rollout output size; SFT target media must already be this size. |
 | `--diffusion-h3-aspect-ratio` | str | `16:9` | MiniMax H3 only: `21:9` / `16:9` / `4:3` / `1:1` / `3:4` / `9:16`. |
 | `--diffusion-h3-duration-seconds` | float | `5.0` | MiniMax H3 only: rollout duration, 4.0–15.0 s. |
 | `--diffusion-audio-flow-shift` | float | `3.0` | MiniMax H3 only: audio flow shift for rollout. |
-| `--diffusion-sde-type` | str | `sde` | `sde` / `cps` / `ode`, checked at startup unless `--sde-step-backend-path` is set. Selects the train-side SDE backend too. |
+| `--diffusion-sde-type` | str | `sde` | `sde` / `cps` / `ode`, checked at startup unless `--sde-step-backend-path` is set. Selects the train-side SDE backend too. One value, or one per latent stream (`visual=cps,audio=ode`); Flow-GRPO does not score an `ode` stream ([SDE Step Backends](../advanced/sde-backend.md)). |
 | `--sde-step-backend-path` | str | – | Custom dynamics. See [SDE backends](#sde-step-backends). |
 | `--diffusion-num-sde-steps` | int | `0` | Read by the step strategy. |
 | `--diffusion-sde-window-range` | `"lo,hi"` | – | For `sde_window`. Defaults to `[0, num_inference_steps)`. |
@@ -433,7 +433,7 @@ not meant for manual runs.
 | `--diffusion-sde-type` | Backend | Dynamics |
 |---|---|---|
 | `sde` | `FlowSdeStepBackend` | Flow-matching SDE over the rollout's recorded sigmas. |
-| `ode` | `FlowSdeStepBackend` | Same class; deterministic rollout (used by NFT). |
+| `ode` | none | Deterministic rollout (NFT, DMD2); Flow-GRPO does not score an `ode` stream. |
 | `cps` | `CpsSdeStepBackend` | CPS kernel over the rollout's recorded sigmas, log-prob without constants. |
 
 `--sde-step-backend-path` overrides the mapping with your own `SdeStepBackend` subclass.

@@ -34,6 +34,7 @@ def _args(**overrides):
         diffusion_debug_mode=False,
         rollout_video_dtype="keep",
         rollout_extra_streams=[],
+        rollout_extra_stream_sde_args={},
         train_pipeline_config_path=None,
         use_output_store=False,
         rm_type="pickscore",
@@ -49,6 +50,29 @@ def test_extra_streams_are_requested_only_for_training_rollouts_that_name_them()
     asked = _args(rollout_extra_streams=["audio"])
     assert build_rollout_sampling_params(asked)["rollout_extra_streams"] == ["audio"]
     assert "rollout_extra_streams" not in build_rollout_sampling_params(asked, evaluation=True)
+
+
+def test_the_primary_streams_settings_are_the_top_level_and_others_are_overrides():
+    """The engine reads the primary stream's settings from the top level; a dict there, or an override sent for a
+    stream that inherits them, breaks the request or every multi-stream run on an engine without overrides."""
+    overrides = {"audio": {"rollout_sde_type": "ode", "rollout_noise_level": 0.7, "rollout_log_prob_no_const": True}}
+    args = _args(
+        diffusion_sde_type={"visual": "cps", "audio": "ode"},
+        diffusion_log_prob_no_const={"visual": True, "audio": True},
+        rollout_extra_streams=["audio"],
+        rollout_extra_stream_sde_args=overrides,
+    )
+
+    params = build_rollout_sampling_params(args)
+
+    assert (params["rollout_sde_type"], params["rollout_noise_level"], params["rollout_log_prob_no_const"]) == (
+        "cps",
+        0.7,
+        True,
+    )
+    assert params["rollout_extra_stream_sde_args"] == overrides
+    assert "rollout_extra_stream_sde_args" not in build_rollout_sampling_params(args, evaluation=True)
+    assert "rollout_extra_stream_sde_args" not in build_rollout_sampling_params(_args(rollout_extra_streams=["audio"]))
 
 
 def test_unset_negative_prompt_is_omitted():

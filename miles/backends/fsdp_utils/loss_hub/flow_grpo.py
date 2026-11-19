@@ -157,15 +157,21 @@ def flow_grpo_loss_formula(
 ) -> torch.Tensor | None:
     """SDE log-prob + PPO-clip (+ optional KL vs ``ref_pred``). Actor owns DiT forward.
 
-    One step's action is every stream's next latent; given the current latents the streams' transitions are
-    independent, so the action's per-element mean log-prob is the streams' means weighted by element count.
+    One step's action is every scored stream's next latent; given the current latents the streams' transitions are
+    independent, so the action's per-element mean log-prob is the streams' means weighted by element count. An ode
+    stream steps without noise: it conditions the forward and carries no log-prob, so it is not scored.
     """
     args = ctx.args
     clip_range = args.diffusion_clip_range
     kl_beta = float(args.diffusion_kl_beta)
 
     next_latents = prepared.extras["next_latents"]
-    stream_weights = _stream_weights(prepared.latents)
+    scored_latents = {
+        stream_name: latents
+        for stream_name, latents in prepared.latents.items()
+        if stream_name in args.sde_step_backend_path
+    }
+    stream_weights = _stream_weights(scored_latents)
 
     def sde_step_logprob_by_stream(pred: dict[str, torch.Tensor]) -> dict[str, SdeStepOutput]:
         return {
@@ -178,7 +184,7 @@ def flow_grpo_loss_formula(
                 next_sigmas=prepared.extras["next_sigmas"][stream_name],
                 sigma_max=prepared.extras["sigma_max"][stream_name],
             )
-            for stream_name, latents in prepared.latents.items()
+            for stream_name, latents in scored_latents.items()
         }
 
     step_outs = sde_step_logprob_by_stream(new_pred)
@@ -266,8 +272,10 @@ def flow_grpo_loss_formula(
             )
 
         # Every stream reports under the same keys: a mean over the streams' pairs or elements, a max over all.
-        for stream_name, step_out in step_outs.items():
-            if len(step_outs) > 1:
+        multi_stream = len(prepared.latents) > 1
+        for stream_name in prepared.latents:
+            step_out = step_outs.get(stream_name)
+            if step_out is not None and multi_stream:
                 stream_log_prob_abs_diff = torch.abs(step_out.log_prob - log_prob_old_by_stream[stream_name])
                 metrics.emit_mean(
                     f"log_prob_mean_abs_diff_{stream_name}", total=stream_log_prob_abs_diff.sum(), count=bsz
@@ -286,7 +294,7 @@ def flow_grpo_loss_formula(
                     new_pred[stream_name].float(),
                     rollout_model_output.to(device=ctx.device, dtype=torch.float32),
                     component=prepared.component_name if len(ctx.models) > 1 else None,
-                    stream=stream_name if len(step_outs) > 1 else None,
+                    stream=stream_name if multi_stream else None,
                 )
 
     return loss_sum

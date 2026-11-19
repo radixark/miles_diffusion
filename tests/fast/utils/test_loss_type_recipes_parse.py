@@ -6,6 +6,8 @@
     dmd2          --teacher-load, ODE rollout stopped at a random step; the critic group's and the actor's hooks
                   come from the loss hub by role, so the trainer args carry no hook path
 
+Per-stream SDE settings: one value for every stream, or one for each stream of the run.
+
 --rollout-extra-streams on top of a recipe:
 
     a stream the model trains, under policy_loss or custom_loss        --> accepted
@@ -109,6 +111,54 @@ def test_every_stream_of_the_run_gets_the_sde_settings(parse):
     assert args.diffusion_log_prob_no_const == {"main": False, "echo": False}
     backend = "miles.backends.fsdp_utils.sde_step_backend.FlowSdeStepBackend"
     assert args.sde_step_backend_path == {"main": backend, "echo": backend}
+    # The echo stream inherits the primary's settings, so the request sends it none of its own.
+    assert args.rollout_extra_stream_sde_args == {}
+
+
+def test_an_extra_stream_differing_only_in_noise_level_is_sent_its_own(parse):
+    """Comparing only the dynamics would send no override: the engine would roll the stream out at the primary's noise
+    level while the loss scores it at its own, and with no override nothing checks the echo."""
+    args = parse(
+        ARGV_BY_LOSS_TYPE["policy_loss"] + " --rollout-extra-streams echo --diffusion-noise-level main=0.7,echo=0.3"
+    )
+    assert args.rollout_extra_stream_sde_args == {
+        "echo": {"rollout_sde_type": "sde", "rollout_noise_level": 0.3, "rollout_log_prob_no_const": False}
+    }
+
+
+def test_the_sde_defaults_hold_for_every_stream(parse):
+    """The defaults are strings the per-stream parsers turn into values; a changed default moves every recipe."""
+    args = parse(ARGV_BY_LOSS_TYPE["policy_loss"].replace("--diffusion-sde-type sde", ""))
+    assert args.diffusion_sde_type == {"main": "sde"}
+    assert args.diffusion_noise_level == {"main": 0.7}
+
+
+def test_each_stream_takes_its_own_sde_settings(parse):
+    """The request must carry the extra stream's own kernel, and an ode stream gets no backend to score it with."""
+    args = parse(
+        ARGV_BY_LOSS_TYPE["policy_loss"]
+        + " --rollout-extra-streams echo --diffusion-sde-type main=sde,echo=ode --diffusion-noise-level main=0.7,echo=0.2"
+    )
+
+    assert args.diffusion_sde_type == {"main": "sde", "echo": "ode"}
+    assert args.diffusion_log_prob_no_const == {"main": False, "echo": True}
+    assert args.sde_step_backend_path == {"main": "miles.backends.fsdp_utils.sde_step_backend.FlowSdeStepBackend"}
+    assert args.rollout_extra_stream_sde_args == {
+        "echo": {"rollout_sde_type": "ode", "rollout_noise_level": 0.2, "rollout_log_prob_no_const": True}
+    }
+
+
+@pytest.mark.parametrize(
+    "sde_type",
+    [
+        pytest.param("main=sde", id="a stream left out"),
+        pytest.param("main=sde,echo=sde,other=sde", id="an unknown stream"),
+    ],
+)
+def test_per_stream_sde_settings_must_name_every_stream(parse, sde_type):
+    """Filling a missing stream from a default would hide a typo in a stream name."""
+    with pytest.raises(ValueError, match="give one value, or one for each of"):
+        parse(ARGV_BY_LOSS_TYPE["policy_loss"] + f" --rollout-extra-streams echo --diffusion-sde-type {sde_type}")
 
 
 @pytest.mark.parametrize(

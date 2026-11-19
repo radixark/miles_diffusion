@@ -19,6 +19,7 @@ What each test pins:
   extra stream, engine-built  a stream the engine rolled out reaches the sample, tensor by tensor
   stream not rolled out       an entry without rollout data is not a sample stream
   extra stream, stored        an extra stream's markers become StoredTensors of the response's ref
+  echoed settings             an extra stream's echoed rollout settings reach the sample
 """
 
 from tests.ci.ci_register import register_cpu_ci
@@ -273,3 +274,23 @@ def test_an_extra_streams_stored_tensors_belong_to_the_response_ref():
     assert stream.rollout_log_probs == StoredTensor(sample.rollout_store_ref, fields[0])
     assert stream.dit_trajectory.latents == [StoredTensor(sample.rollout_store_ref, fields[1])]
     assert torch.equal(stream.dit_trajectory.timesteps, torch.tensor([1.0, 0.0]))
+
+
+def test_an_extra_streams_echoed_sde_kernel_reach_the_sample():
+    """Dropping the echo would make every per-stream run fail as if the engine had ignored the settings."""
+    settings = {"rollout_sde_type": "ode", "rollout_noise_level": 0.7, "rollout_log_prob_no_const": True}
+    body = {
+        "extra_streams": {
+            "audio": {
+                "generated_output": None,
+                "rollout_log_probs": torch.zeros(3),
+                "rollout_debug_tensors": None,
+                "dit_trajectory": None,
+                "rollout_sde_kernel": settings,
+            }
+        }
+    }
+
+    sample = apply_rollout_image_response(Sample(), body, deserialize_func=lambda value: value)
+
+    assert sample.extra_streams["audio"].rollout_sde_kernel == settings
