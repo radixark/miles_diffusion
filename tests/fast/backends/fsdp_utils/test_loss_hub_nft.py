@@ -78,7 +78,8 @@ class TestNftMath:
                 diffusion_nft_beta=1.0,
                 diffusion_adv_clip_max=5.0,
                 diffusion_nft_adaptive_weight=True,
-                diffusion_kl_beta=kl_beta,
+                diffusion_kl_beta={"visual": kl_beta},
+                primary_stream="visual",
             )
             ctx = SimpleNamespace(args=args, device=torch.device("cpu"))
             return nft_loss_formula(

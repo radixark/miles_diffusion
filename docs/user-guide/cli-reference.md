@@ -107,7 +107,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--advantage-estimator` | `grpo` | Only `grpo` today. |
 | `--diffusion-clip-range` | `1e-4` | PPO ratio clip. |
 | `--diffusion-adv-clip-max` | `5.0` | Advantage clamp. |
-| `--diffusion-kl-beta` | `0.0` | Reference-KL coefficient; `> 0` turns on a reference forward. |
+| `--diffusion-kl-beta` | `0.0` | Reference-KL coefficient, one value or one per stream; any `> 0` turns on a reference forward. |
 | `--globalize-reward-std` | off | Batch-wide std instead of per-group. |
 | `--globalize-reward-mean` | off | Batch-wide mean instead of per-prompt. |
 
@@ -273,8 +273,8 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--diffusion-adv-clip-max` | float | `5.0` | Under `nft` this also sets the advantage-to-`r` slope. |
 | `--diffusion-recompute-old-log-prob` | flag | off | Recompute old log-probs with the trainer forward instead of trusting the rollout's. `policy_loss` only. |
 | `--diffusion-score-centering` | flag | off | Experimental: cancels the train/rollout drift in the PPO gradient with a closed-form centering term ([SDE Step Backend §5](../advanced/sde-backend.md#5-score-centering-experimental)); needs `--diffusion-sde-type sde` and `--diffusion-debug-mode`, not with `--diffusion-recompute-old-log-prob`. |
-| `--diffusion-kl-beta` | float | `0.0` | KL to the `--ref-mode` model; under `nft` adds `kl_beta * mean((v_θ − v_ref)²)` per pair. |
-| `--ref-mode` | enum | – | KL reference: `none` / `lora_base` (actor with adapters disabled) / `ref` (the model from `--ref-load`). Auto: `lora_base` when KL > 0. |
+| `--diffusion-kl-beta` | str | `0.0` | KL to the `--ref-mode` model, one value or one per stream (`visual=0,audio=0.04`); an `ode` stream's KL is its velocity MSE `mean((v_θ − v_ref)²)`; under `nft` it adds `kl_beta` times the same MSE per pair. |
+| `--ref-mode` | enum | – | KL reference: `none` / `lora_base` (actor with adapters disabled) / `ref` (the model from `--ref-load`). Auto: `lora_base` when any stream's KL > 0. |
 | `--ref-load` | str | – | HF pipeline checkpoint of an independent frozen reference model. Requires `--ref-mode ref`. |
 | `--ref-lora-adapter-path` | str+ | – | PEFT adapter directories applied to `--ref-load`, one per `--update-weight-target-module` entry, in order. |
 | `--ref-cpu-offload` | flag | off | Keep the reference shards in pinned CPU memory between forwards (FSDP `CPUOffloadPolicy`). |
