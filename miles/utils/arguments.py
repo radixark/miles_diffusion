@@ -2152,6 +2152,7 @@ def miles_validate_args(args):
         args.train_pipeline_config_path = f"{cfg_cls.__module__}.{cfg_cls.__qualname__}"
     if args.model_backend_path is None:
         args.model_backend_path = cfg_cls.model_backend_path
+    args.primary_stream = cfg_cls.primary_stream
     if not cfg_cls.supports_cfg_training and (
         args.diffusion_guidance_scale != 1.0 or args.diffusion_negative_prompt is not None
     ):

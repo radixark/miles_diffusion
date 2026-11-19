@@ -56,6 +56,7 @@ def parse(monkeypatch: pytest.MonkeyPatch):
 
     class _FakePipelineConfig:
         model_backend_path = "external.Backend"
+        primary_stream = "main"
         supports_cfg_training = True
         tasks = ("t2i", "t2v")
 
@@ -79,6 +80,11 @@ def parse(monkeypatch: pytest.MonkeyPatch):
 def test_each_loss_type_recipe_parses_and_validates(parse, loss_type):
     args = parse(ARGV_BY_LOSS_TYPE[loss_type])
     assert args.loss_type == loss_type
+
+
+def test_the_models_primary_stream_is_resolved_into_args(parse):
+    """The rollout side keys train pairs by ``args.primary_stream``; left unresolved, it fails on the first GPU rollout."""
+    assert parse(ARGV_BY_LOSS_TYPE["policy_loss"]).primary_stream == "main"
 
 
 def test_dmd2_trainer_groups_get_their_hooks_by_role(parse):

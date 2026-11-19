@@ -36,6 +36,8 @@ import torch
 from miles.ray.data_conversion_hub.flow_grpo import expand_samples_to_train_pairs
 from miles.utils.train_data_utils import TrainDataDPSplitter
 
+_ARGS = SimpleNamespace(primary_stream="visual")
+
 
 # --------------------------------------------------------------------------------------
 # L1 — DP split parity: stride reproduces legacy range(rank, N, dp_size)
@@ -136,7 +138,7 @@ def test_l2_converter_pairs_match_direct_indexing():
     rewards = [0.1, 0.2, 0.3]
     raw_rewards = [0.4, 0.5, 0.6]
 
-    out = expand_samples_to_train_pairs(None, samples, rewards, raw_rewards)
+    out = expand_samples_to_train_pairs(_ARGS, samples, rewards, raw_rewards)
     pairs = out["train_data"]
 
     # count + sample-major ordering; no batch-level grid rides along
@@ -159,16 +161,16 @@ def test_l2_converter_pairs_match_direct_indexing():
             assert p["advantage"] == float(rewards[si])
             assert p["raw_reward"] == float(raw_rewards[si])
             assert p["denoising_env"] is s.denoising_env
-            # per-timestep fields == direct sde-indexed trajectory rows
-            assert torch.equal(p["latent"], lat[idx])
-            assert torch.equal(p["next_latent"], nxt[idx])
-            assert torch.equal(p["timestep"], ts[idx])
-            assert torch.equal(p["sigma"], trajectory_sigmas[idx])
-            assert torch.equal(p["next_sigma"], trajectory_sigmas[idx + 1])
-            assert torch.equal(p["sigma_max"], trajectory_sigmas[1])
-            assert torch.equal(p["log_prob_old"], rlp[idx])
+            # per-timestep fields, under their stream name == direct sde-indexed trajectory rows
+            assert torch.equal(p["latent"]["visual"], lat[idx])
+            assert torch.equal(p["next_latent"]["visual"], nxt[idx])
+            assert torch.equal(p["timestep"]["visual"], ts[idx])
+            assert torch.equal(p["sigma"]["visual"], trajectory_sigmas[idx])
+            assert torch.equal(p["next_sigma"]["visual"], trajectory_sigmas[idx + 1])
+            assert torch.equal(p["sigma_max"]["visual"], trajectory_sigmas[1])
+            assert torch.equal(p["log_prob_old"]["visual"], rlp[idx])
             # debug tensors sliced to the same sde index
-            d = p["rollout_debug_tensors"]
+            d = p["rollout_debug_tensors"]["visual"]
             assert torch.equal(d["rollout_step_model_output"], s.rollout_debug_tensors.rollout_model_outputs[idx])
             assert torch.equal(d["rollout_step_variance_noise"], s.rollout_debug_tensors.rollout_variance_noises[idx])
             assert torch.equal(
@@ -182,7 +184,7 @@ def test_l2_converter_requires_sigmas():
     T, sde = 4, [0, 2]
     samples = [_mk_sample(i, T, sde, with_sigmas=False, with_debug=False) for i in range(2)]
     try:
-        expand_samples_to_train_pairs(None, samples, [1.0, 2.0], [1.0, 2.0])
+        expand_samples_to_train_pairs(_ARGS, samples, [1.0, 2.0], [1.0, 2.0])
     except ValueError:
         pass
     else:

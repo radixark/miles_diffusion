@@ -13,7 +13,10 @@ def expand_samples_to_train_pairs(
     rewards: list[float],
     raw_rewards: list[float],
 ) -> dict[str, Any]:
-    """Flat train pairs in sample-major order (all pairs for sample 0, then sample 1, ...)."""
+    """Flat train pairs in sample-major order (all pairs for sample 0, then sample 1, ...).
+
+    A pair's per-step fields are keyed by latent stream name, like an SFT pair's ``latent``.
+    """
     train_data: list[dict[str, Any]] = []
     for sample, rew, raw_r in zip(samples, rewards, raw_rewards, strict=True):
         traj, denoising_env, rollout_log_probs = _sample_required_inputs(sample)
@@ -39,12 +42,14 @@ def expand_samples_to_train_pairs(
             )
 
         for t in range(sample_t_steps):
+            per_step = {key: _to_cpu(tensor[t]) for key, tensor in per_timestep_features.items()}
+            if pair_debug_steps is not None:
+                per_step["rollout_debug_tensors"] = pair_debug_steps[t]
+            # These fields are the stream at the top level of the rollout response.
             pair: dict[str, Any] = {
                 **per_sample_features,
-                **{key: _to_cpu(tensor[t]) for key, tensor in per_timestep_features.items()},
+                **{key: {args.primary_stream: value} for key, value in per_step.items()},
             }
-            if pair_debug_steps is not None:
-                pair["rollout_debug_tensors"] = pair_debug_steps[t]
             train_data.append(pair)
 
     if not train_data:

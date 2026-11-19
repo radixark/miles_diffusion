@@ -26,6 +26,8 @@ from miles.backends.fsdp_utils.sde_step_backend import FlowSdeStepBackend
 NOISE_LEVEL = 0.7
 CLIP_RANGE = 0.2
 VIEW = (-1, 1, 1, 1)
+# A name no model gives a stream: the loss must take it from the pair.
+STREAM = "main"
 
 
 class _MetricSink:
@@ -70,22 +72,24 @@ def transition():
     batch = [
         {
             "rollout_debug_tensors": {
-                "rollout_step_prev_sample_mean": rollout_prev_mean[i].clone(),
-                "rollout_step_noise_std_dev": noise_std[i].flatten().clone(),
+                STREAM: {
+                    "rollout_step_prev_sample_mean": rollout_prev_mean[i].clone(),
+                    "rollout_step_noise_std_dev": noise_std[i].flatten().clone(),
+                }
             }
         }
         for i in range(4)
     ]
     prepared = SimpleNamespace(
-        latents={"visual": latent},
+        latents={STREAM: latent},
         advantage=torch.tensor([1.0, 2.0, -1.0, -2.0]),
         component_name="dit",
         extras={
-            "next_latents": next_latents,
-            "sigmas": sigmas,
-            "next_sigmas": next_sigmas,
-            "sigma_max": sigma_max,
-            "log_prob_old": backend.log_prob(next_latents, rollout_prev_mean, noise_std).detach(),
+            "next_latents": {STREAM: next_latents},
+            "sigmas": {STREAM: sigmas},
+            "next_sigmas": {STREAM: next_sigmas},
+            "sigma_max": {STREAM: sigma_max},
+            "log_prob_old": {STREAM: backend.log_prob(next_latents, rollout_prev_mean, noise_std).detach()},
         },
     )
     return SimpleNamespace(
@@ -103,7 +107,7 @@ def _loss(t, new_pred):
         t.ctx,
         t.batch,
         t.prepared,
-        new_pred={"visual": new_pred},
+        new_pred={STREAM: new_pred},
         old_pred=None,
         ref_pred=None,
         metrics=_MetricSink(),
@@ -130,15 +134,15 @@ def test_gradient_matches_the_closed_form_oracle_and_the_loss_value_is_unchanged
     oracle_pred = t.new_pred.detach().clone().requires_grad_(True)
     prev_mean, _, _ = t.ctx.sde_backend.prev_sample_mean_and_std(
         oracle_pred,
-        t.prepared.latents["visual"],
-        t.prepared.extras["sigmas"].view(VIEW),
-        t.prepared.extras["next_sigmas"].view(VIEW),
-        sigma_max=t.prepared.extras["sigma_max"].view(VIEW),
+        t.prepared.latents[STREAM],
+        t.prepared.extras["sigmas"][STREAM].view(VIEW),
+        t.prepared.extras["next_sigmas"][STREAM].view(VIEW),
+        sigma_max=t.prepared.extras["sigma_max"][STREAM].view(VIEW),
         noise_level=NOISE_LEVEL,
     )
     delta = prev_mean.double() - t.rollout_prev_mean.double()
     variance = t.noise_std.double().square()
-    residual = t.prepared.extras["next_latents"].double() - t.rollout_prev_mean.double()
+    residual = t.prepared.extras["next_latents"][STREAM].double() - t.rollout_prev_mean.double()
     alpha = 1 / prev_mean[0].numel()
     ratio = ((delta * residual - 0.5 * delta.square()) / variance).flatten(1).mean(1).exp()
     kappa = (delta.square() / variance).flatten(1).sum(1)
@@ -177,20 +181,20 @@ def test_identical_means_leave_the_gradient_bit_identical(transition):
 
 def test_rollouts_without_debug_tensors_are_rejected(transition):
     """Without the check, a missing debug field would surface as an AttributeError on None."""
-    del transition.batch[0]["rollout_debug_tensors"]["rollout_step_prev_sample_mean"]
+    del transition.batch[0]["rollout_debug_tensors"][STREAM]["rollout_step_prev_sample_mean"]
     with pytest.raises(ValueError, match="these rollouts carry none"):
         _loss(transition, transition.new_pred)
 
 
 def test_differing_transition_stds_are_rejected(transition):
     """A rollout std off by 10% breaks the equal-covariance closed form; it must raise, not center silently."""
-    transition.batch[0]["rollout_debug_tensors"]["rollout_step_noise_std_dev"] *= 1.1
+    transition.batch[0]["rollout_debug_tensors"][STREAM]["rollout_step_noise_std_dev"] *= 1.1
     with pytest.raises(ValueError, match="share one transition covariance"):
         _loss(transition, transition.new_pred)
 
 
 def test_log_prob_old_that_is_not_the_rollout_density_is_rejected(transition):
     """A log_prob_old shifted by 0.01 (no-const or misaligned log-probs) fails the density rebuild check."""
-    transition.prepared.extras["log_prob_old"] = transition.prepared.extras["log_prob_old"] + 0.01
+    transition.prepared.extras["log_prob_old"][STREAM] = transition.prepared.extras["log_prob_old"][STREAM] + 0.01
     with pytest.raises(ValueError, match="not the Gaussian density"):
         _loss(transition, transition.new_pred)

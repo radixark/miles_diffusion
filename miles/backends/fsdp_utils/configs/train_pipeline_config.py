@@ -87,6 +87,8 @@ class TrainPipelineConfig(abc.ABC):
     model_family: str | None = None
     # --diffusion-task values this config trains: SGLang ModelTaskType terms (t2i, t2v) or the family's request task.
     tasks: tuple[str, ...] = ()
+    # The name this family's forward gives the latent stream at the top level of a rollout response.
+    primary_stream: str = "visual"
     lora_target_modules: list[str] = ["to_q", "to_k", "to_v", "to_out.0"]
     optimizer_state_allowed_missing: list[str] = []
     # Case-insensitive substrings matched against the checkpoint name (--hf-checkpoint).
