@@ -43,7 +43,7 @@ WANDB_PROJECT = "miles-diffusion-grpo"
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
-    num_rollout: int = 200
+    num_rollout: int = 600
     rollout_batch_size: int = 8
     n_samples_per_prompt: int = 16
     num_steps_per_rollout: int = 2
