@@ -213,6 +213,17 @@ class TestJointForward:
             expected = ((latents[stream_name].float() - x0.float()) / sigma.clamp(min=1e-8)).to(torch.bfloat16)
             assert torch.equal(noise_pred[stream_name], expected), stream_name
 
+    # Catches a prediction cut off from the graph (a detached velocity): the loss would not train that stream.
+    def test_each_prediction_carries_the_gradient(self):
+        config, latents, timesteps, cond = _config(), *_inputs(with_audio=True)
+        latents = {name: latent.clone().requires_grad_() for name, latent in latents.items()}
+
+        noise_pred = _compute_noise_pred(config, _RecordingModel(), latents, timesteps, cond)
+
+        for stream_name in ("visual", "audio"):
+            (grad,) = torch.autograd.grad(noise_pred[stream_name].float().sum(), latents[stream_name])
+            assert grad.abs().sum() > 0, stream_name
+
     def test_audio_without_audio_context_raises(self):
         config, latents, timesteps, cond = _config(), *_inputs(with_audio=True)
         del cond["audio_context"]
@@ -272,6 +283,7 @@ class TestValidateArgs:
             (1, None, None, False, True),
             (2, 2, None, False, True),  # md's default for a 2-GPU engine: all GPUs to TP
             (2, 2, 1, False, True),
+            (2, None, 1, False, True),  # an explicit SP degree wins over the GPUs TP leaves
             (2, 1, None, False, False),  # TP 1 leaves the second GPU to SP
             (2, None, 2, False, False),
             (2, 1, None, True, True),  # CFG parallelism takes the second GPU
