@@ -20,6 +20,10 @@ What the recipe chooses, each from a measurement (docs/models/h3/h3-image.md):
   * No gradient checkpointing: one pair per forward peaks at 16 GB on the trainer, and the
     recomputed forward was 30% of the train time.
 
+The reward is OCR alone and nothing holds the policy near the base model (kl 0). Past about 200
+rollouts the reward keeps rising because the scene is erased, until only the text is left
+(docs/models/h3/h3-image.md, reference results): the recipe stops there.
+
 Usage:
     python3 scripts/run_diffusion_grpo_h3_image_ocr_8gpu.py
 
@@ -43,7 +47,7 @@ WANDB_PROJECT = "miles-diffusion-grpo"
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
-    num_rollout: int = 600
+    num_rollout: int = 200
     rollout_batch_size: int = 8
     n_samples_per_prompt: int = 16
     num_steps_per_rollout: int = 2
