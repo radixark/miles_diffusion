@@ -63,7 +63,7 @@ class DiTTrajectory:
 
 @dataclass
 class RolloutStreamData:
-    """One extra latent stream's rollout data, shaped like the top-level rollout fields of a response."""
+    """One latent stream's rollout data; the primary stream's is the same three fields at a response's top level."""
 
     rollout_log_probs: torch.Tensor | None = None
     rollout_debug_tensors: RolloutDebugTensors | None = None
@@ -100,7 +100,8 @@ class Sample:
     rollout_debug_tensors: RolloutDebugTensors | None = None
     denoising_env: DenoisingEnv | None = None
     dit_trajectory: DiTTrajectory | None = None
-    # The other latent streams the engine rolled out, by name; the four fields above are the primary stream's.
+    # The other latent streams the engine rolled out, by name; rollout_log_probs, rollout_debug_tensors and
+    # dit_trajectory above are the primary stream's.
     extra_streams: dict[str, RolloutStreamData] = field(default_factory=dict)
     # The output store object holding this sample's stored tensors (a radix_transfer_plugins StoreRef).
     rollout_store_ref: Any | None = None

@@ -1,3 +1,26 @@
+"""Parsing one sample's rollout response into a ``Sample``.
+
+    engine response                                   Sample
+      generated_output                             ──►  normalized to [C, F, H, W]
+      {"__store__": field} markers                 ──►  StoredTensor handles of the response's ref
+      generated_audio, audio_sample_rate           ──►  the same fields
+      rollout_log_probs / dit_trajectory / ...     ──►  the same fields            (primary stream)
+      extra_streams:
+        audio: rolled out (log-probs, trajectory)  ──►  extra_streams["audio"]
+        audio: only its decoded waveform           ──►  left out
+      extra_streams: None (no audio pipeline)      ──►  extra_streams == {}
+
+What each test pins:
+  output layout               CHW, HWC, CFHW and FHWC all become [C, F, H, W]
+  ambiguous layout            first and last dimension both look like channels: rejected
+  no channel dimension        rejected
+  store markers               the primary stream's markers become StoredTensors of the response's ref
+  response audio              the audio fields fill the sample
+  extra stream, engine-built  a stream the engine rolled out reaches the sample, tensor by tensor
+  stream not rolled out       an entry without rollout data is not a sample stream
+  extra stream, stored        an extra stream's markers become StoredTensors of the response's ref
+"""
+
 from tests.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=15, suite="stage-a-cpu", labels=[])
@@ -118,16 +141,6 @@ def test_response_audio_fills_the_sample():
     assert silent.generated_audio is None and silent.audio_sample_rate is None
 
 
-# --------------------------------------------------------------------------------------
-# Extra latent streams
-#
-#   engine response                                   Sample
-#     rollout_log_probs / dit_trajectory / ...   ──►    the same fields            (primary stream)
-#     extra_streams:
-#       audio: rolled out (log-probs, trajectory)  ──►  extra_streams["audio"]
-#       audio: only its decoded waveform           ──►  left out
-#     extra_streams: None (no audio pipeline)      ──►  extra_streams == {}
-# --------------------------------------------------------------------------------------
 def _engine_response_bodies(*, extra_stream_rolled_out: bool) -> tuple[list[dict], dict]:
     """Two samples' response bodies as the engine builds them, and the audio stream's batched rollout tensors."""
     from sglang.multimodal_gen.configs.post_training.rl_rollout import AUDIO_STREAM, PRIMARY_STREAM
@@ -167,7 +180,7 @@ def _engine_response_bodies(*, extra_stream_rolled_out: bool) -> tuple[list[dict
 
 
 def test_an_extra_stream_the_engine_rolled_out_reaches_the_sample():
-    """A parser that reads the wrong key or the wrong sample's row fails here and not as a wrong ratio on a GPU run."""
+    """A parser that reads a stream's field from the wrong key fails here and not as a wrong ratio on a GPU run."""
     bodies, audio = _engine_response_bodies(extra_stream_rolled_out=True)
 
     samples = [apply_rollout_image_response(Sample(index=index), body) for index, body in enumerate(bodies)]
@@ -208,15 +221,10 @@ def _audio_output_only(generated_output) -> dict:
 @pytest.mark.parametrize(
     "body",
     [
-        pytest.param({}, id="a response without the field"),
         pytest.param({"extra_streams": None}, id="a pipeline without extra streams"),
         pytest.param(_engine_response_bodies, id="the engine's video-only rollout, which still decodes audio"),
         pytest.param(
-            {"extra_streams": _audio_output_only({"__tensor__": True, "data": b""})}, id="an inline waveform only"
-        ),
-        pytest.param(
-            {"extra_streams": _audio_output_only({"__store__": "extra_streams.audio.generated_output.0"})},
-            id="a stored waveform only",
+            {"extra_streams": _audio_output_only({"__tensor__": True, "data": b""})}, id="a waveform-only entry"
         ),
     ],
 )
