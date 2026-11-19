@@ -71,9 +71,18 @@ def sigma_bucket_key(stream_name: str, bucket: int, num_buckets: int) -> str:
 
 
 def new_metric_buffer(
-    group, device: torch.device, components: Collection[str], sigma_buckets: int = 0, num_rollout_steps: int = 0
+    group,
+    device: torch.device,
+    components: Collection[str],
+    sigma_buckets: int = 0,
+    num_rollout_steps: int = 0,
+    streams: Collection[str] = (),
 ) -> MetricBuffer:
-    """Buffer for one optimizer step, reducing over the DP group."""
+    """Buffer for one optimizer step, reducing over the DP group.
+
+    A run with several DiT ``components``, or with several rollout ``streams``, also logs each one's own
+    train-vs-rollout diffs.
+    """
     schema = dict(SCHEMA)
     for key, reduce in STEP_SCHEMA.items():
         for step_index in range(num_rollout_steps):
@@ -83,9 +92,9 @@ def new_metric_buffer(
     for stream_name in ("visual", "audio"):
         for bucket in range(sigma_buckets):
             schema[sigma_bucket_key(stream_name, bucket, sigma_buckets)] = MetricReduce.MEAN
-    for component in components if len(components) > 1 else ():
-        schema[f"log_prob_mean_abs_diff_{component}"] = MetricReduce.MEAN
-        schema[f"model_output_mean_abs_diff_{component}"] = MetricReduce.MEAN
+    for suffix in (*(components if len(components) > 1 else ()), *(streams if len(streams) > 1 else ())):
+        schema[f"log_prob_mean_abs_diff_{suffix}"] = MetricReduce.MEAN
+        schema[f"model_output_mean_abs_diff_{suffix}"] = MetricReduce.MEAN
     return MetricBuffer(group=group, device=device, schema=schema)
 
 
@@ -113,8 +122,9 @@ def record_rollout_train_abs_diff(
     train: torch.Tensor,
     rollout: torch.Tensor,
     component: str | None = None,
+    stream: str | None = None,
 ) -> None:
-    """Record the train-vs-rollout deviation, also split by `component` when given."""
+    """Record the train-vs-rollout deviation, also split by `component` and by `stream` when given."""
     bsz = train.shape[0]
     reference = rollout.reshape(bsz, -1).float()
     diff = (train.reshape(bsz, -1).float() - reference).abs()
@@ -122,5 +132,6 @@ def record_rollout_train_abs_diff(
     metrics.emit_max(f"{prefix}_max_abs_diff", worst)
     metrics.emit_mean(f"{prefix}_mean_abs_diff", total=total, count=count)
     metrics.emit_max(f"{prefix}_rel_max", worst / (reference.abs().max() + 1e-30))
-    if component is not None:
-        metrics.emit_mean(f"{prefix}_mean_abs_diff_{component}", total=total, count=count)
+    for suffix in (component, stream):
+        if suffix is not None:
+            metrics.emit_mean(f"{prefix}_mean_abs_diff_{suffix}", total=total, count=count)
