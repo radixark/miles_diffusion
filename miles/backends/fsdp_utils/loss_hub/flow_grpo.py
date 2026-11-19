@@ -268,6 +268,12 @@ def flow_grpo_loss_formula(
 
         # Every stream reports under the same keys: a mean over the streams' pairs or elements, a max over all.
         for stream_name, step_out in step_outs.items():
+            if len(step_outs) > 1:
+                stream_log_prob_abs_diff = torch.abs(step_out.log_prob - log_prob_old_by_stream[stream_name])
+                metrics.emit_mean(
+                    f"log_prob_mean_abs_diff_{stream_name}", total=stream_log_prob_abs_diff.sum(), count=bsz
+                )
+
             if stream_name in rollout_prev_means:
                 record_prev_mean_diff_over_noise_std(
                     metrics, rollout_prev_means[stream_name], step_out.prev_mean, step_out.noise_std
@@ -281,6 +287,7 @@ def flow_grpo_loss_formula(
                     new_pred[stream_name].float(),
                     rollout_model_output.to(device=ctx.device, dtype=torch.float32),
                     component=prepared.component_name if len(ctx.models) > 1 else None,
+                    stream=stream_name if len(step_outs) > 1 else None,
                 )
 
     return loss_sum
