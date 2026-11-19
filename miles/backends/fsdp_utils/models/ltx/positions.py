@@ -1,7 +1,7 @@
-"""LTX-2 video token positions consumed by the model's RoPE.
+"""LTX-2 video and audio token positions consumed by the model's RoPE.
 
-The returned tensor contains spatiotemporal patch coordinates, not positional
-embeddings. LTX Core turns these coordinates into RoPE embeddings internally.
+The returned tensors contain patch coordinates, not positional embeddings.
+LTX Core turns these coordinates into RoPE embeddings internally.
 """
 
 from __future__ import annotations
@@ -14,6 +14,9 @@ _LTX_PATCH_SIZE = 1
 _LTX_PATCH_SIZE_T = 1
 _LTX_SCALE_FACTORS = (8, 32, 32)
 _LTX_CAUSAL_OFFSET = 1
+_LTX_AUDIO_SAMPLE_RATE = 16000
+_LTX_AUDIO_HOP_LENGTH = 160
+_LTX_AUDIO_LATENT_DOWNSAMPLE = 4
 
 
 def _latent_grid_shape(
@@ -93,3 +96,22 @@ def prepare_video_positions(
     pixel_coords[:, 0, ...] = (pixel_coords[:, 0, ...] + _LTX_CAUSAL_OFFSET - _LTX_SCALE_FACTORS[0]).clamp(min=0)
     pixel_coords[:, 0, ...] = pixel_coords[:, 0, ...] / float(fps)
     return pixel_coords.to(dtype)
+
+
+def prepare_audio_positions(
+    *,
+    batch_size: int,
+    num_frames: int,
+    device: torch.device,
+) -> torch.Tensor:
+    """Return LTX audio patch bounds in seconds with shape ``[B, 1, T, 2]``, in fp32.
+
+    The engine keeps audio coordinates in fp32 (it rounds only the video ones to the hidden dtype); bf16
+    timestamps already put the audio prediction 20-40% off.
+    """
+    latent_frames = torch.arange(num_frames + 1, dtype=torch.float32, device=device)
+    mel_frames = latent_frames * _LTX_AUDIO_LATENT_DOWNSAMPLE
+    mel_frames = (mel_frames + _LTX_CAUSAL_OFFSET - _LTX_AUDIO_LATENT_DOWNSAMPLE).clamp(min=0)
+    seconds = mel_frames * _LTX_AUDIO_HOP_LENGTH / _LTX_AUDIO_SAMPLE_RATE
+    bounds = torch.stack([seconds[:-1], seconds[1:]], dim=-1)
+    return bounds.view(1, 1, num_frames, 2).expand(batch_size, -1, -1, -1)

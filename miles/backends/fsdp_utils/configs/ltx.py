@@ -13,17 +13,35 @@ from .train_pipeline_config import TrainPipelineConfig, register_train_pipeline_
 
 @register_train_pipeline_config("ltx")
 class LTXTrainPipelineConfig(TrainPipelineConfig):
-    """LTX-2.3 video GRPO: unguided velocity forward over ltx_core."""
+    """LTX-2.3 GRPO: unguided velocity forward over ltx_core, video alone or video with audio."""
 
     tasks = ("t2v",)
     supports_cfg_training = False
     hf_ckpt_name_patterns = ("ltx",)
     model_backend_path = "miles.backends.fsdp_utils.model_backend.MilesModelBackend"
     model_package = "miles.backends.fsdp_utils.models.ltx"
-    # Audio branch has no optimizer state: we only train the video stream.
+    trainable_extra_streams = ("audio",)
+    # A video-only run gives the audio branch no gradient, so it has no optimizer state.
     optimizer_state_allowed_missing = ["audio"]
     # forward_velocity anchors element-wise math on latents.dtype; rollout runs it bf16, so cast at the boundary.
     input_dtype_policy = {"latents": "default", "cond": "default", "timestep": None}
+
+    @classmethod
+    def validate_args(cls, args: Namespace) -> None:
+        # The engine's audio-video cross-attention must match the forward: off for video alone, on with audio.
+        trains_audio = "audio" in args.rollout_extra_streams
+        if trains_audio and ("ltx_av" not in args.rollout_patch_groups or "ltx" in args.rollout_patch_groups):
+            raise ValueError(
+                "LTX --rollout-extra-streams audio trains the joint audio-video forward; set --rollout-patch-group "
+                f"ltx_av (not ltx), got {args.rollout_patch_groups}"
+            )
+        if not trains_audio and "ltx_av" in args.rollout_patch_groups:
+            raise ValueError(
+                "--rollout-patch-group ltx_av leaves the engine's audio-video cross-attention on, but the forward "
+                "trains video alone; add --rollout-extra-streams audio or use --rollout-patch-group ltx"
+            )
+        if trains_audio and (args.sglang_sp_degree or 1) > 1:
+            raise ValueError("LTX audio rollout needs the audio latents unsharded; leave --sglang-sp-degree at 1")
 
     def configure(self, args: Namespace) -> None:
         self._height = args.diffusion_height
@@ -98,7 +116,7 @@ class LTXTrainPipelineConfig(TrainPipelineConfig):
         guidance_scale: float,
         true_cfg_scale: float | None,
     ) -> dict[str, torch.Tensor]:
-        # LTX trains unguided (supports_cfg_training=False): single velocity pass over the video modality.
+        # LTX trains unguided (supports_cfg_training=False): single velocity pass over video, plus audio if trained.
         latents = latents_input["visual"]
         cond = dict(pos_cond or {})
         if "context" not in cond:
@@ -117,44 +135,70 @@ class LTXTrainPipelineConfig(TrainPipelineConfig):
                 device=latents.device,
                 dtype=latents.dtype,
             )
-        return {"visual": self.forward_velocity(model, latents, timesteps_input["visual"], cond)}
+        return self.forward_velocity(model, latents_input, timesteps_input, cond)
 
     def forward_velocity(
         self,
         model: torch.nn.Module,
-        latents_input: torch.Tensor,
-        timesteps_input: torch.Tensor,
+        latents_input: dict[str, torch.Tensor],
+        timesteps_input: dict[str, torch.Tensor],
         cond: dict,
-    ) -> torch.Tensor:
+    ) -> dict[str, torch.Tensor]:
+        """Noise prediction of the video stream, and of the audio stream when the input carries it."""
+        video_latents = latents_input["visual"]
+        video_modality, video_sigma = self._modality(
+            video_latents, timesteps_input["visual"], cond["positions"].to(video_latents.dtype), cond["context"]
+        )
+        audio_modality = None
+        if "audio" in latents_input:
+            from miles.backends.fsdp_utils.models.ltx.positions import prepare_audio_positions
+
+            audio_latents = latents_input["audio"]
+            audio_positions = prepare_audio_positions(
+                batch_size=audio_latents.shape[0], num_frames=audio_latents.shape[1], device=audio_latents.device
+            )
+            audio_modality, audio_sigma = self._modality(
+                audio_latents, timesteps_input["audio"], audio_positions, cond["audio_context"]
+            )
+        # Compute dtype comes from the trainer's ambient autocast around compute_noise_pred.
+        video_velocity, audio_velocity = model(video=video_modality, audio=audio_modality, perturbations=None)
+
+        noise_pred = {"visual": self._noise_pred(video_latents, video_velocity, video_sigma)}
+        if audio_modality is not None:
+            noise_pred["audio"] = self._noise_pred(audio_latents, audio_velocity, audio_sigma)
+        return noise_pred
+
+    def _modality(self, latents: torch.Tensor, timesteps: torch.Tensor, positions: torch.Tensor, context: torch.Tensor):
+        """One stream's ltx_core ``Modality`` and its sigma in [0, 1]."""
         from ltx_core.model.transformer.modality import Modality
-        from ltx_core.utils import to_denoised
 
-        dtype = latents_input.dtype
-        B = latents_input.shape[0]
-
+        dtype = latents.dtype
+        B = latents.shape[0]
         # Trajectory timesteps are σ×1000; ltx_core AdaLN expects σ∈[0,1] and
         # multiplies by timestep_scale_multiplier (1000) internally.
-        sigma_scaled = timesteps_input.to(latents_input.dtype)
-        sigma_unit = sigma_scaled / float(self.num_train_timesteps)
-        per_token_t = sigma_unit.view(B, 1).to(dtype)
-
-        video_modality = Modality(
+        sigma_unit = timesteps.to(dtype) / float(self.num_train_timesteps)
+        modality = Modality(
             enabled=True,
-            latent=latents_input,
+            latent=latents,
             sigma=sigma_unit.reshape(B),
-            timesteps=per_token_t,
-            positions=cond["positions"].to(dtype),
-            context=cond["context"].to(dtype),
+            timesteps=sigma_unit.view(B, 1).to(dtype),
+            positions=positions,
+            context=context.to(dtype),
             context_mask=None,
         )
-        # Compute dtype comes from the trainer's ambient autocast around compute_noise_pred.
-        velocity, _ = model(video=video_modality, audio=None, perturbations=None)
+        return modality, sigma_unit
 
+    @staticmethod
+    def _noise_pred(latents: torch.Tensor, velocity: torch.Tensor, sigma_unit: torch.Tensor) -> torch.Tensor:
+        from ltx_core.utils import to_denoised
+
+        dtype = latents.dtype
+        B = latents.shape[0]
         # Keep the original fp32 denoised reconstruction path: although this is
         # algebraically an identity for T2V, strict e2e metrics depend on its rounding.
-        x0_pred = to_denoised(latents_input, velocity, per_token_t.unsqueeze(-1)).float()
+        x0_pred = to_denoised(latents, velocity, sigma_unit.view(B, 1).to(dtype).unsqueeze(-1)).float()
         sigma_safe = torch.clamp(sigma_unit, min=1e-8).view(B, 1, 1)
-        return ((latents_input.float() - x0_pred) / sigma_safe).to(dtype)
+        return ((latents.float() - x0_pred) / sigma_safe).to(dtype)
 
     def cfg_combine(
         self,
