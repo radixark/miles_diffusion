@@ -18,6 +18,7 @@ Mental model (one microgroup, store on; the rollout process never reads an outpu
         v
     release_generated_outputs after the reward          (9) only output fields deleted, outputs None, inline
         |                                                   untouched, nothing read when no media is logged
+        |                                               (9a) a stored waveform is deleted and kept with its output
         |  keep the first N for media as tensors        (10) at most N across concurrent microgroups
         |                                               (11) a failing read or delete does not fail the rollout
         v
@@ -325,6 +326,29 @@ async def test_logged_rollout_keeps_at_most_the_logged_count_as_tensors():
     assert torch.equal(outputs[0], _normalize_generated_output(_CHW * 0))
     assert outputs[1:] == [None, None, None]
     assert backend.objects[ref.key] == {}
+
+
+@pytest.mark.asyncio
+async def test_a_stored_waveform_is_released_with_its_output():
+    """A waveform left as a store ref reaches the media writer, whose thread then dies and logs no video either."""
+    waveforms = [torch.full((2, 8), float(b)) for b in range(2)]
+    store, backend, ref = _stored(
+        {
+            **{f"generated_output.{b}": _CHW * b for b in range(2)},
+            **{f"extra_streams.audio.generated_output.{b}": waveforms[b] for b in range(2)},
+            _LATENTS: _CHW,
+        }
+    )
+    samples = _stored_samples(ref, (0, 1))
+    for sample in samples:
+        sample.generated_audio = StoredTensor(ref, f"extra_streams.audio.generated_output.{sample.index}")
+
+    await release_generated_outputs(_state(store, media_outputs_left=1), samples)
+
+    assert torch.equal(samples[0].generated_output, _normalize_generated_output(_CHW * 0))
+    assert torch.equal(samples[0].generated_audio, waveforms[0])
+    assert samples[1].generated_output is None and samples[1].generated_audio is None
+    assert set(backend.objects[ref.key]) == {_LATENTS}
 
 
 @pytest.mark.asyncio

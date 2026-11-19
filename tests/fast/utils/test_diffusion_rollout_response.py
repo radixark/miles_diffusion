@@ -106,13 +106,19 @@ def _tensor_bytes(tensor: torch.Tensor) -> bytes:
     return save({"t": tensor})
 
 
-def test_response_audio_fills_the_sample():
+def test_the_audio_streams_output_is_the_samples_waveform():
+    """The engine sends the waveform as the audio stream's output; read from the top level, media has no sound."""
     audio = torch.zeros(2, 480)
-    body = {"generated_audio": audio, "audio_sample_rate": 48000}
+    body = {"extra_streams": {"audio": {"generated_output": audio, "sample_rate": 48000}}}
 
     sample = apply_rollout_image_response(Sample(), body, deserialize_func=lambda value: value)
 
     assert sample.generated_audio is audio
     assert sample.audio_sample_rate == 48000
-    silent = apply_rollout_image_response(Sample(), {}, deserialize_func=lambda value: value)
+
+
+@pytest.mark.parametrize("body", [{}, {"extra_streams": None}], ids=["no field", "a pipeline without audio"])
+def test_a_response_without_an_audio_stream_leaves_the_sample_silent(body):
+    silent = apply_rollout_image_response(Sample(), body, deserialize_func=lambda value: value)
+
     assert silent.generated_audio is None and silent.audio_sample_rate is None
