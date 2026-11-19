@@ -40,8 +40,13 @@ class LTXTrainPipelineConfig(TrainPipelineConfig):
                 "--rollout-patch-group ltx_av leaves the engine's audio-video cross-attention on, but the forward "
                 "trains video alone; add --rollout-extra-streams audio or use --rollout-patch-group ltx"
             )
-        if trains_audio and (args.sglang_sp_degree or 1) > 1:
-            raise ValueError("LTX audio rollout needs the audio latents unsharded; leave --sglang-sp-degree at 1")
+        # The engine fails a request whose audio latents it shards. Left unset, its SP degree takes whatever GPUs of
+        # the engine TP, DP and CFG parallelism leave over, so a multi-GPU engine has to pin it.
+        if trains_audio and args.rollout_num_gpus_per_engine > 1 and args.sglang_sp_degree != 1:
+            raise ValueError(
+                "LTX audio rollout needs the audio latents unsharded: an engine over several GPUs must set "
+                f"--sglang-sp-degree 1, got {args.sglang_sp_degree}"
+            )
 
     def configure(self, args: Namespace) -> None:
         self._height = args.diffusion_height
