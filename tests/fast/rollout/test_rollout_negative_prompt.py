@@ -32,6 +32,7 @@ def _args(**overrides):
         diffusion_log_prob_no_const=False,
         diffusion_debug_mode=False,
         rollout_video_dtype="keep",
+        rollout_extra_streams=[],
         train_pipeline_config_path=None,
         use_output_store=False,
         rm_type="pickscore",
@@ -39,6 +40,14 @@ def _args(**overrides):
     )
     values.update(overrides)
     return Namespace(**values)
+
+
+def test_extra_streams_are_requested_only_for_training_rollouts_that_name_them():
+    """The engine rejects the field on an eval request, and an unasked-for key would change every existing request."""
+    assert "rollout_extra_streams" not in build_rollout_sampling_params(_args())
+    asked = _args(rollout_extra_streams=["audio"])
+    assert build_rollout_sampling_params(asked)["rollout_extra_streams"] == ["audio"]
+    assert "rollout_extra_streams" not in build_rollout_sampling_params(asked, evaluation=True)
 
 
 def test_unset_negative_prompt_is_omitted():

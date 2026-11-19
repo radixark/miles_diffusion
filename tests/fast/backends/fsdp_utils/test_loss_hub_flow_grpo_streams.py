@@ -12,7 +12,10 @@ here are called "wide" and "narrow" (6 and 4 elements per pair) because no model
     a recomputed old log-prob goes back into the pair under its stream's name
 
 What each test pins:
-  pairs reach prepare         the converter keys a pair by ``args.primary_stream``, and prepare reads that layout
+  pairs reach prepare         the converter keys a pair by ``args.primary_stream``, and prepare reads that layout;
+                              a stream the run did not ask for stays out of the pair
+  converter, extra stream     each requested stream is paired from its own trajectory, grid and debug tensors
+  converter, missing stream   a requested stream the response lacks is an error, not a primary-only pair
   prepare, two streams        every stream is stacked into latents, timesteps and each extras field
   prepare, two DiTs           the primary stream's timestep picks the DiT component
   recomputed old log-prob     written back under its stream, where the next window's prepare reads it
@@ -31,7 +34,7 @@ from miles.backends.fsdp_utils.loss_hub.flow_grpo import flow_grpo_loss_formula,
 from miles.backends.fsdp_utils.metrics import new_metric_buffer
 from miles.backends.fsdp_utils.sde_step_backend import FlowSdeStepBackend
 from miles.ray.data_conversion_hub.flow_grpo import expand_samples_to_train_pairs
-from miles.utils.types import DenoisingEnv, DiTTrajectory, RolloutDebugTensors, Sample
+from miles.utils.types import DenoisingEnv, DiTTrajectory, RolloutDebugTensors, RolloutStreamData, Sample
 
 NOISE_LEVEL = 0.7
 CLIP_RANGE = 0.2
@@ -148,9 +151,11 @@ def test_converted_pairs_are_keyed_by_the_primary_stream_and_prepare_reads_them(
             timesteps=torch.linspace(900.0, 0.0, num_steps + 1),
             sigmas=torch.linspace(0.9, 0.0, num_steps + 1),
         ),
+        # Rolled out, but not asked for by this run: it must stay out of the pairs.
+        extra_streams={"echo": RolloutStreamData(rollout_log_probs=torch.zeros(num_steps))},
         train_metadata={"sde_step_indices": sde_steps},
     )
-    args = SimpleNamespace(primary_stream="main")
+    args = SimpleNamespace(primary_stream="main", rollout_extra_streams=[])
     pairs = expand_samples_to_train_pairs(args, [sample], [0.5], [0.5])["train_data"]
 
     prepared = prepare_flow_grpo_batch(_prepare_ctx(), pairs, microbatch_id=0, optim_step_idx=0)
@@ -163,6 +168,70 @@ def test_converted_pairs_are_keyed_by_the_primary_stream_and_prepare_reads_them(
         torch.stack([pair["rollout_debug_tensors"]["main"]["rollout_step_model_output"] for pair in pairs]),
         sample.rollout_debug_tensors.rollout_model_outputs[sde_steps],
     )
+
+
+def _sample_with_an_extra_stream(extra_streams: dict) -> Sample:
+    num_steps = 4
+    return Sample(
+        index=7,
+        prompt="a prompt",
+        rollout_log_probs=torch.linspace(-1.0, -2.0, num_steps),
+        denoising_env=DenoisingEnv(),
+        dit_trajectory=DiTTrajectory(
+            latents=torch.randn(num_steps + 1, 2, 3),
+            timesteps=torch.linspace(900.0, 0.0, num_steps + 1),
+            sigmas=torch.linspace(0.9, 0.0, num_steps + 1),
+        ),
+        extra_streams=extra_streams,
+        train_metadata={"sde_step_indices": [1, 2]},
+    )
+
+
+def test_converter_pairs_every_requested_stream_from_its_own_trajectory():
+    """Indexing an extra stream by the primary's grid or latent window would pair it with the wrong step."""
+    num_steps = 4
+    # The extra stream returns only the latents of steps 1..3, on its own grid, and is the one with debug tensors.
+    echo = RolloutStreamData(
+        rollout_log_probs=torch.linspace(-3.0, -4.0, num_steps),
+        rollout_debug_tensors=RolloutDebugTensors(rollout_model_outputs=torch.randn(num_steps, 5)),
+        dit_trajectory=DiTTrajectory(
+            latents=torch.randn(3, 5),
+            timesteps=torch.linspace(800.0, 0.0, num_steps + 1),
+            sigmas=torch.linspace(0.8, 0.0, num_steps + 1),
+            latent_step_indices=torch.tensor([1, 2, 3]),
+        ),
+    )
+    sample = _sample_with_an_extra_stream({"echo": echo})
+    args = SimpleNamespace(primary_stream="main", rollout_extra_streams=["echo"])
+
+    pairs = expand_samples_to_train_pairs(args, [sample], [0.5], [0.5])["train_data"]
+
+    assert len(pairs) == 2
+    for pair, step in zip(pairs, [1, 2], strict=True):
+        assert list(pair["latent"]) == ["main", "echo"]
+        assert torch.equal(pair["latent"]["main"], sample.dit_trajectory.latents[step])
+        assert torch.equal(pair["next_latent"]["main"], sample.dit_trajectory.latents[step + 1])
+        assert torch.equal(pair["latent"]["echo"], echo.dit_trajectory.latents[step - 1])
+        assert torch.equal(pair["next_latent"]["echo"], echo.dit_trajectory.latents[step])
+        assert pair["timestep"]["echo"] == echo.dit_trajectory.timesteps[step]
+        assert pair["sigma"]["echo"] == echo.dit_trajectory.sigmas[step]
+        assert pair["next_sigma"]["echo"] == echo.dit_trajectory.sigmas[step + 1]
+        assert pair["sigma_max"]["echo"] == echo.dit_trajectory.sigmas[1]
+        assert pair["log_prob_old"]["echo"] == echo.rollout_log_probs[step]
+        assert pair["sigma"]["main"] == sample.dit_trajectory.sigmas[step]
+        assert list(pair["rollout_debug_tensors"]) == ["echo"]
+        assert torch.equal(
+            pair["rollout_debug_tensors"]["echo"]["rollout_step_model_output"],
+            echo.rollout_debug_tensors.rollout_model_outputs[step],
+        )
+
+
+def test_a_requested_stream_the_response_lacks_is_an_error():
+    """An engine without extra rollout streams ignores the request field; training would go on primary-only."""
+    args = SimpleNamespace(primary_stream="main", rollout_extra_streams=["echo"])
+
+    with pytest.raises(ValueError, match="no rollout data for --rollout-extra-streams"):
+        expand_samples_to_train_pairs(args, [_sample_with_an_extra_stream({})], [0.5], [0.5])
 
 
 def test_prepare_stacks_every_stream_of_the_pairs(rollout):

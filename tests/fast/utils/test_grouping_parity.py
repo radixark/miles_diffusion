@@ -36,7 +36,7 @@ import torch
 from miles.ray.data_conversion_hub.flow_grpo import expand_samples_to_train_pairs
 from miles.utils.train_data_utils import TrainDataDPSplitter
 
-_ARGS = SimpleNamespace(primary_stream="visual")
+_ARGS = SimpleNamespace(primary_stream="visual", rollout_extra_streams=[])
 
 
 # --------------------------------------------------------------------------------------

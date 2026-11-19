@@ -68,6 +68,8 @@ def build_rollout_sampling_params(
                 "rollout_return_dit_trajectory": True,
             }
         )
+        if args.rollout_extra_streams:
+            sampling_params["rollout_extra_streams"] = args.rollout_extra_streams
         if args.use_output_store:
             sampling_params["rollout_return_outputs_via_store"] = True
         if args.rm_type == "none" and args.custom_rm_path is None:
