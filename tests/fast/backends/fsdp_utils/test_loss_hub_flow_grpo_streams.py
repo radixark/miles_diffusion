@@ -55,10 +55,10 @@ NOISE_LEVEL = 0.7
 # Wide enough that no pair is clipped; the two-stream oracle also runs at a recipe's clip range.
 CLIP_RANGE = 100.0
 BATCH_SIZE = 3
-# stream -> (per-pair latent shape, sigmas, next sigmas, sigma max)
+# stream -> (per-pair latent shape, sigmas, next sigmas, sigma max). Each stream's first pair starts at sigma == 1,
+# the one step whose transition reads sigma max, and the two sigma maxes differ.
 STREAM_SPECS = {
-    "wide": ((2, 3), [0.8, 0.55, 0.3], [0.55, 0.3, 0.1], 0.8),
-    # Its first pair starts at sigma == 1, the one step whose transition reads sigma max.
+    "wide": ((2, 3), [1.0, 0.55, 0.3], [0.55, 0.3, 0.1], 0.8),
     "narrow": ((4,), [1.0, 0.7, 0.4], [0.7, 0.4, 0.2], 0.9),
 }
 STREAM_WEIGHTS = {"wide": 0.6, "narrow": 0.4}
@@ -348,7 +348,8 @@ def test_one_stream_reproduces_the_single_stream_formula_bit_for_bit(rollout, kl
     """Writing the ratio or the KL sum in another arithmetic form moves fp32 values the strict e2e standards compare."""
     backend, stream = rollout.ctx.sde_backend, rollout.streams["wide"]
     rollout.ctx.args.diffusion_kl_beta = kl_beta
-    ref_pred = {"wide": stream.rollout_pred}
+    # Far from the new prediction: a KL term of the policy loss's size, so one ulp of it shows in the sum.
+    ref_pred = {"wide": stream.rollout_pred + 3.0}
     production_pred = _leaf({"wide": rollout.new_pred["wide"]})
     production_loss = _loss(
         rollout, ["wide"], production_pred, ref_pred=ref_pred, old_log_prob_from_new=old_log_prob_from_new
