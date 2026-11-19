@@ -93,7 +93,7 @@ def test_t2va_prediction_matches_the_sft_target_and_skips_padding_rows():
     context = DiffusionLossContext(
         models={"transformer": _VisualHead()},
         train_pipeline_config=config,
-        sde_backend=None,
+        sde_backends={},
         args=Namespace(
             seed=42,
             fsdp_flow_shift={"visual": 3.0},
@@ -408,7 +408,7 @@ def test_real_tiny_diffusers_h3_joint_sft_forward_and_backward(forward_dtype):
     context = DiffusionLossContext(
         models={"transformer_ref": model},
         train_pipeline_config=config,
-        sde_backend=None,
+        sde_backends={},
         args=args,
         forward_dtype=forward_dtype,
         device=torch.device("cpu"),

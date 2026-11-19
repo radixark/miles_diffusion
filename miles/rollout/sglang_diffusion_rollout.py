@@ -60,9 +60,9 @@ def build_rollout_sampling_params(
         sampling_params.update(
             {
                 "rollout": True,
-                "rollout_sde_type": args.diffusion_sde_type,
-                "rollout_noise_level": args.diffusion_noise_level,
-                "rollout_log_prob_no_const": args.diffusion_log_prob_no_const,
+                "rollout_sde_type": args.diffusion_sde_type[args.primary_stream],
+                "rollout_noise_level": args.diffusion_noise_level[args.primary_stream],
+                "rollout_log_prob_no_const": args.diffusion_log_prob_no_const[args.primary_stream],
                 "rollout_debug_mode": args.diffusion_debug_mode,
                 "rollout_return_denoising_env": True,
                 "rollout_return_dit_trajectory": True,

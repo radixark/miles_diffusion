@@ -101,6 +101,16 @@ def test_extra_rollout_streams_the_model_trains_are_accepted(parse, loss_type):
     assert parse(argv).rollout_extra_streams == []
 
 
+def test_every_stream_of_the_run_gets_the_sde_settings(parse):
+    """A stream missing from these maps raises a KeyError on the first rollout request or training step."""
+    args = parse(ARGV_BY_LOSS_TYPE["policy_loss"] + " --diffusion-noise-level 0.4 --rollout-extra-streams echo")
+    assert args.diffusion_sde_type == {"main": "sde", "echo": "sde"}
+    assert args.diffusion_noise_level == {"main": 0.4, "echo": 0.4}
+    assert args.diffusion_log_prob_no_const == {"main": False, "echo": False}
+    backend = "miles.backends.fsdp_utils.sde_step_backend.FlowSdeStepBackend"
+    assert args.sde_step_backend_path == {"main": backend, "echo": backend}
+
+
 @pytest.mark.parametrize(
     ("loss_type", "extra_streams", "match"),
     [

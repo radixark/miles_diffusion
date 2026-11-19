@@ -62,7 +62,7 @@ def _actor(train_input, train_output, forwarded, **args):
         models={},
         reference_models={},
         train_pipeline_config=None,
-        sde_backend=None,
+        sde_backends={},
         args=Namespace(
             num_steps_per_rollout=2,
             micro_batch_size=1,

@@ -162,7 +162,6 @@ def flow_grpo_loss_formula(
     """
     args = ctx.args
     clip_range = args.diffusion_clip_range
-    noise_level = args.diffusion_noise_level
     kl_beta = float(args.diffusion_kl_beta)
 
     next_latents = prepared.extras["next_latents"]
@@ -170,11 +169,11 @@ def flow_grpo_loss_formula(
 
     def sde_step_logprob_by_stream(pred: dict[str, torch.Tensor]) -> dict[str, SdeStepOutput]:
         return {
-            stream_name: ctx.sde_backend.sde_step_logprob(
+            stream_name: ctx.sde_backends[stream_name].sde_step_logprob(
                 pred[stream_name].float(),
                 latents.float(),
                 prev_sample=next_latents[stream_name].float(),
-                noise_level=noise_level,
+                noise_level=args.diffusion_noise_level[stream_name],
                 sigmas=prepared.extras["sigmas"][stream_name],
                 next_sigmas=prepared.extras["next_sigmas"][stream_name],
                 sigma_max=prepared.extras["sigma_max"][stream_name],
