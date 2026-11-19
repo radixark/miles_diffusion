@@ -27,7 +27,9 @@ What each test pins:
   two streams, recomputed     the old log-prob taken from the new prediction gives ratio 1 and the joint gradient
   two streams, KL             the KL term weights the streams like the log-prob
   recomputed old log-probs    written back per stream, not as one joint value
-  per-stream kernel           each stream steps with its own step backend and noise level
+  per-stream dynamics         each stream steps with its own step backend and noise level
+  ode stream                  conditions the step, adds nothing to the score, still reports its model output
+  converter, sigma grids      constant-free scored streams must share one sigma grid
   debug diffs                 every stream's rollout model output and transition mean reach the logged diffs
   per-stream diffs            two streams also log each stream's own log-prob and model-output diff
   one stream, logged keys     a single stream logs exactly the keys it logged before streams existed, with one
@@ -107,6 +109,7 @@ def rollout():
     args = SimpleNamespace(
         diffusion_clip_range=CLIP_RANGE,
         diffusion_noise_level=dict.fromkeys(STREAM_SPECS, NOISE_LEVEL),
+        sde_step_backend_path=dict.fromkeys(STREAM_SPECS, "a backend"),
         diffusion_kl_beta=0.0,
         diffusion_score_centering=False,
     )
@@ -208,8 +211,7 @@ def test_converted_pairs_are_keyed_by_the_primary_stream_and_prepare_reads_them(
         extra_streams={"echo": RolloutStreamData(rollout_log_probs=torch.zeros(num_steps))},
         train_metadata={"sde_step_indices": sde_steps},
     )
-    args = SimpleNamespace(primary_stream="main", rollout_extra_streams=[])
-    pairs = expand_samples_to_train_pairs(args, [sample], [0.5], [0.5])["train_data"]
+    pairs = expand_samples_to_train_pairs(_converter_args(), [sample], [0.5], [0.5])["train_data"]
 
     prepared = prepare_flow_grpo_batch(_prepare_ctx(), pairs, microbatch_id=0, optim_step_idx=0)
 
@@ -220,6 +222,18 @@ def test_converted_pairs_are_keyed_by_the_primary_stream_and_prepare_reads_them(
     assert torch.equal(
         torch.stack([pair["rollout_debug_tensors"]["main"]["rollout_step_model_output"] for pair in pairs]),
         sample.rollout_debug_tensors.rollout_model_outputs[sde_steps],
+    )
+
+
+def _converter_args(extra_streams=(), scored=None, log_prob_no_const=False):
+    """Converter args: every stream scored (it has a step backend) unless ``scored`` names the scored ones."""
+    streams = ("main", *extra_streams)
+    scored = streams if scored is None else scored
+    return SimpleNamespace(
+        primary_stream="main",
+        rollout_extra_streams=list(extra_streams),
+        sde_step_backend_path=dict.fromkeys(scored, "a backend"),
+        diffusion_log_prob_no_const=dict.fromkeys(streams, log_prob_no_const),
     )
 
 
@@ -255,9 +269,8 @@ def test_converter_pairs_every_requested_stream_from_its_own_trajectory():
         ),
     )
     sample = _sample_with_an_extra_stream({"echo": echo})
-    args = SimpleNamespace(primary_stream="main", rollout_extra_streams=["echo"])
 
-    pairs = expand_samples_to_train_pairs(args, [sample], [0.5], [0.5])["train_data"]
+    pairs = expand_samples_to_train_pairs(_converter_args(["echo"]), [sample], [0.5], [0.5])["train_data"]
 
     assert len(pairs) == 2
     for pair, step in zip(pairs, [1, 2], strict=True):
@@ -281,10 +294,40 @@ def test_converter_pairs_every_requested_stream_from_its_own_trajectory():
 
 def test_a_requested_stream_the_response_lacks_is_an_error():
     """An engine without extra rollout streams ignores the request field; training would go on primary-only."""
-    args = SimpleNamespace(primary_stream="main", rollout_extra_streams=["echo"])
-
     with pytest.raises(ValueError, match="no rollout data for --rollout-extra-streams"):
-        expand_samples_to_train_pairs(args, [_sample_with_an_extra_stream({})], [0.5], [0.5])
+        expand_samples_to_train_pairs(_converter_args(["echo"]), [_sample_with_an_extra_stream({})], [0.5], [0.5])
+
+
+def _echo_stream(sigmas):
+    num_steps = 4
+    return RolloutStreamData(
+        rollout_log_probs=torch.zeros(num_steps),
+        dit_trajectory=DiTTrajectory(
+            latents=torch.randn(num_steps + 1, 5),
+            timesteps=torch.linspace(900.0, 0.0, num_steps + 1),
+            sigmas=sigmas,
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("log_prob_no_const", "scored", "raises"),
+    [
+        pytest.param(True, ("main", "echo"), True, id="two streams scored without the constants"),
+        pytest.param(False, ("main", "echo"), False, id="two log-densities"),
+        pytest.param(True, ("main",), False, id="the other stream is ode"),
+    ],
+)
+def test_constant_free_streams_must_share_one_sigma_grid(log_prob_no_const, scored, raises):
+    """A constant-free log-prob scales its stream by the noise variance; on two grids the joint score is skewed."""
+    sample = _sample_with_an_extra_stream({"echo": _echo_stream(torch.linspace(0.8, 0.0, 5))})
+    args = _converter_args(["echo"], scored=scored, log_prob_no_const=log_prob_no_const)
+
+    if raises:
+        with pytest.raises(ValueError, match="different sigma grids"):
+            expand_samples_to_train_pairs(args, [sample], [0.5], [0.5])
+    else:
+        expand_samples_to_train_pairs(args, [sample], [0.5], [0.5])
 
 
 def test_prepare_stacks_every_stream_of_the_pairs(rollout):
@@ -497,8 +540,33 @@ def test_recomputed_old_log_probs_are_written_per_stream(rollout):
         assert torch.equal(written, expected)
 
 
+def test_an_ode_stream_conditions_the_step_but_is_not_scored(rollout):
+    """Scoring an ode stream adds a zero-noise Gaussian: NaN log-probs and a KL of 0/0."""
+    # An ode stream gets no step backend.
+    rollout.ctx.args.sde_step_backend_path = {"wide": "a backend"}
+    rollout.ctx.sde_backends = {"wide": rollout.backend}
+    pred = _leaf(rollout.new_pred)
+    metrics = _metrics(list(STREAM_SPECS))
+    loss = _loss(
+        rollout, list(STREAM_SPECS), pred, batch=_model_output_batch(rollout, list(STREAM_SPECS)), metrics=metrics
+    )
+    (wide_grad,) = torch.autograd.grad(loss, pred["wide"])
+
+    reference_pred = _leaf({"wide": rollout.new_pred["wide"]})
+    reference_loss = _loss(rollout, ["wide"], reference_pred)
+    (reference_grad,) = torch.autograd.grad(reference_loss, reference_pred["wide"])
+
+    assert torch.equal(loss, reference_loss)
+    assert torch.equal(wide_grad, reference_grad)
+    logged = metrics.reduce()
+    assert "log_prob_mean_abs_diff_narrow" not in logged
+    assert logged["model_output_mean_abs_diff_narrow"] == pytest.approx(
+        (rollout.new_pred["narrow"] - rollout.streams["narrow"].rollout_pred).abs().mean().item()
+    )
+
+
 def test_each_stream_steps_with_its_own_backend_and_noise_level(rollout):
-    """Reading one stream's backend or noise level for every stream would score the other on the wrong kernel."""
+    """Reading one stream's backend or noise level for every stream would score the other with the wrong dynamics."""
     noise_levels = {"wide": 0.7, "narrow": 0.3}
     narrow_backend = CpsSdeStepBackend()
     rollout.ctx.args.diffusion_noise_level = noise_levels

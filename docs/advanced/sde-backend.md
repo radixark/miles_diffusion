@@ -33,11 +33,27 @@ Implementation: `miles/backends/fsdp_utils/sde_step_backend.py`. Override with
 |---|---|---|---|
 | Flow-SDE | `sde` (default) | `FlowSdeStepBackend` | Transition noise std η·√(σ/(1−σ))·√(−dt) with the rollout's recorded σ (the grid's second σ replaces the denominator's σ at σ = 1); [Flow-GRPO](https://arxiv.org/abs/2505.05470) |
 | CPS | `cps` | `CpsSdeStepBackend` | Transition noise std σ_next·sin(η·π/2); log-prob is −(x−μ)², without the Gaussian constants or the 1/(2σ²) scale (forces `--diffusion-log-prob-no-const`); [FlowCPS](https://arxiv.org/abs/2509.05952) |
-| ODE | `ode` | `FlowSdeStepBackend` (placeholder; NFT and DMD2 never call it) | Deterministic; NFT, DMD2 or a custom loss formula only — with the Flow-GRPO loss it is rejected at parse time |
+| ODE | `ode` | none | Deterministic; NFT, DMD2 or a custom loss formula only, or a stream that Flow-GRPO does not score (see below) — a Flow-GRPO run with every stream `ode` is rejected at parse time |
 
 `--diffusion-noise-level` (η) sets the SDE noise scale. DanceGRPO-style constant-η
 schedules use the same `sde` backend with a tuned η
 ([DanceGRPO](https://arxiv.org/abs/2505.07818)).
+
+### Per latent stream
+
+With `--rollout-extra-streams` (an audio-video model, for example), each latent stream can roll out with its own
+transition: `--diffusion-sde-type visual=cps,audio=ode`, `--diffusion-noise-level visual=0.7,audio=0.3`. A single
+value applies to every stream; a per-stream value must name each stream of the run. Flow-GRPO scores a step as one
+action over the streams it scores:
+
+- An `ode` stream is not scored. It still rolls out and conditions the joint forward, and its model output is still
+  compared with the rollout's.
+- The scored streams must agree on the log-prob form. With the Gaussian constants (`sde`) their log-probs add up to
+  the joint log-density for any noise levels. Without them (`cps`) each term is scaled by its stream's noise variance,
+  so the scored streams need one noise level and one sigma grid.
+- An extra stream whose settings differ from the primary stream's is sent its own (`rollout_extra_stream_sde_args`).
+  The engine must echo the settings it applied; a response without the echo, or with other settings, is rejected
+  as soon as it arrives.
 
 ## 3. Key flags
 

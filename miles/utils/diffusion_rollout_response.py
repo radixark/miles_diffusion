@@ -224,6 +224,7 @@ def _parse_extra_streams(
     deserialize_func: Callable[[Any], torch.Tensor | None],
 ) -> dict[str, RolloutStreamData]:
     """The extra streams the engine rolled out; one that only carries its decoded output is left out."""
+    # An engine without per-stream rollout settings echoes no rollout_sde_kernel.
     return {
         stream_name: RolloutStreamData(
             rollout_log_probs=deserialize_func(stream["rollout_log_probs"]),
@@ -232,6 +233,7 @@ def _parse_extra_streams(
                 deserialize_func=deserialize_func,
             ),
             dit_trajectory=_parse_dit_trajectory(stream["dit_trajectory"], deserialize_func=deserialize_func),
+            rollout_sde_kernel=stream.get("rollout_sde_kernel"),
         )
         for stream_name, stream in (data or {}).items()
         if stream["rollout_log_probs"] is not None

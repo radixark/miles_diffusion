@@ -57,6 +57,31 @@ def parse_stream_flow_shifts(value: str) -> dict[str, float]:
     return stream_flow_shifts
 
 
+def _parse_per_stream(value: str, cast) -> dict[str | None, Any]:
+    """``"x"`` -> {None: x}, one value for every stream; ``"visual=x,audio=y"`` -> a value per named stream."""
+    if "=" not in value:
+        return {None: cast(value)}
+    return {name.strip(): cast(item.strip()) for name, _, item in (term.partition("=") for term in value.split(","))}
+
+
+def parse_stream_sde_types(value: str) -> dict[str | None, str]:
+    return _parse_per_stream(value, str)
+
+
+def parse_stream_noise_levels(value: str) -> dict[str | None, float]:
+    return _parse_per_stream(value, float)
+
+
+def _resolve_per_stream(flag: str, values: dict[str | None, Any], streams: tuple[str, ...]) -> dict[str, Any]:
+    if set(values) == {None}:
+        return dict.fromkeys(streams, values[None])
+    if set(values) != set(streams):
+        raise ValueError(
+            f"{flag} names the streams {sorted(values)}; give one value, or one for each of {list(streams)}"
+        )
+    return {stream_name: values[stream_name] for stream_name in streams}
+
+
 def parse_stream_names(value: str) -> list[str]:
     """``"visual,audio"`` -> ["visual", "audio"]."""
     return [stream_name.strip() for stream_name in value.split(",")]
@@ -309,7 +334,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     'Comma-separated latent streams the engine rolls out besides the primary one, e.g. "audio". '
                     "The Flow-GRPO converter pairs them with the primary stream; the model must be able to train "
-                    "them. A custom train-pair converter reads them from Sample.extra_streams itself."
+                    "them. A custom train-pair converter reads them from Sample.extra_streams itself; a custom "
+                    "generate function, like a replayed dump, skips the check that each stream was rolled out "
+                    "with its --diffusion-sde-type and --diffusion-noise-level."
                 ),
             )
             parser.add_argument(
@@ -352,9 +379,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument(
                 "--diffusion-noise-level",
-                type=float,
-                default=0.7,
-                help="SDE noise level for diffusion rollout (matches flow_grpo sample.noise_level; sent as rollout_noise_level on POST /rollout/generate).",
+                type=parse_stream_noise_levels,
+                default="0.7",
+                help=(
+                    "SDE noise level for diffusion rollout (matches flow_grpo sample.noise_level). One value for every "
+                    'latent stream, or one per stream, e.g. "visual=0.7,audio=0.3"; an ode stream ignores it.'
+                ),
             )
             parser.add_argument(
                 "--diffusion-height",
@@ -413,9 +443,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument(
                 "--diffusion-sde-type",
-                type=str,
+                type=parse_stream_sde_types,
                 default="sde",
-                help="rollout_sde_type for POST /rollout/generate.",
+                help=(
+                    "Rollout dynamics: sde, cps or ode. One value for every latent stream, or one per stream, "
+                    'e.g. "visual=cps,audio=ode"; Flow-GRPO scores only the non-ode streams.'
+                ),
             )
             parser.add_argument(
                 "--sde-step-backend-path",
@@ -1929,7 +1962,7 @@ def validate_score_centering_args(args) -> None:
         return
     if args.loss_type != "policy_loss":
         raise ValueError("--diffusion-score-centering is only supported for policy_loss / Flow-GRPO")
-    if args.diffusion_sde_type != "sde" or args.sde_step_backend_path is not None:
+    if set(args.diffusion_sde_type.values()) != {"sde"} or args.sde_step_backend_path is not None:
         raise ValueError(
             "--diffusion-score-centering requires --diffusion-sde-type sde with the default SDE step backend"
         )
@@ -2009,23 +2042,48 @@ def validate_lora_weight_sync_args(args) -> None:
 
 
 def validate_train_sde_backend(args) -> None:
-    """Reject rollouts the train-side SDE backend cannot score like the engine does."""
+    """Reject rollouts the train-side SDE backends cannot score like the engine does."""
+    sde_types, no_const = args.diffusion_sde_type, args.diffusion_log_prob_no_const
+    noise_levels = args.diffusion_noise_level
+    # An ode stream carries zero log-probs and no noise: it conditions the joint forward and is not scored.
+    scored = [stream_name for stream_name, sde_type in sde_types.items() if sde_type != "ode"]
     # The engine drops the Gaussian constants under this flag while FlowSdeStepBackend keeps them,
     # so every old/new log-prob ratio would be off.
-    if args.diffusion_log_prob_no_const and args.diffusion_sde_type == "sde" and args.sde_step_backend_path is None:
+    if args.sde_step_backend_path is None and any(
+        no_const[stream_name] and sde_types[stream_name] == "sde" for stream_name in scored
+    ):
         raise ValueError(
             "--diffusion-log-prob-no-const with --diffusion-sde-type sde needs a --sde-step-backend-path "
             "whose log_prob also drops the constants"
         )
-    # ODE rollouts carry zero log-probs and no noise, which the Flow-GRPO formula would score as SDE steps.
-    if args.diffusion_sde_type == "ode":
+    if not scored:
         from miles.backends.fsdp_utils.loss_hub import LOSS_HOOKS, get_loss_hooks
 
         if get_loss_hooks(args, "actor").formula is LOSS_HOOKS[("policy_loss", "actor")].formula:
             raise ValueError(
                 "--diffusion-sde-type ode is for DiffusionNFT (--loss-type nft), DMD2 or a custom loss formula; "
-                "the Flow-GRPO loss needs an sde or cps rollout"
+                "the Flow-GRPO loss needs an sde or cps rollout of at least one stream"
             )
+    # A log-density with the constants has no noise to normalize by at a zero noise level.
+    if any(not no_const[stream_name] and noise_levels[stream_name] <= 0 for stream_name in scored):
+        raise ValueError(
+            f"--diffusion-noise-level must be positive for a stream scored with the Gaussian constants, "
+            f"got {noise_levels}; a stream rolled out without noise is --diffusion-sde-type ode"
+        )
+    # A step's log-prob adds the scored streams': a log-density and a squared distance without the constants
+    # do not add.
+    if len({no_const[stream_name] for stream_name in scored}) > 1:
+        raise ValueError(
+            f"the scored streams mix log-probs with and without the Gaussian constants: "
+            f"--diffusion-sde-type {sde_types}"
+        )
+    # Without the constants each stream's term is scaled by its noise variance, so the streams need one noise scale.
+    if len(scored) > 1 and no_const[scored[0]] and len({noise_levels[stream_name] for stream_name in scored}) > 1:
+        raise ValueError(
+            f"streams scored without the Gaussian constants need one --diffusion-noise-level, got {noise_levels}"
+        )
+    if args.sde_step_backend_path is not None and len({sde_types[stream_name] for stream_name in scored}) > 1:
+        raise ValueError(f"--sde-step-backend-path implements one dynamics; --diffusion-sde-type is {sde_types}")
 
 
 def validate_loss_hook_paths(args) -> None:
@@ -2132,7 +2190,6 @@ def miles_validate_args(args):
     validate_loss_hook_paths(args)
     validate_reference_model_args(args)
     validate_actor_lora_adapter(args)
-    validate_score_centering_args(args)
 
     if args.wandb_log_image_interval < 1:
         raise ValueError(f"wandb_log_image_interval must be >= 1, got {args.wandb_log_image_interval}")
@@ -2190,6 +2247,10 @@ def miles_validate_args(args):
             f"--rollout-extra-streams feeds the Flow-GRPO train pairs; the --loss-type {args.loss_type} converter "
             "reads the primary stream alone"
         )
+    streams = (args.primary_stream, *args.rollout_extra_streams)
+    args.diffusion_sde_type = _resolve_per_stream("--diffusion-sde-type", args.diffusion_sde_type, streams)
+    args.diffusion_noise_level = _resolve_per_stream("--diffusion-noise-level", args.diffusion_noise_level, streams)
+    validate_score_centering_args(args)
     cfg_cls.validate_args(args)
     if args.use_lora and args.lora_target_modules is None:
         args.lora_target_modules = list(cfg_cls.lora_target_modules)
@@ -2273,7 +2334,10 @@ def miles_validate_args(args):
 
     is_nft = args.loss_type == "nft"
     if is_nft:
-        if args.diffusion_noise_level == 0 and args.diffusion_sde_type != "ode":
+        if any(
+            args.diffusion_noise_level[stream_name] == 0 and sde_type != "ode"
+            for stream_name, sde_type in args.diffusion_sde_type.items()
+        ):
             raise ValueError("--loss-type nft with --diffusion-noise-level 0 requires --diffusion-sde-type ode")
         if args.diffusion_nft_beta <= 0:
             raise ValueError(f"--diffusion-nft-beta must be > 0, got {args.diffusion_nft_beta}")
@@ -2394,30 +2458,46 @@ def miles_validate_args(args):
         args.eval_function_path = args.rollout_function_path
 
     # cps/ode log_probs drop Gaussian constants on both the engine and trainer sides.
-    if args.diffusion_sde_type in ("cps", "ode"):
-        args.diffusion_log_prob_no_const = True
+    args.diffusion_log_prob_no_const = {
+        stream_name: args.diffusion_log_prob_no_const or sde_type in ("cps", "ode")
+        for stream_name, sde_type in args.diffusion_sde_type.items()
+    }
     validate_train_sde_backend(args)
 
     # The train-side scorer must replicate the rollout dynamics; derive it from the same knob.
+    scored_sde_types = {
+        stream_name: sde_type for stream_name, sde_type in args.diffusion_sde_type.items() if sde_type != "ode"
+    }
     if args.sde_step_backend_path is None:
         sde_step_backends = {
             "sde": "miles.backends.fsdp_utils.sde_step_backend.FlowSdeStepBackend",
             "cps": "miles.backends.fsdp_utils.sde_step_backend.CpsSdeStepBackend",
-            # NFT does not use the placeholder backend.
-            "ode": "miles.backends.fsdp_utils.sde_step_backend.FlowSdeStepBackend",
         }
-        if args.diffusion_sde_type not in sde_step_backends:
+        if not set(scored_sde_types.values()) <= set(sde_step_backends):
             raise ValueError(
-                f"no train-side sde step backend for --diffusion-sde-type {args.diffusion_sde_type!r}; "
+                f"no train-side sde step backend for --diffusion-sde-type {args.diffusion_sde_type}; "
                 f"implemented: {sorted(sde_step_backends)}; pass --sde-step-backend-path for a custom one"
             )
-        args.sde_step_backend_path = sde_step_backends[args.diffusion_sde_type]
-    # Each stream of the run rolls out and is scored with its own settings; the checks above ran on the shared value.
-    streams = (args.primary_stream, *args.rollout_extra_streams)
-    args.diffusion_sde_type = dict.fromkeys(streams, args.diffusion_sde_type)
-    args.diffusion_noise_level = dict.fromkeys(streams, args.diffusion_noise_level)
-    args.diffusion_log_prob_no_const = dict.fromkeys(streams, args.diffusion_log_prob_no_const)
-    args.sde_step_backend_path = dict.fromkeys(streams, args.sde_step_backend_path)
+        args.sde_step_backend_path = {
+            stream_name: sde_step_backends[sde_type] for stream_name, sde_type in scored_sde_types.items()
+        }
+    else:
+        args.sde_step_backend_path = dict.fromkeys(scored_sde_types, args.sde_step_backend_path)
+
+    def rollout_sde_kernel(stream_name: str) -> dict[str, Any]:
+        return {
+            "rollout_sde_type": args.diffusion_sde_type[stream_name],
+            "rollout_noise_level": args.diffusion_noise_level[stream_name],
+            "rollout_log_prob_no_const": args.diffusion_log_prob_no_const[stream_name],
+        }
+
+    # The request's top-level fields carry the primary stream's settings, which every extra stream inherits; only a
+    # stream with other settings is sent its own, and the engine echoes the settings it applied to it.
+    args.rollout_extra_stream_sde_args = {
+        stream_name: rollout_sde_kernel(stream_name)
+        for stream_name in args.rollout_extra_streams
+        if rollout_sde_kernel(stream_name) != rollout_sde_kernel(args.primary_stream)
+    }
 
     if args.num_steps_per_rollout is not None:
         samples_per_rollout = args.rollout_batch_size * args.n_samples_per_prompt
