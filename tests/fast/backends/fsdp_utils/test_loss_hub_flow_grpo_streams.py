@@ -1,15 +1,17 @@
-"""Flow-GRPO train pairs keyed by latent stream.
+"""Flow-GRPO train pairs and loss over named latent streams.
 
-The converter and the prepare hook never name a stream: they carry whatever streams the pairs hold. The streams
+The converter, prepare hook and loss never name a stream: they carry whatever streams the pairs hold. The streams
 here are called "wide" and "narrow" (6 and 4 elements per pair) because no model has them.
 
     rollout sample ──expand──► pair: per-step fields keyed by stream   {"latent": {"wide": x_w, "narrow": x_n}, ...}
                                  │ prepare_flow_grpo_batch: stack each stream across the micro-batch
                                  ▼
     PreparedBatch.latents / timesteps / extras[...]   every one a {stream: tensor} dict
-                                 │ flow_grpo_loss_formula, on the pairs' one stream
+                                 │ flow_grpo_loss_formula
                                  ▼
-    a recomputed old log-prob goes back into the pair under its stream's name
+    per stream:  l_s = mean over the stream's D_s elements of log N(x'_s | mu_s, std_s^2)
+    one action:  l   = sum_s (D_s / D) * l_s       (the mean over all D = sum_s D_s elements; here 0.6 and 0.4)
+                 r   = exp(l_new - l_old),   loss = sum over pairs of max(-A r, -A clip(r))
 
 What each test pins:
   pairs reach prepare         the converter keys a pair by ``args.primary_stream``, and prepare reads that layout;
@@ -18,32 +20,48 @@ What each test pins:
   converter, missing stream   a requested stream the response lacks is an error, not a primary-only pair
   prepare, two streams        every stream is stacked into latents, timesteps and each extras field
   prepare, two DiTs           the primary stream's timestep picks the DiT component
-  recomputed old log-prob     written back under its stream, where the next window's prepare reads it
+  one stream                  loss and gradient equal the single-stream formula bit for bit
+  one stream, combination     a lone stream's values pass through the weighting bit for bit
+  two streams, loss           loss and both gradients equal a float64 oracle over every element of both streams,
+                              unclipped and at a recipe's clip range
+  two streams, recomputed     the old log-prob taken from the new prediction gives ratio 1 and the joint gradient
+  two streams, KL             the KL term weights the streams like the log-prob
+  recomputed old log-probs    written back per stream, not as one joint value
+  debug diffs                 every stream's rollout model output and transition mean reach the logged diffs
 """
 
 from tests.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=10, suite="stage-a-cpu", labels=[])
 
+import math
 from types import SimpleNamespace
 
 import pytest
 import torch
 
-from miles.backends.fsdp_utils.loss_hub.flow_grpo import flow_grpo_loss_formula, prepare_flow_grpo_batch
+from miles.backends.fsdp_utils.loss_hub.flow_grpo import (
+    _combine_streams,
+    _stream_weights,
+    flow_grpo_loss_formula,
+    prepare_flow_grpo_batch,
+)
 from miles.backends.fsdp_utils.metrics import new_metric_buffer
 from miles.backends.fsdp_utils.sde_step_backend import FlowSdeStepBackend
 from miles.ray.data_conversion_hub.flow_grpo import expand_samples_to_train_pairs
 from miles.utils.types import DenoisingEnv, DiTTrajectory, RolloutDebugTensors, RolloutStreamData, Sample
 
 NOISE_LEVEL = 0.7
-CLIP_RANGE = 0.2
+# Wide enough that no pair is clipped; the two-stream oracle also runs at a recipe's clip range.
+CLIP_RANGE = 100.0
 BATCH_SIZE = 3
 # stream -> (per-pair latent shape, sigmas, next sigmas, sigma max)
 STREAM_SPECS = {
     "wide": ((2, 3), [0.8, 0.55, 0.3], [0.55, 0.3, 0.1], 0.8),
-    "narrow": ((4,), [0.9, 0.7, 0.4], [0.7, 0.4, 0.2], 0.9),
+    # Its first pair starts at sigma == 1, the one step whose transition reads sigma max.
+    "narrow": ((4,), [1.0, 0.7, 0.4], [0.7, 0.4, 0.2], 0.9),
 }
+STREAM_WEIGHTS = {"wide": 0.6, "narrow": 0.4}
 ADVANTAGE = [1.0, -2.0, 0.5]
 
 
@@ -121,6 +139,26 @@ def _loss(rollout, stream_names, new_pred, *, batch=None, metrics=None, ref_pred
         train_output_inputs=[],
         **kwargs,
     )
+
+
+def _leaf(pred: dict[str, torch.Tensor], dtype=torch.float32) -> dict[str, torch.Tensor]:
+    return {stream_name: value.detach().to(dtype).clone().requires_grad_(True) for stream_name, value in pred.items()}
+
+
+def _clipped_ppo_loss(log_prob_new, log_prob_old, advantage, clip_range=CLIP_RANGE):
+    ratio = torch.exp(log_prob_new - log_prob_old)
+    return torch.maximum(-advantage * ratio, -advantage * torch.clamp(ratio, 1.0 - clip_range, 1.0 + clip_range)).sum()
+
+
+def _element_log_probs(backend, stream, pred):
+    """Gaussian log-density of every element of one stream's transition, [B, D_s], in ``pred``'s dtype."""
+    prev_mean, noise_std, _ = _transition_mean_and_std(backend, stream, pred)
+    density = (
+        -((stream.next_latent.to(pred.dtype) - prev_mean) ** 2) / (2 * noise_std**2)
+        - torch.log(noise_std)
+        - 0.5 * math.log(2 * math.pi)
+    )
+    return density.flatten(1)
 
 
 def _prepare_ctx():
@@ -298,13 +336,184 @@ def test_a_multi_dit_family_routes_by_the_primary_streams_timestep(rollout):
     assert prepared.model is ctx.models["high_noise"]
 
 
-def test_recomputed_old_log_prob_is_written_back_under_its_stream(rollout):
-    """A flat tensor written back would break the next window's prepare, which stacks ``pair[key][stream]``."""
+@pytest.mark.parametrize(
+    ("kl_beta", "old_log_prob_from_new"),
+    [
+        pytest.param(0.0, False, id="rollout log-probs"),
+        pytest.param(0.5, False, id="with the KL term"),
+        pytest.param(0.0, True, id="old log-prob recomputed from the new prediction"),
+    ],
+)
+def test_one_stream_reproduces_the_single_stream_formula_bit_for_bit(rollout, kl_beta, old_log_prob_from_new):
+    """Writing the ratio or the KL sum in another arithmetic form moves fp32 values the strict e2e standards compare."""
     backend, stream = rollout.ctx.sde_backend, rollout.streams["wide"]
+    rollout.ctx.args.diffusion_kl_beta = kl_beta
+    ref_pred = {"wide": stream.rollout_pred}
+    production_pred = _leaf({"wide": rollout.new_pred["wide"]})
+    production_loss = _loss(
+        rollout, ["wide"], production_pred, ref_pred=ref_pred, old_log_prob_from_new=old_log_prob_from_new
+    )
+    (production_grad,) = torch.autograd.grad(production_loss, production_pred["wide"])
+
+    def single_stream_step(pred):
+        return backend.sde_step_logprob(
+            pred,
+            stream.latent,
+            prev_sample=stream.next_latent,
+            noise_level=NOISE_LEVEL,
+            sigmas=stream.sigmas,
+            next_sigmas=stream.next_sigmas,
+            sigma_max=stream.sigma_max,
+        )
+
+    reference_pred = _leaf({"wide": rollout.new_pred["wide"]})["wide"]
+    step_out = single_stream_step(reference_pred)
+    log_prob_old = step_out.log_prob.detach() if old_log_prob_from_new else stream.log_prob_old
+    reference_loss = _clipped_ppo_loss(step_out.log_prob, log_prob_old, rollout.advantage)
+    if kl_beta > 0:
+        kl_per_pair = ((step_out.prev_mean - single_stream_step(ref_pred["wide"]).prev_mean) ** 2).mean(
+            dim=tuple(range(1, step_out.prev_mean.ndim)), keepdim=True
+        ) / (2 * step_out.std_dev_t**2)
+        reference_loss = reference_loss + kl_beta * kl_per_pair.sum()
+    (reference_grad,) = torch.autograd.grad(reference_loss, reference_pred)
+
+    assert torch.equal(production_loss, reference_loss)
+    assert torch.equal(production_grad, reference_grad)
+
+
+def test_a_lone_streams_values_pass_through_the_combination_bit_for_bit():
+    """Combining as (D * l) / D instead of weight * l moves one fp32 value in seven, for instance a rollout's log-prob."""
+    values = torch.randn(1000, generator=torch.Generator().manual_seed(0))
+    stream_weights = _stream_weights({"wide": torch.zeros(1, 2, 3)})
+
+    assert torch.equal(_combine_streams({"wide": values}, stream_weights), values)
+
+
+@pytest.mark.parametrize(
+    "clip_range", [pytest.param(CLIP_RANGE, id="no pair clipped"), pytest.param(1e-4, id="a recipe's clip range")]
+)
+def test_two_streams_match_the_mean_over_every_element_of_both(rollout, clip_range):
+    """An unweighted mean of the stream means, swapped weights, or a clip per stream changes the loss or a gradient."""
+    backend = rollout.ctx.sde_backend
+    rollout.ctx.args.diffusion_clip_range = clip_range
+    production_pred = _leaf(rollout.new_pred)
+    production_loss = _loss(rollout, list(STREAM_SPECS), production_pred)
+    production_grads = torch.autograd.grad(production_loss, list(production_pred.values()))
+
+    oracle_pred = _leaf(rollout.new_pred, torch.float64)
+    new_elements = [
+        _element_log_probs(backend, rollout.streams[stream_name], oracle_pred[stream_name])
+        for stream_name in oracle_pred
+    ]
+    old_elements = [
+        _element_log_probs(backend, rollout.streams[stream_name], rollout.streams[stream_name].rollout_pred.double())
+        for stream_name in oracle_pred
+    ]
+    oracle_loss = _clipped_ppo_loss(
+        torch.cat(new_elements, dim=1).mean(dim=1),
+        torch.cat(old_elements, dim=1).mean(dim=1),
+        rollout.advantage,
+        clip_range,
+    )
+    oracle_grads = torch.autograd.grad(oracle_loss, list(oracle_pred.values()))
+
+    torch.testing.assert_close(production_loss.double(), oracle_loss, rtol=1e-5, atol=1e-6)
+    for production_grad, oracle_grad in zip(production_grads, oracle_grads, strict=True):
+        assert production_grad.abs().sum().item() > 0.0
+        torch.testing.assert_close(production_grad.double(), oracle_grad, rtol=1e-4, atol=1e-6)
+
+
+def test_two_streams_with_the_old_log_prob_taken_from_the_new_prediction(rollout):
+    """Without the detach the first window has no gradient; reading the rollout's log-probs here changes its ratio."""
+    backend = rollout.ctx.sde_backend
+    for stream in rollout.streams.values():
+        stream.log_prob_old = torch.full_like(stream.log_prob_old, float("nan"))
+    production_pred = _leaf(rollout.new_pred)
+    production_loss = _loss(rollout, list(STREAM_SPECS), production_pred, old_log_prob_from_new=True)
+    production_grads = torch.autograd.grad(production_loss, list(production_pred.values()))
+
+    oracle_pred = _leaf(rollout.new_pred, torch.float64)
+    elements = [
+        _element_log_probs(backend, rollout.streams[stream_name], oracle_pred[stream_name])
+        for stream_name in oracle_pred
+    ]
+    # The ratio is exactly 1: the loss is -sum(A) and its gradient is that of -sum(A * l_new).
+    oracle_grads = torch.autograd.grad(
+        -(rollout.advantage * torch.cat(elements, dim=1).mean(dim=1)).sum(), list(oracle_pred.values())
+    )
+
+    assert torch.equal(production_loss, -rollout.advantage.sum())
+    for production_grad, oracle_grad in zip(production_grads, oracle_grads, strict=True):
+        assert production_grad.abs().sum().item() > 0.0
+        torch.testing.assert_close(production_grad.double(), oracle_grad, rtol=1e-4, atol=1e-6)
+
+
+def test_kl_term_weights_the_streams_like_the_log_prob(rollout):
+    """Summing the two streams' KL unweighted would give the 4-element stream the 6-element stream's say."""
+    backend, kl_beta = rollout.ctx.sde_backend, 0.5
+    # Far from the new prediction, so the KL term is of the policy loss's size.
+    ref_pred = {stream_name: stream.rollout_pred + 3.0 for stream_name, stream in rollout.streams.items()}
+    policy_loss = _loss(rollout, list(STREAM_SPECS), rollout.new_pred)
+    rollout.ctx.args.diffusion_kl_beta = kl_beta
+    loss = _loss(rollout, list(STREAM_SPECS), rollout.new_pred, ref_pred=ref_pred)
+
+    expected_kl = 0.0
+    for stream_name, weight in STREAM_WEIGHTS.items():
+        stream = rollout.streams[stream_name]
+        prev_mean, _, std_dev_t = _transition_mean_and_std(backend, stream, rollout.new_pred[stream_name])
+        ref_mean, _, _ = _transition_mean_and_std(backend, stream, ref_pred[stream_name])
+        per_pair = (prev_mean - ref_mean).square().flatten(1).mean(dim=1) / (2 * std_dev_t.flatten() ** 2)
+        expected_kl = expected_kl + weight * per_pair.sum()
+    torch.testing.assert_close(loss - policy_loss, kl_beta * expected_kl, rtol=1e-4, atol=1e-8)
+
+
+def test_recomputed_old_log_probs_are_written_per_stream(rollout):
+    """Writing the joint value back would feed the next window one number where it stacks one per stream."""
+    backend = rollout.ctx.sde_backend
     batch = [{} for _ in range(BATCH_SIZE)]
 
-    assert _loss(rollout, ["wide"], {"wide": rollout.new_pred["wide"]}, batch=batch, write_old_log_prob=True) is None
+    assert _loss(rollout, list(STREAM_SPECS), rollout.new_pred, batch=batch, write_old_log_prob=True) is None
 
-    prev_mean, noise_std, _ = _transition_mean_and_std(backend, stream, rollout.new_pred["wide"])
-    expected = backend.log_prob(stream.next_latent, prev_mean, noise_std)
-    assert torch.equal(torch.stack([pair["log_prob_old"]["wide"] for pair in batch]), expected)
+    for stream_name, stream in rollout.streams.items():
+        prev_mean, noise_std, _ = _transition_mean_and_std(backend, stream, rollout.new_pred[stream_name])
+        expected = backend.log_prob(stream.next_latent, prev_mean, noise_std)
+        written = torch.stack([pair["log_prob_old"][stream_name] for pair in batch])
+        assert torch.equal(written, expected)
+
+
+def test_every_streams_rollout_model_output_reaches_the_logged_diff(rollout):
+    """A debug lookup that misses a stream returns None and the train-vs-rollout diff silently stops being logged."""
+    backend = rollout.ctx.sde_backend
+    rollout_means = {
+        stream_name: _transition_mean_and_std(backend, stream, stream.rollout_pred)[0]
+        for stream_name, stream in rollout.streams.items()
+    }
+    batch = [
+        {
+            "rollout_debug_tensors": {
+                stream_name: {
+                    "rollout_step_model_output": stream.rollout_pred[index],
+                    "rollout_step_prev_sample_mean": rollout_means[stream_name][index],
+                }
+                for stream_name, stream in rollout.streams.items()
+            }
+        }
+        for index in range(BATCH_SIZE)
+    ]
+    metrics = new_metric_buffer(None, torch.device("cpu"), ["dit"])
+
+    _loss(rollout, list(STREAM_SPECS), rollout.new_pred, batch=batch, metrics=metrics)
+
+    diffs = [
+        (rollout.new_pred[stream_name] - stream.rollout_pred).abs() for stream_name, stream in rollout.streams.items()
+    ]
+    every_element = torch.cat([diff.flatten() for diff in diffs])
+    logged = metrics.reduce()
+    assert logged["model_output_mean_abs_diff"] == pytest.approx(every_element.mean().item())
+    assert logged["model_output_max_abs_diff"] == pytest.approx(every_element.max().item())
+    # One value per pair of each stream: the transition-mean gap's RMS, in units of that stream's noise std.
+    mean_gaps = []
+    for stream_name, stream in rollout.streams.items():
+        prev_mean, noise_std, _ = _transition_mean_and_std(backend, stream, rollout.new_pred[stream_name])
+        mean_gaps.append(((rollout_means[stream_name] - prev_mean) / noise_std).flatten(1).square().mean(dim=1).sqrt())
+    assert logged["prev_mean_diff_over_noise_std"] == pytest.approx(torch.cat(mean_gaps).mean().item())
