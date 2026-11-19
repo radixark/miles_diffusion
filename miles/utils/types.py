@@ -85,6 +85,7 @@ class Sample:
     # With --use-output-store, a StoredTensor from generation until its reward, then None (or a tensor kept for media).
     generated_output: torch.Tensor | None = None
     # [C, L] waveform at audio_sample_rate, for engines that also return audio (e.g. H3 t2va).
+    # With --use-output-store it is stored and released with generated_output.
     generated_audio: torch.Tensor | None = None
     audio_sample_rate: int | None = None
     rollout_log_probs: torch.Tensor | None = None
