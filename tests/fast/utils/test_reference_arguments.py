@@ -43,7 +43,7 @@ def _args(**overrides):
         sglang_sp_degree=None,
         sglang_enable_cfg_parallel=False,
         loss_type="policy_loss",
-        diffusion_kl_beta=0.0,
+        diffusion_kl_beta={None: 0.0},
         custom_prepare_train_batch_path=None,
         custom_loss_function_path=None,
         custom_train_output_function_path=None,

@@ -77,6 +77,10 @@ def parse_stream_noise_levels(value: str) -> dict[str | None, float]:
     return _parse_per_stream(value, float)
 
 
+def parse_stream_kl_betas(value: str) -> dict[str | None, float]:
+    return _parse_per_stream(value, float)
+
+
 def _resolve_per_stream(flag: str, values: dict[str | None, Any], streams: tuple[str, ...]) -> dict[str, Any]:
     if set(values) == {None}:
         return dict.fromkeys(streams, values[None])
@@ -1201,11 +1205,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument(
                 "--diffusion-kl-beta",
-                type=float,
-                default=0.0,
+                type=parse_stream_kl_betas,
+                default="0.0",
                 help=(
-                    "Reference KL coefficient for diffusion GRPO. When > 0, enables a "
-                    "reference DiT forward (see --ref-mode; default lora_base)."
+                    "Reference KL coefficient for diffusion GRPO. When any stream's beta is > 0, enables a "
+                    "reference DiT forward (see --ref-mode; default lora_base). One value for every latent "
+                    'stream, or one per stream, e.g. "visual=0,audio=0.04"; an ode stream\'s KL is its velocity MSE.'
                 ),
             )
             parser.add_argument(
@@ -1215,7 +1220,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help=(
                     "Reference model of the KL term: lora_base runs the actor with its adapters disabled, "
-                    "ref runs the frozen model from --ref-load. Auto: lora_base when --diffusion-kl-beta > 0."
+                    "ref runs the frozen model from --ref-load. Auto: lora_base when any stream's --diffusion-kl-beta > 0."
                 ),
             )
             parser.add_argument(
@@ -1900,7 +1905,7 @@ def set_default_diffusion_args(args) -> None:
             args.critic_lr = args.lr
 
     if args.ref_mode is None:
-        args.ref_mode = "lora_base" if args.diffusion_kl_beta > 0 else "none"
+        args.ref_mode = "lora_base" if any(beta > 0 for beta in args.diffusion_kl_beta.values()) else "none"
 
 
 def validate_output_store_args(args) -> None:
@@ -2062,14 +2067,11 @@ def validate_train_sde_backend(args) -> None:
             "--diffusion-log-prob-no-const with --diffusion-sde-type sde needs a --sde-step-backend-path "
             "whose log_prob also drops the constants"
         )
-    if not scored:
-        from miles.backends.fsdp_utils.loss_hub import LOSS_HOOKS, get_loss_hooks
-
-        if get_loss_hooks(args, "actor").formula is LOSS_HOOKS[("policy_loss", "actor")].formula:
-            raise ValueError(
-                "--diffusion-sde-type ode is for DiffusionNFT (--loss-type nft), DMD2 or a custom loss formula; "
-                "the Flow-GRPO loss needs an sde or cps rollout of at least one stream"
-            )
+    if not scored and _uses_flow_grpo_formula(args):
+        raise ValueError(
+            "--diffusion-sde-type ode is for DiffusionNFT (--loss-type nft), DMD2 or a custom loss formula; "
+            "the Flow-GRPO loss needs an sde or cps rollout of at least one stream"
+        )
     # At a zero noise level a stream samples its own mean: a log-density has no noise to normalize by, and a
     # constant-free term only measures how far the new mean moved from the old one, which carries no reward signal.
     if any(noise_levels[stream_name] <= 0 for stream_name in scored):
@@ -2086,6 +2088,26 @@ def validate_train_sde_backend(args) -> None:
         )
     if args.sde_step_backend_path is not None and len({sde_types[stream_name] for stream_name in scored}) > 1:
         raise ValueError(f"--sde-step-backend-path implements one dynamics; --diffusion-sde-type is {sde_types}")
+
+
+def _uses_flow_grpo_formula(args) -> bool:
+    from miles.backends.fsdp_utils.loss_hub import LOSS_HOOKS, get_loss_hooks
+
+    return get_loss_hooks(args, "actor").formula is LOSS_HOOKS[("policy_loss", "actor")].formula
+
+
+def validate_kl_beta_forms(args) -> None:
+    """Reject one --diffusion-kl-beta > 0 over streams whose Flow-GRPO KL terms differ in scale."""
+    sde_types = set(args.diffusion_sde_type.values())
+    if set(args.diffusion_kl_beta) != {None} or args.diffusion_kl_beta[None] <= 0:
+        return
+    # A scored stream's KL is its velocity MSE times a step factor far below 1, so one beta would hold an ode
+    # stream's velocity MSE orders of magnitude harder per element.
+    if "ode" in sde_types and sde_types != {"ode"} and _uses_flow_grpo_formula(args):
+        raise ValueError(
+            f"--diffusion-kl-beta {args.diffusion_kl_beta[None]} covers ode and scored streams, whose KL terms "
+            'differ in scale; give one per stream, e.g. "<scored stream>=0.04,<ode stream>=0.001"'
+        )
 
 
 def validate_loss_hook_paths(args) -> None:
@@ -2252,6 +2274,8 @@ def miles_validate_args(args):
     streams = (args.primary_stream, *args.rollout_extra_streams)
     args.diffusion_sde_type = _resolve_per_stream("--diffusion-sde-type", args.diffusion_sde_type, streams)
     args.diffusion_noise_level = _resolve_per_stream("--diffusion-noise-level", args.diffusion_noise_level, streams)
+    validate_kl_beta_forms(args)
+    args.diffusion_kl_beta = _resolve_per_stream("--diffusion-kl-beta", args.diffusion_kl_beta, streams)
     validate_score_centering_args(args)
     cfg_cls.validate_args(args)
     if args.use_lora and args.lora_target_modules is None:
@@ -2325,7 +2349,7 @@ def miles_validate_args(args):
             raise ValueError("--loss-type sft_loss requires --n-samples-per-prompt 1")
         if args.eval_interval is not None:
             raise ValueError("--loss-type sft_loss does not support --eval-interval (no rollout engines)")
-        if args.diffusion_kl_beta > 0:
+        if any(beta > 0 for beta in args.diffusion_kl_beta.values()):
             raise ValueError("--loss-type sft_loss does not support --diffusion-kl-beta")
         if args.diffusion_recompute_old_log_prob:
             raise ValueError("--loss-type sft_loss does not support --diffusion-recompute-old-log-prob")
@@ -2357,7 +2381,7 @@ def miles_validate_args(args):
 
     if is_nft and not (args.use_ema and args.rollout_weights == "ema"):
         raise ValueError("--loss-type nft samples and trains against pi_old; set --use-ema --rollout-weights ema")
-    if args.diffusion_kl_beta > 0 and args.ref_mode == "none":
+    if any(beta > 0 for beta in args.diffusion_kl_beta.values()) and args.ref_mode == "none":
         raise ValueError("--diffusion-kl-beta > 0 requires a reference model; set --ref-mode lora_base or ref")
 
     if args.dump_details is not None:

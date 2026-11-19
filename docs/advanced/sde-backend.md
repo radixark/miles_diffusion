@@ -58,6 +58,11 @@ action over the streams it scores:
 - An extra stream whose settings differ from the primary stream's is sent its own (`rollout_extra_stream_sde_args`).
   The engine must echo the settings it applied; a response without the echo, or with other settings, is rejected
   as soon as it arrives.
+- `--diffusion-kl-beta visual=0,audio=0.04` gives each stream its own KL weight, and the loss adds
+  `beta_s * KL_s` over the streams. A scored stream's KL is the Gaussian one; an `ode` stream's is the velocity MSE
+  `mean((v_θ − v_ref)²)`. The Gaussian KL is the velocity MSE times a step factor far below 1, so a single beta
+  over `ode` and scored streams is rejected. Each stream's KL is logged as `kl_loss_<stream>`; `kl_loss` adds
+  them unweighted, so read the per-stream keys when the forms differ.
 
 ## 3. Key flags
 
