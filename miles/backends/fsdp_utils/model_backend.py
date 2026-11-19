@@ -20,17 +20,52 @@ from __future__ import annotations
 import abc
 import functools
 import importlib
+import json
 import logging
+import os
 from dataclasses import replace
+from itertools import chain
+from pathlib import Path
 
 import torch
 from diffusers import DiffusionPipeline
+from diffusers.utils import SAFE_WEIGHTS_INDEX_NAME, SAFETENSORS_WEIGHTS_NAME
 
 from .models.parallel_plan import FSDPParallelPlan
 from .sequence_parallel.diffusers_dispatch import install_diffusers_usp_patch
 from .sequence_parallel.plan import MILES_SP_PLAN_ATTR, SequenceParallelPlan
 
 logger = logging.getLogger(__name__)
+
+
+def diffusers_weight_files(checkpoint_path: str, component: str) -> list[Path] | None:
+    """The safetensors files ``from_pretrained`` reads a component from with no variant, or None for other weights.
+
+    The ones the component's index lists, else its single file; a Hub id is resolved to its snapshot first.
+    """
+    stem = SAFETENSORS_WEIGHTS_NAME.removesuffix(".safetensors")
+    is_local = os.path.isdir(checkpoint_path)
+    if not is_local:
+        from huggingface_hub import snapshot_download
+        from huggingface_hub.errors import HFValidationError, LocalEntryNotFoundError, RepositoryNotFoundError
+
+        patterns = [f"{component}/{SAFETENSORS_WEIGHTS_NAME}*", f"{component}/{stem}-*.safetensors"]
+        try:
+            checkpoint_path = snapshot_download(checkpoint_path, allow_patterns=patterns)
+        except (HFValidationError, LocalEntryNotFoundError, RepositoryNotFoundError):
+            # Not a folder, and no repo the Hub or the offline cache resolves: load_component says so.
+            return None
+    folder = Path(checkpoint_path) / component
+    index = folder / SAFE_WEIGHTS_INDEX_NAME
+    if index.is_file():
+        names = set(json.loads(index.read_text())["weight_map"].values())
+    elif is_local and (Path(checkpoint_path) / SAFETENSORS_WEIGHTS_NAME).is_file():
+        # In a local folder from_pretrained takes a single weights file at the root before the component's.
+        return None
+    else:
+        names = {SAFETENSORS_WEIGHTS_NAME}
+    files = [folder / name for name in sorted(names)]
+    return files if all(file.is_file() for file in files) else None
 
 
 class BaseModelBackend(abc.ABC):
@@ -53,6 +88,15 @@ class BaseModelBackend(abc.ABC):
         materialize_weights: bool,
     ) -> torch.nn.Module:
         raise NotImplementedError
+
+    def safetensors_files(self, component: str, *, checkpoint_path: str) -> list[Path] | None:
+        """Local safetensors files every rank can read its shards of the component from; None: rank 0 loads it.
+
+        They hold what ``load_component`` loads: a backend that loads other weights names its own files or none.
+        A backend that names files gives every tensor its final dtype when it builds without weights: the file
+        values are cast into those dtypes, and no rank loads a model the others could copy them from.
+        """
+        return None
 
     @abc.abstractmethod
     def enable_gradient_checkpointing(self, model: torch.nn.Module) -> None:
@@ -196,18 +240,40 @@ class DiffusersModelBackend(BaseModelBackend):
             "low_cpu_mem_usage": materialize_weights,
         }
 
-        # Non-rank0 loads with low_cpu_mem_usage=False so the ambient meta-device
-        # context keeps params on meta; diffusers forbids that combination when the
-        # class pins modules to fp32, so disable the pin for the duration (dtypes are
-        # re-synced from rank0 afterwards, see ``sync_model_dtypes``).
+        # A build without weights loads with low_cpu_mem_usage=False so the ambient meta-device context keeps
+        # the parameters on meta; diffusers forbids that combination when the class pins modules to fp32, so the
+        # pin is off for the call and applied afterwards.
         keep_in_fp32 = getattr(model_cls, "_keep_in_fp32_modules", None)
         if not materialize_weights and keep_in_fp32 is not None:
             model_cls._keep_in_fp32_modules = None
         try:
-            return model_cls.from_pretrained(checkpoint_path, **kwargs)
+            model = model_cls.from_pretrained(checkpoint_path, **kwargs)
         finally:
             if not materialize_weights and keep_in_fp32 is not None:
                 model_cls._keep_in_fp32_modules = keep_in_fp32
+        if not materialize_weights:
+            self._cast_state_as_a_load_does(model, master_dtype, keep_in_fp32 or [])
+        return model
+
+    @staticmethod
+    def _cast_state_as_a_load_does(model: torch.nn.Module, master_dtype: torch.dtype, keep_in_fp32: list[str]) -> None:
+        """Give every floating tensor of the state dict the dtype a load with weights gives it.
+
+        diffusers casts each one to the master dtype, or to fp32 under the class's pin
+        (``load_model_dict_into_meta``). A build without weights has the constructor's dtypes, and every rank may
+        be built that way, so no rank's loaded model is there to copy them from.
+        """
+        saved = set(model.state_dict())
+        for name, tensor in chain(model.named_parameters(), model.named_buffers()):
+            if name in saved and tensor.is_floating_point():
+                pinned = any(module in name.split(".") for module in keep_in_fp32)
+                tensor.data = tensor.data.to(torch.float32 if pinned else master_dtype)
+
+    def safetensors_files(self, component: str, *, checkpoint_path: str) -> list[Path] | None:
+        # The files hold what this class's load_component loads; a subclass that loads other weights names its own.
+        if type(self).load_component is not DiffusersModelBackend.load_component:
+            return None
+        return diffusers_weight_files(checkpoint_path, component)
 
     @classmethod
     def _resolve_component_class(cls, checkpoint_path: str, component: str):

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import tempfile
 import time
 from itertools import chain
 from pathlib import Path
@@ -63,6 +65,59 @@ def broadcast_full_state_to_fsdp(
         # CPUOffloadPolicy manages params only; buffers must live on GPU for forward.
         for buffer in model.buffers():
             buffer.data = buffer.data.to(torch.cuda.current_device())
+
+
+def safetensors_hold_state(model: torch.nn.Module, files: list[Path]) -> bool:
+    """Whether the files hold the model's state dict: the same names, each with the same shape.
+
+    A buffer outside the state dict is in no file, so it must hold the value its constructor computed.
+    """
+    from safetensors import safe_open
+
+    state = model.state_dict()
+    if any(buffer.is_meta for name, buffer in model.named_buffers() if name not in state):
+        return False
+    saved = {}
+    for file in files:
+        with safe_open(file, framework="pt") as tensors:
+            saved.update({name: tuple(tensors.get_slice(name).get_shape()) for name in tensors.keys()})
+    return saved == {name: tuple(tensor.shape) for name, tensor in state.items()}
+
+
+def holds_on_every_rank(condition: bool) -> bool:
+    conditions = [None] * dist.get_world_size()
+    dist.all_gather_object(conditions, condition)
+    return all(conditions)
+
+
+@torch.no_grad()
+def load_safetensors_to_fsdp(model: torch.nn.Module, files: list[Path], *, cpu_offload: bool) -> None:
+    """Materialize FSDP2 shards by reading each rank's own slice of every parameter from the files.
+
+    A buffer outside the state dict is in no file: every rank ends with the value rank 0's constructor computed.
+    """
+    device = torch.cuda.current_device()
+    # Buffers were computed for real on every rank; to_empty would wipe them. One still on meta is in the state
+    # dict, and the read fills it. to_empty splits a tensor two modules share, so each name keeps its own entry.
+    buffers = dict(model.named_buffers(remove_duplicate=False))
+    model.to_empty(device="cpu" if cpu_offload else device)
+    for name, buffer in model.named_buffers(remove_duplicate=False):
+        if not buffers[name].is_meta:
+            buffer.copy_(buffers[name])
+    # The reader takes every safetensors file of one folder, and the files' own folder may hold others (a variant).
+    with tempfile.TemporaryDirectory() as folder:
+        for file in files:
+            os.symlink(file.resolve(), Path(folder) / file.name)
+        dcp.load(model.state_dict(), storage_reader=dcp.HuggingFaceStorageReader(folder, thread_count=4))
+    if cpu_offload:
+        # CPUOffloadPolicy manages params only; buffers must live on GPU for forward.
+        for buffer in model.buffers():
+            buffer.data = buffer.data.to(device)
+    # As the broadcast leaves them: rank 0's values, should a constructor not compute the same on every rank.
+    state = model.state_dict()
+    for name, buffer in model.named_buffers(remove_duplicate=False):
+        if name not in state:
+            dist.broadcast(buffer, src=0)
 
 
 def _is_lora_param_name(name: str) -> bool:
