@@ -3,11 +3,11 @@
     engine response                                   Sample
       generated_output                             ──►  normalized to [C, F, H, W]
       {"__store__": field} markers                 ──►  StoredTensor handles of the response's ref
-      generated_audio, audio_sample_rate           ──►  the same fields
       rollout_log_probs / dit_trajectory / ...     ──►  the same fields            (primary stream)
       extra_streams:
+        audio: generated_output, sample_rate       ──►  generated_audio, audio_sample_rate
         audio: rolled out (log-probs, trajectory)  ──►  extra_streams["audio"]
-        audio: only its decoded waveform           ──►  left out
+        audio: only its decoded waveform           ──►  no extra_streams entry
       extra_streams: None (no audio pipeline)      ──►  extra_streams == {}
 
 What each test pins:
@@ -15,7 +15,7 @@ What each test pins:
   ambiguous layout            first and last dimension both look like channels: rejected
   no channel dimension        rejected
   store markers               the primary stream's markers become StoredTensors of the response's ref
-  response audio              the audio fields fill the sample
+  response audio              the audio stream's output and sample rate fill the sample's waveform fields
   extra stream, engine-built  a stream the engine rolled out reaches the sample, tensor by tensor
   stream not rolled out       an entry without rollout data is not a sample stream
   extra stream, stored        an extra stream's markers become StoredTensors of the response's ref
@@ -130,15 +130,21 @@ def _tensor_bytes(tensor: torch.Tensor) -> bytes:
     return save({"t": tensor})
 
 
-def test_response_audio_fills_the_sample():
+def test_the_audio_streams_output_is_the_samples_waveform():
+    """The engine sends the waveform as the audio stream's output; read from the top level, media has no sound."""
     audio = torch.zeros(2, 480)
-    body = {"generated_audio": audio, "audio_sample_rate": 48000}
+    body = {"extra_streams": _audio_output_only(audio)}
 
     sample = apply_rollout_image_response(Sample(), body, deserialize_func=lambda value: value)
 
     assert sample.generated_audio is audio
     assert sample.audio_sample_rate == 48000
-    silent = apply_rollout_image_response(Sample(), {}, deserialize_func=lambda value: value)
+
+
+@pytest.mark.parametrize("body", [{}, {"extra_streams": None}], ids=["no field", "a pipeline without audio"])
+def test_a_response_without_an_audio_stream_leaves_the_sample_silent(body):
+    silent = apply_rollout_image_response(Sample(), body, deserialize_func=lambda value: value)
+
     assert silent.generated_audio is None and silent.audio_sample_rate is None
 
 
@@ -225,7 +231,8 @@ def _audio_output_only(generated_output) -> dict:
         pytest.param({"extra_streams": None}, id="a pipeline without extra streams"),
         pytest.param(_engine_response_bodies, id="the engine's video-only rollout, which still decodes audio"),
         pytest.param(
-            {"extra_streams": _audio_output_only({"__tensor__": True, "data": b""})}, id="a waveform-only entry"
+            {"extra_streams": _audio_output_only({"__tensor__": True, "data": _tensor_bytes(torch.zeros(2, 8))})},
+            id="a waveform-only entry",
         ),
     ],
 )
