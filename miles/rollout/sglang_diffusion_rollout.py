@@ -285,32 +285,40 @@ async def generate_microgroup(
 async def release_generated_outputs(state: GenerateState, samples: list[Sample]) -> None:
     """Delete the stored outputs of scored samples from the store, first reading the few media logging keeps.
 
-    The samples' outputs become ``None``, except the kept ones, which become tensors. The rollout's release deletes
-    whatever a failed delete leaves.
+    The samples' outputs become ``None``, except the kept ones, which become tensors; a waveform follows its
+    sample's output. The rollout's release deletes whatever a failed delete leaves.
     """
+    # The engine stores a response's outputs together: where the output is stored, so is the waveform, if any.
     stored_samples = [sample for sample in samples if isinstance(sample.generated_output, StoredTensor)]
     if not stored_samples:
         return
     # taken before the read is awaited, so concurrent microgroups keep at most --wandb-log-num-images in all
     media_samples = stored_samples[: state.media_outputs_left]
     state.media_outputs_left -= len(media_samples)
-    media_tensors = []
+    waveform_samples = [sample for sample in media_samples if sample.generated_audio is not None]
+    media_tensors, media_waveforms = [], []
     if media_samples:
         media_outputs = [sample.generated_output for sample in media_samples]
+        stored_waveforms = [sample.generated_audio for sample in waveform_samples]
         try:
             media_tensors = await asyncio.to_thread(read_generated_outputs, state.output_reader, media_outputs)
+            if stored_waveforms:
+                # not read_generated_outputs: a waveform has no video layout to normalize
+                media_waveforms = await asyncio.to_thread(state.output_reader.read, stored_waveforms)
         except Exception:
             logger.warning(
                 "Failed to read %d outputs kept for media; they are not logged", len(media_samples), exc_info=True
             )
-            media_samples = []
-    output_refs = [
-        msgspec.structs.replace(
-            stored_output.ref,
-            fields=tuple(spec for spec in stored_output.ref.fields if spec.name == stored_output.field),
+            media_samples, waveform_samples, media_tensors = [], [], []
+    output_refs = []
+    for sample in stored_samples:
+        ref = sample.generated_output.ref
+        output_fields = {sample.generated_output.field}
+        if sample.generated_audio is not None:
+            output_fields.add(sample.generated_audio.field)
+        output_refs.append(
+            msgspec.structs.replace(ref, fields=tuple(spec for spec in ref.fields if spec.name in output_fields))
         )
-        for stored_output in (sample.generated_output for sample in stored_samples)
-    ]
     try:
         await asyncio.to_thread(state.output_store.delete_many, output_refs)
     except Exception:
@@ -319,8 +327,11 @@ async def release_generated_outputs(state: GenerateState, samples: list[Sample])
         )
     for sample in stored_samples:
         sample.generated_output = None
+        sample.generated_audio = None
     for sample, tensor in zip(media_samples, media_tensors, strict=True):
         sample.generated_output = tensor
+    for sample, waveform in zip(waveform_samples, media_waveforms, strict=True):
+        sample.generated_audio = waveform
 
 
 async def generate_and_rm_microgroup(

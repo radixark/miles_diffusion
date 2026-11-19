@@ -265,8 +265,10 @@ def apply_rollout_image_response(
         if isinstance(generated_output, StoredTensor)
         else _normalize_generated_output(generated_output)
     )
-    sample.generated_audio = deserialize_func(body.get("generated_audio"))
-    sample.audio_sample_rate = body.get("audio_sample_rate")
+    # The waveform is the audio stream's decoded output; a pipeline without audio sends no such stream.
+    audio_stream = (body.get("extra_streams") or {}).get("audio") or {}
+    sample.generated_audio = deserialize_func(audio_stream.get("generated_output"))
+    sample.audio_sample_rate = audio_stream.get("sample_rate")
     # Eval-mode rollout (rollout=False) sends no log_probs; train-mode always does.
     sample.rollout_log_probs = deserialize_func(body.get("rollout_log_probs"))
     sample.rollout_debug_tensors = _parse_rollout_debug_tensors(
