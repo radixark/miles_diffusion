@@ -104,10 +104,9 @@ def prepare_audio_positions(
     num_frames: int,
     device: torch.device,
 ) -> torch.Tensor:
-    """Return LTX audio patch bounds in seconds with shape ``[B, 1, T, 2]``, in fp32.
+    """Return LTX audio patch coordinates in seconds with shape ``[B, 1, T, 2]``, in fp32.
 
-    The engine keeps audio coordinates in fp32 (it rounds only the video ones to the hidden dtype); bf16
-    timestamps already put the audio prediction 20-40% off.
+    The engine rounds only the video coordinates to the hidden dtype; bf16 is too coarse for audio timestamps.
     """
     latent_frames = torch.arange(num_frames + 1, dtype=torch.float32, device=device)
     mel_frames = latent_frames * _LTX_AUDIO_LATENT_DOWNSAMPLE
