@@ -73,6 +73,7 @@ What to watch:
 | Signal | Where | Reading |
 |---|---|---|
 | Reward | `eval/ocr_test`, `rollout/reward/raw_mean` | Eval is the 1018-prompt test split, sampled without noise, so two evals differ only by the weights. The rollout reward follows the 8 prompts of its rollout (0.47 to 0.84 on the base model) |
+| Images | `eval_media`, `rollout_media` | The OCR score cannot tell text in a scene from text on an empty background. Look at the images; past 200 rollouts this recipe erases the scene (§ 6.1) |
 | Rollout vs train | `train/model_output_mean_abs_diff`, `train/prev_mean_diff_over_noise_std` | The trainer's forward and transition mean against the engine's own (`--diffusion-debug-mode`); about 0.02 and 0.018 on a rollout's first optimizer step of the base model. They should not grow: over 1000 rollouts they fell to 0.010 and 0.007 |
 | PPO ratio | `train/clipfrac`, `train/log_prob_mean_abs_diff` | 0 on a rollout's first optimizer step (the old log-prob is recomputed by the trainer), then how far that step moved the policy |
 | Memory | `nvidia-smi`, `train/device_memory_used_gb` | A GPU peaks near 69 GB, during a rollout (its TP2 engine rank). While training, the engine is offloaded and about 24 GB are in use |
@@ -94,8 +95,13 @@ What to watch:
   engine's, 20-47% of the pairs are clipped before any update.
 - **lr 1e-4, 2 optimizer steps per rollout.** The learning rate decides whether the adapters generalize. At 2e-4 the
   recipe fits 8 fixed prompts 1.5 times as fast as at 1e-4, and on the full dataset gets worse on every prompt it has
-  not trained on: `eval/ocr_test` falls from 0.600 to 0.550 in 20 rollouts. At 1e-4 it rises to 0.621, and to 0.948
-  after 600 (§ 6). lr 3e-4 with a 3e-4 clip range and 4 optimizer steps took it to 0.37 in 10 rollouts.
+  not trained on: `eval/ocr_test` falls from 0.600 to 0.550 in 20 rollouts. At 1e-4 it rises to 0.621, and to 0.830
+  after 200 (§ 6). lr 3e-4 with a 3e-4 clip range and 4 optimizer steps took it to 0.37 in 10 rollouts.
+- **200 rollouts, and no further.** The reward is OCR alone, and `--diffusion-kl-beta 0` leaves nothing that holds
+  the policy near the base model. Up to 180 rollouts the eval rises with the scene intact; after 200 it rises
+  because the scene is erased, and by 800 the images are text on an empty background (§ 6.1). Training longer
+  needs a term that keeps the image: a KL to the base model (`--diffusion-kl-beta`, 0.04 in the SD3.5 OCR recipe)
+  or a second reward such as PickScore (`weighted_mixture_rm`). Neither has been measured on this model.
 - **Tune on `eval/ocr_test`, not on the reward of a fixed prompt set**, which rises fastest for the settings that
   generalize worst. For a reading before the next eval, run the frozen-weights control of § 4 once:
   `--deterministic-mode` gives rollout k the same prompts and noise in every run, so a run's
@@ -103,8 +109,8 @@ What to watch:
 - **No gradient checkpointing.** One pair per forward peaks at 16 GB on the trainer, and checkpointing made the
   training phase a third longer (64 s against 47 s).
 - **Cost.** About 73 s per rollout on 8 H200: 14 s to generate and score 128 images, 47 s to train on their 640
-  pairs, the rest to move the engines and the trainer on and off the GPUs. With the evals, the recipe's 600 rollouts
-  take 13 hours.
+  pairs, the rest to move the engines and the trainer on and off the GPUs. With the evals, the recipe's 200 rollouts
+  take 4.4 hours.
 - **Engine.** MiniMax-H3-Image rollouts need sgl-project/sglang#51113 in `sglang-miles`. The checkpoint must ship both
   layouts (§ 2).
 - **LoRA only.** The engine keeps the DiT's per-step output heads outside its parameters and cannot receive them, so
@@ -114,21 +120,25 @@ What to watch:
 
 ### 6.1 The recipe on the full dataset
 
-One run of the recipe's settings on 8 H200, 1000 rollouts in 22 hours. The recipe stops at 600 (76,800 images, 13
-hours); the learning rate is constant, so its run is the first 600 rollouts of this one.
+One run of the recipe's settings on 8 H200, 1000 rollouts in 22 hours. The recipe stops at 200 (25,600 images, 4.4
+hours); the learning rate is constant, so its run is the first 200 rollouts of this one. The second row is the detail
+left in the 8 eval images wandb logs, always for the same 8 prompts: the mean luminance step between neighbouring
+pixels.
 
-| Rollouts trained | 0 | 100 | 200 | 300 | 400 | 500 | 600 | 700 | 800 | 900 | 1000 |
+| Rollouts trained | 0 | 100 | 180 | 200 | 240 | 280 | 320 | 400 | 600 | 800 | 1000 |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| `eval/ocr_test` | 0.6003 | 0.6795 | 0.8303 | 0.8768 | 0.7991 | 0.8886 | 0.9475 | 0.9510 | 0.9650 | 0.9500 | 0.9565 |
+| `eval/ocr_test` | 0.6003 | 0.6795 | 0.8181 | 0.8303 | 0.8813 | 0.8101 | 0.9141 | 0.7991 | 0.9475 | 0.9650 | 0.9565 |
+| Image detail | 0.061 | 0.066 | 0.060 | 0.054 | 0.035 | 0.025 | 0.013 | 0.022 | 0.013 | 0.015 | 0.016 |
 
-![MiniMax H3 Image eval OCR](../../assets/images/h3/h3_image_ocr_eval.png)
+![MiniMax H3 Image eval OCR and image detail](../../assets/images/h3/h3_image_ocr_eval.png)
 
-- **Most of the gain comes in 600 rollouts.** The eval first passes 0.90 after 320 rollouts and is 0.948 after 600.
-  The 400 rollouts after that add about 0.01: the evals from 700 on lie between 0.930 and 0.975, the best after 980.
-- **The eval is not monotonic.** It fell 0.12 below its best so far after 160 rollouts, 0.07 after 280 and 0.15 after
-  400, and came back each time; the last of these took 200 rollouts. Later drops are 0.05 or less. The eval has no
-  sampling noise, so each value is what the weights of that rollout score. A checkpoint is saved with every eval
-  (`--save-interval 20`): pick one by its eval, not the last one written.
+- **Up to 180 rollouts the gain is real.** The eval goes from 0.600 to 0.818 and the images keep their scene; the text
+  in them is larger and cleaner.
+- **After 200 the reward is hacked.** Between 200 and 320 rollouts the eval goes from 0.83 to 0.91 while the image
+  detail falls to a fifth: the scene fades, and from 800 on the images are the quoted text on an empty background.
+  The OCR score of those images is higher, and it is the only thing the recipe rewards.
+- **The drops in the eval are the scene coming back.** After 400 rollouts the eval is 0.15 below its best so far and
+  the image detail is up from 0.013 to 0.022.
 - **The trainer stays aligned with the engine.** `train/model_output_mean_abs_diff` on a rollout's first optimizer
   step, averaged over 100 rollouts, goes from 0.021 to 0.010. `train/clipfrac` on the second optimizer step, averaged
   over 20 rollouts, stays below 0.32.
