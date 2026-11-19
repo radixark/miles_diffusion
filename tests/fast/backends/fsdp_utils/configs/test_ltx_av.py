@@ -91,7 +91,8 @@ def _inputs(with_audio: bool):
     cond = {"context": torch.randn(1, 16, 32, generator=gen).bfloat16()}
     if with_audio:
         latents["audio"] = torch.randn(1, NUM_AUDIO_FRAMES, 128, generator=gen).bfloat16()
-        timesteps["audio"] = timesteps["visual"].clone()
+        # The engine gives both streams one sigma grid; a different value here pins which stream feeds which Modality.
+        timesteps["audio"] = torch.tensor([497.3])
         cond["audio_context"] = torch.randn(1, 16, 24, generator=gen).bfloat16()
     return latents, timesteps, cond
 
@@ -210,9 +211,12 @@ class TestAudioPositions:
 
 class TestValidateArgs:
     @staticmethod
-    def _args(extra_streams, patch_groups, sp_degree=None):
+    def _args(extra_streams, patch_groups, sp_degree=None, gpus_per_engine=1):
         return Namespace(
-            rollout_extra_streams=extra_streams, rollout_patch_groups=patch_groups, sglang_sp_degree=sp_degree
+            rollout_extra_streams=extra_streams,
+            rollout_patch_groups=patch_groups,
+            sglang_sp_degree=sp_degree,
+            rollout_num_gpus_per_engine=gpus_per_engine,
         )
 
     @pytest.mark.parametrize(
@@ -235,11 +239,21 @@ class TestValidateArgs:
         with pytest.raises(ValueError, match=message):
             LTXTrainPipelineConfig.validate_args(self._args(extra_streams, patch_groups))
 
-    def test_audio_rejects_engine_sequence_parallelism(self):
-        with pytest.raises(ValueError, match="--sglang-sp-degree"):
-            LTXTrainPipelineConfig.validate_args(self._args(["audio"], ["ltx_av"], sp_degree=2))
-        LTXTrainPipelineConfig.validate_args(self._args(["audio"], ["ltx_av"], sp_degree=1))
-        LTXTrainPipelineConfig.validate_args(self._args([], ["ltx"], sp_degree=2))
+    # The engine shards audio under SP; an unset SP degree takes the GPUs TP leaves, so only 1 is safe on 2+ GPUs.
+    @pytest.mark.parametrize(
+        ("sp_degree", "gpus_per_engine", "accepted"),
+        [(None, 1, True), (1, 2, True), (None, 2, False), (2, 2, False)],
+    )
+    def test_audio_needs_engine_sp_degree_one(self, sp_degree, gpus_per_engine, accepted):
+        args = self._args(["audio"], ["ltx_av"], sp_degree=sp_degree, gpus_per_engine=gpus_per_engine)
+        if accepted:
+            LTXTrainPipelineConfig.validate_args(args)
+        else:
+            with pytest.raises(ValueError, match="--sglang-sp-degree 1"):
+                LTXTrainPipelineConfig.validate_args(args)
+
+    def test_video_only_keeps_engine_sequence_parallelism(self):
+        LTXTrainPipelineConfig.validate_args(self._args([], ["ltx"], sp_degree=2, gpus_per_engine=2))
 
     def test_the_recipe_parses_with_audio(self, monkeypatch):
         # Through parse: the LTX config declares audio, and its own checks run after the patch groups are split.
