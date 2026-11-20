@@ -303,6 +303,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Samples per prompt sent in one rollout request (sub-batch of the group).",
             )
             parser.add_argument(
+                "--rollout-extra-streams",
+                type=parse_stream_names,
+                default=[],
+                help=(
+                    'Comma-separated latent streams the engine rolls out besides the primary one, e.g. "audio". '
+                    "The Flow-GRPO converter pairs them with the primary stream; the model must be able to train "
+                    "them. A custom train-pair converter reads them from Sample.extra_streams itself."
+                ),
+            )
+            parser.add_argument(
                 "--rollout-video-dtype",
                 type=str,
                 choices=["keep", "uint8"],
@@ -1935,6 +1945,10 @@ def validate_score_centering_args(args) -> None:
         raise ValueError(
             f"--diffusion-score-centering requires 0 < --diffusion-clip-range < 1, got {args.diffusion_clip_range}"
         )
+    if args.rollout_extra_streams:
+        raise ValueError(
+            "--diffusion-score-centering closes one stream's Gaussian integral; drop --rollout-extra-streams"
+        )
 
 
 def validate_actor_lora_adapter(args) -> None:
@@ -2163,6 +2177,18 @@ def miles_validate_args(args):
     if cfg_cls.tasks and args.diffusion_task not in cfg_cls.tasks:
         raise ValueError(
             f"{cfg_cls.__name__} trains --diffusion-task {list(cfg_cls.tasks)}, got {args.diffusion_task!r}"
+        )
+    if not set(args.rollout_extra_streams) <= set(cfg_cls.trainable_extra_streams):
+        raise ValueError(
+            f"{cfg_cls.__name__} trains the extra streams {list(cfg_cls.trainable_extra_streams)}, "
+            f"got --rollout-extra-streams {args.rollout_extra_streams}"
+        )
+    if len(set(args.rollout_extra_streams)) != len(args.rollout_extra_streams):
+        raise ValueError(f"--rollout-extra-streams names a stream twice: {args.rollout_extra_streams}")
+    if args.rollout_extra_streams and args.loss_type not in ("policy_loss", "custom_loss"):
+        raise ValueError(
+            f"--rollout-extra-streams feeds the Flow-GRPO train pairs; the --loss-type {args.loss_type} converter "
+            "reads the primary stream alone"
         )
     cfg_cls.validate_args(args)
     if args.use_lora and args.lora_target_modules is None:

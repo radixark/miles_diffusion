@@ -6,6 +6,11 @@
     dmd2          --teacher-load, ODE rollout stopped at a random step; the critic group's and the actor's hooks
                   come from the loss hub by role, so the trainer args carry no hook path
 
+--rollout-extra-streams on top of a recipe:
+
+    a stream the model trains, under policy_loss or custom_loss        --> accepted
+    a stream it does not train / named twice / under nft                --> rejected
+
 The arguments pass through load_fsdp_args, set_default_diffusion_args and miles_validate_args exactly as parse_args
 runs them, so a validator that reads a value the defaults no longer fill fails here, not on the launch node.
 """
@@ -57,6 +62,7 @@ def parse(monkeypatch: pytest.MonkeyPatch):
     class _FakePipelineConfig:
         model_backend_path = "external.Backend"
         primary_stream = "main"
+        trainable_extra_streams = ("echo",)
         supports_cfg_training = True
         tasks = ("t2i", "t2v")
 
@@ -85,6 +91,28 @@ def test_each_loss_type_recipe_parses_and_validates(parse, loss_type):
 def test_the_models_primary_stream_is_resolved_into_args(parse):
     """The rollout side keys train pairs by ``args.primary_stream``; left unresolved, it fails on the first GPU rollout."""
     assert parse(ARGV_BY_LOSS_TYPE["policy_loss"]).primary_stream == "main"
+
+
+@pytest.mark.parametrize("loss_type", ["policy_loss", "custom_loss"])
+def test_extra_rollout_streams_the_model_trains_are_accepted(parse, loss_type):
+    """Rejecting custom_loss would lock out the custom converters the flag's help tells to read the streams."""
+    argv = ARGV_BY_LOSS_TYPE["policy_loss"].replace("--loss-type policy_loss", f"--loss-type {loss_type}")
+    assert parse(argv + " --rollout-extra-streams echo").rollout_extra_streams == ["echo"]
+    assert parse(argv).rollout_extra_streams == []
+
+
+@pytest.mark.parametrize(
+    ("loss_type", "extra_streams", "match"),
+    [
+        pytest.param("policy_loss", "audio", "trains the extra streams", id="a stream the model cannot train"),
+        pytest.param("policy_loss", "echo,echo", "twice", id="a stream named twice"),
+        pytest.param("nft", "echo", "reads the primary stream alone", id="a loss whose converter drops the stream"),
+    ],
+)
+def test_extra_rollout_streams_that_would_not_be_trained_are_rejected(parse, loss_type, extra_streams, match):
+    """Each of these would otherwise fail after the engine loaded, or roll a stream out that nothing trains on."""
+    with pytest.raises(ValueError, match=match):
+        parse(ARGV_BY_LOSS_TYPE[loss_type] + f" --rollout-extra-streams {extra_streams}")
 
 
 def test_dmd2_trainer_groups_get_their_hooks_by_role(parse):

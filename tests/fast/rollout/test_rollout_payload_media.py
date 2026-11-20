@@ -30,6 +30,7 @@ def _args(**overrides):
         diffusion_log_prob_no_const=False,
         diffusion_debug_mode=False,
         rollout_video_dtype="uint8",
+        rollout_extra_streams=[],
         train_pipeline_config_path=None,
         rm_type="none",
         custom_rm_path=None,

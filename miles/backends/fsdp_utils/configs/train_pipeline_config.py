@@ -89,6 +89,8 @@ class TrainPipelineConfig(abc.ABC):
     tasks: tuple[str, ...] = ()
     # The name this family's forward gives the latent stream at the top level of a rollout response.
     primary_stream: str = "visual"
+    # Extra streams the training forward can train; the engine pipeline declares its own rollout support.
+    trainable_extra_streams: tuple[str, ...] = ()
     lora_target_modules: list[str] = ["to_q", "to_k", "to_v", "to_out.0"]
     optimizer_state_allowed_missing: list[str] = []
     # Case-insensitive substrings matched against the checkpoint name (--hf-checkpoint).
