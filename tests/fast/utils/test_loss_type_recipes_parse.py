@@ -173,6 +173,15 @@ def test_per_stream_sde_settings_must_name_every_stream(parse, sde_type):
         parse(ARGV_BY_LOSS_TYPE["policy_loss"] + f" --rollout-extra-streams echo --diffusion-sde-type {sde_type}")
 
 
+def test_one_kl_beta_covers_every_scored_stream(parse):
+    """The recipes pass one positive beta; a rule against one beta over mixed forms must not catch scored streams."""
+    args = parse(
+        ARGV_BY_LOSS_TYPE["policy_loss"] + " --rollout-extra-streams echo --diffusion-kl-beta 0.04 --use-lora"
+    )
+    assert args.diffusion_kl_beta == {"main": 0.04, "echo": 0.04}
+    assert args.ref_mode == "lora_base"
+
+
 def test_a_kl_beta_on_the_ode_stream_alone_turns_on_the_lora_base_reference(parse):
     """Reading one beta for the reference default would leave a run with only an extra stream's KL without one."""
     args = parse(
