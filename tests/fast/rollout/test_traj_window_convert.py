@@ -15,7 +15,7 @@ non-contiguous kept set still pairs correctly (4), NFT reads x0 off a
 final-step-only trajectory but rejects one ending anywhere else (5), the
 final SDE step pairs with next_sigma == 0 (6), and the trainer's prepare hook
 hands each row of a micro-batch its own pair's step in the rollout, not its
-position in the shipped window (7).
+position in the shipped window, or no steps when the pairs carry none (7).
 """
 
 from tests.ci.ci_register import register_cpu_ci
@@ -93,8 +93,8 @@ def test_terminal_step_next_sigma_is_zero():
     assert feats["next_sigma"].item() == 0.0
 
 
-def test_prepared_batch_carries_each_pairs_rollout_step():
-    """Samples with different SDE windows share a micro-batch; a row given a neighbour's step runs its head."""
+def _prepare_pairs_of_two_windows(edit_pairs=lambda pairs: None):
+    """Two samples with different SDE windows, expanded and prepared as one micro-batch."""
     from types import SimpleNamespace
 
     from miles.backends.fsdp_utils.loss_hub.flow_grpo import prepare_flow_grpo_batch
@@ -125,20 +125,45 @@ def test_prepared_batch_carries_each_pairs_rollout_step():
         for index, (sde, kept) in enumerate([([2, 3], [2, 3, 4]), ([6, 7], [6, 7, 8])])
     ]
     pairs = expand_samples_to_train_pairs(None, samples, [0.1, 0.2], [0.1, 0.2])["train_data"]
-    # a custom expander may emit the step as a plain int
-    pairs[1]["denoising_step_index"] = int(pairs[1]["denoising_step_index"])
+    edit_pairs(pairs)
     ctx = SimpleNamespace(
         args=SimpleNamespace(diffusion_adv_clip_max=5.0, diffusion_guidance_scale=1.0, diffusion_true_cfg_scale=None),
         device=torch.device("cpu"),
         train_pipeline_config=_Family(),
         models={"transformer": torch.nn.Identity()},
     )
+    return prepare_flow_grpo_batch(ctx, pairs, microbatch_id=0, optim_step_idx=0)
 
-    prepared = prepare_flow_grpo_batch(ctx, pairs, microbatch_id=0, optim_step_idx=0)
+
+def test_prepared_batch_carries_each_pairs_rollout_step():
+    """Samples with different SDE windows share a micro-batch; a row given a neighbour's step runs its head."""
+
+    def emit_one_step_as_a_plain_int(pairs):
+        pairs[1]["denoising_step_index"] = int(pairs[1]["denoising_step_index"])
+
+    prepared = _prepare_pairs_of_two_windows(emit_one_step_as_a_plain_int)
 
     assert prepared.denoising_step_indices.tolist() == [2, 3, 6, 7]
     assert prepared.denoising_step_indices.dtype == torch.long
     assert torch.equal(prepared.extras["sigmas"], _full_traj().sigmas[[2, 3, 6, 7]])
+
+
+def test_pairs_without_a_step_prepare_without_step_indices():
+    """An expander written before the key existed still feeds the families whose forward ignores the step."""
+
+    def drop_the_step(pairs):
+        for pair in pairs:
+            del pair["denoising_step_index"]
+
+    assert _prepare_pairs_of_two_windows(drop_the_step).denoising_step_indices is None
+
+
+def test_a_micro_batch_with_the_step_on_only_some_pairs_is_rejected():
+    def drop_one_step(pairs):
+        del pairs[2]["denoising_step_index"]
+
+    with pytest.raises(ValueError, match="only some pairs"):
+        _prepare_pairs_of_two_windows(drop_one_step)
 
 
 def test_missing_window_latent_raises():
