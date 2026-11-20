@@ -21,7 +21,7 @@ class LTXTrainPipelineConfig(TrainPipelineConfig):
     model_backend_path = "miles.backends.fsdp_utils.model_backend.MilesModelBackend"
     model_package = "miles.backends.fsdp_utils.models.ltx"
     trainable_extra_streams = ("audio",)
-    # A video-only run gives the audio branch no gradient, so it has no optimizer state.
+    # A run that does not train the audio stream never steps the audio branch, so it has no optimizer state.
     optimizer_state_allowed_missing = ["audio"]
     # forward_velocity anchors element-wise math on latents.dtype; rollout runs it bf16, so cast at the boundary.
     input_dtype_policy = {"latents": "default", "cond": "default", "timestep": None}

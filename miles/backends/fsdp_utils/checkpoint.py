@@ -16,6 +16,14 @@ from torch.distributed.checkpoint.stateful import Stateful
 logger = logging.getLogger(__name__)
 
 
+def saved_optimizer_param_names(optimizer_dir: Path, key: str) -> set[str]:
+    """The params an optimizer checkpoint saved under ``key`` holds state for."""
+    prefix = f"{key}.optim.state."
+    saved_tensors = dcp.FileSystemReader(str(optimizer_dir)).read_metadata().state_dict_metadata
+    # A saved tensor is "<prefix><param name>.<state field>", e.g. "...attn1.to_q.lora_A.default.weight.exp_avg".
+    return {name[len(prefix) :].rpartition(".")[0] for name in saved_tensors if name.startswith(prefix)}
+
+
 def sync_model_dtypes(model: torch.nn.Module) -> None:
     """Match meta parameter and buffer dtypes to rank 0 before FSDP sharding."""
     rank = dist.get_rank()
@@ -105,24 +113,51 @@ class ModelState(Stateful):
 
 
 class OptimizerState(Stateful):
-    """Wrapper for optimizer state only. ``allowed_missing`` is a list of
-    substring patterns; matching params are filtered out of the saved/loaded
-    state dict so DCP's strict matching tolerates trainable params whose
-    forward output is unreachable from the loss (architectural dead params)."""
+    """Wrapper for optimizer state only.
 
-    def __init__(self, model, optimizer, allowed_missing: list[str] | None = None):
+    A trainable param whose forward output never reaches the loss is never stepped, so a checkpoint holds no state
+    for it. ``allowed_missing`` names such params by substring. A save writes the state the optimizer really has. To
+    load, pass the checkpoint's ``saved_param_names``: a matching param the checkpoint lacks is left out of what DCP's
+    strict matching expects and starts never-stepped, and one the checkpoint holds (the run that saved it trained that
+    param) is loaded like any other.
+    """
+
+    def __init__(
+        self,
+        model,
+        optimizer,
+        allowed_missing: list[str] | None = None,
+        saved_param_names: set[str] | None = None,
+    ):
         self.model = model
         self.optimizer = optimizer
         self.allowed_missing = tuple(allowed_missing or ())
+        self.saved_param_names = saved_param_names
 
     def state_dict(self):
+        allowed_missing_params = {
+            param_name: param
+            for param_name, param in self.model.named_parameters()
+            if any(pattern in param_name for pattern in self.allowed_missing)
+        }
+        stateless = {
+            param_name for param_name, param in allowed_missing_params.items() if param not in self.optimizer.state
+        }
+        # get_state_dict gives every param of an optimizer that never stepped zero state, and leaves it in the
+        # optimizer.
         _, optimizer_state_dict = get_state_dict(self.model, optimizers=self.optimizer)
-        if self.allowed_missing:
-            optimizer_state_dict["state"] = {
-                param_name: param_state
-                for param_name, param_state in optimizer_state_dict["state"].items()
-                if not any(pattern in param_name for pattern in self.allowed_missing)
-            }
+        if self.saved_param_names is None:
+            # A save: the allowed-missing params that had no state get none, in the checkpoint and in the optimizer.
+            for param_name in stateless:
+                self.optimizer.state.pop(allowed_missing_params[param_name], None)
+        else:
+            # A load, which replaces the optimizer's state: the checkpoint says which params have none.
+            stateless = set(allowed_missing_params) - self.saved_param_names
+        optimizer_state_dict["state"] = {
+            param_name: param_state
+            for param_name, param_state in optimizer_state_dict["state"].items()
+            if param_name not in stateless
+        }
         return {"optim": optimizer_state_dict}
 
     def load_state_dict(self, state_dict):
@@ -243,8 +278,12 @@ def load(actor: Any) -> dict[str, Any] | None:
     # Load optimizer state (optional)
     load_optimizer = not actor.args.no_load_optim
     if load_optimizer and (optimizer_dir / ".metadata").exists():
-        allowed_missing = actor.train_pipeline_config.optimizer_state_allowed_missing
-        optimizer_state = OptimizerState(actor.model, actor.optimizer, allowed_missing=allowed_missing)
+        optimizer_state = OptimizerState(
+            actor.model,
+            actor.optimizer,
+            allowed_missing=actor.train_pipeline_config.optimizer_state_allowed_missing,
+            saved_param_names=saved_optimizer_param_names(optimizer_dir, "optim_state"),
+        )
         optim_state_dict = {"optim_state": optimizer_state}
         try:
             dcp.load(state_dict=optim_state_dict, checkpoint_id=str(optimizer_dir))
@@ -341,8 +380,11 @@ def save(actor: Any, iteration: int) -> None:
 
     # --no-save-optim drops both the optimizer and the LR scheduler.
     if not actor.args.no_save_optim:
-        allowed_missing = actor.train_pipeline_config.optimizer_state_allowed_missing
-        optimizer_state = OptimizerState(actor.model, actor.optimizer, allowed_missing=allowed_missing)
+        optimizer_state = OptimizerState(
+            actor.model,
+            actor.optimizer,
+            allowed_missing=actor.train_pipeline_config.optimizer_state_allowed_missing,
+        )
         dcp.save({"optim_state": optimizer_state}, checkpoint_id=str(optimizer_dir))
 
         lr_scheduler_state = LRSchedulerState(actor.lr_scheduler)
