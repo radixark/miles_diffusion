@@ -170,6 +170,14 @@ class TestBackendHierarchy:
         with pytest.raises(ValueError, match="names no subfolder"):
             DiffusersModelBackend._resolve_component(checkpoint, "transformer")
 
+    def test_loading_spec_with_a_weight_variant_is_rejected(self, tmp_path):
+        """Loading without the variant could read the repository's other weights of the same component."""
+        spec = [__name__, "_CheckpointComponent", {"subfolder": "transformer", "variant": "fp16"}]
+        checkpoint = _write_checkpoint(tmp_path, _H3_IMAGE_INDEX, {"transformer": spec})
+
+        with pytest.raises(ValueError, match="weight variant 'fp16'"):
+            DiffusersModelBackend._resolve_component(checkpoint, "transformer")
+
     def test_hub_checkpoint_without_a_modular_index_reads_model_index(self, monkeypatch):
         def raise_entry_not_found(repo_id, filename):
             response = httpx.Response(404, request=httpx.Request("HEAD", f"https://huggingface.co/{repo_id}"))

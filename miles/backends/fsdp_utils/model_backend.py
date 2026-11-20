@@ -256,6 +256,12 @@ class DiffusersModelBackend(BaseModelBackend):
             raise ValueError(
                 f"component {component!r} names no subfolder in its spec {spec!r} in {index_name} of {checkpoint_path}"
             )
+        if loading_spec.get("variant") is not None:
+            raise ValueError(
+                f"component {component!r} names the weight variant {loading_spec['variant']!r} in its spec in "
+                f"{index_name} of {checkpoint_path}; loading a variant is untested, and loading without it could "
+                f"read other weights"
+            )
         return component_cls, subfolder
 
     @staticmethod
