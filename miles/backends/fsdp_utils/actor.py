@@ -445,6 +445,7 @@ class FSDPTrainRayActor(TrainRayActor):
                     self.models,
                     sigma_buckets=self.args.log_loss_sigma_bucket,
                     num_rollout_steps=self.args.diffusion_num_steps,
+                    streams=(self.args.primary_stream, *self.args.rollout_extra_streams),
                 )
 
                 for pair_lo, pair_hi in microbatch_ranges:
