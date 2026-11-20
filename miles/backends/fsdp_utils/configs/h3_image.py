@@ -105,7 +105,8 @@ class H3ImageTrainPipelineConfig(H3TrainPipelineConfig):
         del neg_cond, joint_cond, use_cfg, cfg_batching, guidance_scale, true_cfg_scale
         if denoising_step_indices is None:
             raise ValueError(
-                "H3 Image picks its output head by the rollout's denoising step, which this loss does not provide"
+                "H3 Image picks its output head by each pair's denoising step, which these pairs do not carry: "
+                "an expander that feeds Flow-GRPO must set denoising_step_index on every pair"
             )
         cond = pos_cond
         visual = latents_input["visual"]
