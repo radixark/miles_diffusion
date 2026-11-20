@@ -15,6 +15,9 @@ places:
 validation. A key that collides with an existing argument **overrides it** (with a logged warning) —
 the YAML wins over the command line, but the override skips every check and derived value computed
 before it (a YAML `global_batch_size`, for example, does not re-derive `num_steps_per_rollout`).
+By then `diffusion_sde_type`, `diffusion_noise_level`, `diffusion_log_prob_no_const` and
+`sde_step_backend_path` are resolved into a mapping from latent stream to value, so the YAML gives them
+in that form (`diffusion_noise_level: {visual: 0.5}`).
 
 `--config <file.yaml>` is different: it only adds YAML keys that are not arguments at all, so it
 cannot change any flag.
