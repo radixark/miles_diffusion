@@ -40,6 +40,12 @@ class H3ImageTrainPipelineConfig(H3TrainPipelineConfig):
                 "otherwise): a merged sync sends the DiT's per-step output heads, which the rollout engine cannot "
                 "receive"
             )
+        if has_trainer and not args.train_only and args.diffusion_model_family != cls.model_family:
+            raise ValueError(
+                "H3 Image named by --train-pipeline-config-path cannot sync to a rollout engine: the fused-qkv LoRA "
+                "group is looked up by --diffusion-model-family, which a config path leaves unset. Let "
+                "--hf-checkpoint or --diffusion-model-family name the family, or run --train-only"
+            )
         if args.diffusion_flow_shift is not None:
             raise ValueError("H3 Image samples on its release's sigma grid; drop --diffusion-flow-shift")
         if args.sequence_parallel_size != 1:

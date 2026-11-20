@@ -149,6 +149,7 @@ def test_forward_rejects_a_layout_with_reference_rows():
 def _grpo_args(**overrides):
     args = Namespace(
         loss_type="policy_loss",
+        diffusion_model_family="h3_image",
         use_lora=True,
         lora_ipc_weight_sync=True,
         colocate=True,
@@ -186,8 +187,17 @@ def test_lora_flow_grpo_is_accepted():
         # the recipe's explicit one-pair tiles
         {"micro_batch_size_sample": 1, "micro_batch_size_tstep": 1},
         {"diffusion_eval_num_steps": 6},
+        # a config named by path has no family key, which only a sync looks things up by
+        {"diffusion_model_family": None, "train_only": True, "lora_ipc_weight_sync": False},
     ],
-    ids=["rollout-only", "train-only", "adapters-over-nccl", "one-pair-tiles", "eval-steps-of-the-release"],
+    ids=[
+        "rollout-only",
+        "train-only",
+        "adapters-over-nccl",
+        "one-pair-tiles",
+        "eval-steps-of-the-release",
+        "config-by-path-train-only",
+    ],
 )
 def test_supported_variations_are_accepted(overrides):
     H3ImageTrainPipelineConfig.validate_args(_grpo_args(**overrides))
@@ -219,6 +229,14 @@ def test_a_launch_with_the_required_flags_passes_the_real_parser(monkeypatch):
 def test_a_run_on_dumped_rollouts_is_not_held_to_a_sync_mode(monkeypatch):
     """--load-debug-rollout-data starts no engine, so there is no sync whose mode could be wrong."""
     assert _validate_launch(monkeypatch, "--load-debug-rollout-data dump/{rollout_id}.pt").train_only
+
+
+def test_a_config_named_by_path_cannot_sync_to_an_engine(monkeypatch):
+    """Without the family key the fused-qkv LoRA group is not found, and the adapters of q, k and v can split."""
+    path_flags = "--lora-ipc-weight-sync --train-pipeline-config-path miles.backends.fsdp_utils.configs.h3_image.H3ImageTrainPipelineConfig"
+
+    with pytest.raises(ValueError, match="cannot sync to a rollout engine"):
+        _validate_launch(monkeypatch, path_flags)
 
 
 def test_full_weight_training_is_rejected_even_without_an_engine():
