@@ -149,8 +149,8 @@ pixels.
 - **The drop at 400 is the scene coming back.** The eval is 0.115 below its value at 320 and the image detail is up
   from 0.013 to 0.022. Not every drop is: from 240 to 280 the eval and the detail fall together.
 - **The trainer stays aligned with the engine.** `train/model_output_mean_abs_diff` on a rollout's first optimizer
-  step, averaged over 100 rollouts, is 0.021 and 0.023 over the recipe's 200 rollouts and falls to 0.010 by 1000. `train/clipfrac` on the second optimizer step, averaged
-  over 20 rollouts, stays below 0.32.
+  step, averaged over 100 rollouts, is 0.021 and 0.023 over the recipe's 200 rollouts and falls to 0.010 by 1000.
+  `train/clipfrac` on the second optimizer step, averaged over 20 rollouts, stays below 0.32.
 - **The run is reproducible.** A second launch reproduced the first 20 rollouts' rewards and the eval after them
   exactly.
 
