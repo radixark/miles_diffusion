@@ -51,6 +51,8 @@ action over the streams it scores:
 - The scored streams must agree on the log-prob form. With the Gaussian constants (`sde`) their log-probs add up to
   the joint log-density for any noise levels. Without them (`cps`) each term is scaled by its stream's noise variance,
   so the scored streams need one noise level and one sigma grid.
+- An `sde` or `cps` stream needs a positive noise level. At zero it samples its own mean and there is nothing to
+  score: such a stream is `ode`.
 - An extra stream whose settings differ from the primary stream's is sent its own (`rollout_extra_stream_sde_args`).
   The engine must echo the settings it applied; a response without the echo, or with other settings, is rejected
   as soon as it arrives.

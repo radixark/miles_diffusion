@@ -383,7 +383,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default="0.7",
                 help=(
                     "SDE noise level for diffusion rollout (matches flow_grpo sample.noise_level). One value for every "
-                    'latent stream, or one per stream, e.g. "visual=0.7,audio=0.3"; an ode stream ignores it.'
+                    'latent stream, or one per stream, e.g. "visual=0.7,audio=0.3"; positive for an sde or cps stream, '
+                    "ignored by an ode stream."
                 ),
             )
             parser.add_argument(
@@ -2064,11 +2065,12 @@ def validate_train_sde_backend(args) -> None:
                 "--diffusion-sde-type ode is for DiffusionNFT (--loss-type nft), DMD2 or a custom loss formula; "
                 "the Flow-GRPO loss needs an sde or cps rollout of at least one stream"
             )
-    # A log-density with the constants has no noise to normalize by at a zero noise level.
-    if any(not no_const[stream_name] and noise_levels[stream_name] <= 0 for stream_name in scored):
+    # At a zero noise level a stream samples its own mean: a log-density has no noise to normalize by, and a
+    # constant-free term only measures how far the new mean moved from the old one, which carries no reward signal.
+    if any(noise_levels[stream_name] <= 0 for stream_name in scored):
         raise ValueError(
-            f"--diffusion-noise-level must be positive for a stream scored with the Gaussian constants, "
-            f"got {noise_levels}; a stream rolled out without noise is --diffusion-sde-type ode"
+            f"--diffusion-noise-level must be positive for an sde or cps stream, got {noise_levels}; "
+            "a stream rolled out without noise is --diffusion-sde-type ode"
         )
     # A step's log-prob adds the scored streams': a log-density and a squared distance without the constants
     # do not add.

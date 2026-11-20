@@ -4,6 +4,7 @@
     sde + no-const + custom --sde-step-backend-path                --> allowed (backend owns it)
     ode + the Flow-GRPO formula (policy_loss, or custom_loss without a formula path) --> rejected
     ode + nft / dmd2 / custom_loss with its own formula; cps; flag off --> allowed
+    an sde or cps stream at a zero noise level                     --> rejected (an ode stream may sit at zero)
 """
 
 from tests.ci.ci_register import register_cpu_ci
@@ -89,6 +90,19 @@ def _args(**overrides):
             "must be positive",
             id="a log-density at a zero noise level",
         ),
+        pytest.param(
+            dict(diffusion_sde_type="cps", diffusion_noise_level=0.0),
+            "must be positive",
+            id="a constant-free stream at a zero noise level",
+        ),
+        pytest.param(
+            dict(
+                diffusion_sde_type={"visual": "cps", "audio": "cps"},
+                diffusion_noise_level={"visual": 0.8, "audio": 0.0},
+            ),
+            "must be positive",
+            id="a second constant-free stream at a zero noise level",
+        ),
     ],
 )
 def test_rejects_rollouts_the_backend_cannot_score(overrides, match):
@@ -126,6 +140,13 @@ def test_rejects_rollouts_the_backend_cannot_score(overrides, match):
                 diffusion_noise_level={"visual": 0.5, "audio": 0.5},
             ),
             id="constant-free streams on one noise scale",
+        ),
+        pytest.param(
+            dict(
+                diffusion_sde_type={"visual": "cps", "audio": "ode"},
+                diffusion_noise_level={"visual": 0.8, "audio": 0.0},
+            ),
+            id="an ode stream at a zero noise level",
         ),
     ],
 )
