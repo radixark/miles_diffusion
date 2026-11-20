@@ -95,8 +95,9 @@ def new_metric_buffer(
     for suffix in (*(components if len(components) > 1 else ()), *(streams if len(streams) > 1 else ())):
         schema[f"log_prob_mean_abs_diff_{suffix}"] = MetricReduce.MEAN
         schema[f"model_output_mean_abs_diff_{suffix}"] = MetricReduce.MEAN
-    for stream_name in streams if len(streams) > 1 else ():
-        schema[f"kl_loss_{stream_name}"] = MetricReduce.MEAN
+    if len(streams) > 1:
+        for stream_name in streams:
+            schema[f"kl_loss_{stream_name}"] = MetricReduce.MEAN
     return MetricBuffer(group=group, device=device, schema=schema)
 
 
