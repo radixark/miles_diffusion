@@ -227,7 +227,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     'Comma-separated latent streams the SFT loss supervises, e.g. "visual,audio", among those the '
                     "pair carries. A stream left out is still noised and fed to the DiT, keeping its native joint "
-                    "input, but adds no loss. RL trajectories carry only the visual stream."
+                    "input, but adds no loss. RL trajectories carry the primary stream, plus any "
+                    "--rollout-extra-streams."
                 ),
             )
             parser.add_argument(
