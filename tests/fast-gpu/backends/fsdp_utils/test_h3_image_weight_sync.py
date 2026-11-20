@@ -12,6 +12,7 @@ from tests.ci.ci_register import register_cuda_ci
 
 register_cuda_ci(est_time=60, suite="stage-b-3-gpu-h200", labels=[])
 
+import sys
 from argparse import Namespace
 
 import diffusers
@@ -91,3 +92,7 @@ def test_a_weight_sync_sends_the_heads_as_two_stacks_and_no_diffusers_name(lora_
     assert sent_head_stacks.keys() == head_stacks.keys()
     for name, stack in head_stacks.items():
         assert torch.equal(sent_head_stacks[name], stack), name
+
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, "-v"]))
