@@ -103,3 +103,14 @@ def test_dmd2_trainer_groups_get_their_hooks_by_role(parse):
 def test_a_hook_path_outside_custom_loss_fails_validation(parse):
     with pytest.raises(ValueError, match="read only under --loss-type custom_loss"):
         parse(ARGV_BY_LOSS_TYPE["nft"] + " --teacher-load teacher --custom-loss-function-path my.formula")
+
+
+def test_a_run_on_dumped_rollouts_counts_as_train_only_for_every_check(parse):
+    """--load-debug-rollout-data starts no engine: a check that reads train_only before it is derived refuses the
+    run for an engine it does not have."""
+    args = parse(
+        ARGV_BY_LOSS_TYPE["policy_loss"]
+        + " --use-lora --lora-target-modules to_q --lora-ipc-weight-sync --load-debug-rollout-data dump/{rollout_id}.pt"
+    )
+
+    assert args.train_only
