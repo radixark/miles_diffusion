@@ -69,11 +69,12 @@ class H3ImageTrainPipelineConfig(H3TrainPipelineConfig):
                 "H3 Image's packed forward takes one pair; keep --micro-batch-size, --micro-batch-size-sample and "
                 "--micro-batch-size-tstep at 1"
             )
-        if args.diffusion_quality == "high" or args.diffusion_true_cfg_scale not in (None, 1.0):
+        if args.diffusion_quality not in ("exact", "lossless"):
             raise ValueError(
-                "H3 Image rollout serves --diffusion-quality exact or lossless, unguided; "
-                "drop --diffusion-true-cfg-scale"
+                f"H3 Image rollout serves --diffusion-quality exact or lossless, got {args.diffusion_quality!r}"
             )
+        if args.diffusion_true_cfg_scale not in (None, 1.0):
+            raise ValueError("H3 Image rollout is unguided; drop --diffusion-true-cfg-scale")
 
     @classmethod
     def apply_rollout_sampling_params(
