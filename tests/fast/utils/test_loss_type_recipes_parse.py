@@ -6,7 +6,7 @@
     dmd2          --teacher-load, ODE rollout stopped at a random step; the critic group's and the actor's hooks
                   come from the loss hub by role, so the trainer args carry no hook path
 
-Per-stream SDE settings: one value for every stream, or one for each stream of the run.
+Per-stream SDE settings: one value for every stream, or one for each stream of the run, each named once.
 
 --rollout-extra-streams on top of a recipe:
 
@@ -173,6 +173,16 @@ def test_extra_rollout_streams_that_would_not_be_trained_are_rejected(parse, los
     """Each of these would otherwise fail after the engine loaded, or roll a stream out that nothing trains on."""
     with pytest.raises(ValueError, match=match):
         parse(ARGV_BY_LOSS_TYPE[loss_type] + f" --rollout-extra-streams {extra_streams}")
+
+
+def test_a_stream_named_twice_in_a_per_stream_flag_is_rejected(parse, capsys):
+    """A dict keeps the last of the two values, so the repeat would pass the check against the run's streams."""
+    with pytest.raises(SystemExit):
+        parse(
+            ARGV_BY_LOSS_TYPE["policy_loss"]
+            + " --rollout-extra-streams echo --diffusion-noise-level main=0.7,echo=0.3,echo=0.5"
+        )
+    assert "a stream is named twice" in capsys.readouterr().err
 
 
 def test_dmd2_trainer_groups_get_their_hooks_by_role(parse):
