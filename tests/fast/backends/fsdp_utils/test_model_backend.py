@@ -202,6 +202,24 @@ class TestBackendHierarchy:
             "transformer",
         )
 
+    def test_cached_modular_checkpoint_resolves_from_its_modular_index_while_the_hub_is_offline(
+        self, monkeypatch, tmp_path
+    ):
+        """Falling through to the root index here would name the engine's native classes for MiniMax-H3-Image."""
+        snapshot = tmp_path / "models--org--modular" / "snapshots" / ("0" * 40)
+        snapshot.mkdir(parents=True)
+        (snapshot / "modular_model_index.json").write_text(json.dumps(_H3_IMAGE_MODULAR_INDEX))
+        refs = tmp_path / "models--org--modular" / "refs"
+        refs.mkdir()
+        (refs / "main").write_text("0" * 40)
+        monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_OFFLINE", True)
+        monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_CACHE", str(tmp_path))
+
+        assert DiffusersModelBackend._resolve_component("org/modular", "transformer") == (
+            diffusers.MiniMaxH3ImageTransformer2DModel,
+            "transformer_diffusers",
+        )
+
     def test_cached_classic_checkpoint_resolves_when_the_hub_refuses_the_probe(self, monkeypatch):
         """A gated repo answers 401 without a token, also for a file it does not have."""
 
