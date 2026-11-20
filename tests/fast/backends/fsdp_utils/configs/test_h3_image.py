@@ -236,6 +236,11 @@ def test_supported_variations_are_accepted(overrides):
     H3ImageTrainPipelineConfig.validate_args(_grpo_args(**overrides))
 
 
+def _remove_head_updates_from_sglang(monkeypatch):
+    # raising=False: an sglang-d from before the head update has no constant to remove
+    monkeypatch.delattr(sglang_minimax_h3, "MINIMAX_H3_PDD_FUSED_HEADS_WEIGHT_NAME_PREFIX", raising=False)
+
+
 @pytest.mark.parametrize(
     ("overrides", "sync_sends_the_heads"),
     [
@@ -257,7 +262,7 @@ def test_supported_variations_are_accepted(overrides):
 )
 def test_a_sync_that_sends_the_heads_needs_an_sglang_that_takes_them(monkeypatch, overrides, sync_sends_the_heads):
     """That engine skips the heads with a warning, and its rollouts keep the heads it started with."""
-    monkeypatch.delattr(sglang_minimax_h3, "MINIMAX_H3_PDD_FUSED_HEADS_WEIGHT_NAME_PREFIX")
+    _remove_head_updates_from_sglang(monkeypatch)
     args = _grpo_args(**overrides)
 
     if sync_sends_the_heads:
@@ -269,7 +274,7 @@ def test_a_sync_that_sends_the_heads_needs_an_sglang_that_takes_them(monkeypatch
 
 def test_a_config_named_by_path_is_refused_before_the_engine_is_asked_about_heads(monkeypatch):
     """Both ways out the head refusal names lead into this one, and by path no transform would send a stack."""
-    monkeypatch.delattr(sglang_minimax_h3, "MINIMAX_H3_PDD_FUSED_HEADS_WEIGHT_NAME_PREFIX")
+    _remove_head_updates_from_sglang(monkeypatch)
     args = _grpo_args(use_lora=False, lora_ipc_weight_sync=False, diffusion_model_family=None)
 
     with pytest.raises(ValueError, match="cannot sync to a rollout engine"):
@@ -308,6 +313,8 @@ def test_micro_batch_tiles_above_one_pair_are_rejected_through_the_parser(monkey
 
 def test_a_run_on_dumped_rollouts_is_not_held_to_a_sync_mode(monkeypatch):
     """--load-debug-rollout-data starts no engine, so there is no sync whose mode could be wrong."""
+    # an engine that takes head updates refuses no sync mode, so only one that does not can tell
+    _remove_head_updates_from_sglang(monkeypatch)
     assert _validate_launch(monkeypatch, "--load-debug-rollout-data dump/{rollout_id}.pt").train_only
 
 
