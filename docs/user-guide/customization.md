@@ -296,7 +296,9 @@ counts from 0; the old-log-prob recompute of windows 1.. passes their training f
 `timesteps_for_model` are keyed by latent stream name: `"visual"`, plus e.g.
 `"audio"` for joint audio-video models. `PreparedBatch.teacher_guidance_scale` asks the trunk to run the frozen
 teacher (`--teacher-load`) without grad on this micro-batch at that CFG scale, over `neg_cond` / `joint_cond`, before
-the training forward; the formula receives it as `teacher_pred`.
+the training forward; the formula receives it as `teacher_pred`. `PreparedBatch.forward_only_batch` is a second
+prepared batch the trunk forwards without grad before this one, through the teacher it asks for and its model; a
+formula whose prepare sets it also receives `forward_only_teacher_pred` and `forward_only_pred`.
 
 ### `--custom-loss-function-path`
 

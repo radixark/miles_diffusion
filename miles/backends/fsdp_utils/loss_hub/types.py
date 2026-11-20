@@ -27,6 +27,8 @@ class DiffusionLossContext:
     dp_rank: int = 0
     reference_models: dict[str, torch.nn.Module] = field(default_factory=dict)
     external_data: dict[str, Any] = field(default_factory=dict)
+    # 0 in the train-input hook, which runs before the schedule exists
+    num_microbatches_per_optim_step: int = 0
 
 
 @dataclass(frozen=True)
@@ -71,3 +73,6 @@ class PreparedBatch:
     extras: dict[str, Any] = field(default_factory=dict)
     # CFG scale of the frozen teacher's no-grad forward on this batch; None runs no teacher forward.
     teacher_guidance_scale: float | None = None
+    # A second batch the trunk forwards without grad before this one: the teacher it asks for and its model. The
+    # formula receives them as ``forward_only_teacher_pred`` and ``forward_only_pred``.
+    forward_only_batch: PreparedBatch | None = None
