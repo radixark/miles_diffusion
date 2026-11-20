@@ -9,7 +9,7 @@ H3 full-weight sync: the Diffusers weights the trainer holds -> the FL2VA layout
 Pushing [q; k; v] instead of per-head rows has the same shape, so the native qkv loader
 accepts it and silently scrambles attention.
 
-The transform is registered for family "h3" by the last import in fsdp_utils/adaptations,
+The transform is registered for family "h3" by the imports of fsdp_utils/adaptations,
 so it applies whenever the weight iterator uses the bridge.
 """
 
@@ -44,5 +44,5 @@ def test_qkv_is_held_until_complete_then_fused_per_head():
 
 
 def test_bridge_registers_h3_on_import():
-    # registration rides on adaptations' last import; a family missing there would sync untransformed
+    # registration rides on adaptations' imports; a family missing there would sync untransformed
     assert get_param_transform("transformer_blocks.0.attn.to_q.weight", torch.zeros(1), "h3") is _to_fl2va
