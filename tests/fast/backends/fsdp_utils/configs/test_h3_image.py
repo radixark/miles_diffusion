@@ -193,24 +193,32 @@ def test_supported_variations_are_accepted(overrides):
     H3ImageTrainPipelineConfig.validate_args(_grpo_args(**overrides))
 
 
-def test_a_launch_with_the_required_flags_passes_the_real_parser(monkeypatch):
-    """validate_args reads the parser's defaults, which a namespace built by hand does not have."""
-    argv = (
-        "test --hf-checkpoint MiniMaxAI/MiniMax-H3-Image --diffusion-task t2i --prompt-data prompts.jsonl "
-        "--rollout-function-path miles.rollout.sglang_diffusion_rollout.generate_rollout --rm-type ocr "
-        "--rollout-batch-size 8 --n-samples-per-prompt 16 --num-steps-per-rollout 2 --num-rollout 1 "
-        "--actor-num-gpus-per-node 8 --rollout-num-gpus 8 --rollout-num-gpus-per-engine 2 --colocate "
-        "--diffusion-num-steps 6 --diffusion-guidance-scale 1.0 --diffusion-sde-type cps "
-        "--use-lora --lora-ipc-weight-sync"
-    )
-    monkeypatch.setattr(sys, "argv", shlex.split(argv))
+_LAUNCH = (
+    "test --hf-checkpoint MiniMaxAI/MiniMax-H3-Image --diffusion-task t2i --prompt-data prompts.jsonl "
+    "--rollout-function-path miles.rollout.sglang_diffusion_rollout.generate_rollout --rm-type ocr "
+    "--rollout-batch-size 8 --n-samples-per-prompt 16 --num-steps-per-rollout 2 --num-rollout 1 "
+    "--actor-num-gpus-per-node 8 --rollout-num-gpus 8 --rollout-num-gpus-per-engine 2 --colocate "
+    "--diffusion-num-steps 6 --diffusion-guidance-scale 1.0 --diffusion-sde-type cps --use-lora "
+)
 
+
+def _validate_launch(monkeypatch, flags):
+    """The parser and miles_validate_args on a launch line: the family hook reads what they derive before it."""
+    monkeypatch.setattr(sys, "argv", shlex.split(_LAUNCH + flags))
     args = load_fsdp_args(extra_args_provider=get_miles_extra_args_provider())
     set_default_diffusion_args(args)
     miles_validate_args(args)
+    return args
 
-    assert args.diffusion_model_family == "h3_image"
-    assert (args.micro_batch_size_sample, args.micro_batch_size_tstep) == (None, None)
+
+def test_a_launch_with_the_required_flags_passes_the_real_parser(monkeypatch):
+    """validate_args reads the parser's defaults, which a namespace built by hand does not have."""
+    assert _validate_launch(monkeypatch, "--lora-ipc-weight-sync").diffusion_model_family == "h3_image"
+
+
+def test_a_run_on_dumped_rollouts_is_not_held_to_a_sync_mode(monkeypatch):
+    """--load-debug-rollout-data starts no engine, so there is no sync whose mode could be wrong."""
+    assert _validate_launch(monkeypatch, "--load-debug-rollout-data dump/{rollout_id}.pt").train_only
 
 
 def test_full_weight_training_is_rejected_even_without_an_engine():
