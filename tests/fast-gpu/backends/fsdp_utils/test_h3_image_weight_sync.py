@@ -26,22 +26,18 @@ from miles.backends.fsdp_utils.diffusion_update_weight_utils import (
 )
 
 
-class _CaptureFullWeightUpdater(DiffusionUpdateWeightFromTensor):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.buckets: list[list[tuple[str, torch.Tensor]]] = []
+def _capturing(updater_cls):
+    """``updater_cls`` with the buckets it would push to the rollout engine kept instead."""
 
-    def update_bucket_weights(self, named_tensors, target_module):
-        self.buckets.append([(name, tensor.clone()) for name, tensor in named_tensors])
+    class _CaptureUpdater(updater_cls):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.buckets: list[list[tuple[str, torch.Tensor]]] = []
 
+        def update_bucket_weights(self, named_tensors, target_module):
+            self.buckets.append([(name, tensor.clone()) for name, tensor in named_tensors])
 
-class _CaptureMergedLoRAUpdater(DiffusionUpdateWeightFromTensorLoRA):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.buckets: list[list[tuple[str, torch.Tensor]]] = []
-
-    def update_bucket_weights(self, named_tensors, target_module):
-        self.buckets.append([(name, tensor.clone()) for name, tensor in named_tensors])
+    return _CaptureUpdater
 
 
 def _tiny_h3_image():
@@ -74,14 +70,14 @@ def test_a_weight_sync_sends_the_heads_as_two_stacks_and_no_diffusers_name(lora_
         )
         for suffix in ("weight", "bias")
     }
-    updater_cls = _CaptureFullWeightUpdater
+    updater_cls = DiffusionUpdateWeightFromTensor
     if lora_merged_in:
         model = get_peft_model(model, LoraConfig(r=4, lora_alpha=8, target_modules=["to_q", "to_k", "to_v"]))
-        updater_cls = _CaptureMergedLoRAUpdater
+        updater_cls = DiffusionUpdateWeightFromTensorLoRA
     # one byte: every tensor closes its bucket, so the held heads outlive the buckets they arrived in
-    args = Namespace(update_weight_buffer_size=1, train_pipeline_config_path=None, diffusion_model_family="h3_image")
+    args = Namespace(update_weight_buffer_size=1, diffusion_model_family="h3_image")
 
-    updater = updater_cls(args, {"transformer": model})
+    updater = _capturing(updater_cls)(args, {"transformer": model})
     updater.update_weights()
 
     sent = [(name, tensor) for bucket in updater.buckets for name, tensor in bucket]
