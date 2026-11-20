@@ -74,6 +74,7 @@ class Cosmos3TrainPipelineConfig(TrainPipelineConfig):
         model: torch.nn.Module,
         latents_input: dict[str, torch.Tensor],
         timesteps_input: dict[str, torch.Tensor],
+        denoising_step_indices: torch.Tensor | None,
         pos_cond: dict | None,
         neg_cond: dict | None,
         joint_cond: dict | None,

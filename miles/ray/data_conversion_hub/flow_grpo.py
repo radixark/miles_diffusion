@@ -132,6 +132,7 @@ def _build_per_timestep_features(
     return {
         "latent": [_own_row(all_latents[position[int(s)]]) for s in sde_idx],
         "next_latent": [_own_row(all_latents[position[int(s) + 1]]) for s in sde_idx],
+        "denoising_step_index": idx,
         "timestep": timesteps[idx],
         "sigma": sigmas[idx],
         "next_sigma": sigmas[idx + 1],

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import operator
+
 import torch
 
 from miles.backends.fsdp_utils.loss_hub.score_centering import score_centering_term
@@ -13,6 +15,21 @@ from miles.utils.train_data_utils import stack_train_pair_rollout_debug
 
 def _stack_pair_field(batch: list[dict], key: str, device: torch.device) -> torch.Tensor:
     return torch.stack([pair[key] for pair in batch]).to(device=device, dtype=torch.float32)
+
+
+def _stack_denoising_step_indices(batch: list[dict], device: torch.device) -> torch.Tensor | None:
+    steps = [pair.get("denoising_step_index") for pair in batch]
+    if all(step is None for step in steps):
+        return None
+    if any(step is None for step in steps):
+        raise ValueError(
+            "only some pairs of this micro-batch carry denoising_step_index; an expander sets it on every pair or on none"
+        )
+    try:
+        steps = [operator.index(step) for step in steps]
+    except TypeError as error:
+        raise ValueError(f"denoising_step_index must be an int or an integer tensor scalar: {error}") from error
+    return torch.tensor(steps, device=device)
 
 
 def prepare_flow_grpo_batch(
@@ -40,6 +57,7 @@ def prepare_flow_grpo_batch(
     next_sigmas = _stack_pair_field(batch, "next_sigma", device)
     sigma_max = _stack_pair_field(batch, "sigma_max", device)
     log_prob_old = _stack_pair_field(batch, "log_prob_old", device)
+    denoising_step_indices = _stack_denoising_step_indices(batch, device)
     advantage = torch.tensor(
         [float(pair["advantage"]) for pair in batch],
         device=device,
@@ -109,6 +127,7 @@ def prepare_flow_grpo_batch(
             "sigma_max": sigma_max,
             "log_prob_old": log_prob_old,
         },
+        denoising_step_indices=denoising_step_indices,
     )
 
 
