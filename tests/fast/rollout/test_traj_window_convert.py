@@ -13,14 +13,14 @@ the full trajectory (1), full trajectories without provenance keep the legacy
 behaviour (2), a missing window latent raises instead of mispairing (3), a
 non-contiguous kept set still pairs correctly (4), NFT reads x0 off a
 final-step-only trajectory but rejects one ending anywhere else (5), the
-final SDE step pairs with next_sigma == 0 (6), a pair carries its step's
-number in the rollout, not its position in the shipped window (7), and the
-trainer's prepare hook hands each row of a micro-batch its own pair's step (8).
+final SDE step pairs with next_sigma == 0 (6), and the trainer's prepare hook
+hands each row of a micro-batch its own pair's step in the rollout, not its
+position in the shipped window (7).
 """
 
 from tests.ci.ci_register import register_cpu_ci
 
-register_cpu_ci(est_time=10, suite="stage-a-cpu", labels=[])
+register_cpu_ci(est_time=20, suite="stage-a-cpu", labels=[])
 
 import pytest
 import torch
@@ -91,12 +91,6 @@ def test_full_trajectory_without_provenance_is_legacy():
 def test_terminal_step_next_sigma_is_zero():
     feats, _ = _build(_full_traj(), sde=[T - 1])
     assert feats["next_sigma"].item() == 0.0
-
-
-def test_pair_carries_the_rollout_step_number_not_the_window_position():
-    """A window ships step 2 at position 0; a DiT with one output head per step needs the 2."""
-    feats, _ = _build(_windowed(_full_traj(), [2, 3, 4]))
-    assert feats["denoising_step_index"].tolist() == SDE
 
 
 def test_prepared_batch_carries_each_pairs_rollout_step():
