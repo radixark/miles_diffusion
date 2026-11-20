@@ -206,8 +206,8 @@ substring hit as perfect (`dist=0`), and caps `dist` at `len(target)` — see
 `miles/rollout/rm_hub/ocr.py`.
 
 OCR runs on **CPU** Ray actors (`--ocr-num-workers`, default 4). Used by the
-SD3 Flow-GRPO OCR and OCR & PickScore recipes, the three Krea-2 DiffusionNFT recipes, and the
-smoke mode of the SD3 DiffusionNFT recipe.
+SD3 Flow-GRPO OCR and OCR & PickScore recipes, the MiniMax H3 Image Flow-GRPO recipe, the three
+Krea-2 DiffusionNFT recipes, and the smoke mode of the SD3 DiffusionNFT recipe.
 
 ### API rewards (`--rm-type openai_api` / `custom_api`)
 
@@ -287,7 +287,7 @@ Dataset repo: [`rockdu/miles-diffusion-datasets`](https://huggingface.co/dataset
 |---|---|
 | `hpdv2/` | SD3 HPS Flow-GRPO |
 | `flowgrpo_pickscore/` | PickScore recipes (SD3 NFT, Qwen-Image, Wan2.2, LTX, Cosmos3, Krea-2, MiniMax H3) |
-| `flowgrpo_ocr/` | SD3 OCR and OCR & PickScore Flow-GRPO, Krea-2 OCR NFT, NFT smoke test |
+| `flowgrpo_ocr/` | SD3 OCR and OCR & PickScore Flow-GRPO, MiniMax H3 Image OCR Flow-GRPO, Krea-2 OCR NFT, NFT smoke test |
 
 ### Per-sample rm_type override
 

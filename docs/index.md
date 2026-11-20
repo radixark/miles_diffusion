@@ -11,8 +11,8 @@ pipeline, or from a native package when a family brings its own modeling. Shippe
 ## Core features
 
 - **Verified Recipes for Latest Diffusion Models.** Launchers for Wan2.2-T2V-A14B, Qwen-Image,
-  LTX-2.3, Cosmos3-Nano, SD3.5, Krea-2, FLUX 3 Image Klein, and MiniMax H3. `TrainPipelineConfig` allows for easy
-  model support.
+  LTX-2.3, Cosmos3-Nano, SD3.5, Krea-2, FLUX 3 Image Klein, MiniMax H3, and MiniMax H3 Image. `TrainPipelineConfig`
+  allows for easy model support.
 - **Quality control on three fronts.** Deterministic mode supports bit-for-bit comparisons for recipes covered by
   committed E2E standards; sglang-side monkey patches reduce train/rollout mismatches; and an FSDP2 param-dtype patch
   provides per-parameter fp32 control under the mixed-precision policy. See [Deterministic
@@ -52,6 +52,7 @@ LTX-2.3, Cosmos3-Nano, and MiniMax H3 also appear in the
 | [Krea-2](models/krea/krea2.md)                             | T2I       | DiffusionNFT + OCR (2- and 8-GPU sync, 6 + 2 async) |
 | [FLUX 3 Image Klein](models/flux3/flux3-image.md)          | T2I       | DiffusionNFT + PickScore (LoRA), Flow-GRPO + HPSv2.1 (full finetune) |
 | [MiniMax H3](models/h3/h3.md)                             | T2VA      | Flow-GRPO + PickScore (t2va, video branch, 2 GPUs), LoRA SFT (t2va, 8 GPUs) |
+| [MiniMax H3 Image](models/h3/h3-image.md)                 | T2I       | Flow-GRPO + OCR (LoRA, 8 GPUs)            |
 
 
 
