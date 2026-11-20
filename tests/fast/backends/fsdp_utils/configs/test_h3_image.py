@@ -223,6 +223,8 @@ def test_lora_flow_grpo_is_accepted():
         {"diffusion_model_family": None, "train_only": True, "lora_ipc_weight_sync": False},
         # only the adapters are trained, and they share one dtype
         {"fsdp_master_dtype": "bf16"},
+        # no trainer is built
+        {"debug_rollout_only": True, "use_lora": False, "lora_ipc_weight_sync": False, "fsdp_master_dtype": "bf16"},
     ],
     ids=[
         "rollout-only",
@@ -234,6 +236,7 @@ def test_lora_flow_grpo_is_accepted():
         "eval-steps-of-the-release",
         "config-by-path-train-only",
         "lora-on-a-bf16-master",
+        "rollout-only-on-a-bf16-master",
     ],
 )
 def test_supported_variations_are_accepted(overrides):
@@ -354,7 +357,7 @@ def test_a_config_named_by_path_cannot_sync_to_an_engine(monkeypatch, sync_flags
         # FSDP refuses these when the trainer is built, after every rank has loaded the DiT
         ({"use_lora": False, "lora_ipc_weight_sync": False, "fsdp_master_dtype": "bf16"}, "master-dtype fp32 only"),
         (
-            {"use_lora": False, "lora_ipc_weight_sync": False, "train_only": True, "fsdp_master_dtype": "bf16"},
+            {"use_lora": False, "lora_ipc_weight_sync": False, "train_only": True, "fsdp_master_dtype": "fp16"},
             "master-dtype fp32 only",
         ),
     ],
@@ -370,7 +373,7 @@ def test_a_config_named_by_path_cannot_sync_to_an_engine(monkeypatch, sync_flags
         "true-cfg",
         "micro-batch",
         "full-weight-on-a-bf16-master",
-        "full-weight-train-only-on-a-bf16-master",
+        "full-weight-train-only-on-an-fp16-master",
     ],
 )
 def test_unsupported_training_settings_are_rejected(overrides, message):
