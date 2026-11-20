@@ -61,7 +61,12 @@ def _parse_per_stream(value: str, cast) -> dict[str | None, Any]:
     """``"x"`` -> {None: x}, one value for every stream; ``"visual=x,audio=y"`` -> a value per named stream."""
     if "=" not in value:
         return {None: cast(value)}
-    return {name.strip(): cast(item.strip()) for name, _, item in (term.partition("=") for term in value.split(","))}
+    terms = [(name.strip(), item.strip()) for name, _, item in (term.partition("=") for term in value.split(","))]
+    names = [name for name, _ in terms]
+    # A dict would keep the last of two values and hide the repeat from the check against the run's streams.
+    if len(set(names)) != len(names):
+        raise argparse.ArgumentTypeError(f"a stream is named twice in {value!r}")
+    return {name: cast(item) for name, item in terms}
 
 
 def parse_stream_sde_types(value: str) -> dict[str | None, str]:
