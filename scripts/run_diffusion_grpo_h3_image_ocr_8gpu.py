@@ -17,8 +17,8 @@ What the recipe chooses, each from a measurement (docs/models/h3/h3-image.md):
     1e-4 on the base model, the size of the clip range.
   * lr 1e-4: at 2e-4 the recipe fits its train prompts faster and gets worse on every other one
     (eval OCR 0.60 -> 0.55 in 20 rollouts); at 1e-4 the eval rises.
-  * No gradient checkpointing: one pair per forward peaks at 16 GB on the trainer, and the
-    recomputed forward was 30% of the train time.
+  * No gradient checkpointing: one pair per forward peaks at 16 GB on the trainer, and
+    checkpointing made the training phase a third longer.
 
 The reward is OCR alone and nothing holds the policy near the base model (kl 0). Past about 200
 rollouts the reward keeps rising because the scene is erased, until only the text is left
@@ -62,7 +62,7 @@ def prepare(args: ScriptArgs) -> str:
     return f"{local_dir}/{DATASET_SUBSET}"
 
 
-def execute(args: ScriptArgs, data_dir: str) -> None:
+def execute(args: ScriptArgs, prompt_dir: str) -> None:
     run_name = f"diffusion_grpo_h3_image_ocr_8gpu_{U.create_run_id()}"
 
     ckpt_args = (
@@ -72,7 +72,7 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
 
     rollout_args = (
         "--rollout-function-path miles.rollout.sglang_diffusion_rollout.generate_rollout "
-        f"--prompt-data {data_dir}/train.jsonl "
+        f"--prompt-data {prompt_dir}/train.jsonl "
         "--input-key input "
         f"--rollout-batch-size {args.rollout_batch_size} "
         f"--n-samples-per-prompt {args.n_samples_per_prompt} "
@@ -91,7 +91,6 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
         "--diffusion-height 512 "
         "--diffusion-width 512 "
         "--diffusion-sde-type cps "
-        "--diffusion-log-prob-no-const "
         "--diffusion-noise-level 0.8 "
         "--diffusion-step-strategy-path miles.rollout.step_strategy_hub.sde_window "
         "--diffusion-num-sde-steps 5 "
@@ -104,9 +103,8 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
     if args.eval_interval:
         eval_args = (
             f"--eval-interval {args.eval_interval} "
-            f"--eval-prompt-data ocr_test {data_dir}/test.jsonl "
+            f"--eval-prompt-data ocr_test {prompt_dir}/test.jsonl "
             "--n-samples-per-eval-prompt 1 "
-            "--diffusion-eval-num-steps 6 "
         )
 
     grpo_args = (
@@ -167,8 +165,8 @@ def execute(args: ScriptArgs, data_dir: str) -> None:
 
 @U.dataclass_cli
 def main(args: ScriptArgs) -> None:
-    data_dir = prepare(args)
-    execute(args, data_dir)
+    prompt_dir = prepare(args)
+    execute(args, prompt_dir)
 
 
 if __name__ == "__main__":
