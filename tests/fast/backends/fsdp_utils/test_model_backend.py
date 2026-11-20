@@ -15,7 +15,7 @@ import httpx
 import huggingface_hub
 import pytest
 import torch
-from huggingface_hub.errors import EntryNotFoundError, GatedRepoError
+from huggingface_hub.errors import GatedRepoError, RemoteEntryNotFoundError
 
 from miles.backends.fsdp_utils import model_backend
 from miles.backends.fsdp_utils.model_backend import BaseModelBackend, DiffusersModelBackend, MilesModelBackend
@@ -172,7 +172,8 @@ class TestBackendHierarchy:
 
     def test_hub_checkpoint_without_a_modular_index_reads_model_index(self, monkeypatch):
         def raise_entry_not_found(repo_id, filename):
-            raise EntryNotFoundError(f"{repo_id} has no {filename}")
+            response = httpx.Response(404, request=httpx.Request("HEAD", f"https://huggingface.co/{repo_id}"))
+            raise RemoteEntryNotFoundError(f"{repo_id} has no {filename}", response=response)
 
         monkeypatch.setattr(model_backend, "hf_hub_download", raise_entry_not_found)
         monkeypatch.setattr(

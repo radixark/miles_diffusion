@@ -28,7 +28,7 @@ from dataclasses import replace
 import torch
 from diffusers import DiffusionPipeline, ModularPipeline
 from huggingface_hub import hf_hub_download
-from huggingface_hub.errors import EntryNotFoundError, HfHubHTTPError, HFValidationError
+from huggingface_hub.errors import EntryNotFoundError, HfHubHTTPError, HFValidationError, RemoteEntryNotFoundError
 
 from .models.parallel_plan import FSDPParallelPlan
 from .sequence_parallel.diffusers_dispatch import install_diffusers_usp_patch
@@ -245,13 +245,17 @@ class DiffusersModelBackend(BaseModelBackend):
         if component_cls is None:
             raise ValueError(
                 f"cannot resolve the class for component {component!r} from {index_name} of {checkpoint_path}: "
-                f"spec {spec!r}; remote-code components are not supported"
+                f"spec {spec!r} names a class the installed library does not provide (remote-code components are "
+                f"not supported)"
             )
         if len(spec) == 2:
             return component_cls, component
-        subfolder = spec[2].get("subfolder") if isinstance(spec[2], dict) else None
+        loading_spec = spec[2] if isinstance(spec[2], dict) else {}
+        subfolder = loading_spec.get("subfolder")
         if not isinstance(subfolder, str) or not subfolder:
-            raise ValueError(f"component {component!r} of {checkpoint_path} names no subfolder in its spec {spec!r}")
+            raise ValueError(
+                f"component {component!r} names no subfolder in its spec {spec!r} in {index_name} of {checkpoint_path}"
+            )
         return component_cls, subfolder
 
     @staticmethod
@@ -264,8 +268,18 @@ class DiffusersModelBackend(BaseModelBackend):
         else:
             try:
                 index_file = hf_hub_download(checkpoint_path, ModularPipeline.config_name)
-            # 404, or no answer (offline, gated, not a repo id) and no cached copy: the load goes on from the root index
-            except (EntryNotFoundError, HfHubHTTPError, HFValidationError):
+            except RemoteEntryNotFoundError:
+                return None
+            # no answer (offline, gated, not a repo id) and no cached copy: the load goes on from the root index
+            except (EntryNotFoundError, HfHubHTTPError, HFValidationError) as error:
+                logger.info(
+                    "%s of %s could not be read (%s: %s); reading %s",
+                    ModularPipeline.config_name,
+                    checkpoint_path,
+                    type(error).__name__,
+                    error,
+                    DiffusionPipeline.config_name,
+                )
                 return None
         with open(index_file) as f:
             return json.load(f)
