@@ -155,8 +155,8 @@ class TrainPipelineConfig(abc.ABC):
         """Default diffusers forward with CFG over the visual stream; families with a different forward override.
 
         ``denoising_step_indices`` is ``[B]`` long: each pair's 0-based denoising step in its rollout's schedule
-        (not doubled for the CFG joint batch), for a DiT whose forward depends on the step. None unless the
-        prepare hook sets it; of the built-in hooks only Flow-GRPO's does.
+        (not doubled for the CFG joint batch), for a DiT whose forward depends on the step. None when the
+        prepare hook has none.
         """
         latents = latents_input["visual"]
         timesteps = timesteps_input["visual"]
