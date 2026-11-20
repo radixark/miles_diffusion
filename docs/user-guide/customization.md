@@ -270,8 +270,8 @@ def expand_samples_to_train_pairs(args, samples, rewards, raw_rewards) -> dict:
 
 Default for Flow-GRPO lives under `miles/ray/data_conversion_hub/flow_grpo.py`. It sets `denoising_step_index` on
 every pair: the pair's 0-based step in its rollout's schedule. An expander that feeds the built-in Flow-GRPO prepare
-hook for a family whose forward depends on the step must set it too, as an int or an integer tensor scalar, on all
-pairs or on none.
+hook sets it on every pair or on none, as an int or an integer tensor scalar; a family whose forward depends on the
+step needs it on every pair.
 
 ### `--custom-convert-samples-to-train-data-path`
 
