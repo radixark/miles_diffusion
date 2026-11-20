@@ -1,4 +1,4 @@
-"""MiniMax H3 Image: t2i Flow-GRPO on the release's PDD grid, LoRA only."""
+"""MiniMax H3 Image: t2i Flow-GRPO on the release's PDD grid."""
 
 from __future__ import annotations
 
@@ -8,6 +8,23 @@ import torch
 
 from .h3 import H3TrainPipelineConfig, _without_padding_tail
 from .train_pipeline_config import register_train_pipeline_config
+
+
+def _give_every_pdd_head_a_gradient(pdd_heads: torch.nn.ModuleList) -> None:
+    """Make whichever head a forward runs carry every head's parameters into the graph, at weight zero.
+
+    A forward runs the head of one step, so the other heads have no gradient on that rank. FSDP reduces the
+    gradients of one wrap as a single buffer of the parameters that have one on that rank, in order: ranks whose
+    pairs come from different steps would average one head's gradient with another's.
+    """
+
+    def add_zero_of_every_head(head: torch.nn.Module, inputs: tuple, output: torch.Tensor) -> torch.Tensor:
+        # read at call time: FSDP swaps a module's sharded and unsharded parameters
+        zero = 0.0 * sum(parameter.sum() for pdd_head in pdd_heads for parameter in pdd_head.parameters())
+        return output + zero.to(output.dtype)
+
+    for pdd_head in pdd_heads:
+        pdd_head.register_forward_hook(add_zero_of_every_head)
 
 
 @register_train_pipeline_config("h3_image")
@@ -21,6 +38,7 @@ class H3ImageTrainPipelineConfig(H3TrainPipelineConfig):
 
     @classmethod
     def validate_args(cls, args: Namespace) -> None:
+        from miles.backends.fsdp_utils.models.diffusers.h3_image.weight_bridge import rollout_takes_pdd_fused_heads
         from miles.utils.arguments import rollout_merges_lora
 
         if args.loss_type != "policy_loss":
@@ -28,24 +46,28 @@ class H3ImageTrainPipelineConfig(H3TrainPipelineConfig):
                 "H3 Image trains with --loss-type policy_loss only: its DiT picks an output head by the rollout's "
                 "denoising step, which no other built-in loss sets, and custom_loss is untested"
             )
-        has_trainer = not args.debug_rollout_only
-        syncs_weights_to_rollout = has_trainer and not args.train_only
-        if has_trainer and not args.use_lora:
-            raise ValueError(
-                "H3 Image runs its trainer with LoRA adapters only (--use-lora): full-weight training would update "
-                "the DiT's per-step output heads, each from the ranks whose pairs came from its step, which is untested"
-            )
-        if syncs_weights_to_rollout and not rollout_merges_lora(args):
-            raise ValueError(
-                "H3 Image syncs its LoRA as adapters (--lora-ipc-weight-sync under --colocate, plain --use-lora "
-                "otherwise): a merged sync sends the DiT's per-step output heads, which the rollout engine cannot "
-                "receive"
-            )
+        syncs_weights_to_rollout = not args.debug_rollout_only and not args.train_only
         if syncs_weights_to_rollout and args.diffusion_model_family != cls.model_family:
             raise ValueError(
-                "H3 Image named by --train-pipeline-config-path cannot sync to a rollout engine: the fused-qkv LoRA "
-                "group is looked up by --diffusion-model-family, which a config path leaves unset. Let "
-                "--hf-checkpoint or --diffusion-model-family name the family, or run --train-only"
+                "H3 Image named by --train-pipeline-config-path cannot sync to a rollout engine: its weight "
+                "transform and its fused-qkv LoRA group are looked up by --diffusion-model-family, which a config "
+                "path leaves unset. Let --hf-checkpoint or --diffusion-model-family name the family, or run "
+                "--train-only"
+            )
+        # every sync but a LoRA adapter one carries the DiT's weights, its per-step output heads among them
+        if syncs_weights_to_rollout and not rollout_merges_lora(args) and not rollout_takes_pdd_fused_heads():
+            raise ValueError(
+                "H3 Image's weight sync sends the DiT's per-step output heads, which this sglang-d does not take in "
+                "a weight update (it predates sgl-project/sglang#51654): the rollout would keep the heads it started "
+                "with. Install an sglang-d that takes them, or train a LoRA and sync it as adapters (--use-lora, "
+                "with --lora-ipc-weight-sync under --colocate)"
+            )
+        # diffusers loads proj_in, the time embedder and the per-step heads in fp32 under any master dtype
+        if not args.debug_rollout_only and not args.use_lora and args.fsdp_master_dtype != "fp32":
+            raise ValueError(
+                f"H3 Image trains all weights at --fsdp-master-dtype fp32 only, got {args.fsdp_master_dtype}: some "
+                "of its modules stay in fp32 under a lower master dtype, and FSDP refuses a wrap whose trained "
+                "weights differ in dtype. Use fp32, or train a LoRA (--use-lora)"
             )
         if args.diffusion_flow_shift is not None:
             raise ValueError("H3 Image samples on its release's sigma grid; drop --diffusion-flow-shift")
@@ -86,6 +108,12 @@ class H3ImageTrainPipelineConfig(H3TrainPipelineConfig):
     ) -> None:
         # the engine generates a request below its default area on a larger canvas and resizes the image back
         extra_sampling_params["min_generation_area"] = int(args.diffusion_width) * int(args.diffusion_height)
+
+    def postprocess_model_after_materialize(self, model: torch.nn.Module) -> None:
+        pdd_heads = model.pdd_proj_out
+        # a LoRA trainer and a frozen reference leave the heads without gradients on every rank
+        if any(parameter.requires_grad for parameter in pdd_heads.parameters()):
+            _give_every_pdd_head_a_gradient(pdd_heads)
 
     def compute_noise_pred(
         self,

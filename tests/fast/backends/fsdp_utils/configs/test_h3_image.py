@@ -16,6 +16,7 @@ from argparse import Namespace
 import diffusers
 import pytest
 import torch
+from sglang.multimodal_gen.configs.models.dits import minimax_h3 as sglang_minimax_h3
 from sglang.multimodal_gen.runtime.pipelines_core.stages.model_specific_stages.minimax_h3.packed_sequence import (
     minimax_h3_packed_sequence_ref2va_blocks,
 )
@@ -155,6 +156,27 @@ def test_forward_rejects_a_layout_with_reference_rows():
         _forward(_tiny_h3_image(), visual, cond, torch.tensor([0]))
 
 
+def test_a_forward_through_one_head_gives_every_head_a_gradient():
+    """FSDP reduces a wrap's gradients as one buffer of the parameters that have one on a rank, in order: a head
+    without a gradient on the ranks that ran another step would have its gradient averaged with that step's."""
+    hooked, plain = _tiny_h3_image(), _tiny_h3_image()
+    H3ImageTrainPipelineConfig().postprocess_model_after_materialize(hooked)
+    visual, cond = _rows_and_cond(_t2i_layout())
+
+    predictions = [_forward(model, visual, cond, torch.tensor([1])) for model in (hooked, plain)]
+    for prediction in predictions:
+        prediction.square().sum().backward()
+
+    assert torch.equal(*predictions)
+    plain_grads = {name: parameter.grad for name, parameter in plain.named_parameters()}
+    for name, parameter in hooked.named_parameters():
+        if name.startswith("pdd_proj_out.") and not name.startswith("pdd_proj_out.1."):
+            assert plain_grads[name] is None
+            assert parameter.grad is not None and not parameter.grad.any(), name
+        else:
+            assert torch.equal(parameter.grad, plain_grads[name]), name
+
+
 def _grpo_args(**overrides):
     args = Namespace(
         loss_type="policy_loss",
@@ -173,6 +195,7 @@ def _grpo_args(**overrides):
         micro_batch_size=1,
         diffusion_quality="exact",
         diffusion_true_cfg_scale=None,
+        fsdp_master_dtype="fp32",
     )
     vars(args).update(overrides)
     return args
@@ -191,14 +214,78 @@ def test_lora_flow_grpo_is_accepted():
         {"train_only": True, "lora_ipc_weight_sync": False, "colocate": True},
         # engines on their own GPUs receive the adapters over NCCL
         {"colocate": False, "lora_ipc_weight_sync": False},
+        # colocated without the IPC sync, the LoRA reaches the engine merged into the DiT's weights
+        {"lora_ipc_weight_sync": False},
+        {"use_lora": False, "lora_ipc_weight_sync": False},
+        {"use_lora": False, "lora_ipc_weight_sync": False, "train_only": True},
         {"diffusion_eval_num_steps": 6},
         # a config named by path has no family key, which only a sync looks things up by
         {"diffusion_model_family": None, "train_only": True, "lora_ipc_weight_sync": False},
+        # only the adapters are trained, and they share one dtype
+        {"fsdp_master_dtype": "bf16"},
+        # no trainer is built
+        {"debug_rollout_only": True, "use_lora": False, "lora_ipc_weight_sync": False, "fsdp_master_dtype": "bf16"},
     ],
-    ids=["rollout-only", "train-only", "adapters-over-nccl", "eval-steps-of-the-release", "config-by-path-train-only"],
+    ids=[
+        "rollout-only",
+        "train-only",
+        "adapters-over-nccl",
+        "lora-synced-as-merged-weights",
+        "full-weight",
+        "full-weight-train-only",
+        "eval-steps-of-the-release",
+        "config-by-path-train-only",
+        "lora-on-a-bf16-master",
+        "rollout-only-on-a-bf16-master",
+    ],
 )
 def test_supported_variations_are_accepted(overrides):
     H3ImageTrainPipelineConfig.validate_args(_grpo_args(**overrides))
+
+
+def _remove_head_updates_from_sglang(monkeypatch):
+    # raising=False: an sglang-d from before the head update has no constant to remove
+    monkeypatch.delattr(sglang_minimax_h3, "MINIMAX_H3_PDD_FUSED_HEADS_WEIGHT_NAME_PREFIX", raising=False)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "sync_sends_the_heads"),
+    [
+        ({"use_lora": False, "lora_ipc_weight_sync": False}, True),
+        ({"lora_ipc_weight_sync": False}, True),
+        ({}, False),
+        ({"colocate": False, "lora_ipc_weight_sync": False}, False),
+        ({"use_lora": False, "lora_ipc_weight_sync": False, "train_only": True}, False),
+        ({"use_lora": False, "lora_ipc_weight_sync": False, "debug_rollout_only": True}, False),
+    ],
+    ids=[
+        "full-weight",
+        "lora-synced-as-merged-weights",
+        "lora-adapters-over-ipc",
+        "lora-adapters-over-nccl",
+        "full-weight-train-only",
+        "rollout-only",
+    ],
+)
+def test_a_sync_that_sends_the_heads_needs_an_sglang_that_takes_them(monkeypatch, overrides, sync_sends_the_heads):
+    """That engine skips the heads with a warning, and its rollouts keep the heads it started with."""
+    _remove_head_updates_from_sglang(monkeypatch)
+    args = _grpo_args(**overrides)
+
+    if sync_sends_the_heads:
+        with pytest.raises(ValueError, match="does not take in a weight update"):
+            H3ImageTrainPipelineConfig.validate_args(args)
+    else:
+        H3ImageTrainPipelineConfig.validate_args(args)
+
+
+def test_a_config_named_by_path_is_refused_before_the_engine_is_asked_about_heads(monkeypatch):
+    """Both ways out the head refusal names lead into this one, and by path no transform would send a stack."""
+    _remove_head_updates_from_sglang(monkeypatch)
+    args = _grpo_args(use_lora=False, lora_ipc_weight_sync=False, diffusion_model_family=None)
+
+    with pytest.raises(ValueError, match="cannot sync to a rollout engine"):
+        H3ImageTrainPipelineConfig.validate_args(args)
 
 
 _LAUNCH = (
@@ -210,9 +297,10 @@ _LAUNCH = (
 )
 
 
-def _validate_launch(monkeypatch, flags):
+def _validate_launch(monkeypatch, flags, *, use_lora=True):
     """The parser and miles_validate_args on a launch line: the family hook reads what they derive before it."""
-    monkeypatch.setattr(sys, "argv", shlex.split(_LAUNCH + flags))
+    launch = _LAUNCH if use_lora else _LAUNCH.replace("--use-lora ", "")
+    monkeypatch.setattr(sys, "argv", shlex.split(launch + flags))
     args = load_fsdp_args(extra_args_provider=get_miles_extra_args_provider())
     set_default_diffusion_args(args)
     miles_validate_args(args)
@@ -232,29 +320,28 @@ def test_micro_batch_tiles_above_one_pair_are_rejected_through_the_parser(monkey
 
 def test_a_run_on_dumped_rollouts_is_not_held_to_a_sync_mode(monkeypatch):
     """--load-debug-rollout-data starts no engine, so there is no sync whose mode could be wrong."""
+    # an engine that takes head updates refuses no sync mode, so only one that does not can tell
+    _remove_head_updates_from_sglang(monkeypatch)
     assert _validate_launch(monkeypatch, "--load-debug-rollout-data dump/{rollout_id}.pt").train_only
 
 
-def test_a_config_named_by_path_cannot_sync_to_an_engine(monkeypatch):
-    """Without the family key the fused-qkv LoRA group is not found, and the adapters of q, k and v can split."""
-    path_flags = "--lora-ipc-weight-sync --train-pipeline-config-path miles.backends.fsdp_utils.configs.h3_image.H3ImageTrainPipelineConfig"
+@pytest.mark.parametrize(
+    ("sync_flags", "use_lora"),
+    [("--lora-ipc-weight-sync ", True), ("", True), ("", False)],
+    ids=["lora-adapters", "lora-merged", "full-weight"],
+)
+def test_a_config_named_by_path_cannot_sync_to_an_engine(monkeypatch, sync_flags, use_lora):
+    """Without the family key neither the weight transform nor the fused-qkv LoRA group is found: a weight sync
+    would send the Diffusers layout as it is, and the adapters of q, k and v could split across buckets."""
+    path = "--train-pipeline-config-path miles.backends.fsdp_utils.configs.h3_image.H3ImageTrainPipelineConfig"
 
     with pytest.raises(ValueError, match="cannot sync to a rollout engine"):
-        _validate_launch(monkeypatch, path_flags)
-
-
-def test_full_weight_training_is_rejected_even_without_an_engine():
-    """--train-only syncs nothing, but every rank would still give a different per-step head its gradient."""
-    with pytest.raises(ValueError, match="LoRA adapters only"):
-        H3ImageTrainPipelineConfig.validate_args(_grpo_args(train_only=True, use_lora=False))
+        _validate_launch(monkeypatch, sync_flags + path, use_lora=use_lora)
 
 
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [
-        ({"use_lora": False}, "LoRA adapters only"),
-        # merged base weights carry the per-step heads too
-        ({"lora_ipc_weight_sync": False}, "as adapters"),
         ({"loss_type": "nft"}, "policy_loss"),
         ({"diffusion_flow_shift": 3.0}, "flow-shift"),
         ({"sequence_parallel_size": 2}, "sequence"),
@@ -267,10 +354,14 @@ def test_full_weight_training_is_rejected_even_without_an_engine():
         ({"diffusion_true_cfg_scale": 4.0}, "unguided"),
         # the forward raises on these at the first train step
         ({"micro_batch_size": 2}, "one pair"),
+        # FSDP refuses these when the trainer is built, after every rank has loaded the DiT
+        ({"use_lora": False, "lora_ipc_weight_sync": False, "fsdp_master_dtype": "bf16"}, "master-dtype fp32 only"),
+        (
+            {"use_lora": False, "lora_ipc_weight_sync": False, "train_only": True, "fsdp_master_dtype": "fp16"},
+            "master-dtype fp32 only",
+        ),
     ],
     ids=[
-        "full-weight",
-        "lora-synced-as-merged-weights",
         "nft",
         "flow-shift",
         "sequence-parallel",
@@ -281,6 +372,8 @@ def test_full_weight_training_is_rejected_even_without_an_engine():
         "quality-high",
         "true-cfg",
         "micro-batch",
+        "full-weight-on-a-bf16-master",
+        "full-weight-train-only-on-an-fp16-master",
     ],
 )
 def test_unsupported_training_settings_are_rejected(overrides, message):
