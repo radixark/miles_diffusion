@@ -62,6 +62,13 @@ class H3ImageTrainPipelineConfig(H3TrainPipelineConfig):
                 "with. Install an sglang-d that takes them, or train a LoRA and sync it as adapters (--use-lora, "
                 "with --lora-ipc-weight-sync under --colocate)"
             )
+        # diffusers loads proj_in, the time embedder and the per-step heads in fp32 under any master dtype
+        if not args.debug_rollout_only and not args.use_lora and args.fsdp_master_dtype != "fp32":
+            raise ValueError(
+                f"H3 Image trains all weights at --fsdp-master-dtype fp32 only, got {args.fsdp_master_dtype}: some "
+                "of its modules stay in fp32 under a lower master dtype, and FSDP refuses a wrap whose trained "
+                "weights differ in dtype. Use fp32, or train a LoRA (--use-lora)"
+            )
         if args.diffusion_flow_shift is not None:
             raise ValueError("H3 Image samples on its release's sigma grid; drop --diffusion-flow-shift")
         if args.sequence_parallel_size != 1:
