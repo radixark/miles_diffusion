@@ -26,11 +26,29 @@ _WORKER = Path(__file__).with_name("_h3_image_head_gradients_worker.py")
 
 
 @pytest.mark.skipif(torch.cuda.device_count() < 2, reason="Requires two CUDA devices")
-def test_each_head_reduces_to_the_mean_of_its_own_gradients():
+@pytest.mark.parametrize("forward_dtype", ["fp32", "bf16"])
+def test_each_head_reduces_to_the_mean_of_its_own_gradients(forward_dtype):
+    """bf16 is a full-weight run's default forward: the heads stay fp32 there, and their wrap reduces through the
+    patched mixed-dtype collectives instead of torch's own."""
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
+    # cuBLAS needs this to run under torch.use_deterministic_algorithms, which the worker turns on.
+    env["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+    # The worker imports the CPU test's tiny model from the `tests` package at the repository root.
+    repo_root = str(Path(__file__).resolve().parents[4])
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, [repo_root, env.get("PYTHONPATH")]))
     result = subprocess.run(
-        [sys.executable, "-m", "torch.distributed.run", "--standalone", "--nnodes=1", "--nproc_per_node=2", _WORKER],
+        [
+            sys.executable,
+            "-m",
+            "torch.distributed.run",
+            "--standalone",
+            "--nnodes=1",
+            "--nproc_per_node=2",
+            _WORKER,
+            "--forward-dtype",
+            forward_dtype,
+        ],
         env=env,
         capture_output=True,
         text=True,
