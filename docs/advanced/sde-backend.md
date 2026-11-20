@@ -49,8 +49,10 @@ action over the streams it scores:
 - An `ode` stream is not scored. It still rolls out and conditions the joint forward, and its model output is still
   compared with the rollout's.
 - The scored streams must agree on the log-prob form. With the Gaussian constants (`sde`) their log-probs add up to
-  the joint log-density for any noise levels. Without them (`cps`) each term is scaled by its stream's noise variance,
-  so the scored streams need one noise level and one sigma grid.
+  the joint log-density for any noise levels. Without them (`cps`) each stream's term carries the variance of
+  the noise its step injects as a weight, as each step's does within one stream: a stream whose step injects less
+  noise (a lower noise level, or a smaller next sigma on its own grid) counts for less in the ratio. Use `sde` to
+  weight the streams by element count alone.
 - An `sde` or `cps` stream needs a positive noise level. At zero it samples its own mean and there is nothing to
   score: such a stream is `ode`.
 - An extra stream whose settings differ from the primary stream's is sent its own (`rollout_extra_stream_sde_args`).

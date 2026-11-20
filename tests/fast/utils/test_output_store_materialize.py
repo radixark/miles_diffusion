@@ -16,12 +16,7 @@ from miles.ray.data_conversion_hub.flow_grpo import expand_samples_to_train_pair
 from miles.utils.output_store import StoredTensor, materialize_stored_tensors
 from miles.utils.types import CondKwargs, DenoisingEnv, DiTTrajectory, RolloutDebugTensors, Sample
 
-_ARGS = SimpleNamespace(
-    primary_stream="visual",
-    rollout_extra_streams=[],
-    sde_step_backend_path={"visual": "miles.backends.fsdp_utils.sde_step_backend.FlowSdeStepBackend"},
-    diffusion_log_prob_no_const={"visual": False},
-)
+_ARGS = SimpleNamespace(primary_stream="visual", rollout_extra_streams=[])
 
 B, T = 2, 3
 K = T + 1

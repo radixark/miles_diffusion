@@ -2079,11 +2079,6 @@ def validate_train_sde_backend(args) -> None:
             f"the scored streams mix log-probs with and without the Gaussian constants: "
             f"--diffusion-sde-type {sde_types}"
         )
-    # Without the constants each stream's term is scaled by its noise variance, so the streams need one noise scale.
-    if len(scored) > 1 and no_const[scored[0]] and len({noise_levels[stream_name] for stream_name in scored}) > 1:
-        raise ValueError(
-            f"streams scored without the Gaussian constants need one --diffusion-noise-level, got {noise_levels}"
-        )
     if args.sde_step_backend_path is not None and len({sde_types[stream_name] for stream_name in scored}) > 1:
         raise ValueError(f"--sde-step-backend-path implements one dynamics; --diffusion-sde-type is {sde_types}")
 
