@@ -50,7 +50,7 @@ def transition():
         diffusion_clip_range=CLIP_RANGE,
         diffusion_noise_level={STREAM: NOISE_LEVEL},
         sde_step_backend_path={STREAM: "a backend"},
-        diffusion_kl_beta=0.0,
+        diffusion_kl_beta={STREAM: 0.0},
         diffusion_score_centering=True,
     )
     ctx = SimpleNamespace(

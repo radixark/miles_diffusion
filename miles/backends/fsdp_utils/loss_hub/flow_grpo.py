@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
 import torch
@@ -163,7 +164,7 @@ def flow_grpo_loss_formula(
     """
     args = ctx.args
     clip_range = args.diffusion_clip_range
-    kl_beta = float(args.diffusion_kl_beta)
+    positive_kl_betas = {stream_name: beta for stream_name, beta in args.diffusion_kl_beta.items() if beta > 0}
 
     next_latents = prepared.extras["next_latents"]
     scored_latents = {
@@ -173,21 +174,23 @@ def flow_grpo_loss_formula(
     }
     stream_weights = _stream_weights(scored_latents)
 
-    def sde_step_logprob_by_stream(pred: dict[str, torch.Tensor]) -> dict[str, SdeStepOutput]:
+    def sde_step_logprob_by_stream(
+        pred: dict[str, torch.Tensor], stream_names: Iterable[str]
+    ) -> dict[str, SdeStepOutput]:
         return {
             stream_name: ctx.sde_backends[stream_name].sde_step_logprob(
                 pred[stream_name].float(),
-                latents.float(),
+                scored_latents[stream_name].float(),
                 prev_sample=next_latents[stream_name].float(),
                 noise_level=args.diffusion_noise_level[stream_name],
                 sigmas=prepared.extras["sigmas"][stream_name],
                 next_sigmas=prepared.extras["next_sigmas"][stream_name],
                 sigma_max=prepared.extras["sigma_max"][stream_name],
             )
-            for stream_name, latents in scored_latents.items()
+            for stream_name in stream_names
         }
 
-    step_outs = sde_step_logprob_by_stream(new_pred)
+    step_outs = sde_step_logprob_by_stream(new_pred, scored_latents)
     log_prob_new_by_stream = {stream_name: step_out.log_prob for stream_name, step_out in step_outs.items()}
     log_prob_new = _combine_streams(log_prob_new_by_stream, stream_weights)
 
@@ -237,24 +240,37 @@ def flow_grpo_loss_formula(
     bsz = len(batch)
 
     kl_sum = loss_sum.new_zeros(())
-    if kl_beta > 0:
+    kl_sum_by_stream = {}
+    if positive_kl_betas:
         if ref_pred is None:
             raise ValueError("Flow-GRPO KL requires a reference DiT forward; set --ref-mode lora_base or ref")
-        ref_step_outs = sde_step_logprob_by_stream(ref_pred)
-        kl_sum_by_stream = {}
-        for stream_name, step_out in step_outs.items():
-            kl_per_pair = ((step_out.prev_mean - ref_step_outs[stream_name].prev_mean) ** 2).mean(
-                dim=tuple(range(1, step_out.prev_mean.ndim)),
-                keepdim=True,
-            ) / (2 * step_out.std_dev_t**2)
+        ref_step_outs = sde_step_logprob_by_stream(
+            ref_pred, [stream_name for stream_name in positive_kl_betas if stream_name in scored_latents]
+        )
+        for stream_name in positive_kl_betas:
+            step_out = step_outs.get(stream_name)
+            if step_out is not None:
+                kl_per_pair = ((step_out.prev_mean - ref_step_outs[stream_name].prev_mean) ** 2).mean(
+                    dim=tuple(range(1, step_out.prev_mean.ndim)),
+                    keepdim=True,
+                ) / (2 * step_out.std_dev_t**2)
+            else:
+                # An ode stream steps without noise, so its transition has no Gaussian to compare.
+                velocity_diff = new_pred[stream_name].float() - ref_pred[stream_name].float()
+                kl_per_pair = (velocity_diff**2).mean(dim=tuple(range(1, velocity_diff.ndim)))
             kl_sum_by_stream[stream_name] = kl_per_pair.sum()
-        kl_sum = _combine_streams(kl_sum_by_stream, stream_weights)
-        loss_sum = loss_sum + kl_beta * kl_sum
+        kl_sum = functools.reduce(torch.add, kl_sum_by_stream.values())
+        loss_sum = loss_sum + functools.reduce(
+            torch.add, (beta * kl_sum_by_stream[stream_name] for stream_name, beta in positive_kl_betas.items())
+        )
 
     with torch.no_grad():
         metrics.emit_mean("loss", total=loss_sum, count=bsz)
         metrics.emit_mean("policy_loss", total=per_pair_loss.sum(), count=bsz)
         metrics.emit_mean("kl_loss", total=kl_sum, count=bsz)
+        if len(prepared.latents) > 1:
+            for stream_name, stream_kl_sum in kl_sum_by_stream.items():
+                metrics.emit_mean(f"kl_loss_{stream_name}", total=stream_kl_sum, count=bsz)
         metrics.emit_mean("loss_abs_mean", total=per_pair_loss.abs().sum(), count=bsz)
         metrics.emit_mean("adv_abs_mean", total=prepared.advantage.abs().sum(), count=bsz)
         metrics.emit_mean("ratio_abs_minus_1", total=(ratio - 1.0).abs().sum(), count=bsz)

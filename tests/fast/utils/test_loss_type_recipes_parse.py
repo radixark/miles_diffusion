@@ -6,7 +6,9 @@
     dmd2          --teacher-load, ODE rollout stopped at a random step; the critic group's and the actor's hooks
                   come from the loss hub by role, so the trainer args carry no hook path
 
-Per-stream SDE settings: one value for every stream, or one for each stream of the run, each named once.
+Per-stream SDE settings and KL betas: one value for every stream, or one for each stream of the run, each named
+once. One KL beta > 0 over ode and scored streams is rejected: their KL terms differ in scale. Any stream's beta > 0
+turns on the lora_base reference by default.
 The log-prob form the request asks for follows the SDE type; a custom step backend goes to the scored streams.
 One rejected command line per validator shows the parser still calls it.
 
@@ -69,6 +71,7 @@ def parse(monkeypatch: pytest.MonkeyPatch):
         trainable_extra_streams = ("echo",)
         supports_cfg_training = True
         tasks = ("t2i", "t2v")
+        lora_target_modules = ("to_q",)
 
         @classmethod
         def validate_args(cls, args: Namespace) -> None:
@@ -135,6 +138,13 @@ def test_the_sde_defaults_hold_for_every_stream(parse):
     assert args.diffusion_noise_level == {"main": 0.7}
 
 
+def test_no_kl_beta_means_no_kl_on_any_stream_and_no_reference(parse):
+    """A default that left a stream unresolved, or turned the reference on, would change every recipe without KL."""
+    args = parse(ARGV_BY_LOSS_TYPE["policy_loss"] + " --rollout-extra-streams echo")
+    assert args.diffusion_kl_beta == {"main": 0.0, "echo": 0.0}
+    assert args.ref_mode == "none"
+
+
 def test_each_stream_takes_its_own_sde_settings(parse):
     """The request must carry the extra stream's own kernel, and an ode stream gets no backend to score it with."""
     args = parse(
@@ -161,6 +171,54 @@ def test_per_stream_sde_settings_must_name_every_stream(parse, sde_type):
     """Filling a missing stream from a default would hide a typo in a stream name."""
     with pytest.raises(ValueError, match="give one value, or one for each of"):
         parse(ARGV_BY_LOSS_TYPE["policy_loss"] + f" --rollout-extra-streams echo --diffusion-sde-type {sde_type}")
+
+
+def test_one_kl_beta_covers_every_scored_stream(parse):
+    """The recipes pass one positive beta; a rule against one beta over mixed forms must not catch scored streams."""
+    args = parse(
+        ARGV_BY_LOSS_TYPE["policy_loss"] + " --rollout-extra-streams echo --diffusion-kl-beta 0.04 --use-lora"
+    )
+    assert args.diffusion_kl_beta == {"main": 0.04, "echo": 0.04}
+    assert args.ref_mode == "lora_base"
+
+
+def test_a_kl_beta_on_the_ode_stream_alone_turns_on_the_lora_base_reference(parse):
+    """Reading one beta for the reference default would leave a run with only an extra stream's KL without one."""
+    args = parse(
+        ARGV_BY_LOSS_TYPE["policy_loss"]
+        + " --rollout-extra-streams echo --diffusion-sde-type main=sde,echo=ode --diffusion-kl-beta main=0,echo=0.04"
+        + " --use-lora"
+    )
+    assert args.diffusion_kl_beta == {"main": 0.0, "echo": 0.04}
+    assert args.ref_mode == "lora_base"
+
+
+@pytest.mark.parametrize(
+    ("kl_beta", "loss", "raises"),
+    [
+        pytest.param("0.04", "--loss-type policy_loss", True, id="one beta over both"),
+        pytest.param("0", "--loss-type policy_loss", False, id="no KL"),
+        pytest.param("main=0.04,echo=0.04", "--loss-type policy_loss", False, id="a beta per stream"),
+        pytest.param(
+            "0.04",
+            "--loss-type custom_loss --custom-loss-function-path miles.backends.fsdp_utils.loss_hub.nft.nft_loss_formula",
+            False,
+            id="a custom formula with its own KL",
+        ),
+    ],
+)
+def test_one_kl_beta_over_ode_and_scored_streams_is_rejected(parse, kl_beta, loss, raises):
+    """One beta would hold the ode stream's velocity MSE 60-1000x harder per element than the scored stream's KL."""
+    argv = (
+        ARGV_BY_LOSS_TYPE["policy_loss"].replace("--loss-type policy_loss", loss)
+        + f" --rollout-extra-streams echo --diffusion-sde-type main=sde,echo=ode --diffusion-kl-beta {kl_beta}"
+        + " --use-lora"
+    )
+    if raises:
+        with pytest.raises(ValueError, match="differ in scale; give one per stream"):
+            parse(argv)
+    else:
+        parse(argv)
 
 
 @pytest.mark.parametrize(

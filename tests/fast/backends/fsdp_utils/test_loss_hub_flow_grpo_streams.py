@@ -25,13 +25,14 @@ What each test pins:
   two streams, loss           loss and both gradients equal a float64 oracle over every element of both streams,
                               unclipped and at a recipe's clip range
   two streams, recomputed     the old log-prob taken from the new prediction gives ratio 1 and the joint gradient
-  two streams, KL             the KL term weights the streams like the log-prob
+  two streams, KL             each stream's KL is its own per-element mean times its own beta, unweighted
+  ode stream, KL              an ode stream's KL is its velocity MSE to the reference, taken in fp32
   recomputed old log-probs    written back per stream, not as one joint value
   per-stream dynamics         each stream steps with its own step backend and noise level
   two cps streams             each scored at its own noise level; the joint gradient equals a float64 oracle
   ode stream                  conditions the step, adds nothing to the score, still reports its model output
   debug diffs                 every stream's rollout model output and transition mean reach the logged diffs
-  per-stream diffs            two streams also log each stream's own log-prob and model-output diff
+  per-stream diffs            two streams also log each stream's own log-prob and model-output diff, and KL
   one stream, logged keys     a single stream logs exactly the keys it logged before streams existed, with one
                               DiT and with two
 """
@@ -110,7 +111,7 @@ def rollout():
         diffusion_clip_range=CLIP_RANGE,
         diffusion_noise_level=dict.fromkeys(STREAM_SPECS, NOISE_LEVEL),
         sde_step_backend_path=dict.fromkeys(STREAM_SPECS, "a backend"),
-        diffusion_kl_beta=0.0,
+        diffusion_kl_beta=dict.fromkeys(STREAM_SPECS, 0.0),
         diffusion_score_centering=False,
     )
     ctx = SimpleNamespace(
@@ -365,7 +366,7 @@ def test_a_multi_dit_family_routes_by_the_primary_streams_timestep(rollout):
 def test_one_stream_reproduces_the_single_stream_formula_bit_for_bit(rollout, kl_beta, old_log_prob_from_new):
     """Writing the ratio or the KL sum in another arithmetic form moves fp32 values the strict e2e standards compare."""
     backend, stream = rollout.backend, rollout.streams["wide"]
-    rollout.ctx.args.diffusion_kl_beta = kl_beta
+    rollout.ctx.args.diffusion_kl_beta = {"wide": kl_beta}
     # Far from the new prediction: a KL term of the policy loss's size, so one ulp of it shows in the sum.
     ref_pred = {"wide": stream.rollout_pred + 3.0}
     production_pred = _leaf({"wide": rollout.new_pred["wide"]})
@@ -467,23 +468,59 @@ def test_two_streams_with_the_old_log_prob_taken_from_the_new_prediction(rollout
         torch.testing.assert_close(production_grad.double(), oracle_grad, rtol=1e-4, atol=1e-6)
 
 
-def test_kl_term_weights_the_streams_like_the_log_prob(rollout):
-    """Summing the two streams' KL unweighted would give the 4-element stream the 6-element stream's say."""
-    backend, kl_beta = rollout.backend, 0.5
+@pytest.mark.parametrize(
+    "kl_betas",
+    [
+        pytest.param({"wide": 0.5, "narrow": 2.0}, id="a beta per stream"),
+        pytest.param({"wide": 0.0, "narrow": 2.0}, id="only the narrow stream"),
+    ],
+)
+def test_each_streams_kl_takes_its_own_beta(rollout, kl_betas):
+    """Weighting the KL by element share would shrink a small stream's beta; one beta would leak into a zero one."""
+    backend = rollout.backend
     # Far from the new prediction, so the KL term is of the policy loss's size.
     ref_pred = {stream_name: stream.rollout_pred + 3.0 for stream_name, stream in rollout.streams.items()}
     policy_loss = _loss(rollout, list(STREAM_SPECS), rollout.new_pred)
-    rollout.ctx.args.diffusion_kl_beta = kl_beta
+    rollout.ctx.args.diffusion_kl_beta = kl_betas
     loss = _loss(rollout, list(STREAM_SPECS), rollout.new_pred, ref_pred=ref_pred)
 
-    expected_kl = 0.0
-    for stream_name, weight in STREAM_WEIGHTS.items():
+    expected_kl_term = 0.0
+    for stream_name, beta in kl_betas.items():
         stream = rollout.streams[stream_name]
         prev_mean, _, std_dev_t = _transition_mean_and_std(backend, stream, rollout.new_pred[stream_name])
         ref_mean, _, _ = _transition_mean_and_std(backend, stream, ref_pred[stream_name])
         per_pair = (prev_mean - ref_mean).square().flatten(1).mean(dim=1) / (2 * std_dev_t.flatten() ** 2)
-        expected_kl = expected_kl + weight * per_pair.sum()
-    torch.testing.assert_close(loss - policy_loss, kl_beta * expected_kl, rtol=1e-4, atol=1e-8)
+        expected_kl_term = expected_kl_term + beta * per_pair.sum()
+    torch.testing.assert_close(loss - policy_loss, expected_kl_term, rtol=1e-4, atol=1e-8)
+
+
+def test_an_ode_streams_kl_is_its_velocity_mse(rollout):
+    """Taking KL only over the scored streams would leave an ode stream's beta silently without effect."""
+    rollout.ctx.args.sde_step_backend_path = {"wide": "a backend"}
+    rollout.ctx.sde_backends = {"wide": rollout.backend}
+    rollout.ctx.args.diffusion_kl_beta = {"wide": 0.0, "narrow": 2.0}
+    ref_pred = {stream_name: stream.rollout_pred + 3.0 for stream_name, stream in rollout.streams.items()}
+    pred = _leaf(rollout.new_pred)
+    loss = _loss(rollout, list(STREAM_SPECS), pred, ref_pred=ref_pred)
+    (narrow_grad,) = torch.autograd.grad(loss, pred["narrow"])
+
+    velocity_diff = rollout.new_pred["narrow"] - ref_pred["narrow"]
+    # d/dv of 2.0 * sum over pairs of mean((v - v_ref)^2) over the stream's 4 elements.
+    torch.testing.assert_close(narrow_grad, 2.0 * 2 * velocity_diff / velocity_diff[0].numel())
+
+
+def test_an_ode_streams_kl_subtracts_in_fp32(rollout):
+    """Subtracting bf16 predictions first rounds each gap to 8 bits before it is squared."""
+    rollout.ctx.args.sde_step_backend_path = {"wide": "a backend"}
+    rollout.ctx.sde_backends = {"wide": rollout.backend}
+    pred = dict(rollout.new_pred, narrow=rollout.new_pred["narrow"].bfloat16())
+    ref_pred = dict(pred, narrow=(rollout.streams["narrow"].rollout_pred + 0.3).bfloat16())
+    policy_loss = _loss(rollout, list(STREAM_SPECS), pred)
+    rollout.ctx.args.diffusion_kl_beta = {"wide": 0.0, "narrow": 1.0}
+    loss = _loss(rollout, list(STREAM_SPECS), pred, ref_pred=ref_pred)
+
+    velocity_diff = pred["narrow"].float() - ref_pred["narrow"].float()
+    torch.testing.assert_close(loss - policy_loss, velocity_diff.square().mean(dim=1).sum(), rtol=1e-6, atol=0)
 
 
 def test_recomputed_old_log_probs_are_written_per_stream(rollout):
@@ -623,8 +660,17 @@ def test_two_streams_also_log_each_streams_own_diffs(rollout):
     """The joint diff is almost all the larger stream; a stream replayed wrongly only shows in its own key."""
     backend, stream_names = rollout.backend, list(STREAM_SPECS)
     metrics = _metrics(stream_names)
+    rollout.ctx.args.diffusion_kl_beta = {"wide": 0.0, "narrow": 2.0}
+    ref_pred = {stream_name: stream.rollout_pred + 3.0 for stream_name, stream in rollout.streams.items()}
 
-    _loss(rollout, stream_names, rollout.new_pred, batch=_model_output_batch(rollout, stream_names), metrics=metrics)
+    _loss(
+        rollout,
+        stream_names,
+        rollout.new_pred,
+        batch=_model_output_batch(rollout, stream_names),
+        metrics=metrics,
+        ref_pred=ref_pred,
+    )
 
     logged = metrics.reduce()
     for stream_name, stream in rollout.streams.items():
@@ -636,6 +682,14 @@ def test_two_streams_also_log_each_streams_own_diffs(rollout):
         assert logged[f"model_output_mean_abs_diff_{stream_name}"] == pytest.approx(
             (rollout.new_pred[stream_name] - stream.rollout_pred).abs().mean().item()
         )
+    narrow = rollout.streams["narrow"]
+    prev_mean, _, std_dev_t = _transition_mean_and_std(backend, narrow, rollout.new_pred["narrow"])
+    ref_mean, _, _ = _transition_mean_and_std(backend, narrow, ref_pred["narrow"])
+    narrow_kl = (prev_mean - ref_mean).square().flatten(1).mean(dim=1) / (2 * std_dev_t.flatten() ** 2)
+    assert logged["kl_loss_narrow"] == pytest.approx(narrow_kl.mean().item(), rel=1e-5)
+    # A zero-beta stream adds nothing to the total either.
+    assert logged["kl_loss"] == pytest.approx(narrow_kl.mean().item(), rel=1e-5)
+    assert "kl_loss_wide" not in logged
 
 
 @pytest.mark.parametrize(
