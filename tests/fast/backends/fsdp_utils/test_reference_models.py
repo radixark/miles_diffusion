@@ -172,6 +172,7 @@ def make_actor_forward_harness(
         guidance_scale=1.0,
         true_cfg_scale=true_cfg_scale,
         teacher_guidance_scale=teacher_guidance_scale,
+        forward_only_batch=None,
     )
 
     def prepare(ctx, batch, **kwargs):
@@ -596,6 +597,28 @@ def test_an_unguided_teacher_runs_without_cfg():
         False,
         1.0,
     )
+
+
+def test_a_forward_only_batch_runs_without_grad_before_the_training_forward():
+    harness, observed, actor, teacher = _teacher_harness(None)
+    prepared = harness.loss_hooks.prepare(None, [])
+    forward_only_inputs = torch.full((2, 3), 2.0)
+    prepared.forward_only_batch = SimpleNamespace(
+        **{**vars(prepared), "latents": {"visual": forward_only_inputs}, "teacher_guidance_scale": 1.0}
+    )
+
+    _run_forward(harness, reshard_model=lambda model: None).backward()
+
+    # Its teacher and its model, then the training forward, which asked for no teacher.
+    assert observed["order"] == ["teacher", "actor", "actor"]
+    assert "teacher_pred" not in observed
+    forward_only_pred = observed["formula_kwargs"]["forward_only_pred"]["visual"]
+    forward_only_teacher_pred = observed["formula_kwargs"]["forward_only_teacher_pred"]["visual"]
+    assert not forward_only_pred.requires_grad and not forward_only_teacher_pred.requires_grad
+    with torch.no_grad():
+        torch.testing.assert_close(forward_only_pred, actor(forward_only_inputs))
+        torch.testing.assert_close(forward_only_teacher_pred, teacher(forward_only_inputs))
+        torch.testing.assert_close(observed["new_pred"], actor(torch.ones(2, 3)))
 
 
 def test_no_teacher_forward_unless_the_prepare_hook_asks():

@@ -46,6 +46,13 @@ What each test pins:
   test_critic_matching_the_teacher_gives_no_gradient     x0_fake == x0_real ──► zero loss and gradient
   test_gaussian_student_moves_toward_the_teacher         analytic scores: sign and normalization move mu
   test_health_metrics_are_recorded_overall_and_per_step  score gap, teacher distance, x0 stats, split by stop step
+
+--dmd2-critic-scoring original: the critic's last step is plain SFT and carries the scoring batch, a fresh draw in the
+scoring range, as its forward-only batch; the formula keeps the x0 of that batch's forwards:
+  test_under_original_only_the_last_step_carries_a_scoring_batch_and_it_stays_plain_sft
+  test_the_scoring_batch_is_the_reuse_last_step_batch_one_step_of_micro_batches_later
+  test_under_original_the_formula_keeps_the_x0_of_the_forward_only_batch
+  test_either_mode_scores_the_last_step_once             by its training forward or before it, never both or neither
 """
 
 from tests.ci.ci_register import register_cpu_ci
@@ -132,6 +139,7 @@ def _ctx(teacher_guidance_scale=3.0, critic_scale=1.0):
             dmd2_teacher_guidance_scale=teacher_guidance_scale,
             dmd2_score_sigma_range=[0.02, 0.98],
             dmd2_critic_loss_space="velocity",
+            dmd2_critic_scoring="reuse-critic-step",
         ),
         forward_dtype=torch.float32,
         device=torch.device("cpu"),
@@ -156,16 +164,12 @@ def _forward(config, model, prepared, *, use_cfg, cfg_batching, guidance_scale):
 
 
 def _critic_step(ctx, pairs, optim_step_idx, train_output_inputs, metrics=None, teacher=None):
-    """One critic optimizer step as _train_core runs it: prepare, the teacher forward it asks for, the critic's
-    training forward, the loss hook."""
+    """One critic optimizer step as _train_core runs it: prepare, the forward-only batch it carries, the teacher
+    forward it asks for, the critic's training forward, the loss hook."""
     config = ctx.train_pipeline_config
     teacher = _CondVelocity(1.0) if teacher is None else teacher
-    steps = []
-    for start in range(0, len(pairs), ctx.args.micro_batch_size):
-        batch = pairs[start : start + ctx.args.micro_batch_size]
-        prepared = dmd2.prepare_critic_batch(
-            ctx, batch, microbatch_id=optim_step_idx * 10 + start, optim_step_idx=optim_step_idx
-        )
+
+    def forward_teacher_and_model(prepared):
         teacher_pred = None
         if prepared.teacher_guidance_scale is not None:
             use_cfg = prepared.teacher_guidance_scale > 1.0
@@ -186,6 +190,22 @@ def _critic_step(ctx, pairs, optim_step_idx, train_output_inputs, metrics=None, 
             cfg_batching=prepared.cfg_batching,
             guidance_scale=prepared.guidance_scale,
         )
+        return teacher_pred, new_pred
+
+    steps = []
+    for start in range(0, len(pairs), ctx.args.micro_batch_size):
+        batch = pairs[start : start + ctx.args.micro_batch_size]
+        prepared = dmd2.prepare_critic_batch(
+            ctx, batch, microbatch_id=optim_step_idx * 10 + start, optim_step_idx=optim_step_idx
+        )
+        forward_only_preds = {}
+        if prepared.forward_only_batch is not None:
+            with torch.no_grad():
+                forward_only_teacher_pred, forward_only_pred = forward_teacher_and_model(prepared.forward_only_batch)
+            forward_only_preds = dict(
+                forward_only_pred=forward_only_pred, forward_only_teacher_pred=forward_only_teacher_pred
+            )
+        teacher_pred, new_pred = forward_teacher_and_model(prepared)
         loss = dmd2.critic_loss_formula(
             ctx,
             batch,
@@ -197,6 +217,7 @@ def _critic_step(ctx, pairs, optim_step_idx, train_output_inputs, metrics=None, 
             metrics=metrics or _Metrics(),
             optim_step_idx=optim_step_idx,
             train_output_inputs=train_output_inputs,
+            **forward_only_preds,
         )
         steps.append((batch, prepared, new_pred, loss))
     return steps
@@ -604,3 +625,98 @@ def test_health_metrics_are_recorded_overall_and_per_step():
         assert reduced[f"x0_mean_abs_diff_step{step}"] == pytest.approx(distance)
     # No pair stopped at steps 2 or 3, so they log nothing.
     assert not any(key.endswith(("_step2", "_step3")) for key in reduced)
+
+
+def _original_ctx(teacher_guidance_scale=3.0, num_microbatches_per_optim_step=3):
+    ctx = dataclasses.replace(
+        _ctx(teacher_guidance_scale), num_microbatches_per_optim_step=num_microbatches_per_optim_step
+    )
+    ctx.args.dmd2_critic_scoring = "original"
+    return ctx
+
+
+def test_under_original_only_the_last_step_carries_a_scoring_batch_and_it_stays_plain_sft():
+    ctx = _original_ctx()
+    pairs = _pairs(256)
+    last_step = CRITIC_STEPS - 1
+
+    critic_batch = dmd2.prepare_critic_batch(ctx, pairs, microbatch_id=6, optim_step_idx=last_step)
+
+    sft_batch = prepare_sft_batch(ctx, _sft_pairs(ctx, pairs), microbatch_id=6, optim_step_idx=last_step)
+    assert torch.equal(critic_batch.latents["visual"], sft_batch.latents["visual"])
+    assert torch.equal(critic_batch.extras["target"]["visual"], sft_batch.extras["target"]["visual"])
+    assert critic_batch.teacher_guidance_scale is None
+    assert critic_batch.neg_cond is None and critic_batch.joint_cond is None
+    assert critic_batch.forward_only_batch is not None
+    assert dmd2.prepare_critic_batch(ctx, pairs, microbatch_id=0, optim_step_idx=0).forward_only_batch is None
+
+
+@pytest.mark.parametrize("cfg_batching", [False, True])
+def test_the_scoring_batch_is_the_reuse_last_step_batch_one_step_of_micro_batches_later(cfg_batching):
+    pairs = _pairs(4)
+    ctx = _ctx(teacher_guidance_scale=3.0)
+    ctx.train_pipeline_config.cfg_batching = cfg_batching
+    reuse = dmd2.prepare_critic_batch(ctx, pairs, microbatch_id=9, optim_step_idx=CRITIC_STEPS - 1)
+
+    original_ctx = _original_ctx(num_microbatches_per_optim_step=3)
+    original_ctx.train_pipeline_config.cfg_batching = cfg_batching
+    # Micro-batch 6 of a step of 3: its scoring draw is micro-batch 9, past the last step's training ids.
+    scoring = dmd2.prepare_critic_batch(
+        original_ctx, pairs, microbatch_id=6, optim_step_idx=CRITIC_STEPS - 1
+    ).forward_only_batch
+
+    for field in ("latents", "timesteps", "timesteps_for_model"):
+        assert torch.equal(getattr(scoring, field)["visual"], getattr(reuse, field)["visual"])
+    assert torch.equal(scoring.extras["sigmas"]["visual"], reuse.extras["sigmas"]["visual"])
+    assert scoring.teacher_guidance_scale == reuse.teacher_guidance_scale == 3.0
+    for cond in ("pos_cond", "neg_cond", "joint_cond"):
+        reuse_cond, scoring_cond = getattr(reuse, cond), getattr(scoring, cond)
+        if reuse_cond is None:
+            assert scoring_cond is None
+        else:
+            assert torch.equal(scoring_cond["encoder_hidden_states"], reuse_cond["encoder_hidden_states"])
+
+
+def test_under_original_the_formula_keeps_the_x0_of_the_forward_only_batch():
+    ctx = _original_ctx(teacher_guidance_scale=1.0)
+    ctx.models["transformer"] = _NoisyInputVelocity()
+    pairs = _pairs(2)
+
+    inputs = []
+    [(_, prepared, new_pred, loss)] = _critic_step(ctx, pairs, CRITIC_STEPS - 1, inputs, teacher=_CondVelocity(2.0))
+    scores = dmd2.score_last_step_samples(ctx, pairs, inputs)
+
+    assert list(scores) == [100, 101]
+    scoring = prepared.forward_only_batch
+    x_s = scoring.latents["visual"]
+    sigma = scoring.extras["sigmas"]["visual"].view(-1, 1, 1, 1)
+    critic_velocity = x_s + scoring.timesteps_for_model["visual"].view(-1, 1, 1, 1)
+    for n, pair in enumerate(pairs):
+        assert torch.equal(scores[pair["sample_index"]]["x0_fake"], x_s[n] - sigma[n] * critic_velocity[n])
+        torch.testing.assert_close(scores[pair["sample_index"]]["x0_real"], x_s[n] - sigma[n] * 2.0 * (1.0 + n))
+    # The loss is still the SFT loss of the training forward.
+    sft_loss = sft_loss_formula(
+        ctx,
+        pairs,
+        prepared,
+        new_pred=new_pred,
+        old_pred=None,
+        ref_pred=None,
+        metrics=_Metrics(),
+        optim_step_idx=CRITIC_STEPS - 1,
+        train_output_inputs=[],
+    )
+    assert torch.equal(loss, sft_loss)
+
+
+@pytest.mark.parametrize("critic_scoring", ["reuse-critic-step", "original"])
+def test_either_mode_scores_the_last_step_once(critic_scoring):
+    """A step scored twice or not at all leaves the actor the wrong scores, or none, without an error."""
+    ctx = _ctx()
+    ctx.args.dmd2_critic_scoring = critic_scoring
+
+    for step in range(CRITIC_STEPS):
+        by_training_forward = dmd2._is_scoring_step(ctx, step)
+        before_training = dmd2._is_scored_before_training(ctx, step)
+        assert by_training_forward + before_training == (step == CRITIC_STEPS - 1)
+    assert dmd2._is_scored_before_training(ctx, CRITIC_STEPS - 1) == (critic_scoring == "original")
