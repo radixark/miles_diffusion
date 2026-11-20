@@ -23,9 +23,15 @@ def _stack_denoising_step_indices(batch: list[dict], device: torch.device) -> to
     if all(step is None for step in steps):
         return None
     if any(step is None for step in steps):
-        raise ValueError("only some pairs of this micro-batch carry denoising_step_index; an expander sets it on all")
-    # operator.index: an int or an integer tensor scalar, never a float
-    return torch.tensor([operator.index(step) for step in steps], device=device)
+        raise ValueError(
+            "only some pairs of this micro-batch carry denoising_step_index; an expander sets it on every pair or on none"
+        )
+    try:
+        # operator.index: an int or an integer tensor scalar, never a float
+        steps = [operator.index(step) for step in steps]
+    except TypeError as error:
+        raise ValueError(f"denoising_step_index must be an int or an integer tensor scalar: {error}") from error
+    return torch.tensor(steps, device=device)
 
 
 def prepare_flow_grpo_batch(
