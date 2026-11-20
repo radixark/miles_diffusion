@@ -162,8 +162,6 @@ def _grpo_args(**overrides):
         rollout_microgroup_size=1,
         diffusion_output_num_frames=1,
         micro_batch_size=1,
-        micro_batch_size_sample=None,
-        micro_batch_size_tstep=None,
         diffusion_quality="exact",
         diffusion_true_cfg_scale=None,
     )
@@ -184,20 +182,11 @@ def test_lora_flow_grpo_is_accepted():
         {"train_only": True, "lora_ipc_weight_sync": False, "colocate": True},
         # engines on their own GPUs receive the adapters over NCCL
         {"colocate": False, "lora_ipc_weight_sync": False},
-        # the recipe's explicit one-pair tiles
-        {"micro_batch_size_sample": 1, "micro_batch_size_tstep": 1},
         {"diffusion_eval_num_steps": 6},
         # a config named by path has no family key, which only a sync looks things up by
         {"diffusion_model_family": None, "train_only": True, "lora_ipc_weight_sync": False},
     ],
-    ids=[
-        "rollout-only",
-        "train-only",
-        "adapters-over-nccl",
-        "one-pair-tiles",
-        "eval-steps-of-the-release",
-        "config-by-path-train-only",
-    ],
+    ids=["rollout-only", "train-only", "adapters-over-nccl", "eval-steps-of-the-release", "config-by-path-train-only"],
 )
 def test_supported_variations_are_accepted(overrides):
     H3ImageTrainPipelineConfig.validate_args(_grpo_args(**overrides))
@@ -224,6 +213,12 @@ def _validate_launch(monkeypatch, flags):
 def test_a_launch_with_the_required_flags_passes_the_real_parser(monkeypatch):
     """validate_args reads the parser's defaults, which a namespace built by hand does not have."""
     assert _validate_launch(monkeypatch, "--lora-ipc-weight-sync").diffusion_model_family == "h3_image"
+
+
+def test_micro_batch_tiles_above_one_pair_are_rejected_through_the_parser(monkeypatch):
+    """The check reads micro_batch_size, which the parser folds the tiles into before the family hook runs."""
+    with pytest.raises(ValueError, match="one pair"):
+        _validate_launch(monkeypatch, "--lora-ipc-weight-sync --micro-batch-size-sample 2 --micro-batch-size-tstep 1")
 
 
 def test_a_run_on_dumped_rollouts_is_not_held_to_a_sync_mode(monkeypatch):
@@ -263,8 +258,6 @@ def test_full_weight_training_is_rejected_even_without_an_engine():
         ({"diffusion_true_cfg_scale": 4.0}, "unguided"),
         # the forward raises on these at the first train step
         ({"micro_batch_size": 2}, "one pair"),
-        # the parser folds the tiles into micro_batch_size
-        ({"micro_batch_size": 2, "micro_batch_size_sample": 2, "micro_batch_size_tstep": 1}, "one pair"),
     ],
     ids=[
         "full-weight",
@@ -279,7 +272,6 @@ def test_full_weight_training_is_rejected_even_without_an_engine():
         "quality-high",
         "true-cfg",
         "micro-batch",
-        "micro-batch-tiles",
     ],
 )
 def test_unsupported_training_settings_are_rejected(overrides, message):
