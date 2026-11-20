@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import functools
+from typing import TYPE_CHECKING
+
 import torch
 
 from miles.backends.fsdp_utils.loss_hub.score_centering import score_centering_term
@@ -10,6 +13,9 @@ from miles.backends.fsdp_utils.metrics import record_prev_mean_diff_over_noise_s
 from miles.utils.metric_buffer import MetricBuffer
 from miles.utils.train_data_utils import stack_train_pair_rollout_debug
 
+if TYPE_CHECKING:
+    from miles.backends.fsdp_utils.sde_step_backend import SdeStepOutput
+
 
 def _stack_pair_field(batch: list[dict], key: str, device: torch.device) -> dict[str, torch.Tensor]:
     """Stack one per-stream pair field across the micro-batch, keyed by latent stream name."""
@@ -17,6 +23,21 @@ def _stack_pair_field(batch: list[dict], key: str, device: torch.device) -> dict
         stream_name: torch.stack([pair[key][stream_name] for pair in batch]).to(device=device, dtype=torch.float32)
         for stream_name in batch[0][key]
     }
+
+
+def _stream_weights(latents: dict[str, torch.Tensor]) -> dict[str, float]:
+    """Each stream's share of a pair's latent elements; a lone stream's is exactly 1.0."""
+    element_counts = {stream_name: latent[0].numel() for stream_name, latent in latents.items()}
+    total = sum(element_counts.values())
+    return {stream_name: count / total for stream_name, count in element_counts.items()}
+
+
+def _combine_streams(value_by_stream: dict[str, torch.Tensor], stream_weights: dict[str, float]) -> torch.Tensor:
+    """Weight each stream's value by its share of the elements and add them."""
+    # Weight first, then add: multiplying by 1.0 keeps a lone stream's values bit for bit.
+    return functools.reduce(
+        torch.add, (weight * value_by_stream[stream_name] for stream_name, weight in stream_weights.items())
+    )
 
 
 def prepare_flow_grpo_batch(
@@ -134,52 +155,73 @@ def flow_grpo_loss_formula(
     write_old_log_prob: bool = False,
     old_log_prob_from_new: bool = False,
 ) -> torch.Tensor | None:
-    """SDE log-prob + PPO-clip (+ optional KL vs ``ref_pred``). Actor owns DiT forward."""
+    """SDE log-prob + PPO-clip (+ optional KL vs ``ref_pred``). Actor owns DiT forward.
+
+    One step's action is every stream's next latent; given the current latents the streams' transitions are
+    independent, so the action's per-element mean log-prob is the streams' means weighted by element count.
+    """
     args = ctx.args
     clip_range = args.diffusion_clip_range
     noise_level = args.diffusion_noise_level
     kl_beta = float(args.diffusion_kl_beta)
 
-    # The pairs carry one rollout stream.
-    (stream_name,) = prepared.latents
-    next_latents = prepared.extras["next_latents"][stream_name]
-    log_prob_old_rollout = prepared.extras["log_prob_old"][stream_name]
-    sde_step_sigmas = {
-        "sigmas": prepared.extras["sigmas"][stream_name],
-        "next_sigmas": prepared.extras["next_sigmas"][stream_name],
-        "sigma_max": prepared.extras["sigma_max"][stream_name],
-    }
+    next_latents = prepared.extras["next_latents"]
+    stream_weights = _stream_weights(prepared.latents)
 
-    step_out = ctx.sde_backend.sde_step_logprob(
-        new_pred[stream_name].float(),
-        prepared.latents[stream_name].float(),
-        prev_sample=next_latents.float(),
-        noise_level=noise_level,
-        **sde_step_sigmas,
-    )
-    log_prob_new = step_out.log_prob
+    def sde_step_logprob_by_stream(pred: dict[str, torch.Tensor]) -> dict[str, SdeStepOutput]:
+        return {
+            stream_name: ctx.sde_backend.sde_step_logprob(
+                pred[stream_name].float(),
+                latents.float(),
+                prev_sample=next_latents[stream_name].float(),
+                noise_level=noise_level,
+                sigmas=prepared.extras["sigmas"][stream_name],
+                next_sigmas=prepared.extras["next_sigmas"][stream_name],
+                sigma_max=prepared.extras["sigma_max"][stream_name],
+            )
+            for stream_name, latents in prepared.latents.items()
+        }
+
+    step_outs = sde_step_logprob_by_stream(new_pred)
+    log_prob_new_by_stream = {stream_name: step_out.log_prob for stream_name, step_out in step_outs.items()}
+    log_prob_new = _combine_streams(log_prob_new_by_stream, stream_weights)
 
     if write_old_log_prob:
-        for pair, log_prob in zip(batch, log_prob_new, strict=True):
-            pair["log_prob_old"] = {stream_name: log_prob.cpu()}
+        per_pair_log_probs = zip(*log_prob_new_by_stream.values(), strict=True)
+        for pair, log_probs in zip(batch, per_pair_log_probs, strict=True):
+            pair["log_prob_old"] = {
+                stream_name: log_prob.cpu()
+                for stream_name, log_prob in zip(log_prob_new_by_stream, log_probs, strict=True)
+            }
         return None
 
-    log_prob_old = log_prob_new.detach() if old_log_prob_from_new else log_prob_old_rollout
+    log_prob_old_by_stream = (
+        {stream_name: log_prob.detach() for stream_name, log_prob in log_prob_new_by_stream.items()}
+        if old_log_prob_from_new
+        else prepared.extras["log_prob_old"]
+    )
+    log_prob_old = _combine_streams(log_prob_old_by_stream, stream_weights)
     ratio = torch.exp(log_prob_new - log_prob_old)
     unclipped = -prepared.advantage * ratio
     clipped = -prepared.advantage * torch.clamp(ratio, 1.0 - clip_range, 1.0 + clip_range)
     per_pair_loss = torch.maximum(unclipped, clipped)
 
-    rollout_prev_mean = stack_train_pair_rollout_debug(batch, "rollout_step_prev_sample_mean", stream_name)
-    if rollout_prev_mean is not None:
-        rollout_prev_mean = rollout_prev_mean.to(device=step_out.prev_mean.device, dtype=torch.float32)
+    rollout_prev_means = {}
+    for stream_name, step_out in step_outs.items():
+        rollout_prev_mean = stack_train_pair_rollout_debug(batch, "rollout_step_prev_sample_mean", stream_name)
+        if rollout_prev_mean is not None:
+            rollout_prev_means[stream_name] = rollout_prev_mean.to(
+                device=step_out.prev_mean.device, dtype=torch.float32
+            )
     if args.diffusion_score_centering:
+        # The closed form is one stream's Gaussian.
+        ((stream_name, step_out),) = step_outs.items()
         per_pair_loss = per_pair_loss + score_centering_term(
             batch,
             step_out,
-            rollout_prev_mean,
+            rollout_prev_means.get(stream_name),
             stream_name=stream_name,
-            next_latents=next_latents,
+            next_latents=next_latents[stream_name],
             log_ratio=log_prob_new - log_prob_old,
             advantage=prepared.advantage,
             clip_range=clip_range,
@@ -193,19 +235,16 @@ def flow_grpo_loss_formula(
     if kl_beta > 0:
         if ref_pred is None:
             raise ValueError("Flow-GRPO KL requires a reference DiT forward; set --ref-mode lora_base or ref")
-        ref_step_out = ctx.sde_backend.sde_step_logprob(
-            ref_pred[stream_name].float(),
-            prepared.latents[stream_name].float(),
-            prev_sample=next_latents.float(),
-            noise_level=noise_level,
-            **sde_step_sigmas,
-        )
-        kl_per_pair = ((step_out.prev_mean - ref_step_out.prev_mean) ** 2).mean(
-            dim=tuple(range(1, step_out.prev_mean.ndim)),
-            keepdim=True,
-        ) / (2 * step_out.std_dev_t**2)
-        loss_sum = loss_sum + kl_beta * kl_per_pair.sum()
-        kl_sum = kl_per_pair.sum()
+        ref_step_outs = sde_step_logprob_by_stream(ref_pred)
+        kl_sum_by_stream = {}
+        for stream_name, step_out in step_outs.items():
+            kl_per_pair = ((step_out.prev_mean - ref_step_outs[stream_name].prev_mean) ** 2).mean(
+                dim=tuple(range(1, step_out.prev_mean.ndim)),
+                keepdim=True,
+            ) / (2 * step_out.std_dev_t**2)
+            kl_sum_by_stream[stream_name] = kl_per_pair.sum()
+        kl_sum = _combine_streams(kl_sum_by_stream, stream_weights)
+        loss_sum = loss_sum + kl_beta * kl_sum
 
     with torch.no_grad():
         metrics.emit_mean("loss", total=loss_sum, count=bsz)
@@ -227,17 +266,21 @@ def flow_grpo_loss_formula(
                 count=bsz,
             )
 
-        if rollout_prev_mean is not None:
-            record_prev_mean_diff_over_noise_std(metrics, rollout_prev_mean, step_out.prev_mean, step_out.noise_std)
+        # Every stream reports under the same keys: a mean over the streams' pairs or elements, a max over all.
+        for stream_name, step_out in step_outs.items():
+            if stream_name in rollout_prev_means:
+                record_prev_mean_diff_over_noise_std(
+                    metrics, rollout_prev_means[stream_name], step_out.prev_mean, step_out.noise_std
+                )
 
-        rollout_model_output = stack_train_pair_rollout_debug(batch, "rollout_step_model_output", stream_name)
-        if rollout_model_output is not None:
-            record_rollout_train_abs_diff(
-                metrics,
-                "model_output",
-                new_pred[stream_name].float(),
-                rollout_model_output.to(device=ctx.device, dtype=torch.float32),
-                component=prepared.component_name if len(ctx.models) > 1 else None,
-            )
+            rollout_model_output = stack_train_pair_rollout_debug(batch, "rollout_step_model_output", stream_name)
+            if rollout_model_output is not None:
+                record_rollout_train_abs_diff(
+                    metrics,
+                    "model_output",
+                    new_pred[stream_name].float(),
+                    rollout_model_output.to(device=ctx.device, dtype=torch.float32),
+                    component=prepared.component_name if len(ctx.models) > 1 else None,
+                )
 
     return loss_sum
