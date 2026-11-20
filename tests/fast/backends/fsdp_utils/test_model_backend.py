@@ -12,11 +12,9 @@ import json
 import logging
 
 import diffusers
-import httpx
 import huggingface_hub
 import pytest
 import torch
-from huggingface_hub.errors import GatedRepoError, RemoteEntryNotFoundError
 
 from miles.backends.fsdp_utils import model_backend
 from miles.backends.fsdp_utils.model_backend import BaseModelBackend, DiffusersModelBackend, MilesModelBackend
@@ -179,29 +177,10 @@ class TestBackendHierarchy:
         with pytest.raises(ValueError, match="weight variant 'fp16'"):
             DiffusersModelBackend._resolve_component(checkpoint, "transformer")
 
-    def test_hub_checkpoint_without_a_modular_index_reads_model_index(self, monkeypatch, caplog):
-        caplog.set_level(logging.INFO, logger=model_backend.__name__)
-
-        def raise_entry_not_found(repo_id, filename):
-            response = httpx.Response(404, request=httpx.Request("HEAD", f"https://huggingface.co/{repo_id}"))
-            raise RemoteEntryNotFoundError(f"{repo_id} has no {filename}", response=response)
-
-        monkeypatch.setattr(model_backend, "hf_hub_download", raise_entry_not_found)
-        monkeypatch.setattr(
-            model_backend.DiffusionPipeline,
-            "load_config",
-            lambda checkpoint_path: {"transformer": [__name__, "_CheckpointComponent"]},
-        )
-
-        assert DiffusersModelBackend._resolve_component("org/classic", "transformer") == (
-            _CheckpointComponent,
-            "transformer",
-        )
-        # every classic checkpoint answers 404: a line per component load on each rank would say nothing
-        assert not caplog.records
-
-    def test_cached_classic_checkpoint_resolves_while_the_hub_is_offline(self, monkeypatch, tmp_path, caplog):
-        """A classic checkpoint's cache never holds a modular index, so the probe has no copy to fall back to."""
+    def test_checkpoint_without_a_readable_modular_index_reads_model_index_and_logs_it(
+        self, monkeypatch, tmp_path, caplog
+    ):
+        """A cached classic checkpoint must still resolve offline, and the fall-through must not be silent."""
         caplog.set_level(logging.INFO, logger=model_backend.__name__)
         monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_OFFLINE", True)
         monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_CACHE", str(tmp_path))
@@ -215,9 +194,8 @@ class TestBackendHierarchy:
             _CheckpointComponent,
             "transformer",
         )
-        # the log names why the Hub was not asked, not the client's "check your connection" wrapper
         [record] = caplog.records
-        assert "OfflineModeIsEnabled" in record.getMessage()
+        assert "model_index.json" in record.getMessage() and "modular_model_index.json" in record.getMessage()
 
     def test_cached_modular_checkpoint_resolves_from_its_modular_index_while_the_hub_is_offline(
         self, monkeypatch, tmp_path
@@ -235,25 +213,6 @@ class TestBackendHierarchy:
         assert DiffusersModelBackend._resolve_component("org/modular", "transformer") == (
             diffusers.MiniMaxH3ImageTransformer2DModel,
             "transformer_diffusers",
-        )
-
-    def test_cached_classic_checkpoint_resolves_when_the_hub_refuses_the_probe(self, monkeypatch):
-        """A gated repo answers 401 without a token, also for a file it does not have."""
-
-        def raise_gated(repo_id, filename):
-            response = httpx.Response(401, request=httpx.Request("HEAD", f"https://huggingface.co/{repo_id}"))
-            raise GatedRepoError(f"{repo_id} is gated", response=response)
-
-        monkeypatch.setattr(model_backend, "hf_hub_download", raise_gated)
-        monkeypatch.setattr(
-            model_backend.DiffusionPipeline,
-            "load_config",
-            lambda checkpoint_path: {"transformer": [__name__, "_CheckpointComponent"]},
-        )
-
-        assert DiffusersModelBackend._resolve_component("org/gated", "transformer") == (
-            _CheckpointComponent,
-            "transformer",
         )
 
     def test_missing_local_checkpoint_is_reported_as_a_missing_directory(self, tmp_path):

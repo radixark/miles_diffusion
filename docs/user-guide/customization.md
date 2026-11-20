@@ -269,9 +269,7 @@ def expand_samples_to_train_pairs(args, samples, rewards, raw_rewards) -> dict:
 ```
 
 Default for Flow-GRPO lives under `miles/ray/data_conversion_hub/flow_grpo.py`. It sets `denoising_step_index` on
-every pair: the pair's 0-based step in its rollout's schedule. An expander that feeds the built-in Flow-GRPO prepare
-hook sets it on every pair or on none, as an int or an integer tensor scalar; a family whose forward depends on the
-step needs it on every pair.
+every pair (the pair's 0-based step in its rollout's schedule), which a family whose forward depends on the step needs.
 
 ### `--custom-convert-samples-to-train-data-path`
 
@@ -299,10 +297,8 @@ counts from 0; the old-log-prob recompute of windows 1.. passes their training f
 `timesteps_for_model` are keyed by latent stream name: `"visual"`, plus e.g.
 `"audio"` for joint audio-video models. `PreparedBatch.teacher_guidance_scale` asks the trunk to run the frozen
 teacher (`--teacher-load`) without grad on this micro-batch at that CFG scale, over `neg_cond` / `joint_cond`, before
-the training forward; the formula receives it as `teacher_pred`. `PreparedBatch.denoising_step_indices` hands the
-family's forward each pair's 0-based denoising step in its rollout's schedule (`[B]` long). It is `None` when the
-prepare hook has none: of the built-in hooks only Flow-GRPO's sets it, from pairs that carry `denoising_step_index`.
-A family whose forward needs it must raise on `None`.
+the training forward; the formula receives it as `teacher_pred`. `PreparedBatch.denoising_step_indices` (`[B]` long)
+reaches the family's forward; of the built-in hooks only Flow-GRPO's sets it, from the pairs' `denoising_step_index`.
 
 ### `--custom-loss-function-path`
 
