@@ -5,6 +5,10 @@
     ode + the Flow-GRPO formula (policy_loss, or custom_loss without a formula path) --> rejected
     ode + nft / dmd2 / custom_loss with its own formula; cps; flag off --> allowed
     an sde or cps stream at a zero noise level                     --> rejected (an ode stream may sit at zero)
+    scored streams with and without the constants                  --> rejected
+    one custom --sde-step-backend-path for two dynamics            --> rejected
+    scored streams of one form on different noise levels           --> allowed, with or without the constants
+    an ode stream next to a scored one                             --> allowed
 """
 
 from tests.ci.ci_register import register_cpu_ci
@@ -62,14 +66,6 @@ def _args(**overrides):
             ),
             "with and without the Gaussian constants",
             id="a log-density added to a constant-free term",
-        ),
-        pytest.param(
-            dict(
-                diffusion_sde_type={"visual": "cps", "audio": "cps"},
-                diffusion_noise_level={"visual": 0.7, "audio": 0.3},
-            ),
-            "one --diffusion-noise-level",
-            id="constant-free streams on different noise scales",
         ),
         pytest.param(
             dict(
@@ -132,14 +128,14 @@ def test_rejects_rollouts_the_backend_cannot_score(overrides, match):
                 diffusion_log_prob_no_const={"visual": False, "audio": False},
                 diffusion_noise_level={"visual": 0.7, "audio": 0.3},
             ),
-            id="log-densities on different noise scales",
+            id="log-densities on different noise levels",
         ),
         pytest.param(
             dict(
                 diffusion_sde_type={"visual": "cps", "audio": "cps"},
-                diffusion_noise_level={"visual": 0.5, "audio": 0.5},
+                diffusion_noise_level={"visual": 0.7, "audio": 0.3},
             ),
-            id="constant-free streams on one noise scale",
+            id="constant-free streams on different noise levels",
         ),
         pytest.param(
             dict(

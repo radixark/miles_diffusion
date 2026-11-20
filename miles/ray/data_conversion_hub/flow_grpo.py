@@ -62,7 +62,7 @@ def _stream_rollouts(args, sample: Sample) -> dict[str, RolloutStreamData]:
             f"the rollout response carries no rollout data for --rollout-extra-streams {missing} "
             f"(sample_index={sample.index}); the response has no rolled-out stream of that name"
         )
-    stream_rollouts = {
+    return {
         args.primary_stream: RolloutStreamData(
             rollout_log_probs=sample.rollout_log_probs,
             rollout_debug_tensors=sample.rollout_debug_tensors,
@@ -70,19 +70,6 @@ def _stream_rollouts(args, sample: Sample) -> dict[str, RolloutStreamData]:
         ),
         **{stream_name: sample.extra_streams[stream_name] for stream_name in args.rollout_extra_streams},
     }
-    # A log-prob without the Gaussian constants scales its stream by the noise variance, so several such scored
-    # streams add up as one action only on one sigma grid.
-    no_const_streams = [
-        stream_name for stream_name in args.sde_step_backend_path if args.diffusion_log_prob_no_const[stream_name]
-    ]
-    if len(no_const_streams) > 1:
-        grids = [stream_rollouts[stream_name].dit_trajectory.sigmas for stream_name in no_const_streams]
-        if any(not torch.equal(grid, grids[0]) for grid in grids[1:]):
-            raise ValueError(
-                f"streams {no_const_streams} are scored without the Gaussian constants but roll out on different "
-                f"sigma grids (sample_index={sample.index})"
-            )
-    return stream_rollouts
 
 
 def _build_stream_steps(sample: Sample, stream_rollout: RolloutStreamData) -> list[dict[str, Any]]:
