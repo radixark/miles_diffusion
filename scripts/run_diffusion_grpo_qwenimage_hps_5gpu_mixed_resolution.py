@@ -6,17 +6,11 @@ ratio at a near-constant token count; eval stays at --diffusion-height / --diffu
 And the reward is HPSv2.1 rather than PickScore, whose CLIP processor center-crops to 224x224
 and so never sees ~43% of a 672x384 or 384x672 frame.
 
---micro-batch-size 8 is not free choice: a train micro-batch must hold one resolution, and
+--micro-batch-size 8 is not a free choice: a train micro-batch must hold one resolution, and
 under stride DP split each rank holds 16 samples / 4 ranks = 4 samples x 2 SDE steps = 8 pairs
 of every prompt group, so 8 is exactly one group's pairs on that rank. The legacy
 --micro-batch-size-sample 8 tiling the baseline uses would gather 8 different samples, which
 spans groups and so resolutions; arg validation rejects it.
-
-Measured, and worth knowing before copying this: over 60 rollouts against the fixed-512 recipe
-on the same reward, this configuration bought nothing -- the fixed run gained as much at both
-non-square eval sizes and more at 512x512. The three buckets are within 2% of each other in
-token count, which makes this a weak test of mixed-resolution training rather than a
-recommended configuration. See the PR for the numbers.
 
 Per rollout: 32 prompts x 16 samples = 512 samples. num_steps_per_rollout=2 gives 256
 samples per optimizer step.

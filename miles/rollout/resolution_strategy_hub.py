@@ -1,21 +1,7 @@
-"""Library of functions that pick the output resolution of one sglang-diffusion
-rollout prompt group.
+"""Functions that pick the output resolution of one rollout prompt group.
 
-Each function has signature ``(args, sample, seed) -> (height, width)``, in the
-style of ``miles.rollout.step_strategy_hub``. The rollout calls it once per
-prompt group, so every request of that group -- every microgroup -- renders at
-one resolution; see ``generate_and_rm_group``. Point
-``--diffusion-resolution-strategy-path`` at any such function; unset, the
-request keeps ``--diffusion-height`` / ``--diffusion-width``.
-
-The strategy receives the group's first ``Sample``, so a strategy can read the
-resolution off the prompt or its dataset metadata instead of drawing one.
-
-``weighted_buckets`` reads the parsed form of ``--diffusion-resolution-buckets``
-and ``--diffusion-resolution-weights`` that ``validate_resolution_strategy``
-leaves on ``args`` (``diffusion_resolution_bucket_list`` and
-``diffusion_resolution_bucket_weights``), so the strings are parsed once at
-startup rather than once per prompt group.
+Each has signature ``(args, sample, seed) -> (height, width)``, in the style of
+``miles.rollout.step_strategy_hub``; ``--diffusion-resolution-strategy-path`` names one.
 """
 
 from __future__ import annotations
