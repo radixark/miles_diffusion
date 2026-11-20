@@ -21,10 +21,11 @@ import abc
 import functools
 import importlib
 import logging
+import os
 from dataclasses import replace
 
 import torch
-from diffusers import DiffusionPipeline
+from diffusers import DiffusionPipeline, ModularPipeline
 
 from .models.parallel_plan import FSDPParallelPlan
 from .sequence_parallel.diffusers_dispatch import install_diffusers_usp_patch
@@ -189,9 +190,19 @@ class DiffusersModelBackend(BaseModelBackend):
         master_dtype: torch.dtype,
         materialize_weights: bool,
     ) -> torch.nn.Module:
-        model_cls = self._resolve_component_class(checkpoint_path, component)
+        """Load one component of a Diffusers checkpoint by itself.
+
+        Components load individually via ``cls.from_pretrained(subfolder=...)`` rather
+        than through ``DiffusionPipeline.from_pretrained`` with the siblings passed as
+        ``None``: pipelines that declare a component optional with a ``None`` default
+        (e.g. ``WanPipeline.transformer``/``transformer_2``) drop it from
+        ``expected_modules``, so the ``None`` is silently ignored and the sibling is
+        loaded from disk anyway — on every rank, and with ``low_cpu_mem_usage=False``
+        it also trips diffusers' ``_keep_in_fp32_modules`` guard.
+        """
+        model_cls, subfolder = self._resolve_component(checkpoint_path, component)
         kwargs = {
-            "subfolder": component,
+            "subfolder": subfolder,
             "torch_dtype": master_dtype,
             "low_cpu_mem_usage": materialize_weights,
         }
@@ -210,27 +221,43 @@ class DiffusersModelBackend(BaseModelBackend):
                 model_cls._keep_in_fp32_modules = keep_in_fp32
 
     @classmethod
-    def _resolve_component_class(cls, checkpoint_path: str, component: str):
-        """Resolve ``component``'s class from ``model_index.json``.
+    def _resolve_component(cls, checkpoint_path: str, component: str) -> tuple[type, str]:
+        """``component``'s class and its folder under ``checkpoint_path``, from the checkpoint's index.
 
-        Components load individually via ``cls.from_pretrained(subfolder=...)`` rather
-        than through ``DiffusionPipeline.from_pretrained`` with the siblings passed as
-        ``None``: pipelines that declare a component optional with a ``None`` default
-        (e.g. ``WanPipeline.transformer``/``transformer_2``) drop it from
-        ``expected_modules``, so the ``None`` is silently ignored and the sibling is
-        loaded from disk anyway — on every rank, and with ``low_cpu_mem_usage=False``
-        it also trips diffusers' ``_keep_in_fp32_modules`` guard.
+        The index is the one diffusers' modular loader reads: ``modular_model_index.json`` when the checkpoint has
+        one, else ``model_index.json``. Weights load from ``checkpoint_path``, not from the repository a loading
+        spec names.
         """
-        config = DiffusionPipeline.load_config(checkpoint_path)
-        if component not in config:
-            raise ValueError(f"pipeline {checkpoint_path} has no component {component!r}")
-        component_cls = cls._component_class(config[component])
+        try:
+            index, index_name = ModularPipeline.load_config(checkpoint_path), ModularPipeline.config_name
+        except OSError as error:
+            if os.path.isfile(os.path.join(checkpoint_path, ModularPipeline.config_name)):
+                raise
+            index, index_name = DiffusionPipeline.load_config(checkpoint_path), DiffusionPipeline.config_name
+            logger.info("%s: read %s; no %s (%s)", checkpoint_path, index_name, ModularPipeline.config_name, error)
+        if component not in index:
+            raise ValueError(f"{index_name} of {checkpoint_path} has no component {component!r}")
+        spec = index[component]
+        component_cls = cls._component_class(spec)
         if component_cls is None:
             raise ValueError(
-                f"cannot resolve the class for component {component!r} of {checkpoint_path} "
-                f"from spec {config[component]!r}; remote-code components are not supported"
+                f"cannot resolve the class for component {component!r} from {index_name} of {checkpoint_path}: "
+                f"spec {spec!r} names no class an installed library provides; remote-code components are not supported"
             )
-        return component_cls
+        if len(spec) == 2:
+            return component_cls, component
+        loading_spec = spec[2] if isinstance(spec[2], dict) else {}
+        subfolder, variant = loading_spec.get("subfolder"), loading_spec.get("variant")
+        if not subfolder:
+            raise ValueError(
+                f"component {component!r} names no subfolder in {index_name} of {checkpoint_path}: {spec!r}"
+            )
+        if variant is not None:
+            raise ValueError(
+                f"component {component!r} names the weight variant {variant!r} in {index_name} of {checkpoint_path}; "
+                f"loading a variant is untested"
+            )
+        return component_cls, subfolder
 
     @staticmethod
     def _component_class(spec):
