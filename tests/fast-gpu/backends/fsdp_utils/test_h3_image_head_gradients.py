@@ -20,10 +20,12 @@ import sys
 from pathlib import Path
 
 import pytest
+import torch
 
 _WORKER = Path(__file__).with_name("_h3_image_head_gradients_worker.py")
 
 
+@pytest.mark.skipif(torch.cuda.device_count() < 2, reason="Requires two CUDA devices")
 def test_each_head_reduces_to_the_mean_of_its_own_gradients():
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
