@@ -208,7 +208,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--rollout-return-full-trajectory` | flag | off | Ask the engine for the whole denoising trajectory instead of only the steps the step strategy requests. The train tensors are identical; kept for debugging and A/B runs. |
 | `--diffusion-log-prob-no-const` | flag | off | Drop log-prob constants on the engine (pairs with the CPS backend). Forced on for `cps` / `ode`. |
 | `--diffusion-generator-device` | str | `cuda` | |
-| `--rollout-patch-group` | str | – | Comma-separated numeric-parity patch groups: `qwen_image`, `wan`, `ltx`. |
+| `--rollout-patch-group` | str | – | Comma-separated numeric-parity patch groups: `qwen_image`, `wan`, `ltx`, `ltx_av` (LTX with `--rollout-extra-streams audio`). |
 | `--update-weight-target-module` | str | `transformer` | Modules to train and sync. Wan2.2: `transformer,transformer_2`. |
 | `--update-weight-buffer-size` | int | 512 MiB | Weight-sync chunk size in bytes. |
 | `--rollout-seed` | int | `42` | |
