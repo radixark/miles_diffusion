@@ -287,7 +287,7 @@ Dataset repo: [`rockdu/miles-diffusion-datasets`](https://huggingface.co/dataset
 |---|---|
 | `hpdv2/` | SD3 HPS Flow-GRPO |
 | `flowgrpo_pickscore/` | PickScore recipes (SD3 NFT, Qwen-Image, Wan2.2, LTX, Cosmos3, Krea-2, MiniMax H3) |
-| `flowgrpo_ocr/` | SD3 OCR and OCR & PickScore Flow-GRPO, Krea-2 OCR NFT, NFT smoke test |
+| `flowgrpo_ocr/` | SD3 OCR and OCR & PickScore Flow-GRPO, MiniMax H3 Image OCR Flow-GRPO, Krea-2 OCR NFT, NFT smoke test |
 
 ### Per-sample rm_type override
 
