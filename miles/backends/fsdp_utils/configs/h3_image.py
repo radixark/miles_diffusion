@@ -130,6 +130,14 @@ class H3ImageTrainPipelineConfig(H3TrainPipelineConfig):
                 "H3 Image picks its output head by each pair's denoising step, which these pairs do not carry: "
                 "an expander that feeds Flow-GRPO must set denoising_step_index on every pair"
             )
+        step = int(denoising_step_indices.item())
+        num_heads = len(model.pdd_proj_out)
+        # a negative step would index a head from the end
+        if not 0 <= step < num_heads:
+            raise ValueError(
+                f"denoising_step_index {step} is not one of H3 Image's {num_heads} per-step output heads "
+                f"(0..{num_heads - 1})"
+            )
         cond = pos_cond
         visual = latents_input["visual"]
         device, dtype = visual.device, visual.dtype
@@ -151,7 +159,7 @@ class H3ImageTrainPipelineConfig(H3TrainPipelineConfig):
             position_ids=position_ids.to(device=device, dtype=torch.float32),
             image_indices=layout["img_pos"].view(-1).long(),
             text_indices=layout["text_pos"].view(-1).long(),
-            pdd_step_index=int(denoising_step_indices.item()),
+            pdd_step_index=step,
             return_dict=False,
         )
         # H3 predicts clean - noise; the shared flow objective predicts noise - clean.

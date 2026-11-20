@@ -139,6 +139,15 @@ def test_forward_without_the_rollout_step_is_rejected():
         _forward(_tiny_h3_image(), visual, cond, None)
 
 
+@pytest.mark.parametrize("step", [-1, 3])
+def test_forward_rejects_a_step_without_an_output_head(step):
+    """The tiny model has heads 0..2; a step of -1 would otherwise run the last one."""
+    visual, cond = _rows_and_cond(_t2i_layout())
+
+    with pytest.raises(ValueError, match="per-step output heads"):
+        _forward(_tiny_h3_image(), visual, cond, torch.tensor([step]))
+
+
 def test_forward_rejects_a_layout_with_reference_rows():
     """An edit layout's image rows start with references, which are not target rows."""
     visual, cond = _rows_and_cond(_t2i_layout(ref_blocks=({"kind": "image", "latent_h": 4, "latent_w": 4},)))
