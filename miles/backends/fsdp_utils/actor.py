@@ -266,7 +266,8 @@ class FSDPTrainRayActor(TrainRayActor):
         print_memory("after wake_up DiT")
 
     def save_model(self, rollout_id: int, force_sync: bool = False) -> None:  # type: ignore[override]
-        if self.args.save is None:
+        # a rollout-only actor loads no model
+        if self.args.save is None or self.args.debug_rollout_only:
             return
         checkpoint.save(self, iteration=rollout_id)
 
