@@ -7,7 +7,8 @@
     no hook            --> the converted train pairs, as before
 
 The trunk numbers each forward: ``microbatch_id`` counts the rollout's micro-batches, ``optim_step_idx`` is the
-window; the old-log-prob recompute of windows 1.. reuses their training forwards' numbers.
+window; the old-log-prob recompute of windows 1.. reuses their training forwards' numbers. A group's forward-only hooks
+run without grad on a step's micro-batches before that step trains, numbered past the rollout's training ones.
 
 The production _train_core runs on CPU with the forward, metrics and rank checks replaced; the
 optimizer step is skipped, so only the pairs, ctx and numbers each stage receives are observed.
@@ -73,7 +74,7 @@ def _actor(train_input, train_output, forwarded, **args):
         ),
         _forward_dtype=torch.float32,
         parallel_state=SimpleNamespace(dp_rank=0, dp_group=None),
-        loss_hooks=SimpleNamespace(train_input=train_input, train_output=train_output),
+        loss_hooks=SimpleNamespace(train_input=train_input, train_output=train_output, forward_only=None),
         optimizer=SimpleNamespace(zero_grad=lambda set_to_none: None),
         global_step=0,
         _maybe_legacy_window_pad_len=lambda train_pairs, microbatch_ranges: None,
@@ -149,3 +150,39 @@ def test_the_recompute_passes_the_numbers_of_the_training_forwards_of_windows_1_
     recompute = [(2, 1, True, [pairs[2]]), (3, 1, True, [pairs[3]])]
     training = [(index, index // 2, False, [pair]) for index, pair in enumerate(pairs)]
     assert forwarded == recompute + training
+
+
+def test_the_forward_only_pass_runs_before_its_steps_train_numbered_past_the_training_micro_batches():
+    pairs = [{"sample_index": index} for index in range(6)]
+    forwarded, hooks_and_grad_modes = [], []
+    actor = _actor(None, lambda ctx, train_pairs, inputs: inputs, forwarded)
+    actor.args.num_steps_per_rollout = 3
+    forward_only = SimpleNamespace(runs_before_step=lambda ctx, optim_step_idx: optim_step_idx >= 1)
+    actor.loss_hooks.forward_only = forward_only
+    record_forward = actor._forward_train_pair_batch
+
+    def forward(ctx, chunk, **kwargs):
+        hooks_and_grad_modes.append((kwargs.get("hooks"), torch.is_grad_enabled()))
+        record_forward(ctx, chunk, **kwargs)
+
+    actor._forward_train_pair_batch = forward
+
+    train_output_inputs = _load_train_core()(actor, rollout_id=0, rollout_data={"train_data": pairs}, external_data={})
+
+    # 3 steps x 2 micro-batches train as 0..5; the passes before steps 1 and 2 count on from 6.
+    assert forwarded == [
+        (0, 0, False, [pairs[0]]),
+        (1, 0, False, [pairs[1]]),
+        (6, 1, False, [pairs[2]]),
+        (7, 1, False, [pairs[3]]),
+        (2, 1, False, [pairs[2]]),
+        (3, 1, False, [pairs[3]]),
+        (8, 2, False, [pairs[4]]),
+        (9, 2, False, [pairs[5]]),
+        (4, 2, False, [pairs[4]]),
+        (5, 2, False, [pairs[5]]),
+    ]
+    training, forward_only_pass = [(None, True)] * 2, [(forward_only, False)] * 2
+    assert hooks_and_grad_modes == training + (forward_only_pass + training) * 2
+    # The train-output hook receives what both kinds of forward kept, in the order they ran.
+    assert train_output_inputs == [0, 1, 6, 7, 2, 3, 8, 9, 4, 5]

@@ -40,7 +40,7 @@ from .diffusion_update_weight_utils import (
 )
 from .ema import EMAOptimizer, reshard_model
 from .input_dtype_policy import apply_input_dtype_policy
-from .loss_hub import DiffusionLossContext, get_loss_hooks
+from .loss_hub import DiffusionLossContext, ForwardOnlyHooks, LossHooks, get_loss_hooks
 from .lr_scheduler import get_lr_scheduler
 from .metrics import new_metric_buffer
 from .mixed_precision import parse_dtype_from_str
@@ -429,6 +429,8 @@ class FSDPTrainRayActor(TrainRayActor):
         # ------------- Forward / Backward -------------
         with timer("actor_train"):
             microbatch_id = 0
+            # past the training ids: no draw shared with a training forward
+            forward_only_microbatch_id = sum(len(microbatch_ranges) for microbatch_ranges in microbatch_schedule)
             for optim_step_idx, microbatch_ranges in enumerate(microbatch_schedule):
                 self.optimizer.zero_grad(set_to_none=True)
 
@@ -446,6 +448,22 @@ class FSDPTrainRayActor(TrainRayActor):
                     sigma_buckets=self.args.log_loss_sigma_bucket,
                     num_rollout_steps=self.args.diffusion_num_steps,
                 )
+
+                forward_only = self.loss_hooks.forward_only
+                if forward_only is not None and forward_only.runs_before_step(loss_ctx, optim_step_idx):
+                    with torch.no_grad():
+                        for pair_lo, pair_hi in microbatch_ranges:
+                            self._forward_train_pair_batch(
+                                loss_ctx,
+                                train_pairs[pair_lo:pair_hi],
+                                microbatch_id=forward_only_microbatch_id,
+                                optim_step_idx=optim_step_idx,
+                                train_output_inputs=train_output_inputs,
+                                metrics=metrics,
+                                pad_to_len=legacy_pad_to_len,
+                                hooks=forward_only,
+                            )
+                            forward_only_microbatch_id += 1
 
                 for pair_lo, pair_hi in microbatch_ranges:
                     chunk = train_pairs[pair_lo:pair_hi]
@@ -519,10 +537,12 @@ class FSDPTrainRayActor(TrainRayActor):
         pad_to_len: int | None = None,
         write_old_log_prob: bool = False,
         old_log_prob_from_new: bool = False,
+        hooks: LossHooks | ForwardOnlyHooks | None = None,
     ) -> torch.Tensor | None:
         """Run one prepared diffusion micro-batch: number ``microbatch_id`` of the rollout, in optimizer step
-        ``optim_step_idx``."""
-        prepared = self.loss_hooks.prepare(
+        ``optim_step_idx``, through the group's hooks or ``hooks``."""
+        hooks = self.loss_hooks if hooks is None else hooks
+        prepared = hooks.prepare(
             ctx, batch, microbatch_id=microbatch_id, optim_step_idx=optim_step_idx, pad_to_len=pad_to_len
         )
         train_pipeline_config = self.train_pipeline_config
@@ -600,7 +620,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 # PEFT re-enables adapter gradients on exit; reshard first so that lands on the shards, not gathered copies.
                 reshard_model(prepared.model)
 
-        return self.loss_hooks.formula(
+        return hooks.formula(
             ctx,
             batch,
             prepared,

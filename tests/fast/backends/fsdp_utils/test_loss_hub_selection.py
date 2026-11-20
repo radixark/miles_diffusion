@@ -1,11 +1,13 @@
 """--loss-type and the trainer role select a group's hooks from the loss hub; only custom_loss reads --custom-*-path.
 
-    (loss_type, role) ──► LossHooks(prepare, formula, train_input, train_output)
+    (loss_type, role) ──► LossHooks(prepare, formula, train_input, train_output, forward_only)
       policy_loss / actor   Flow-GRPO prepare + formula, no input / output hook
       nft / actor           NFT prepare + formula
       sft_loss / actor      SFT prepare + formula
       dmd2 / actor          generator prepare + DMD2 formula, train_input = select_scored_pairs
-      dmd2 / critic         critic prepare + critic formula, train_output = score_last_step_samples
+      dmd2 / critic         critic prepare + critic formula, train_output = score_last_step_samples,
+                            forward_only = scoring prepare + scoring formula (no loss) before the steps
+                            is_scored_before_training names
     custom_loss / actor     each --custom-*-path loaded; unset prepare / formula fall back to Flow-GRPO's
     no such (loss_type, role) ──► KeyError
 
@@ -21,7 +23,7 @@ from argparse import Namespace
 
 import pytest
 
-from miles.backends.fsdp_utils.loss_hub import LOSS_HOOKS, LossHooks, get_loss_hooks
+from miles.backends.fsdp_utils.loss_hub import LOSS_HOOKS, ForwardOnlyHooks, LossHooks, get_loss_hooks
 from miles.backends.fsdp_utils.loss_hub.flow_grpo import flow_grpo_loss_formula, prepare_flow_grpo_batch
 from miles.utils.misc import function_registry, load_function
 
@@ -47,6 +49,11 @@ HOOK_PATHS_BY_LOSS_TYPE_AND_ROLE = {
         prepare="miles.backends.fsdp_utils.loss_hub.dmd2.prepare_critic_batch",
         formula="miles.backends.fsdp_utils.loss_hub.dmd2.critic_loss_formula",
         train_output="miles.backends.fsdp_utils.loss_hub.dmd2.score_last_step_samples",
+        forward_only=dict(
+            runs_before_step="miles.backends.fsdp_utils.loss_hub.dmd2.is_scored_before_training",
+            prepare="miles.backends.fsdp_utils.loss_hub.dmd2.prepare_scoring_batch",
+            formula="miles.backends.fsdp_utils.loss_hub.dmd2.scoring_formula",
+        ),
     ),
 }
 
@@ -67,11 +74,14 @@ def test_builtin_hooks_are_the_functions_the_paths_named(loss_type, role):
 
     assert hooks is LOSS_HOOKS[(loss_type, role)]
     paths = HOOK_PATHS_BY_LOSS_TYPE_AND_ROLE[(loss_type, role)]
+    forward_only_paths = paths.get("forward_only")
     assert hooks == LossHooks(
         prepare=load_function(paths["prepare"]),
         formula=load_function(paths["formula"]),
         train_input=load_function(paths.get("train_input")),
         train_output=load_function(paths.get("train_output")),
+        forward_only=forward_only_paths
+        and ForwardOnlyHooks(**{name: load_function(path) for name, path in forward_only_paths.items()}),
     )
 
 
