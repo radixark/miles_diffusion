@@ -190,7 +190,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--diffusion-guidance-scale-2` | float | – | Wan2.2 low-noise expert; **required** when training it. |
 | `--diffusion-true-cfg-scale` | float | – | |
 | `--diffusion-negative-prompt` | str | – | Unset sends none, so the engine's per-model default applies; flow_grpo recipes pass `" "`. |
-| `--diffusion-noise-level` | str | `0.7` | One value, or one per latent stream (`visual=0.7,audio=0.3`); an `ode` stream ignores it. |
+| `--diffusion-noise-level` | str | `0.7` | One value, or one per latent stream (`visual=0.7,audio=0.3`); must be positive for an `sde` or `cps` stream, and an `ode` stream ignores it. |
 | `--diffusion-quality` | enum | `exact` | `exact` / `lossless` / `high`: sglang-diffusion request quality level. `exact` is the bit-identical reference path; the looser levels mount rounding-changing fusions. |
 | `--diffusion-height` / `--diffusion-width` | int | `512` | Rollout output size; SFT target media must already be this size. |
 | `--diffusion-h3-aspect-ratio` | str | `16:9` | MiniMax H3 only: `21:9` / `16:9` / `4:3` / `1:1` / `3:4` / `9:16`. |
