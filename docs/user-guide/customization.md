@@ -357,8 +357,9 @@ train pairs) as `ctx.external_data[<role>]`.
 ### `--sde-step-backend-path`
 
 **Class** implementing `SdeStepBackend`. Auto-selected from
-`--diffusion-sde-type` (`sde` / `ode` → `FlowSdeStepBackend`, `cps` →
-`CpsSdeStepBackend`) unless overridden. See
+`--diffusion-sde-type` (`sde` → `FlowSdeStepBackend`, `cps` →
+`CpsSdeStepBackend`; an `ode` stream gets none) unless overridden. One backend per scored latent stream, in
+`ctx.sde_backends[stream_name]`. See
 [SDE step backend](../advanced/sde-backend.md).
 
 ***

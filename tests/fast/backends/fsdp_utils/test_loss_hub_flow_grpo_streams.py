@@ -27,6 +27,9 @@ What each test pins:
   two streams, recomputed     the old log-prob taken from the new prediction gives ratio 1 and the joint gradient
   two streams, KL             the KL term weights the streams like the log-prob
   recomputed old log-probs    written back per stream, not as one joint value
+  per-stream dynamics         each stream steps with its own step backend and noise level
+  two cps streams             each scored at its own noise level; the joint gradient equals a float64 oracle
+  ode stream                  conditions the step, adds nothing to the score, still reports its model output
   debug diffs                 every stream's rollout model output and transition mean reach the logged diffs
   per-stream diffs            two streams also log each stream's own log-prob and model-output diff
   one stream, logged keys     a single stream logs exactly the keys it logged before streams existed, with one
@@ -50,7 +53,7 @@ from miles.backends.fsdp_utils.loss_hub.flow_grpo import (
     prepare_flow_grpo_batch,
 )
 from miles.backends.fsdp_utils.metrics import new_metric_buffer
-from miles.backends.fsdp_utils.sde_step_backend import FlowSdeStepBackend
+from miles.backends.fsdp_utils.sde_step_backend import CpsSdeStepBackend, FlowSdeStepBackend
 from miles.ray.data_conversion_hub.flow_grpo import expand_samples_to_train_pairs
 from miles.utils.types import DenoisingEnv, DiTTrajectory, RolloutDebugTensors, RolloutStreamData, Sample
 
@@ -72,14 +75,14 @@ def _view(tensor: torch.Tensor, like: torch.Tensor) -> torch.Tensor:
     return tensor.view(-1, *([1] * (like.ndim - 1)))
 
 
-def _transition_mean_and_std(backend, stream, pred):
+def _transition_mean_and_std(backend, stream, pred, noise_level=NOISE_LEVEL):
     prev_mean, noise_std, std_dev_t = backend.prev_sample_mean_and_std(
         pred,
         stream.latent.to(pred.dtype),
         _view(stream.sigmas, pred).to(pred.dtype),
         _view(stream.next_sigmas, pred).to(pred.dtype),
         sigma_max=_view(stream.sigma_max, pred).to(pred.dtype),
-        noise_level=NOISE_LEVEL,
+        noise_level=noise_level,
     )
     return prev_mean, noise_std, std_dev_t
 
@@ -105,12 +108,20 @@ def rollout():
         new_pred[stream_name] = stream.rollout_pred + 0.05 * torch.randn((BATCH_SIZE, *shape), generator=generator)
     args = SimpleNamespace(
         diffusion_clip_range=CLIP_RANGE,
-        diffusion_noise_level=NOISE_LEVEL,
+        diffusion_noise_level=dict.fromkeys(STREAM_SPECS, NOISE_LEVEL),
+        sde_step_backend_path=dict.fromkeys(STREAM_SPECS, "a backend"),
         diffusion_kl_beta=0.0,
         diffusion_score_centering=False,
     )
-    ctx = SimpleNamespace(args=args, sde_backend=backend, models={"dit": object()}, device=torch.device("cpu"))
-    return SimpleNamespace(ctx=ctx, streams=streams, new_pred=new_pred, advantage=torch.tensor(ADVANTAGE))
+    ctx = SimpleNamespace(
+        args=args,
+        sde_backends=dict.fromkeys(STREAM_SPECS, backend),
+        models={"dit": object()},
+        device=torch.device("cpu"),
+    )
+    return SimpleNamespace(
+        ctx=ctx, backend=backend, streams=streams, new_pred=new_pred, advantage=torch.tensor(ADVANTAGE)
+    )
 
 
 def _prepared(rollout, stream_names):
@@ -353,7 +364,7 @@ def test_a_multi_dit_family_routes_by_the_primary_streams_timestep(rollout):
 )
 def test_one_stream_reproduces_the_single_stream_formula_bit_for_bit(rollout, kl_beta, old_log_prob_from_new):
     """Writing the ratio or the KL sum in another arithmetic form moves fp32 values the strict e2e standards compare."""
-    backend, stream = rollout.ctx.sde_backend, rollout.streams["wide"]
+    backend, stream = rollout.backend, rollout.streams["wide"]
     rollout.ctx.args.diffusion_kl_beta = kl_beta
     # Far from the new prediction: a KL term of the policy loss's size, so one ulp of it shows in the sum.
     ref_pred = {"wide": stream.rollout_pred + 3.0}
@@ -402,7 +413,7 @@ def test_a_lone_streams_values_pass_through_the_combination_bit_for_bit():
 )
 def test_two_streams_match_the_mean_over_every_element_of_both(rollout, clip_range):
     """An unweighted mean of the stream means, swapped weights, or a clip per stream changes the loss or a gradient."""
-    backend = rollout.ctx.sde_backend
+    backend = rollout.backend
     rollout.ctx.args.diffusion_clip_range = clip_range
     production_pred = _leaf(rollout.new_pred)
     production_loss = _loss(rollout, list(STREAM_SPECS), production_pred)
@@ -433,7 +444,7 @@ def test_two_streams_match_the_mean_over_every_element_of_both(rollout, clip_ran
 
 def test_two_streams_with_the_old_log_prob_taken_from_the_new_prediction(rollout):
     """Without the detach the first window has no gradient; reading the rollout's log-probs here changes its ratio."""
-    backend = rollout.ctx.sde_backend
+    backend = rollout.backend
     for stream in rollout.streams.values():
         stream.log_prob_old = torch.full_like(stream.log_prob_old, float("nan"))
     production_pred = _leaf(rollout.new_pred)
@@ -458,7 +469,7 @@ def test_two_streams_with_the_old_log_prob_taken_from_the_new_prediction(rollout
 
 def test_kl_term_weights_the_streams_like_the_log_prob(rollout):
     """Summing the two streams' KL unweighted would give the 4-element stream the 6-element stream's say."""
-    backend, kl_beta = rollout.ctx.sde_backend, 0.5
+    backend, kl_beta = rollout.backend, 0.5
     # Far from the new prediction, so the KL term is of the policy loss's size.
     ref_pred = {stream_name: stream.rollout_pred + 3.0 for stream_name, stream in rollout.streams.items()}
     policy_loss = _loss(rollout, list(STREAM_SPECS), rollout.new_pred)
@@ -477,7 +488,7 @@ def test_kl_term_weights_the_streams_like_the_log_prob(rollout):
 
 def test_recomputed_old_log_probs_are_written_per_stream(rollout):
     """Writing the joint value back would feed the next window one number where it stacks one per stream."""
-    backend = rollout.ctx.sde_backend
+    backend = rollout.backend
     batch = [{} for _ in range(BATCH_SIZE)]
 
     assert _loss(rollout, list(STREAM_SPECS), rollout.new_pred, batch=batch, write_old_log_prob=True) is None
@@ -489,9 +500,78 @@ def test_recomputed_old_log_probs_are_written_per_stream(rollout):
         assert torch.equal(written, expected)
 
 
+def test_an_ode_stream_conditions_the_step_but_is_not_scored(rollout):
+    """Scoring an ode stream adds a zero-noise Gaussian: NaN log-probs and a KL of 0/0."""
+    # An ode stream gets no step backend.
+    rollout.ctx.args.sde_step_backend_path = {"wide": "a backend"}
+    rollout.ctx.sde_backends = {"wide": rollout.backend}
+    pred = _leaf(rollout.new_pred)
+    metrics = _metrics(list(STREAM_SPECS))
+    loss = _loss(
+        rollout, list(STREAM_SPECS), pred, batch=_model_output_batch(rollout, list(STREAM_SPECS)), metrics=metrics
+    )
+    (wide_grad,) = torch.autograd.grad(loss, pred["wide"])
+
+    reference_pred = _leaf({"wide": rollout.new_pred["wide"]})
+    reference_loss = _loss(rollout, ["wide"], reference_pred)
+    (reference_grad,) = torch.autograd.grad(reference_loss, reference_pred["wide"])
+
+    assert torch.equal(loss, reference_loss)
+    assert torch.equal(wide_grad, reference_grad)
+    logged = metrics.reduce()
+    assert "log_prob_mean_abs_diff_narrow" not in logged
+    assert logged["model_output_mean_abs_diff_narrow"] == pytest.approx(
+        (rollout.new_pred["narrow"] - rollout.streams["narrow"].rollout_pred).abs().mean().item()
+    )
+
+
+def test_each_stream_steps_with_its_own_backend_and_noise_level(rollout):
+    """Reading one stream's backend or noise level for every stream would score the other with the wrong dynamics."""
+    noise_levels = {"wide": 0.7, "narrow": 0.3}
+    narrow_backend = CpsSdeStepBackend()
+    rollout.ctx.args.diffusion_noise_level = noise_levels
+    rollout.ctx.sde_backends = {"wide": rollout.backend, "narrow": narrow_backend}
+    batch = [{} for _ in range(BATCH_SIZE)]
+
+    _loss(rollout, list(STREAM_SPECS), rollout.new_pred, batch=batch, write_old_log_prob=True)
+
+    for stream_name, backend in rollout.ctx.sde_backends.items():
+        stream = rollout.streams[stream_name]
+        prev_mean, noise_std, _ = _transition_mean_and_std(
+            backend, stream, rollout.new_pred[stream_name], noise_levels[stream_name]
+        )
+        expected = backend.log_prob(stream.next_latent, prev_mean, noise_std)
+        assert torch.equal(torch.stack([pair["log_prob_old"][stream_name] for pair in batch]), expected)
+
+
+def test_constant_free_streams_are_scored_at_their_own_noise_levels(rollout):
+    """Scoring both streams at one noise level moves the other stream's transition mean, and the joint ratio with it."""
+    backend, noise_levels = CpsSdeStepBackend(), {"wide": 0.8, "narrow": 0.3}
+    rollout.ctx.sde_backends = dict.fromkeys(STREAM_SPECS, backend)
+    rollout.ctx.args.diffusion_noise_level = noise_levels
+    production_pred = _leaf(rollout.new_pred)
+    production_loss = _loss(rollout, list(STREAM_SPECS), production_pred, old_log_prob_from_new=True)
+    production_grads = torch.autograd.grad(production_loss, list(production_pred.values()))
+
+    oracle_pred = _leaf(rollout.new_pred, torch.float64)
+    log_prob = 0.0
+    for stream_name, weight in STREAM_WEIGHTS.items():
+        stream = rollout.streams[stream_name]
+        prev_mean, _, _ = _transition_mean_and_std(
+            backend, stream, oracle_pred[stream_name], noise_levels[stream_name]
+        )
+        log_prob = log_prob + weight * (-((stream.next_latent.double() - prev_mean) ** 2)).flatten(1).mean(dim=1)
+    oracle_loss = _clipped_ppo_loss(log_prob, log_prob.detach(), rollout.advantage.double())
+    oracle_grads = torch.autograd.grad(oracle_loss, list(oracle_pred.values()))
+
+    for production_grad, oracle_grad in zip(production_grads, oracle_grads, strict=True):
+        assert production_grad.abs().sum().item() > 0.0
+        torch.testing.assert_close(production_grad.double(), oracle_grad, rtol=1e-4, atol=1e-6)
+
+
 def test_every_streams_rollout_model_output_reaches_the_logged_diff(rollout):
     """A debug lookup that misses a stream returns None and the train-vs-rollout diff silently stops being logged."""
-    backend = rollout.ctx.sde_backend
+    backend = rollout.backend
     rollout_means = {
         stream_name: _transition_mean_and_std(backend, stream, stream.rollout_pred)[0]
         for stream_name, stream in rollout.streams.items()
@@ -541,7 +621,7 @@ def _model_output_batch(rollout, stream_names):
 
 def test_two_streams_also_log_each_streams_own_diffs(rollout):
     """The joint diff is almost all the larger stream; a stream replayed wrongly only shows in its own key."""
-    backend, stream_names = rollout.ctx.sde_backend, list(STREAM_SPECS)
+    backend, stream_names = rollout.backend, list(STREAM_SPECS)
     metrics = _metrics(stream_names)
 
     _loss(rollout, stream_names, rollout.new_pred, batch=_model_output_batch(rollout, stream_names), metrics=metrics)

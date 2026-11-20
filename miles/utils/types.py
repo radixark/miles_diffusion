@@ -68,6 +68,8 @@ class RolloutStreamData:
     rollout_log_probs: torch.Tensor | None = None
     rollout_debug_tensors: RolloutDebugTensors | None = None
     dit_trajectory: DiTTrajectory | None = None
+    # An extra stream's rollout settings as the engine applied them, echoed in its response.
+    rollout_sde_kernel: dict[str, Any] | None = None
 
 
 @dataclass
