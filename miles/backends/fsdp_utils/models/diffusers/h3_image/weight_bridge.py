@@ -13,17 +13,15 @@ _PDD_HEAD_NAME = re.compile(r"^pdd_proj_out\.(\d+)\.(weight|bias)$")
 _PENDING_PDD_HEADS: dict[str, dict[int, torch.Tensor]] = {}
 
 
-def get_rollout_pdd_fused_heads_name_prefix() -> str:
-    """The prefix sglang-d's weight update takes a per-step head stack by; raises on an sglang-d that takes none."""
+def rollout_takes_pdd_fused_heads() -> bool:
+    """Whether this sglang-d's weight update takes a per-step head stack (sgl-project/sglang#51654)."""
     try:
-        from sglang.multimodal_gen.configs.models.dits.minimax_h3 import MINIMAX_H3_PDD_FUSED_HEADS_WEIGHT_NAME_PREFIX
-    except ImportError as error:
-        raise RuntimeError(
-            "this sglang-d takes no per-step output heads in a weight update (it predates sgl-project/sglang#51654): "
-            "a sync that sends H3 Image's heads would leave the rollout on the heads it started with. Install an "
-            "sglang-d that takes them, or train a LoRA and sync it as adapters (--use-lora --lora-ipc-weight-sync)"
-        ) from error
-    return MINIMAX_H3_PDD_FUSED_HEADS_WEIGHT_NAME_PREFIX
+        from sglang.multimodal_gen.configs.models.dits.minimax_h3 import (  # noqa: F401
+            MINIMAX_H3_PDD_FUSED_HEADS_WEIGHT_NAME_PREFIX,
+        )
+    except ImportError:
+        return False
+    return True
 
 
 def _is_pdd_head(name: str, param) -> bool:
@@ -44,8 +42,11 @@ def _to_fused_pdd_heads(name: str, full: torch.Tensor, model) -> list[tuple[str,
     if len(heads_by_step) < num_steps:
         return []
     del _PENDING_PDD_HEADS[suffix]
+    # imported here: every family's bridge loads with the adaptations package, also on an sglang-d without it
+    from sglang.multimodal_gen.configs.models.dits.minimax_h3 import MINIMAX_H3_PDD_FUSED_HEADS_WEIGHT_NAME_PREFIX
+
     stack = torch.stack([heads_by_step[step] for step in range(num_steps)])
-    return [(f"{get_rollout_pdd_fused_heads_name_prefix()}video_out.{suffix}", stack)]
+    return [(f"{MINIMAX_H3_PDD_FUSED_HEADS_WEIGHT_NAME_PREFIX}video_out.{suffix}", stack)]
 
 
 register_param_transform("h3_image", _is_pdd_head, _to_fused_pdd_heads)

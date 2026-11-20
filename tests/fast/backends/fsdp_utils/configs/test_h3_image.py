@@ -252,7 +252,7 @@ def test_a_sync_that_sends_the_heads_needs_an_sglang_that_takes_them(monkeypatch
     args = _grpo_args(**overrides)
 
     if sync_sends_the_heads:
-        with pytest.raises(RuntimeError, match="takes no per-step output heads"):
+        with pytest.raises(ValueError, match="does not take in a weight update"):
             H3ImageTrainPipelineConfig.validate_args(args)
     else:
         H3ImageTrainPipelineConfig.validate_args(args)
@@ -267,9 +267,10 @@ _LAUNCH = (
 )
 
 
-def _validate_launch(monkeypatch, flags):
+def _validate_launch(monkeypatch, flags, *, use_lora=True):
     """The parser and miles_validate_args on a launch line: the family hook reads what they derive before it."""
-    monkeypatch.setattr(sys, "argv", shlex.split(_LAUNCH + flags))
+    launch = _LAUNCH if use_lora else _LAUNCH.replace("--use-lora ", "")
+    monkeypatch.setattr(sys, "argv", shlex.split(launch + flags))
     args = load_fsdp_args(extra_args_provider=get_miles_extra_args_provider())
     set_default_diffusion_args(args)
     miles_validate_args(args)
@@ -292,12 +293,18 @@ def test_a_run_on_dumped_rollouts_is_not_held_to_a_sync_mode(monkeypatch):
     assert _validate_launch(monkeypatch, "--load-debug-rollout-data dump/{rollout_id}.pt").train_only
 
 
-def test_a_config_named_by_path_cannot_sync_to_an_engine(monkeypatch):
-    """Without the family key the fused-qkv LoRA group is not found, and the adapters of q, k and v can split."""
-    path_flags = "--lora-ipc-weight-sync --train-pipeline-config-path miles.backends.fsdp_utils.configs.h3_image.H3ImageTrainPipelineConfig"
+@pytest.mark.parametrize(
+    ("sync_flags", "use_lora"),
+    [("--lora-ipc-weight-sync ", True), ("", True), ("", False)],
+    ids=["lora-adapters", "lora-merged", "full-weight"],
+)
+def test_a_config_named_by_path_cannot_sync_to_an_engine(monkeypatch, sync_flags, use_lora):
+    """Without the family key neither the weight transform nor the fused-qkv LoRA group is found: a weight sync
+    would send the Diffusers layout as it is, and the adapters of q, k and v could split across buckets."""
+    path = "--train-pipeline-config-path miles.backends.fsdp_utils.configs.h3_image.H3ImageTrainPipelineConfig"
 
     with pytest.raises(ValueError, match="cannot sync to a rollout engine"):
-        _validate_launch(monkeypatch, path_flags)
+        _validate_launch(monkeypatch, sync_flags + path, use_lora=use_lora)
 
 
 @pytest.mark.parametrize(

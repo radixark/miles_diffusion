@@ -19,14 +19,10 @@ from types import SimpleNamespace
 
 import pytest
 import torch
-from sglang.multimodal_gen.configs.models.dits import minimax_h3 as sglang_minimax_h3
 
 from miles.backends.fsdp_utils.adaptations import get_param_transform
 from miles.backends.fsdp_utils.models.diffusers.h3.weight_bridge import _to_fl2va
-from miles.backends.fsdp_utils.models.diffusers.h3_image.weight_bridge import (
-    _to_fused_pdd_heads,
-    get_rollout_pdd_fused_heads_name_prefix,
-)
+from miles.backends.fsdp_utils.models.diffusers.h3_image.weight_bridge import _to_fused_pdd_heads
 
 NUM_STEPS = 3
 MODEL = SimpleNamespace(pdd_proj_out=[None] * NUM_STEPS)
@@ -59,11 +55,3 @@ def test_bridge_registers_h3_image_on_import():
     assert get_param_transform("transformer_blocks.0.attn.to_q.weight", torch.zeros(1), "h3_image") is _to_fl2va
     # the heads' transform is H3 Image's alone: H3 has one output head, which its own transform renames
     assert get_param_transform("pdd_proj_out.0.weight", torch.zeros(1), "h3") is _to_fl2va
-
-
-def test_an_sglang_that_takes_no_heads_is_named(monkeypatch):
-    """Sending the stacks under a name of our own would be skipped by that engine without an error."""
-    monkeypatch.delattr(sglang_minimax_h3, "MINIMAX_H3_PDD_FUSED_HEADS_WEIGHT_NAME_PREFIX")
-
-    with pytest.raises(RuntimeError, match="takes no per-step output heads"):
-        get_rollout_pdd_fused_heads_name_prefix()
