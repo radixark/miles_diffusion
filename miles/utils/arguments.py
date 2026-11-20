@@ -2079,6 +2079,14 @@ def validate_dmd2_args(args) -> None:
 
 
 def miles_validate_args(args):
+    # before the checks below that read train_only
+    if args.load_debug_rollout_data is not None:
+        logger.info(
+            f"load_debug_rollout_data {args.load_debug_rollout_data} is set, "
+            "will not instantiate sglang servers and will only run the training process."
+        )
+        args.train_only = True
+
     args.eval_datasets = _resolve_eval_datasets(args)
 
     if args.eval_interval is not None:
@@ -2270,13 +2278,6 @@ def miles_validate_args(args):
     if args.dump_details is not None:
         args.save_debug_rollout_data = f"{args.dump_details}/rollout_data/{{rollout_id}}.pt"
         args.save_debug_train_data = f"{args.dump_details}/train_data/{{rollout_id}}_{{rank}}.pt"
-
-    if args.load_debug_rollout_data is not None:
-        logger.info(
-            f"load_debug_rollout_data {args.load_debug_rollout_data} is set, "
-            "will not instantiate sglang servers and will only run the training process."
-        )
-        args.train_only = True
 
     validate_output_store_args(args)
 

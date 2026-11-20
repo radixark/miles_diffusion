@@ -174,8 +174,8 @@ See [Dtype Control](../advanced/dtype-control.md).
 | Flag | Type | Default | Notes |
 |---|---|---|---|
 | `--hf-checkpoint` | str | – | **Required.** Pipeline to train and to serve; also the family source. |
-| `--diffusion-model-family` | str | – | Registered family key: `sd3`, `wan2_2`, `ltx`, `qwen_image`, `qwen_image21`, `cosmos3`, `krea2`, `h3`. Overrides name matching. The longest pattern wins, so `Qwen-Image-2.1` resolves to `qwen_image21`. |
-| `--diffusion-task` | str | – | **Required** unless the config declares no `tasks`. The task to train, one of the family config's `tasks`: `t2i` (sd3, krea2, qwen_image, qwen_image21, cosmos3), `t2v` (wan2_2, ltx), `t2va` (h3, the only H3 rollout task) or `ref2va` (h3 joint video/audio SFT with ordered references on `transformer_ref`). |
+| `--diffusion-model-family` | str | – | Registered family key: `sd3`, `wan2_2`, `ltx`, `qwen_image`, `qwen_image21`, `cosmos3`, `krea2`, `h3`, `h3_image`. Overrides name matching. The longest pattern wins, so `Qwen-Image-2.1` resolves to `qwen_image21`. |
+| `--diffusion-task` | str | – | **Required** unless the config declares no `tasks`. The task to train, one of the family config's `tasks`: `t2i` (sd3, krea2, qwen_image, qwen_image21, cosmos3, h3_image), `t2v` (wan2_2, ltx), `t2va` (h3, the only H3 rollout task) or `ref2va` (h3 joint video/audio SFT with ordered references on `transformer_ref`). |
 | `--rollout-function-path` | str | `miles.rollout.sglang_rollout.generate_rollout` | Inherited Miles default; that module is not shipped in miles-diffusion, so set it — diffusion recipes pass `miles.rollout.sglang_diffusion_rollout.generate_rollout`. |
 | `--train-pipeline-config-path` | str | – | Your own `TrainPipelineConfig` for an unregistered family. Mutually exclusive with `--diffusion-model-family`. |
 | `--model-backend-path` | str | – | Override the family's model loader. |
@@ -192,9 +192,9 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--diffusion-noise-level` | float | `0.7` | |
 | `--diffusion-quality` | enum | `exact` | `exact` / `lossless` / `high`: sglang-diffusion request quality level. `exact` is the bit-identical reference path; the looser levels mount rounding-changing fusions. |
 | `--diffusion-height` / `--diffusion-width` | int | `512` | Rollout output size; SFT target media must already be this size. |
-| `--diffusion-h3-aspect-ratio` | str | `16:9` | MiniMax H3 only: `21:9` / `16:9` / `4:3` / `1:1` / `3:4` / `9:16`. |
-| `--diffusion-h3-duration-seconds` | float | `5.0` | MiniMax H3 only: rollout duration, 4.0–15.0 s. |
-| `--diffusion-audio-flow-shift` | float | `3.0` | MiniMax H3 only: audio flow shift for rollout. |
+| `--diffusion-h3-aspect-ratio` | str | `16:9` | Family `h3` only (`h3_image` takes its canvas from `--diffusion-width` / `--diffusion-height`): `21:9` / `16:9` / `4:3` / `1:1` / `3:4` / `9:16`. |
+| `--diffusion-h3-duration-seconds` | float | `5.0` | Family `h3` only: rollout duration, 4.0–15.0 s. |
+| `--diffusion-audio-flow-shift` | float | `3.0` | Family `h3` only: audio flow shift for rollout. |
 | `--diffusion-sde-type` | str | `sde` | `sde` / `cps` / `ode`, checked at startup unless `--sde-step-backend-path` is set. Selects the train-side SDE backend too. |
 | `--sde-step-backend-path` | str | – | Custom dynamics. See [SDE backends](#sde-step-backends). |
 | `--diffusion-num-sde-steps` | int | `0` | Read by the step strategy. |
@@ -409,7 +409,7 @@ Every one takes a dotted path.
 | `--debug-skip-optimizer-step` | flag | off | No backward/step — weights never drift. Use it to measure pure forward divergence from the engine. |
 | `--save-debug-rollout-data` | path template | – | Fills `{rollout_id}`. |
 | `--save-eval-media-dir` | path | – | Keeps every eval sample's video (with its audio when the engine returns it) or image under `<dir>/eval_<rollout_id>/`, with an `index.jsonl` of prompts, seeds and rewards. Independent of `--wandb-log-num-images`. |
-| `--load-debug-rollout-data` | path template | – | Replays a rollout with **no engines started**. |
+| `--load-debug-rollout-data` | path template | – | Replays a rollout with **no engines started**; implies `--train-only`, also for the checks that refuse a setting only when an engine runs. |
 | `--load-debug-rollout-data-subsample` | float | – | |
 | `--save-debug-train-data` | path template | – | Fills `{rollout_id}` and `{rank}`. |
 | `--dump-details` | dir | – | Sets the debug dump paths for post-hoc analysis. |
