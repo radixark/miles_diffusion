@@ -1064,8 +1064,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="How the DMD2 critic scores its last step's samples. reuse-critic-step: that step's training "
                 "forward, drawn in --dmd2-score-sigma-range, is the critic's score, so only the teacher's forward "
                 "is added. original: tianweiy/DMD2's order, a separate draw and critic forward on those samples "
-                "before the critic trains on them, which costs a critic forward per scored sample and, under "
-                "--offload-train, one more sleep/wake of each group.",
+                "before the critic trains on them, which costs a critic forward per scored sample.",
             )
             parser.add_argument(
                 "--critic-load",

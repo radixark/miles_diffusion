@@ -139,6 +139,7 @@ def load_actor_forward_method(reshard_model=reshard_model):
         reshard_model=reshard_model,
         apply_input_dtype_policy=apply_input_dtype_policy,
         DiffusionLossContext=object,
+        ForwardOnlyHooks=object,
         LossHooks=object,
         MetricBuffer=object,
     )

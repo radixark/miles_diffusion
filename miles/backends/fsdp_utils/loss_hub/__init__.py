@@ -12,7 +12,7 @@ import torch
 from miles.backends.fsdp_utils.loss_hub.dmd2 import (
     critic_loss_formula,
     dmd2_loss_formula,
-    last_step_pairs,
+    is_scored_before_training,
     prepare_critic_batch,
     prepare_generator_batch,
     prepare_scoring_batch,
@@ -26,7 +26,20 @@ from miles.backends.fsdp_utils.loss_hub.sft import prepare_sft_batch, sft_loss_f
 from miles.backends.fsdp_utils.loss_hub.types import DiffusionLossContext, PreparedBatch
 from miles.utils.misc import load_function
 
-__all__ = ["LOSS_HOOKS", "DiffusionLossContext", "LossHooks", "PreparedBatch", "get_loss_hooks"]
+__all__ = ["LOSS_HOOKS", "DiffusionLossContext", "ForwardOnlyHooks", "LossHooks", "PreparedBatch", "get_loss_hooks"]
+
+
+@dataclass(frozen=True)
+class ForwardOnlyHooks:
+    """A no-grad pass over an optimizer step's micro-batches, run before the step trains them.
+
+    It runs before the steps ``runs_before_step(ctx, optim_step_idx)`` names. ``prepare`` and ``formula`` are called
+    as a ``LossHooks``' are, with micro-batch ids past the rollout's training ones; the formula returns no loss.
+    """
+
+    runs_before_step: Callable[[DiffusionLossContext, int], bool]
+    prepare: Callable[..., PreparedBatch]
+    formula: Callable[..., None]
 
 
 @dataclass(frozen=True)
@@ -38,13 +51,14 @@ class LossHooks:
     ...)`` turns the predictions into its loss, ``train_input`` preprocesses the rank's train pairs before
     micro-batching, and ``train_output(ctx, train_pairs, train_output_inputs)`` runs after the train steps and hands
     its return value to the groups that train later; ``train_output_inputs`` is the list the formulas filled during
-    this train call.
+    this train call, those of ``forward_only`` included.
     """
 
     prepare: Callable[..., PreparedBatch]
     formula: Callable[..., torch.Tensor | None]
     train_input: Callable[[DiffusionLossContext, list], list] | None = None
     train_output: Callable[[DiffusionLossContext, list, list], Any] | None = None
+    forward_only: ForwardOnlyHooks | None = None
 
 
 LOSS_HOOKS: dict[tuple[str, str], LossHooks] = {
@@ -52,17 +66,17 @@ LOSS_HOOKS: dict[tuple[str, str], LossHooks] = {
     ("nft", "actor"): LossHooks(prepare_nft_batch, nft_loss_formula),
     ("sft_loss", "actor"): LossHooks(prepare_sft_batch, sft_loss_formula),
     ("dmd2", "actor"): LossHooks(prepare_generator_batch, dmd2_loss_formula, train_input=select_scored_pairs),
-    ("dmd2", "critic"): LossHooks(prepare_critic_batch, critic_loss_formula, train_output=score_last_step_samples),
-    # Forward-only, through FSDPTrainRayActor.compute: the critic's scoring under --dmd2-critic-scoring original.
-    ("dmd2", "critic-scoring"): LossHooks(
-        prepare_scoring_batch, scoring_formula, train_input=last_step_pairs, train_output=score_last_step_samples
+    ("dmd2", "critic"): LossHooks(
+        prepare_critic_batch,
+        critic_loss_formula,
+        train_output=score_last_step_samples,
+        forward_only=ForwardOnlyHooks(is_scored_before_training, prepare_scoring_batch, scoring_formula),
     ),
 }
 
 
 def get_loss_hooks(args: Namespace, role: str) -> LossHooks:
-    """The hooks of ``--loss-type`` for the trainer ``role``, or for a forward-only pass such as ``critic-scoring``;
-    only ``custom_loss`` reads the ``--custom-*-path`` flags.
+    """The hooks of ``--loss-type`` for the trainer ``role``; only ``custom_loss`` reads the ``--custom-*-path`` flags.
 
     Under ``custom_loss`` an unset prepare or formula path falls back to Flow-GRPO's.
     """

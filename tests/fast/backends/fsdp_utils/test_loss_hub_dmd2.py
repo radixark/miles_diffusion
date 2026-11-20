@@ -47,12 +47,12 @@ What each test pins:
   test_gaussian_student_moves_toward_the_teacher         analytic scores: sign and normalization move mu
   test_health_metrics_are_recorded_overall_and_per_step  score gap, teacher distance, x0 stats, split by stop step
 
---dmd2-critic-scoring original: the critic's last step is plain SFT and scores nothing; the critic-scoring hooks
-(run forward-only, before that step) score the last step's pairs at a fresh draw in the scoring range:
+--dmd2-critic-scoring original: the critic's last step is plain SFT and scores nothing; the forward-only hooks
+(run before that step) score the last step's pairs at a fresh draw in the scoring range:
   test_under_original_the_last_step_is_plain_sft         full grid, no teacher, nothing kept
   test_scoring_batch_is_the_last_step_batch_of_the_reuse  the same prepare as the reuse mode's last step
   test_scoring_formula_keeps_x0_and_no_loss              returns None; the kept x0 == x_s - sigma v of each forward
-  test_last_step_pairs_are_the_ones_the_actor_trains_on  last 1/K of the shard == select_scored_pairs' set
+  test_either_mode_scores_the_last_step_once             by its training forward or before it, never both or neither
 """
 
 from tests.ci.ci_register import register_cpu_ci
@@ -692,13 +692,14 @@ def test_scoring_formula_keeps_x0_and_no_loss():
         torch.testing.assert_close(scores[pair["sample_index"]]["x0_real"], x_s[n] - sigma[n] * 2.0 * (1.0 + n))
 
 
-def test_last_step_pairs_are_the_ones_the_actor_trains_on():
+@pytest.mark.parametrize("critic_scoring", ["reuse-critic-step", "original"])
+def test_either_mode_scores_the_last_step_once(critic_scoring):
+    """A step scored twice or not at all leaves the actor the wrong scores, or none, without an error."""
     ctx = _ctx()
-    pairs = _pairs(9)
+    ctx.args.dmd2_critic_scoring = critic_scoring
 
-    kept = dmd2.last_step_pairs(ctx, pairs)
-
-    assert kept == pairs[6:]
-    actor_ctx = _ctx()
-    actor_ctx.external_data["critic"] = {pair["sample_index"]: {} for pair in kept}
-    assert dmd2.select_scored_pairs(actor_ctx, pairs) == kept
+    for step in range(CRITIC_STEPS):
+        by_training_forward = dmd2._is_scoring_step(ctx, step)
+        before_training = dmd2.is_scored_before_training(ctx, step)
+        assert by_training_forward + before_training == (step == CRITIC_STEPS - 1)
+    assert dmd2.is_scored_before_training(ctx, CRITIC_STEPS - 1) == (critic_scoring == "original")

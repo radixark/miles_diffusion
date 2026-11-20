@@ -2,8 +2,8 @@
 
 --dmd2-critic-scoring picks how the critic scores its last step's samples: ``reuse-critic-step`` scores them with
 that step's training forward (the critic hooks' last step is the scoring batch), ``original`` scores them with a
-separate forward-only pass (the ``critic-scoring`` hooks, run by ``FSDPTrainRayActor.compute``) before the critic
-trains that step on them, as tianweiy/DMD2 does.
+separate forward-only pass (the critic's ``forward_only`` hooks) before the critic trains that step on them, as
+tianweiy/DMD2 does.
 """
 
 from __future__ import annotations
@@ -191,14 +191,14 @@ def score_last_step_samples(
     return {index: {"x0_real": real.cpu(), "x0_fake": fake.cpu()} for index, real, fake in train_output_inputs}
 
 
-def last_step_pairs(ctx: DiffusionLossContext, train_pairs: list[dict]) -> list[dict]:
-    """The last 1/K of the rank's pairs, K the critic's steps per rollout: its last step's pairs, the ones it scores."""
-    return train_pairs[len(train_pairs) - len(train_pairs) // ctx.args.num_steps_per_rollout :]
-
-
 def _is_scoring_step(ctx: DiffusionLossContext, optim_step_idx: int) -> bool:
     """Under reuse-critic-step the last step's training forward is the critic's score; under original no step is."""
     return ctx.args.dmd2_critic_scoring == "reuse-critic-step" and optim_step_idx == ctx.args.num_steps_per_rollout - 1
+
+
+def is_scored_before_training(ctx: DiffusionLossContext, optim_step_idx: int) -> bool:
+    """Under original the last step's samples are scored forward-only, before the critic trains that step."""
+    return ctx.args.dmd2_critic_scoring == "original" and optim_step_idx == ctx.args.num_steps_per_rollout - 1
 
 
 def select_scored_pairs(ctx: DiffusionLossContext, train_pairs: list[dict]) -> list[dict]:
