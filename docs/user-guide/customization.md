@@ -257,6 +257,9 @@ On its last step its prepare hook also asks for the teacher at the same noisy in
 formula keeps the critic's x0 from that step's forward, before the update, next to the teacher's; after
 training its train-output hook hands them to the actor as `ctx.external_data["critic"]`. The actor trains on those samples only (its train-input hook):
 it recomputes the student's x0 at the rollout's step and moves it along their difference.
+Under `--dmd2-critic-scoring original` the last step is plain SFT and its prepare hook also returns the
+scoring batch, at a fresh draw, as `PreparedBatch.forward_only_batch`; the formula keeps the x0 of that
+batch's forwards instead.
 
 DiT forward always stays in the FSDP actor; the loss hook only computes the
 objective.
