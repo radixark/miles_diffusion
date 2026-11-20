@@ -15,7 +15,7 @@ import httpx
 import huggingface_hub
 import pytest
 import torch
-from huggingface_hub.errors import EntryNotFoundError, GatedRepoError
+from huggingface_hub.errors import GatedRepoError, RemoteEntryNotFoundError
 
 from miles.backends.fsdp_utils import model_backend
 from miles.backends.fsdp_utils.model_backend import BaseModelBackend, DiffusersModelBackend, MilesModelBackend
@@ -170,9 +170,18 @@ class TestBackendHierarchy:
         with pytest.raises(ValueError, match="names no subfolder"):
             DiffusersModelBackend._resolve_component(checkpoint, "transformer")
 
+    def test_loading_spec_with_a_weight_variant_is_rejected(self, tmp_path):
+        """Loading without the variant could read the repository's other weights of the same component."""
+        spec = [__name__, "_CheckpointComponent", {"subfolder": "transformer", "variant": "fp16"}]
+        checkpoint = _write_checkpoint(tmp_path, _H3_IMAGE_INDEX, {"transformer": spec})
+
+        with pytest.raises(ValueError, match="weight variant 'fp16'"):
+            DiffusersModelBackend._resolve_component(checkpoint, "transformer")
+
     def test_hub_checkpoint_without_a_modular_index_reads_model_index(self, monkeypatch):
         def raise_entry_not_found(repo_id, filename):
-            raise EntryNotFoundError(f"{repo_id} has no {filename}")
+            response = httpx.Response(404, request=httpx.Request("HEAD", f"https://huggingface.co/{repo_id}"))
+            raise RemoteEntryNotFoundError(f"{repo_id} has no {filename}", response=response)
 
         monkeypatch.setattr(model_backend, "hf_hub_download", raise_entry_not_found)
         monkeypatch.setattr(
@@ -199,6 +208,24 @@ class TestBackendHierarchy:
         assert DiffusersModelBackend._resolve_component("org/classic", "transformer") == (
             _CheckpointComponent,
             "transformer",
+        )
+
+    def test_cached_modular_checkpoint_resolves_from_its_modular_index_while_the_hub_is_offline(
+        self, monkeypatch, tmp_path
+    ):
+        """Falling through to the root index here would name the engine's native classes for MiniMax-H3-Image."""
+        snapshot = tmp_path / "models--org--modular" / "snapshots" / ("0" * 40)
+        snapshot.mkdir(parents=True)
+        (snapshot / "modular_model_index.json").write_text(json.dumps(_H3_IMAGE_MODULAR_INDEX))
+        refs = tmp_path / "models--org--modular" / "refs"
+        refs.mkdir()
+        (refs / "main").write_text("0" * 40)
+        monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_OFFLINE", True)
+        monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_CACHE", str(tmp_path))
+
+        assert DiffusersModelBackend._resolve_component("org/modular", "transformer") == (
+            diffusers.MiniMaxH3ImageTransformer2DModel,
+            "transformer_diffusers",
         )
 
     def test_cached_classic_checkpoint_resolves_when_the_hub_refuses_the_probe(self, monkeypatch):

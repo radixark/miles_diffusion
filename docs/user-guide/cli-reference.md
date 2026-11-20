@@ -192,9 +192,9 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--diffusion-noise-level` | float | `0.7` | |
 | `--diffusion-quality` | enum | `exact` | `exact` / `lossless` / `high`: sglang-diffusion request quality level. `exact` is the bit-identical reference path; the looser levels mount rounding-changing fusions. |
 | `--diffusion-height` / `--diffusion-width` | int | `512` | Rollout output size; SFT target media must already be this size. |
-| `--diffusion-h3-aspect-ratio` | str | `16:9` | MiniMax H3 only: `21:9` / `16:9` / `4:3` / `1:1` / `3:4` / `9:16`. |
-| `--diffusion-h3-duration-seconds` | float | `5.0` | MiniMax H3 only: rollout duration, 4.0–15.0 s. |
-| `--diffusion-audio-flow-shift` | float | `3.0` | MiniMax H3 only: audio flow shift for rollout. |
+| `--diffusion-h3-aspect-ratio` | str | `16:9` | Family `h3` only (`h3_image` takes its canvas from `--diffusion-width` / `--diffusion-height`): `21:9` / `16:9` / `4:3` / `1:1` / `3:4` / `9:16`. |
+| `--diffusion-h3-duration-seconds` | float | `5.0` | Family `h3` only: rollout duration, 4.0–15.0 s. |
+| `--diffusion-audio-flow-shift` | float | `3.0` | Family `h3` only: audio flow shift for rollout. |
 | `--diffusion-sde-type` | str | `sde` | `sde` / `cps` / `ode`, checked at startup unless `--sde-step-backend-path` is set. Selects the train-side SDE backend too. |
 | `--sde-step-backend-path` | str | – | Custom dynamics. See [SDE backends](#sde-step-backends). |
 | `--diffusion-num-sde-steps` | int | `0` | Read by the step strategy. |

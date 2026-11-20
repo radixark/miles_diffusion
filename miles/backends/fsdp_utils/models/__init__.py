@@ -2,7 +2,8 @@
 
 Onboarding a model family:
 
-- **Diffusers checkpoint** (has ``model_index.json``):
+- **Diffusers checkpoint** (has ``modular_model_index.json`` or ``model_index.json``; the modular one is read
+  when shipped):
   ``DiffusersModelBackend`` loads it; add
   ``models/diffusers/<family>/parallel_plan.py`` for its FSDP precision plan.
 

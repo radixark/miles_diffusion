@@ -149,6 +149,7 @@ def test_forward_rejects_a_layout_with_reference_rows():
 def _grpo_args(**overrides):
     args = Namespace(
         loss_type="policy_loss",
+        diffusion_model_family="h3_image",
         use_lora=True,
         lora_ipc_weight_sync=True,
         colocate=True,
@@ -161,8 +162,6 @@ def _grpo_args(**overrides):
         rollout_microgroup_size=1,
         diffusion_output_num_frames=1,
         micro_batch_size=1,
-        micro_batch_size_sample=None,
-        micro_batch_size_tstep=None,
         diffusion_quality="exact",
         diffusion_true_cfg_scale=None,
     )
@@ -183,34 +182,56 @@ def test_lora_flow_grpo_is_accepted():
         {"train_only": True, "lora_ipc_weight_sync": False, "colocate": True},
         # engines on their own GPUs receive the adapters over NCCL
         {"colocate": False, "lora_ipc_weight_sync": False},
-        # the recipe's explicit one-pair tiles
-        {"micro_batch_size_sample": 1, "micro_batch_size_tstep": 1},
         {"diffusion_eval_num_steps": 6},
+        # a config named by path has no family key, which only a sync looks things up by
+        {"diffusion_model_family": None, "train_only": True, "lora_ipc_weight_sync": False},
     ],
-    ids=["rollout-only", "train-only", "adapters-over-nccl", "one-pair-tiles", "eval-steps-of-the-release"],
+    ids=["rollout-only", "train-only", "adapters-over-nccl", "eval-steps-of-the-release", "config-by-path-train-only"],
 )
 def test_supported_variations_are_accepted(overrides):
     H3ImageTrainPipelineConfig.validate_args(_grpo_args(**overrides))
 
 
-def test_a_launch_with_the_required_flags_passes_the_real_parser(monkeypatch):
-    """validate_args reads the parser's defaults, which a namespace built by hand does not have."""
-    argv = (
-        "test --hf-checkpoint MiniMaxAI/MiniMax-H3-Image --diffusion-task t2i --prompt-data prompts.jsonl "
-        "--rollout-function-path miles.rollout.sglang_diffusion_rollout.generate_rollout --rm-type ocr "
-        "--rollout-batch-size 8 --n-samples-per-prompt 16 --num-steps-per-rollout 2 --num-rollout 1 "
-        "--actor-num-gpus-per-node 8 --rollout-num-gpus 8 --rollout-num-gpus-per-engine 2 --colocate "
-        "--diffusion-num-steps 6 --diffusion-guidance-scale 1.0 --diffusion-sde-type cps "
-        "--use-lora --lora-ipc-weight-sync"
-    )
-    monkeypatch.setattr(sys, "argv", shlex.split(argv))
+_LAUNCH = (
+    "test --hf-checkpoint MiniMaxAI/MiniMax-H3-Image --diffusion-task t2i --prompt-data prompts.jsonl "
+    "--rollout-function-path miles.rollout.sglang_diffusion_rollout.generate_rollout --rm-type ocr "
+    "--rollout-batch-size 8 --n-samples-per-prompt 16 --num-steps-per-rollout 2 --num-rollout 1 "
+    "--actor-num-gpus-per-node 8 --rollout-num-gpus 8 --rollout-num-gpus-per-engine 2 --colocate "
+    "--diffusion-num-steps 6 --diffusion-guidance-scale 1.0 --diffusion-sde-type cps --use-lora "
+)
 
+
+def _validate_launch(monkeypatch, flags):
+    """The parser and miles_validate_args on a launch line: the family hook reads what they derive before it."""
+    monkeypatch.setattr(sys, "argv", shlex.split(_LAUNCH + flags))
     args = load_fsdp_args(extra_args_provider=get_miles_extra_args_provider())
     set_default_diffusion_args(args)
     miles_validate_args(args)
+    return args
 
-    assert args.diffusion_model_family == "h3_image"
-    assert (args.micro_batch_size_sample, args.micro_batch_size_tstep) == (None, None)
+
+def test_a_launch_with_the_required_flags_passes_the_real_parser(monkeypatch):
+    """validate_args reads the parser's defaults, which a namespace built by hand does not have."""
+    assert _validate_launch(monkeypatch, "--lora-ipc-weight-sync").diffusion_model_family == "h3_image"
+
+
+def test_micro_batch_tiles_above_one_pair_are_rejected_through_the_parser(monkeypatch):
+    """The check reads micro_batch_size, which the parser folds the tiles into before the family hook runs."""
+    with pytest.raises(ValueError, match="one pair"):
+        _validate_launch(monkeypatch, "--lora-ipc-weight-sync --micro-batch-size-sample 2 --micro-batch-size-tstep 1")
+
+
+def test_a_run_on_dumped_rollouts_is_not_held_to_a_sync_mode(monkeypatch):
+    """--load-debug-rollout-data starts no engine, so there is no sync whose mode could be wrong."""
+    assert _validate_launch(monkeypatch, "--load-debug-rollout-data dump/{rollout_id}.pt").train_only
+
+
+def test_a_config_named_by_path_cannot_sync_to_an_engine(monkeypatch):
+    """Without the family key the fused-qkv LoRA group is not found, and the adapters of q, k and v can split."""
+    path_flags = "--lora-ipc-weight-sync --train-pipeline-config-path miles.backends.fsdp_utils.configs.h3_image.H3ImageTrainPipelineConfig"
+
+    with pytest.raises(ValueError, match="cannot sync to a rollout engine"):
+        _validate_launch(monkeypatch, path_flags)
 
 
 def test_full_weight_training_is_rejected_even_without_an_engine():
@@ -237,8 +258,6 @@ def test_full_weight_training_is_rejected_even_without_an_engine():
         ({"diffusion_true_cfg_scale": 4.0}, "unguided"),
         # the forward raises on these at the first train step
         ({"micro_batch_size": 2}, "one pair"),
-        # the parser folds the tiles into micro_batch_size
-        ({"micro_batch_size": 2, "micro_batch_size_sample": 2, "micro_batch_size_tstep": 1}, "one pair"),
     ],
     ids=[
         "full-weight",
@@ -253,7 +272,6 @@ def test_full_weight_training_is_rejected_even_without_an_engine():
         "quality-high",
         "true-cfg",
         "micro-batch",
-        "micro-batch-tiles",
     ],
 )
 def test_unsupported_training_settings_are_rejected(overrides, message):
