@@ -16,6 +16,7 @@ from argparse import Namespace
 import diffusers
 import pytest
 import torch
+from sglang.multimodal_gen.configs.models.dits import minimax_h3 as sglang_minimax_h3
 from sglang.multimodal_gen.runtime.pipelines_core.stages.model_specific_stages.minimax_h3.packed_sequence import (
     minimax_h3_packed_sequence_ref2va_blocks,
 )
@@ -204,14 +205,58 @@ def test_lora_flow_grpo_is_accepted():
         {"train_only": True, "lora_ipc_weight_sync": False, "colocate": True},
         # engines on their own GPUs receive the adapters over NCCL
         {"colocate": False, "lora_ipc_weight_sync": False},
+        # colocated without the IPC sync, the LoRA reaches the engine merged into the DiT's weights
+        {"lora_ipc_weight_sync": False},
+        {"use_lora": False, "lora_ipc_weight_sync": False},
+        {"use_lora": False, "lora_ipc_weight_sync": False, "train_only": True},
         # the recipe's explicit one-pair tiles
         {"micro_batch_size_sample": 1, "micro_batch_size_tstep": 1},
         {"diffusion_eval_num_steps": 6},
     ],
-    ids=["rollout-only", "train-only", "adapters-over-nccl", "one-pair-tiles", "eval-steps-of-the-release"],
+    ids=[
+        "rollout-only",
+        "train-only",
+        "adapters-over-nccl",
+        "lora-synced-as-merged-weights",
+        "full-weight",
+        "full-weight-train-only",
+        "one-pair-tiles",
+        "eval-steps-of-the-release",
+    ],
 )
 def test_supported_variations_are_accepted(overrides):
     H3ImageTrainPipelineConfig.validate_args(_grpo_args(**overrides))
+
+
+@pytest.mark.parametrize(
+    ("overrides", "sync_sends_the_heads"),
+    [
+        ({"use_lora": False, "lora_ipc_weight_sync": False}, True),
+        ({"lora_ipc_weight_sync": False}, True),
+        ({}, False),
+        ({"colocate": False, "lora_ipc_weight_sync": False}, False),
+        ({"use_lora": False, "lora_ipc_weight_sync": False, "train_only": True}, False),
+        ({"use_lora": False, "lora_ipc_weight_sync": False, "debug_rollout_only": True}, False),
+    ],
+    ids=[
+        "full-weight",
+        "lora-synced-as-merged-weights",
+        "lora-adapters-over-ipc",
+        "lora-adapters-over-nccl",
+        "full-weight-train-only",
+        "rollout-only",
+    ],
+)
+def test_a_sync_that_sends_the_heads_needs_an_sglang_that_takes_them(monkeypatch, overrides, sync_sends_the_heads):
+    """That engine skips the heads with a warning, and its rollouts keep the heads it started with."""
+    monkeypatch.delattr(sglang_minimax_h3, "MINIMAX_H3_PDD_FUSED_HEADS_WEIGHT_NAME_PREFIX")
+    args = _grpo_args(**overrides)
+
+    if sync_sends_the_heads:
+        with pytest.raises(RuntimeError, match="takes no per-step output heads"):
+            H3ImageTrainPipelineConfig.validate_args(args)
+    else:
+        H3ImageTrainPipelineConfig.validate_args(args)
 
 
 def test_a_launch_with_the_required_flags_passes_the_real_parser(monkeypatch):
@@ -234,18 +279,9 @@ def test_a_launch_with_the_required_flags_passes_the_real_parser(monkeypatch):
     assert (args.micro_batch_size_sample, args.micro_batch_size_tstep) == (None, None)
 
 
-def test_full_weight_training_is_rejected_even_without_an_engine():
-    """--train-only syncs nothing, but every rank would still give a different per-step head its gradient."""
-    with pytest.raises(ValueError, match="LoRA adapters only"):
-        H3ImageTrainPipelineConfig.validate_args(_grpo_args(train_only=True, use_lora=False))
-
-
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [
-        ({"use_lora": False}, "LoRA adapters only"),
-        # merged base weights carry the per-step heads too
-        ({"lora_ipc_weight_sync": False}, "as adapters"),
         ({"loss_type": "nft"}, "policy_loss"),
         ({"diffusion_flow_shift": 3.0}, "flow-shift"),
         ({"sequence_parallel_size": 2}, "sequence"),
@@ -262,8 +298,6 @@ def test_full_weight_training_is_rejected_even_without_an_engine():
         ({"micro_batch_size": 2, "micro_batch_size_sample": 2, "micro_batch_size_tstep": 1}, "one pair"),
     ],
     ids=[
-        "full-weight",
-        "lora-synced-as-merged-weights",
         "nft",
         "flow-shift",
         "sequence-parallel",

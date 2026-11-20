@@ -1,4 +1,4 @@
-"""MiniMax H3 Image: t2i Flow-GRPO on the release's PDD grid, LoRA only."""
+"""MiniMax H3 Image: t2i Flow-GRPO on the release's PDD grid."""
 
 from __future__ import annotations
 
@@ -38,6 +38,9 @@ class H3ImageTrainPipelineConfig(H3TrainPipelineConfig):
 
     @classmethod
     def validate_args(cls, args: Namespace) -> None:
+        from miles.backends.fsdp_utils.models.diffusers.h3_image.weight_bridge import (
+            get_rollout_pdd_fused_heads_name_prefix,
+        )
         from miles.utils.arguments import rollout_merges_lora
 
         if args.loss_type != "policy_loss":
@@ -46,17 +49,10 @@ class H3ImageTrainPipelineConfig(H3TrainPipelineConfig):
                 "denoising step, which no other built-in loss sets, and custom_loss is untested"
             )
         has_trainer = not args.debug_rollout_only
-        if has_trainer and not args.use_lora:
-            raise ValueError(
-                "H3 Image runs its trainer with LoRA adapters only (--use-lora): full-weight training would update "
-                "the DiT's per-step output heads, each from the ranks whose pairs came from its step, which is untested"
-            )
+        # every sync but a LoRA adapter one carries the DiT's weights, its per-step output heads among them;
+        # the lookup raises on an sglang-d whose weight update takes no heads
         if has_trainer and not args.train_only and not rollout_merges_lora(args):
-            raise ValueError(
-                "H3 Image syncs its LoRA as adapters (--lora-ipc-weight-sync under --colocate, plain --use-lora "
-                "otherwise): a merged sync sends the DiT's per-step output heads, which the rollout engine cannot "
-                "receive"
-            )
+            get_rollout_pdd_fused_heads_name_prefix()
         if args.diffusion_flow_shift is not None:
             raise ValueError("H3 Image samples on its release's sigma grid; drop --diffusion-flow-shift")
         if args.sequence_parallel_size != 1:
