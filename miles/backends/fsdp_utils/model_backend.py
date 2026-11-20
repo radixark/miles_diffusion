@@ -20,15 +20,12 @@ from __future__ import annotations
 import abc
 import functools
 import importlib
-import json
 import logging
 import os
 from dataclasses import replace
 
 import torch
 from diffusers import DiffusionPipeline, ModularPipeline
-from huggingface_hub import hf_hub_download
-from huggingface_hub.errors import HfHubHTTPError, HFValidationError, LocalEntryNotFoundError, RemoteEntryNotFoundError
 
 from .models.parallel_plan import FSDPParallelPlan
 from .sequence_parallel.diffusers_dispatch import install_diffusers_usp_patch
@@ -227,17 +224,17 @@ class DiffusersModelBackend(BaseModelBackend):
     def _resolve_component(cls, checkpoint_path: str, component: str) -> tuple[type, str]:
         """``component``'s class and its folder under ``checkpoint_path``, from the checkpoint's index.
 
-        A checkpoint that ships ``modular_model_index.json`` is read from it, as diffusers' modular loader does:
-        its root ``model_index.json`` may describe another layout of the same weights (MiniMax-H3-Image's names the
-        engine's native classes). The folder is the ``subfolder`` of the component's loading spec; an entry without
-        a loading spec uses the component's name. The repository a loading spec names is not followed: weights come
-        from ``checkpoint_path``.
+        The index is the one diffusers' modular loader reads: ``modular_model_index.json`` when the checkpoint has
+        one, else ``model_index.json``. Weights load from ``checkpoint_path``, not from the repository a loading
+        spec names.
         """
-        index_name = ModularPipeline.config_name
-        index = cls._read_modular_index(checkpoint_path)
-        if index is None:
-            index_name = DiffusionPipeline.config_name
-            index = DiffusionPipeline.load_config(checkpoint_path)
+        try:
+            index, index_name = ModularPipeline.load_config(checkpoint_path), ModularPipeline.config_name
+        except OSError as error:
+            if os.path.isfile(os.path.join(checkpoint_path, ModularPipeline.config_name)):
+                raise
+            index, index_name = DiffusionPipeline.load_config(checkpoint_path), DiffusionPipeline.config_name
+            logger.info("%s: read %s; no %s (%s)", checkpoint_path, index_name, ModularPipeline.config_name, error)
         if component not in index:
             raise ValueError(f"{index_name} of {checkpoint_path} has no component {component!r}")
         spec = index[component]
@@ -245,52 +242,22 @@ class DiffusersModelBackend(BaseModelBackend):
         if component_cls is None:
             raise ValueError(
                 f"cannot resolve the class for component {component!r} from {index_name} of {checkpoint_path}: "
-                f"spec {spec!r} does not name a class an installed library provides (remote-code components are "
-                f"not supported)"
+                f"spec {spec!r} names no class an installed library provides; remote-code components are not supported"
             )
         if len(spec) == 2:
             return component_cls, component
         loading_spec = spec[2] if isinstance(spec[2], dict) else {}
-        subfolder = loading_spec.get("subfolder")
-        if not isinstance(subfolder, str) or not subfolder:
+        subfolder, variant = loading_spec.get("subfolder"), loading_spec.get("variant")
+        if not subfolder:
             raise ValueError(
-                f"component {component!r} names no subfolder in its spec {spec!r} in {index_name} of {checkpoint_path}"
+                f"component {component!r} names no subfolder in {index_name} of {checkpoint_path}: {spec!r}"
             )
-        if loading_spec.get("variant") is not None:
+        if variant is not None:
             raise ValueError(
-                f"component {component!r} names the weight variant {loading_spec['variant']!r} in its spec in "
-                f"{index_name} of {checkpoint_path}; loading a variant is untested, and loading without it could "
-                f"read other weights"
+                f"component {component!r} names the weight variant {variant!r} in {index_name} of {checkpoint_path}; "
+                f"loading a variant is untested"
             )
         return component_cls, subfolder
-
-    @staticmethod
-    def _read_modular_index(checkpoint_path: str) -> dict | None:
-        """``modular_model_index.json`` of a checkpoint; None when it ships none, or the Hub cannot be asked and no copy is cached."""
-        if os.path.isdir(checkpoint_path):
-            index_file = os.path.join(checkpoint_path, ModularPipeline.config_name)
-            if not os.path.isfile(index_file):
-                return None
-        else:
-            try:
-                index_file = hf_hub_download(checkpoint_path, ModularPipeline.config_name)
-            except RemoteEntryNotFoundError:
-                return None
-            # no answer (offline, gated, not a repo id) and no cached copy: the load goes on from the root index
-            except (LocalEntryNotFoundError, HfHubHTTPError, HFValidationError) as error:
-                # the Hub client wraps "no answer and nothing cached" in one fixed message; its cause says which
-                cause = error.__cause__ if isinstance(error, LocalEntryNotFoundError) and error.__cause__ else error
-                logger.info(
-                    "%s of %s could not be read (%s: %s); reading %s",
-                    ModularPipeline.config_name,
-                    checkpoint_path,
-                    type(cause).__name__,
-                    cause,
-                    DiffusionPipeline.config_name,
-                )
-                return None
-        with open(index_file) as f:
-            return json.load(f)
 
     @staticmethod
     def _component_class(spec):
