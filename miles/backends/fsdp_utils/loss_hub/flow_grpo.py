@@ -18,7 +18,6 @@ def _stack_pair_field(batch: list[dict], key: str, device: torch.device) -> torc
 
 
 def _stack_denoising_step_indices(batch: list[dict], device: torch.device) -> torch.Tensor | None:
-    """``[B]`` long from each pair's ``denoising_step_index``; None when the expander recorded no step."""
     steps = [pair.get("denoising_step_index") for pair in batch]
     if all(step is None for step in steps):
         return None
@@ -27,7 +26,6 @@ def _stack_denoising_step_indices(batch: list[dict], device: torch.device) -> to
             "only some pairs of this micro-batch carry denoising_step_index; an expander sets it on every pair or on none"
         )
     try:
-        # operator.index: an int or an integer tensor scalar, never a float
         steps = [operator.index(step) for step in steps]
     except TypeError as error:
         raise ValueError(f"denoising_step_index must be an int or an integer tensor scalar: {error}") from error
