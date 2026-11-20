@@ -245,7 +245,7 @@ class DiffusersModelBackend(BaseModelBackend):
         if component_cls is None:
             raise ValueError(
                 f"cannot resolve the class for component {component!r} from {index_name} of {checkpoint_path}: "
-                f"spec {spec!r} names a class the installed library does not provide (remote-code components are "
+                f"spec {spec!r} does not name a class an installed library provides (remote-code components are "
                 f"not supported)"
             )
         if len(spec) == 2:
