@@ -217,7 +217,7 @@ class TestBackendHierarchy:
         )
         # the log names why the Hub was not asked, not the client's "check your connection" wrapper
         [record] = caplog.records
-        assert "offline mode is enabled" in record.getMessage()
+        assert "OfflineModeIsEnabled" in record.getMessage()
 
     def test_cached_modular_checkpoint_resolves_from_its_modular_index_while_the_hub_is_offline(
         self, monkeypatch, tmp_path
