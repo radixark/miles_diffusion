@@ -79,8 +79,10 @@ python3 scripts/run_diffusion_grpo_ltx23_sglang.py --audio
   deserializer actor starves the engines.
 - With `--audio`, a step's log-prob is the two streams' per-element means weighted by element
   count: a pair holds 393,216 video and 7,552 audio latent elements, so the audio stream carries
-  1.9% of the step's log-prob. Both streams share one sigma grid, which the `cps` log-prob (no `1/σ²` scale)
-  needs for that weighting to be the joint action's mean. `train/log_prob_mean_abs_diff_visual`
+  1.9% of the step's log-prob. Both streams run at one noise level on one sigma grid, so their steps
+  inject the same noise; that is what keeps the `cps` log-prob (the squared distance, without the
+  `1/(2·noise_std²)` scale) weighting the joint action's mean. With different noise levels or grids
+  each stream's term would also carry its own `noise_std²`. `train/log_prob_mean_abs_diff_visual`
   and `train/log_prob_mean_abs_diff_audio` report each stream's own gap.
 - PickScore scores video frames only, so with `--audio` the audio stream's advantage comes from
   the video's reward.
