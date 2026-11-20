@@ -28,7 +28,7 @@ from dataclasses import replace
 import torch
 from diffusers import DiffusionPipeline, ModularPipeline
 from huggingface_hub import hf_hub_download
-from huggingface_hub.errors import EntryNotFoundError, HfHubHTTPError, HFValidationError, RemoteEntryNotFoundError
+from huggingface_hub.errors import HfHubHTTPError, HFValidationError, LocalEntryNotFoundError, RemoteEntryNotFoundError
 
 from .models.parallel_plan import FSDPParallelPlan
 from .sequence_parallel.diffusers_dispatch import install_diffusers_usp_patch
@@ -245,7 +245,7 @@ class DiffusersModelBackend(BaseModelBackend):
         if component_cls is None:
             raise ValueError(
                 f"cannot resolve the class for component {component!r} from {index_name} of {checkpoint_path}: "
-                f"spec {spec!r} names a class the installed library does not provide (remote-code components are "
+                f"spec {spec!r} does not name a class an installed library provides (remote-code components are "
                 f"not supported)"
             )
         if len(spec) == 2:
@@ -277,13 +277,15 @@ class DiffusersModelBackend(BaseModelBackend):
             except RemoteEntryNotFoundError:
                 return None
             # no answer (offline, gated, not a repo id) and no cached copy: the load goes on from the root index
-            except (EntryNotFoundError, HfHubHTTPError, HFValidationError) as error:
+            except (LocalEntryNotFoundError, HfHubHTTPError, HFValidationError) as error:
+                # the Hub client wraps "no answer and nothing cached" in one fixed message; its cause says which
+                cause = error.__cause__ if isinstance(error, LocalEntryNotFoundError) and error.__cause__ else error
                 logger.info(
                     "%s of %s could not be read (%s: %s); reading %s",
                     ModularPipeline.config_name,
                     checkpoint_path,
-                    type(error).__name__,
-                    error,
+                    type(cause).__name__,
+                    cause,
                     DiffusionPipeline.config_name,
                 )
                 return None

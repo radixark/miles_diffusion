@@ -131,7 +131,7 @@ def test_forward_runs_the_output_head_of_the_pairs_step(forward_dtype):
 
 
 def test_forward_without_the_rollout_step_is_rejected():
-    """A loss that samples its own noise levels has no step to pick a head by."""
+    """Pairs from an expander that records no step leave the forward no head to pick."""
     visual, cond = _rows_and_cond(_t2i_layout())
 
     with pytest.raises(ValueError, match="denoising step"):

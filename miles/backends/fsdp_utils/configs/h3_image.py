@@ -29,18 +29,19 @@ class H3ImageTrainPipelineConfig(H3TrainPipelineConfig):
                 "denoising step, which no other built-in loss sets, and custom_loss is untested"
             )
         has_trainer = not args.debug_rollout_only
+        syncs_weights_to_rollout = has_trainer and not args.train_only
         if has_trainer and not args.use_lora:
             raise ValueError(
                 "H3 Image runs its trainer with LoRA adapters only (--use-lora): full-weight training would update "
                 "the DiT's per-step output heads, each from the ranks whose pairs came from its step, which is untested"
             )
-        if has_trainer and not args.train_only and not rollout_merges_lora(args):
+        if syncs_weights_to_rollout and not rollout_merges_lora(args):
             raise ValueError(
                 "H3 Image syncs its LoRA as adapters (--lora-ipc-weight-sync under --colocate, plain --use-lora "
                 "otherwise): a merged sync sends the DiT's per-step output heads, which the rollout engine cannot "
                 "receive"
             )
-        if has_trainer and not args.train_only and args.diffusion_model_family != cls.model_family:
+        if syncs_weights_to_rollout and args.diffusion_model_family != cls.model_family:
             raise ValueError(
                 "H3 Image named by --train-pipeline-config-path cannot sync to a rollout engine: the fused-qkv LoRA "
                 "group is looked up by --diffusion-model-family, which a config path leaves unset. Let "
@@ -105,7 +106,8 @@ class H3ImageTrainPipelineConfig(H3TrainPipelineConfig):
         del neg_cond, joint_cond, use_cfg, cfg_batching, guidance_scale, true_cfg_scale
         if denoising_step_indices is None:
             raise ValueError(
-                "H3 Image picks its output head by the rollout's denoising step, which this loss does not provide"
+                "H3 Image picks its output head by each pair's denoising step, which these pairs do not carry: "
+                "an expander that feeds Flow-GRPO must set denoising_step_index on every pair"
             )
         cond = pos_cond
         visual = latents_input["visual"]
