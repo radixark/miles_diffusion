@@ -6,6 +6,7 @@
     "audio" without audio_context --> ValueError
     validate_args                --> patch group and extra streams agree; no engine SP for audio
     an audio command line         --> passes the real parser
+    audio with patch group ltx    --> rejected on the real parser too (the parser calls the checks)
 
 ltx_core is replaced by a stand-in, so the file runs without it.
 """
@@ -309,8 +310,7 @@ class TestValidateArgs:
     def test_video_only_keeps_engine_sequence_parallelism(self):
         LTXTrainPipelineConfig.validate_args(self._args([], ["ltx"], gpus_per_engine=2, tp_size=1))
 
-    @pytest.mark.parametrize("gpus_per_engine", [1, 2])
-    def test_audio_command_line_parses(self, monkeypatch, gpus_per_engine):
+    def _parse(self, monkeypatch, patch_group, gpus_per_engine=1):
         # Through parse: LTX declares audio, and its checks run after the defaults set TP and split the patch groups.
         from miles.backends.fsdp_utils.arguments import load_fsdp_args
         from miles.utils.arguments import (
@@ -325,13 +325,24 @@ class TestValidateArgs:
             f"--actor-num-gpus-per-node 2 --rollout-num-gpus 2 --rollout-num-gpus-per-engine {gpus_per_engine} "
             "--micro-batch-size 1 --rollout-function-path miles.rollout.sglang_diffusion_rollout.generate_rollout "
             "--rm-type pickscore --diffusion-sde-type cps --diffusion-guidance-scale 1.0 "
-            "--rollout-extra-streams audio --rollout-patch-group ltx_av"
+            f"--rollout-extra-streams audio --rollout-patch-group {patch_group}"
         )
         monkeypatch.setattr(sys, "argv", shlex.split(argv))
         args = load_fsdp_args(extra_args_provider=get_miles_extra_args_provider())
         set_default_diffusion_args(args)
         miles_validate_args(args)
+        return args
+
+    @pytest.mark.parametrize("gpus_per_engine", [1, 2])
+    def test_audio_command_line_parses(self, monkeypatch, gpus_per_engine):
+        args = self._parse(monkeypatch, "ltx_av", gpus_per_engine)
         assert args.diffusion_model_family == "ltx"
         assert args.rollout_extra_streams == ["audio"]
         assert args.rollout_patch_groups == ["ltx_av"]
         assert args.sglang_tp_size == gpus_per_engine
+
+    def test_a_parsed_command_line_reaches_the_ltx_checks(self, monkeypatch):
+        """The rules are tested on hand-built namespaces; a parser that no longer called them would roll audio out
+        with the engine's audio-video cross-attention off while the trainer runs the joint forward."""
+        with pytest.raises(ValueError, match="not ltx"):
+            self._parse(monkeypatch, "ltx")
