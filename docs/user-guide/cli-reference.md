@@ -15,9 +15,9 @@ places:
 validation. A key that collides with an existing argument **overrides it** (with a logged warning) —
 the YAML wins over the command line, but the override skips every check and derived value computed
 before it (a YAML `global_batch_size`, for example, does not re-derive `num_steps_per_rollout`).
-By then `diffusion_sde_type`, `diffusion_noise_level`, `diffusion_log_prob_no_const` and
-`sde_step_backend_path` are resolved into a mapping from latent stream to value, so the YAML gives them
-in that form (`diffusion_noise_level: {visual: 0.5}`).
+By then `diffusion_sde_type`, `diffusion_noise_level`, `diffusion_log_prob_no_const`,
+`sde_step_backend_path` and `diffusion_kl_beta` are resolved into a mapping from latent stream to value,
+so the YAML gives them in that form (`diffusion_noise_level: {visual: 0.5}`).
 
 `--config <file.yaml>` is different: it only adds YAML keys that are not arguments at all, so it
 cannot change any flag.
@@ -273,7 +273,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--diffusion-adv-clip-max` | float | `5.0` | Under `nft` this also sets the advantage-to-`r` slope. |
 | `--diffusion-recompute-old-log-prob` | flag | off | Recompute old log-probs with the trainer forward instead of trusting the rollout's. `policy_loss` only. |
 | `--diffusion-score-centering` | flag | off | Experimental: cancels the train/rollout drift in the PPO gradient with a closed-form centering term ([SDE Step Backend §5](../advanced/sde-backend.md#5-score-centering-experimental)); needs `--diffusion-sde-type sde` and `--diffusion-debug-mode`, not with `--diffusion-recompute-old-log-prob`. |
-| `--diffusion-kl-beta` | str | `0.0` | KL to the `--ref-mode` model, one value or one per stream (`visual=0,audio=0.04`); an `ode` stream's KL is its velocity MSE `mean((v_θ − v_ref)²)`; under `nft` it adds `kl_beta` times the same MSE per pair. |
+| `--diffusion-kl-beta` | str | `0.0` | Weight of the pull toward the `--ref-mode` model, one value or one per stream (`visual=0,audio=0.0001`). A scored Flow-GRPO stream adds the squared gap of its step means over `2·std²` ([SDE Step Backend](../advanced/sde-backend.md#per-latent-stream)); an `ode` stream, and every pair under `nft`, adds the velocity MSE `mean((v_θ − v_ref)²)`, which DiffusionNFT's code weights by `1e-4`. |
 | `--ref-mode` | enum | – | KL reference: `none` / `lora_base` (actor with adapters disabled) / `ref` (the model from `--ref-load`). Auto: `lora_base` when any stream's KL > 0. |
 | `--ref-load` | str | – | HF pipeline checkpoint of an independent frozen reference model. Requires `--ref-mode ref`. |
 | `--ref-lora-adapter-path` | str+ | – | PEFT adapter directories applied to `--ref-load`, one per `--update-weight-target-module` entry, in order. |

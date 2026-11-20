@@ -1210,7 +1210,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "Reference KL coefficient for diffusion GRPO. When any stream's beta is > 0, enables a "
                     "reference DiT forward (see --ref-mode; default lora_base). One value for every latent "
-                    'stream, or one per stream, e.g. "visual=0,audio=0.04"; an ode stream\'s KL is its velocity MSE.'
+                    'stream, or one per stream, e.g. "visual=0,audio=0.0001". A scored stream adds the squared gap of '
+                    "its step means over 2 std^2; an ode stream, and --loss-type nft, add the velocity MSE."
                 ),
             )
             parser.add_argument(
@@ -2101,12 +2102,12 @@ def validate_kl_beta_forms(args) -> None:
     sde_types = set(args.diffusion_sde_type.values())
     if set(args.diffusion_kl_beta) != {None} or args.diffusion_kl_beta[None] <= 0:
         return
-    # A scored stream's KL is its velocity MSE times a step factor far below 1, so one beta would hold an ode
-    # stream's velocity MSE orders of magnitude harder per element.
+    # A scored stream's term divides the squared gap of its step means by 2 std^2 and an ode stream's is the plain
+    # velocity MSE; their ratio changes by orders of magnitude from step to step, so no single beta suits both.
     if "ode" in sde_types and sde_types != {"ode"} and _uses_flow_grpo_formula(args):
         raise ValueError(
             f"--diffusion-kl-beta {args.diffusion_kl_beta[None]} covers ode and scored streams, whose KL terms "
-            'differ in scale; give one per stream, e.g. "<scored stream>=0.04,<ode stream>=0.001"'
+            'differ in scale; give one per stream, e.g. "<scored stream>=0.04,<ode stream>=0.0001"'
         )
 
 
