@@ -63,7 +63,7 @@ python3 scripts/run_diffusion_grpo_h3_image_ocr_8gpu.py \
 
 # frozen-weights control: rollouts only, the reference a run's rollout reward is read against (§ 5)
 python3 scripts/run_diffusion_grpo_h3_image_ocr_8gpu.py \
-  --num-rollout 60 --eval-interval 0 --save-interval 100000 --extra-args "--debug-rollout-only"
+  --num-rollout 60 --eval-interval 0 --extra-args "--debug-rollout-only"
 
 # local checkpoint
 python3 scripts/run_diffusion_grpo_h3_image_ocr_8gpu.py \
@@ -76,7 +76,7 @@ What to watch:
 |---|---|---|
 | Reward | `eval/ocr_test`, `rollout/reward/raw_mean` | Eval is the 1018-prompt test split, sampled without noise, so two evals differ only by the weights. The rollout reward follows the 8 prompts of its rollout (0.46 to 0.84 on the base model) |
 | Images | `eval_media`, `rollout_media` | The OCR score cannot tell text in a scene from text on an empty background, nor a clean image from a textured one. Look at the images at full size: from about 140 rollouts this recipe's carry a repeating texture, and past 200 it erases the scene (§ 6.1) |
-| Rollout vs train | `train/model_output_mean_abs_diff`, `train/prev_mean_diff_over_noise_std` | The trainer's forward and transition mean against the engine's own (`--diffusion-debug-mode`); about 0.02 and 0.018 on a rollout's first optimizer step of the base model. They should not grow: over 1000 rollouts they fell to 0.010 and 0.007 |
+| Rollout vs train | `train/model_output_mean_abs_diff`, `train/prev_mean_diff_over_noise_std` | The trainer's forward and transition mean against the engine's own (`--diffusion-debug-mode`); about 0.02 and 0.018 on a rollout's first optimizer step of the base model. They should not grow much: over the recipe's 200 rollouts the first stays between 0.021 and 0.025 (20-rollout means) and the second near 0.017. Both fall afterwards, as the scene fades, to 0.010 and 0.007 by 1000 rollouts |
 | PPO ratio | `train/clipfrac`, `train/log_prob_mean_abs_diff` | 0 on a rollout's first optimizer step (the old log-prob is recomputed by the trainer), then how far that step moved the policy |
 | Memory | `nvidia-smi`, `train/device_memory_used_gb` | A GPU peaks near 70 GB, during a rollout (its TP2 engine rank). While training, the engine is offloaded and about 26 GB are in use |
 
@@ -94,7 +94,7 @@ What to watch:
   0.020, and a sync takes 1.2 s instead of 11.5 s; a rollout takes 14 s instead of 8 s.
 - **The trainer recomputes the old log-probs** (`--diffusion-recompute-old-log-prob`). On the base model the engine's
   and the trainer's log-probs differ by 0.7e-4 to 1.7e-4, the size of the clip range (`1e-4`): scored against the
-  engine's, 20-47% of the pairs are clipped before any update.
+  engine's, 20-38% of the pairs are clipped on a rollout's first optimizer step.
 - **lr 1e-4, 2 optimizer steps per rollout.** The learning rate decides whether the adapters generalize. At 2e-4 the
   recipe fits 8 fixed prompts 1.5 times as fast as at 1e-4, and on the full dataset gets worse on every prompt it has
   not trained on: `eval/ocr_test` falls from 0.600 to 0.550 in 20 rollouts. At 1e-4 it rises to 0.621, and to 0.830
@@ -106,9 +106,11 @@ What to watch:
   needs a term that keeps the image: a KL to the base model (`--diffusion-kl-beta`, 0.04 in the SD3.5 OCR recipe)
   or a second reward such as PickScore (`weighted_mixture_rm`). Neither has been measured on this model.
 - **Tune on `eval/ocr_test` together with the eval images, not on the reward of a fixed prompt set**, which rises
-  fastest for the settings that generalize worst. The eval alone is the number this recipe hacks (§ 6.1). For a reading before the next eval, run the frozen-weights control of § 4 once:
-  `--deterministic-mode` gives rollout k the same prompts and noise in every run, so a run's
-  `rollout/reward/raw_mean` minus the control's is its gain on prompts it has not seen. Rollout 0 differs by exactly 0.
+  fastest for the settings that generalize worst. The eval alone is the number this recipe hacks (§ 6.1). For a
+  reading before the next eval, run the frozen-weights control of § 4 once: the fixed `--rollout-seed` and the
+  unshuffled prompt order give rollout k the same prompts and noise in every run (`--deterministic-mode` makes the
+  trained run itself repeatable), so a run's `rollout/reward/raw_mean` minus the control's is its gain on prompts it
+  has not seen. Rollout 0 differs by exactly 0.
 - **No gradient checkpointing.** One pair per forward peaks at 16 GB on the trainer, and checkpointing made the
   training phase a third longer (64 s against 47 s).
 - **Cost.** About 73 s per rollout on 8 H200: 14 s to generate and score 128 images, 47 s to train on their 640
@@ -147,7 +149,7 @@ pixels.
 - **The drop at 400 is the scene coming back.** The eval is 0.115 below its value at 320 and the image detail is up
   from 0.013 to 0.022. Not every drop is: from 240 to 280 the eval and the detail fall together.
 - **The trainer stays aligned with the engine.** `train/model_output_mean_abs_diff` on a rollout's first optimizer
-  step, averaged over 100 rollouts, goes from 0.021 to 0.010. `train/clipfrac` on the second optimizer step, averaged
+  step, averaged over 100 rollouts, is 0.021 and 0.023 over the recipe's 200 rollouts and falls to 0.010 by 1000. `train/clipfrac` on the second optimizer step, averaged
   over 20 rollouts, stays below 0.32.
 - **The run is reproducible.** A second launch reproduced the first 20 rollouts' rewards and the eval after them
   exactly.

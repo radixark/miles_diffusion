@@ -21,8 +21,9 @@ What the recipe chooses, each from a measurement (docs/models/h3/h3-image.md):
     checkpointing made the training phase a third longer.
 
 The reward is OCR alone and nothing holds the policy near the base model (kl 0). Past about 200
-rollouts the reward keeps rising because the scene is erased, until only the text is left
-(docs/models/h3/h3-image.md, reference results): the recipe stops there.
+rollouts the reward keeps rising because the scene is erased, until only the text is left: the
+recipe stops there. Its images are not clean before that either, with a repeating texture from
+about 140 rollouts (docs/models/h3/h3-image.md, reference results).
 
 Usage:
     python3 scripts/run_diffusion_grpo_h3_image_ocr_8gpu.py
