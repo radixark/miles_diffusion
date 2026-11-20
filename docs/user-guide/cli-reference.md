@@ -409,7 +409,7 @@ Every one takes a dotted path.
 | `--debug-skip-optimizer-step` | flag | off | No backward/step — weights never drift. Use it to measure pure forward divergence from the engine. |
 | `--save-debug-rollout-data` | path template | – | Fills `{rollout_id}`. |
 | `--save-eval-media-dir` | path | – | Keeps every eval sample's video (with its audio when the engine returns it) or image under `<dir>/eval_<rollout_id>/`, with an `index.jsonl` of prompts, seeds and rewards. Independent of `--wandb-log-num-images`. |
-| `--load-debug-rollout-data` | path template | – | Replays a rollout with **no engines started**. |
+| `--load-debug-rollout-data` | path template | – | Replays a rollout with **no engines started**; implies `--train-only`, also for the checks that refuse a setting only when an engine runs. |
 | `--load-debug-rollout-data-subsample` | float | – | |
 | `--save-debug-train-data` | path template | – | Fills `{rollout_id}` and `{rank}`. |
 | `--dump-details` | dir | – | Sets the debug dump paths for post-hoc analysis. |
