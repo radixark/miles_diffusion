@@ -7,6 +7,8 @@
                   come from the loss hub by role, so the trainer args carry no hook path
 
 Per-stream SDE settings: one value for every stream, or one for each stream of the run, each named once.
+The log-prob form the request asks for follows the SDE type; a custom step backend goes to the scored streams.
+One rejected command line per validator shows the parser still calls it.
 
 --rollout-extra-streams on top of a recipe:
 
@@ -166,7 +168,9 @@ def test_per_stream_sde_settings_must_name_every_stream(parse, sde_type):
     [
         pytest.param("policy_loss", "audio", "trains the extra streams", id="a stream the model cannot train"),
         pytest.param("policy_loss", "echo,echo", "twice", id="a stream named twice"),
-        pytest.param("nft", "echo", "reads the primary stream alone", id="a loss whose converter drops the stream"),
+        pytest.param("nft", "echo", "reads the primary stream alone", id="nft: its converter drops the stream"),
+        pytest.param("dmd2", "echo", "reads the primary stream alone", id="dmd2: its converter drops the stream"),
+        pytest.param("sft_loss", "echo", "reads the primary stream alone", id="sft: its converter drops the stream"),
     ],
 )
 def test_extra_rollout_streams_that_would_not_be_trained_are_rejected(parse, loss_type, extra_streams, match):
@@ -183,6 +187,52 @@ def test_a_stream_named_twice_in_a_per_stream_flag_is_rejected(parse, capsys):
             + " --rollout-extra-streams echo --diffusion-noise-level main=0.7,echo=0.3,echo=0.5"
         )
     assert "a stream is named twice" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("flags", "expected"),
+    [
+        pytest.param("--diffusion-sde-type cps", True, id="cps drops the constants"),
+        pytest.param(
+            "--diffusion-sde-type sde --diffusion-log-prob-no-const --sde-step-backend-path my_pkg.NoConstBackend",
+            True,
+            id="the flag drops them for sde",
+        ),
+        pytest.param("--diffusion-sde-type sde", False, id="sde keeps them"),
+    ],
+)
+def test_the_request_asks_for_the_log_prob_form_the_trainer_scores(parse, flags, expected):
+    """A cps rollout that kept the constants would be scored by a backend that drops them: every ratio would be off."""
+    argv = ARGV_BY_LOSS_TYPE["policy_loss"].replace("--diffusion-sde-type sde", flags)
+    assert parse(argv).diffusion_log_prob_no_const == {"main": expected}
+
+
+def test_a_custom_step_backend_is_given_to_the_scored_streams_only(parse):
+    """An ode stream with a backend would be scored: a zero-noise transition in the joint log-prob."""
+    args = parse(
+        ARGV_BY_LOSS_TYPE["policy_loss"]
+        + " --sde-step-backend-path my_pkg.Backend --rollout-extra-streams echo --diffusion-sde-type main=sde,echo=ode"
+    )
+    assert args.sde_step_backend_path == {"main": "my_pkg.Backend"}
+
+
+@pytest.mark.parametrize(
+    ("flags", "match"),
+    [
+        pytest.param(
+            "--diffusion-sde-type cps --diffusion-noise-level 0", "must be positive", id="the SDE scoring rules"
+        ),
+        pytest.param(
+            "--diffusion-score-centering --diffusion-debug-mode --rollout-extra-streams echo",
+            "drop --rollout-extra-streams",
+            id="the score-centering rules",
+        ),
+    ],
+)
+def test_the_validators_run_on_a_parsed_command_line(parse, flags, match):
+    """Each rule is tested on a hand-built namespace; a validator the parser no longer calls would reject nothing."""
+    with pytest.raises(ValueError, match=match):
+        parse(ARGV_BY_LOSS_TYPE["policy_loss"].replace("--diffusion-sde-type sde", "") + " " + flags)
 
 
 def test_dmd2_trainer_groups_get_their_hooks_by_role(parse):
