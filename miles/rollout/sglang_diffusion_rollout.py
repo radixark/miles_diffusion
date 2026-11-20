@@ -7,6 +7,7 @@ from collections.abc import Callable
 from contextlib import contextmanager
 from typing import Any
 
+import msgspec
 import numpy as np
 import ray
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
@@ -17,11 +18,11 @@ from miles.rollout.base_types import RolloutFnEvalOutput, RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
 from miles.utils.async_utils import run
 from miles.utils.diffusion_data import Dataset as DiffusionDataset
-from miles.utils.diffusion_rollout_response import RolloutImageResponseParserActor
+from miles.utils.diffusion_rollout_response import RolloutImageResponseParserActor, read_generated_outputs
 from miles.utils.eval_config import EvalDatasetConfig
 from miles.utils.http_utils import post
 from miles.utils.misc import SingletonMeta, load_function
-from miles.utils.output_store import record_dropped_samples
+from miles.utils.output_store import StoredTensor, connect_output_store, record_dropped_samples
 from miles.utils.types import Sample
 
 from .rm_hub import batched_async_rm
@@ -130,6 +131,7 @@ class GenerateState(metaclass=SingletonMeta):
         ]
         self._parser_rr = 0
         self.parser_inflight = [0] * args.rollout_parser_num_workers
+        self.output_store = connect_output_store(args) if args.use_output_store else None
 
         self.reset()
 
@@ -247,6 +249,36 @@ async def generate_microgroup(
     return microgroup
 
 
+async def load_generated_outputs(state: GenerateState, samples: list[Sample]) -> None:
+    """Read the samples' stored outputs into tensors and delete them from the store.
+
+    The store then holds an output only from the engine's put to this read. The rollout's release deletes whatever a
+    failed delete leaves.
+    """
+    stored = [sample for sample in samples if isinstance(sample.generated_output, StoredTensor)]
+    if not stored:
+        return
+    outputs = [sample.generated_output for sample in stored]
+    refs = [
+        msgspec.structs.replace(
+            output.ref, fields=tuple(spec for spec in output.ref.fields if spec.name == output.field)
+        )
+        for output in outputs
+    ]
+    st = hooks.StageTimer()
+    with st.stage("store_read"):
+        tensors = await asyncio.to_thread(read_generated_outputs, state.output_store, outputs)
+        try:
+            await asyncio.to_thread(state.output_store.delete_many, refs)
+        except Exception:
+            logger.warning(
+                "Failed to delete %d read outputs; the rollout's release deletes them", len(refs), exc_info=True
+            )
+    st.attach(stored)
+    for sample, tensor in zip(stored, tensors, strict=True):
+        sample.generated_output = tensor
+
+
 async def generate_and_rm_microgroup(
     args: Namespace,
     microgroup: list[Sample],
@@ -267,6 +299,8 @@ async def generate_and_rm_microgroup(
                     microgroup = await custom_generate_func(args, microgroup, sampling_params)
             else:
                 microgroup = await generate_microgroup(args, microgroup, sampling_params, evaluation=evaluation)
+        # inside the semaphore, so the store holds at most one microgroup's outputs per generation slot
+        await load_generated_outputs(state, microgroup)
 
     # for the rm that need the whole group, we will not do the rm here
     if args.group_rm:

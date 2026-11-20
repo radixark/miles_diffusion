@@ -33,6 +33,8 @@ class TrajectoryEventKind(StrEnum):
     DESER_END = "deser_end"
     REWARD_START = "reward_start"
     REWARD_END = "reward_end"
+    STORE_READ_START = "store_read_start"
+    STORE_READ_END = "store_read_end"
 
 
 # stage name (StageTimer) -> (start kind, end kind)
@@ -40,6 +42,7 @@ STAGE_KINDS = {
     "generate": (TrajectoryEventKind.GEN_START, TrajectoryEventKind.GEN_END),
     "deserialize": (TrajectoryEventKind.DESER_START, TrajectoryEventKind.DESER_END),
     "reward": (TrajectoryEventKind.REWARD_START, TrajectoryEventKind.REWARD_END),
+    "store_read": (TrajectoryEventKind.STORE_READ_START, TrajectoryEventKind.STORE_READ_END),
 }
 
 # kind -> (base span, is_start), for the reader to fold start/end back into spans
@@ -50,6 +53,8 @@ SPAN_KINDS = {
     "deser_end": ("deser", False),
     "reward_start": ("reward", True),
     "reward_end": ("reward", False),
+    "store_read_start": ("store_read", True),
+    "store_read_end": ("store_read", False),
 }
 
 

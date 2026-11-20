@@ -100,7 +100,15 @@ def transition():
 
 def _loss(t, new_pred):
     return flow_grpo_loss_formula(
-        t.ctx, t.batch, t.prepared, new_pred={"visual": new_pred}, old_pred=None, ref_pred=None, metrics=_MetricSink()
+        t.ctx,
+        t.batch,
+        t.prepared,
+        new_pred={"visual": new_pred},
+        old_pred=None,
+        ref_pred=None,
+        metrics=_MetricSink(),
+        optim_step_idx=0,
+        train_output_inputs=[],
     )
 
 

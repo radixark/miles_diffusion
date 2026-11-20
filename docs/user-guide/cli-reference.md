@@ -184,7 +184,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--rollout-microgroup-size` | int | `1` | |
 | `--diffusion-fps` | float | – | Video only. Also the fps logged and saved media play at (8 when unset); H3 drops it from the request, so set it to 24 there. |
 | `--diffusion-output-num-frames` | int | `1` | |
-| `--rollout-video-dtype` | enum | `keep` | `keep` / `uint8`: dtype of the decoded video in rollout and eval responses. `uint8` quantizes engine-side by truncation (×255, then clamp), cutting the response ~4x. That matches the PickScore reward path; HPS, OCR and the OpenAI-API reward round instead, so keep `keep` for them and for any consumer that needs the float tensor. |
+| `--rollout-video-dtype` | enum | `keep` | `keep` / `uint8`: dtype of the decoded video in rollout and eval responses. `uint8` quantizes engine-side by truncation (×255, then clamp), cutting the response ~4x (with `--use-output-store`, the stored output). That matches the PickScore reward path; HPS, OCR and the OpenAI-API reward round instead, so keep `keep` for them and for any consumer that needs the float tensor. |
 | `--diffusion-guidance-scale` | float | `4.0` | |
 | `--diffusion-guidance-scale-2` | float | – | Wan2.2 low-noise expert; **required** when training it. |
 | `--diffusion-true-cfg-scale` | float | – | |
