@@ -206,8 +206,8 @@ substring hit as perfect (`dist=0`), and caps `dist` at `len(target)` — see
 `miles/rollout/rm_hub/ocr.py`.
 
 OCR runs on **CPU** Ray actors (`--ocr-num-workers`, default 4). Used by the
-SD3 Flow-GRPO OCR and OCR & PickScore recipes, the three Krea-2 DiffusionNFT recipes, and the
-smoke mode of the SD3 DiffusionNFT recipe.
+SD3 Flow-GRPO OCR and OCR & PickScore recipes, the MiniMax H3 Image Flow-GRPO recipe, the three
+Krea-2 DiffusionNFT recipes, and the smoke mode of the SD3 DiffusionNFT recipe.
 
 ### API rewards (`--rm-type openai_api` / `custom_api`)
 
