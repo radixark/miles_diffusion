@@ -9,6 +9,7 @@ from tests.ci.ci_register import register_cpu_ci
 register_cpu_ci(est_time=15, suite="stage-a-cpu", labels=[])
 
 import json
+import logging
 
 import diffusers
 import httpx
@@ -178,7 +179,9 @@ class TestBackendHierarchy:
         with pytest.raises(ValueError, match="weight variant 'fp16'"):
             DiffusersModelBackend._resolve_component(checkpoint, "transformer")
 
-    def test_hub_checkpoint_without_a_modular_index_reads_model_index(self, monkeypatch):
+    def test_hub_checkpoint_without_a_modular_index_reads_model_index(self, monkeypatch, caplog):
+        caplog.set_level(logging.INFO, logger=model_backend.__name__)
+
         def raise_entry_not_found(repo_id, filename):
             response = httpx.Response(404, request=httpx.Request("HEAD", f"https://huggingface.co/{repo_id}"))
             raise RemoteEntryNotFoundError(f"{repo_id} has no {filename}", response=response)
@@ -194,9 +197,12 @@ class TestBackendHierarchy:
             _CheckpointComponent,
             "transformer",
         )
+        # every classic checkpoint answers 404: a line per component load on each rank would say nothing
+        assert not caplog.records
 
-    def test_cached_classic_checkpoint_resolves_while_the_hub_is_offline(self, monkeypatch, tmp_path):
+    def test_cached_classic_checkpoint_resolves_while_the_hub_is_offline(self, monkeypatch, tmp_path, caplog):
         """A classic checkpoint's cache never holds a modular index, so the probe has no copy to fall back to."""
+        caplog.set_level(logging.INFO, logger=model_backend.__name__)
         monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_OFFLINE", True)
         monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_CACHE", str(tmp_path))
         monkeypatch.setattr(
@@ -209,6 +215,9 @@ class TestBackendHierarchy:
             _CheckpointComponent,
             "transformer",
         )
+        # the log names why the Hub was not asked, not the client's "check your connection" wrapper
+        [record] = caplog.records
+        assert "offline mode is enabled" in record.getMessage()
 
     def test_cached_modular_checkpoint_resolves_from_its_modular_index_while_the_hub_is_offline(
         self, monkeypatch, tmp_path

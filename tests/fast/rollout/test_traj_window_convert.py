@@ -166,6 +166,16 @@ def test_a_micro_batch_with_the_step_on_only_some_pairs_is_rejected():
         _prepare_pairs_of_two_windows(drop_one_step)
 
 
+def test_a_step_that_is_not_an_integer_is_rejected():
+    """Truncating 2.7 to 2 would run the pair through another step's output head."""
+
+    def emit_one_step_as_a_float(pairs):
+        pairs[0]["denoising_step_index"] = float(pairs[0]["denoising_step_index"]) + 0.7
+
+    with pytest.raises(ValueError, match="denoising_step_index must be an int"):
+        _prepare_pairs_of_two_windows(emit_one_step_as_a_float)
+
+
 def test_missing_window_latent_raises():
     with pytest.raises(ValueError, match="lacks latents"):
         _build(_windowed(_full_traj(), [2, 3]))  # boundary latent 4 missing
