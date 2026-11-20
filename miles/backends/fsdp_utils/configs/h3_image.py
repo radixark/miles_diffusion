@@ -10,6 +10,23 @@ from .h3 import H3TrainPipelineConfig, _without_padding_tail
 from .train_pipeline_config import register_train_pipeline_config
 
 
+def _give_every_pdd_head_a_gradient(pdd_heads: torch.nn.ModuleList) -> None:
+    """Make whichever head a forward runs carry every head's parameters into the graph, at weight zero.
+
+    A forward runs the head of one step, so the other heads have no gradient on that rank. FSDP reduces the
+    gradients of one wrap as a single buffer of the parameters that have one on that rank, in order: ranks whose
+    pairs come from different steps would average one head's gradient with another's.
+    """
+
+    def add_zero_of_every_head(head: torch.nn.Module, inputs: tuple, output: torch.Tensor) -> torch.Tensor:
+        # read at call time: FSDP swaps a module's sharded and unsharded parameters
+        zero = 0.0 * sum(parameter.sum() for pdd_head in pdd_heads for parameter in pdd_head.parameters())
+        return output + zero.to(output.dtype)
+
+    for pdd_head in pdd_heads:
+        pdd_head.register_forward_hook(add_zero_of_every_head)
+
+
 @register_train_pipeline_config("h3_image")
 class H3ImageTrainPipelineConfig(H3TrainPipelineConfig):
     """MiniMax H3 Image: the H3 DiT without audio rows, with one output head per denoising step."""
@@ -78,6 +95,12 @@ class H3ImageTrainPipelineConfig(H3TrainPipelineConfig):
     ) -> None:
         # the engine generates a request below its default area on a larger canvas and resizes the image back
         extra_sampling_params["min_generation_area"] = int(args.diffusion_width) * int(args.diffusion_height)
+
+    def postprocess_model_after_materialize(self, model: torch.nn.Module) -> None:
+        pdd_heads = model.pdd_proj_out
+        # a LoRA trainer and a frozen reference leave the heads without gradients on every rank
+        if any(parameter.requires_grad for parameter in pdd_heads.parameters()):
+            _give_every_pdd_head_a_gradient(pdd_heads)
 
     def compute_noise_pred(
         self,

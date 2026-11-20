@@ -146,6 +146,27 @@ def test_forward_rejects_a_layout_with_reference_rows():
         _forward(_tiny_h3_image(), visual, cond, torch.tensor([0]))
 
 
+def test_a_forward_through_one_head_gives_every_head_a_gradient():
+    """FSDP reduces a wrap's gradients as one buffer of the parameters that have one on a rank, in order: a head
+    without a gradient on the ranks that ran another step would have its gradient averaged with that step's."""
+    hooked, plain = _tiny_h3_image(), _tiny_h3_image()
+    H3ImageTrainPipelineConfig().postprocess_model_after_materialize(hooked)
+    visual, cond = _rows_and_cond(_t2i_layout())
+
+    predictions = [_forward(model, visual, cond, torch.tensor([1])) for model in (hooked, plain)]
+    for prediction in predictions:
+        prediction.square().sum().backward()
+
+    assert torch.equal(*predictions)
+    plain_grads = {name: parameter.grad for name, parameter in plain.named_parameters()}
+    for name, parameter in hooked.named_parameters():
+        if name.startswith("pdd_proj_out.") and not name.startswith("pdd_proj_out.1."):
+            assert plain_grads[name] is None
+            assert parameter.grad is not None and not parameter.grad.any(), name
+        else:
+            assert torch.equal(parameter.grad, plain_grads[name]), name
+
+
 def _grpo_args(**overrides):
     args = Namespace(
         loss_type="policy_loss",
