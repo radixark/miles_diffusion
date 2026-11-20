@@ -132,7 +132,7 @@ def test_forward_runs_the_output_head_of_the_pairs_step(forward_dtype):
 
 
 def test_forward_without_the_rollout_step_is_rejected():
-    """A loss that samples its own noise levels has no step to pick a head by."""
+    """Pairs from an expander that records no step leave the forward no head to pick."""
     visual, cond = _rows_and_cond(_t2i_layout())
 
     with pytest.raises(ValueError, match="denoising step"):
@@ -255,6 +255,15 @@ def test_a_sync_that_sends_the_heads_needs_an_sglang_that_takes_them(monkeypatch
         with pytest.raises(ValueError, match="does not take in a weight update"):
             H3ImageTrainPipelineConfig.validate_args(args)
     else:
+        H3ImageTrainPipelineConfig.validate_args(args)
+
+
+def test_a_config_named_by_path_is_refused_before_the_engine_is_asked_about_heads(monkeypatch):
+    """Both ways out the head refusal names lead into this one, and by path no transform would send a stack."""
+    monkeypatch.delattr(sglang_minimax_h3, "MINIMAX_H3_PDD_FUSED_HEADS_WEIGHT_NAME_PREFIX")
+    args = _grpo_args(use_lora=False, lora_ipc_weight_sync=False, diffusion_model_family=None)
+
+    with pytest.raises(ValueError, match="cannot sync to a rollout engine"):
         H3ImageTrainPipelineConfig.validate_args(args)
 
 

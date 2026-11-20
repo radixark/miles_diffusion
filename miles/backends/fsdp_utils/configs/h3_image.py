@@ -46,21 +46,21 @@ class H3ImageTrainPipelineConfig(H3TrainPipelineConfig):
                 "H3 Image trains with --loss-type policy_loss only: its DiT picks an output head by the rollout's "
                 "denoising step, which no other built-in loss sets, and custom_loss is untested"
             )
-        syncs_to_rollout = not args.debug_rollout_only and not args.train_only
-        # every sync but a LoRA adapter one carries the DiT's weights, its per-step output heads among them
-        if syncs_to_rollout and not rollout_merges_lora(args) and not rollout_takes_pdd_fused_heads():
-            raise ValueError(
-                "H3 Image's weight sync sends the DiT's per-step output heads, which this sglang-d does not take in "
-                "a weight update (it predates sgl-project/sglang#51654): the rollout would keep the heads it started "
-                "with. Install an sglang-d that takes them, or train a LoRA and sync it as adapters (--use-lora, "
-                "with --lora-ipc-weight-sync under --colocate)"
-            )
-        if syncs_to_rollout and args.diffusion_model_family != cls.model_family:
+        syncs_weights_to_rollout = not args.debug_rollout_only and not args.train_only
+        if syncs_weights_to_rollout and args.diffusion_model_family != cls.model_family:
             raise ValueError(
                 "H3 Image named by --train-pipeline-config-path cannot sync to a rollout engine: its weight "
                 "transform and its fused-qkv LoRA group are looked up by --diffusion-model-family, which a config "
                 "path leaves unset. Let --hf-checkpoint or --diffusion-model-family name the family, or run "
                 "--train-only"
+            )
+        # every sync but a LoRA adapter one carries the DiT's weights, its per-step output heads among them
+        if syncs_weights_to_rollout and not rollout_merges_lora(args) and not rollout_takes_pdd_fused_heads():
+            raise ValueError(
+                "H3 Image's weight sync sends the DiT's per-step output heads, which this sglang-d does not take in "
+                "a weight update (it predates sgl-project/sglang#51654): the rollout would keep the heads it started "
+                "with. Install an sglang-d that takes them, or train a LoRA and sync it as adapters (--use-lora, "
+                "with --lora-ipc-weight-sync under --colocate)"
             )
         if args.diffusion_flow_shift is not None:
             raise ValueError("H3 Image samples on its release's sigma grid; drop --diffusion-flow-shift")
@@ -127,7 +127,8 @@ class H3ImageTrainPipelineConfig(H3TrainPipelineConfig):
         del neg_cond, joint_cond, use_cfg, cfg_batching, guidance_scale, true_cfg_scale
         if denoising_step_indices is None:
             raise ValueError(
-                "H3 Image picks its output head by the rollout's denoising step, which this loss does not provide"
+                "H3 Image picks its output head by each pair's denoising step, which these pairs do not carry: "
+                "an expander that feeds Flow-GRPO must set denoising_step_index on every pair"
             )
         cond = pos_cond
         visual = latents_input["visual"]
