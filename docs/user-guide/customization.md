@@ -130,44 +130,48 @@ DiffusionNFT picks the timesteps it trains on with a separate hook,
 
 ### `--diffusion-resolution-strategy-path`
 
-Draw the output resolution of each prompt group rather than running every rollout at
-`--diffusion-height` / `--diffusion-width`. Stock strategies live in
-`miles/rollout/resolution_strategy_hub.py`; unset, nothing about a run changes.
+Draw the output resolution of each prompt group during training. With no strategy
+set, training uses `--diffusion-height` and `--diffusion-width`. Built-in strategies
+live in `miles/rollout/resolution_strategy_hub.py`.
 
+```bash
+--diffusion-resolution-strategy-path miles.rollout.resolution_strategy_hub.weighted_buckets \
+--diffusion-resolution-buckets 512x512,672x384,384x672 \
+--diffusion-resolution-weights 2,1,1    # optional; omit this line to draw buckets uniformly
 ```
---diffusion-resolution-strategy-path miles.rollout.resolution_strategy_hub.weighted_buckets
---diffusion-resolution-buckets 512x512,672x384,384x672
---diffusion-resolution-weights 2,1,1    # optional, uniform by default
-```
+
+Buckets use `height x width`. Each side must be a positive multiple of 16.
 
 ```python
 def strategy(args, sample, seed) -> tuple[int, int]:
-    # (height, width) for every request of this prompt group
+    # Return (height, width) for every request in this prompt group.
     ...
 ```
 
-The strategy receives the group's first `Sample`, so a custom one can read the resolution off
-the prompt or its dataset metadata rather than drawing it. The draw happens once per group —
-GRPO normalizes rewards inside a group, so a group that mixed resolutions would push a reward
-model's size preference into the advantage. Eval keeps `--diffusion-height` / `--diffusion-width`.
+The strategy receives the group's first `Sample` and can use `seed` for a reproducible
+draw, or read the size from `sample.metadata` if your data source puts one there. All
+samples in the group share one resolution so GRPO compares their rewards at the same
+size. Periodic evaluation during training uses a single resolution set by
+`--diffusion-height` and `--diffusion-width`.
 
-Metrics: `rollout/resolution/<HxW>_reward_mean`, and `train/log_prob_mean_abs_diff_res_<HxW>`
-when `--diffusion-resolution-buckets` says up front which resolutions can appear.
+**Training requirements**
 
-**What it requires.** The family must set `supports_mixed_resolution` (today `qwen_image`), and
-the train-pair conversion must declare `@miles.ray.data_conversion_hub.labels_rollout_resolution`
-— Flow-GRPO's does, so `--loss-type nft` / `dmd2` are rejected.
+- The built-in combination is `qwen_image` with Flow-GRPO. A model family must
+  set `supports_mixed_resolution`. A custom train-pair converter must provide
+  `resolution` and `log_prob_rollout` on each pair and declare
+  `@miles.ray.data_conversion_hub.labels_rollout_resolution`.
+- Each training micro-batch must contain a single resolution because Qwen-Image
+  uses the first sample's grid for the whole batch. Choose a flat
+  `--micro-batch-size` that divides the number of training pairs per prompt group
+  on each rank. With a resolution strategy enabled, the legacy
+  `--micro-batch-size-sample` option is limited to 1.
 
-Every train micro-batch must also hold a single resolution: `qwen_image`'s RoPE builds the whole
-batch's positions from the first sample's grid, and 672x384 next to 384x672 holds the same token
-count, so those stack without complaint and train on wrong positions. The actor checks each
-micro-batch. In practice that means a flat `--micro-batch-size` dividing a prompt group's pairs
-on a rank (under `--train-dp-split-mode stride`, `n_samples_per_prompt / dp_size` samples times
-the SDE steps each); `--micro-batch-size-sample` above 1 gathers samples across groups and is
-rejected.
+**Metrics**
 
-Each bucket side must be a positive multiple of 16: sgl-d accepts any positive size and then
-floors it to the latent grid, so a 1000px request would quietly render 992px.
+- `rollout/resolution/<HxW>_reward_mean` reports mean reward at each sampled size.
+- `train/log_prob_mean_abs_diff_res_<HxW>` reports the mean absolute difference
+  between rollout and training log-probabilities for sizes listed in
+  `--diffusion-resolution-buckets`.
 
 ***
 

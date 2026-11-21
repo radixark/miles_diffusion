@@ -23,17 +23,13 @@ def stack_train_pair_rollout_debug(
 
 
 def check_single_resolution(batch: list[dict], *, labels_required: bool = False) -> None:
-    """Fail when a train micro-batch holds pairs of more than one rollout resolution.
+    """Check that a training micro-batch contains a single resolution.
 
-    Latents of different token counts would not stack, but two resolutions with the same
-    count (672x384 / 384x672) would -- and qwen_image's RoPE (diffusers ``QwenEmbedRope``)
-    then builds every pair's positions from the first pair's grid, logging only a warning.
-    A resolution strategy keeps each prompt group at one resolution, so a micro-batch stays
-    single-resolution as long as it does not straddle two groups on a rank.
+    672x384 and 384x672 both yield 1008 tokens, so their latents can stack.
+    Qwen-Image uses the first sample's grid for the whole batch, which gives
+    the other orientation incorrect position encodings.
 
-    ``labels_required`` is set while a resolution strategy is drawing: the check reads the
-    label each train pair carries, so a conversion that does not write one would leave this
-    silently vacuous -- exactly the failure it exists to catch.
+    When labels_required is set, every pair must carry its rollout resolution.
     """
     resolutions = {pair.get("resolution") for pair in batch}
     if labels_required and None in resolutions:

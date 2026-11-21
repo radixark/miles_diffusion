@@ -1,22 +1,11 @@
-"""Qwen-Image HPSv2.1 GRPO over several resolutions.
+"""Mixed-resolution Flow-GRPO for Qwen-Image with HPSv2.1 reward.
 
-The flow_grpo-aligned 512x512 recipe (run_diffusion_grpo_pickscore_5gpu_flowgrpo_aligned.py)
-with two changes. Each prompt group draws one of three buckets uniformly, varying the aspect
-ratio at a near-constant token count; eval stays at --diffusion-height / --diffusion-width.
-And the reward is HPSv2.1 rather than PickScore, whose CLIP processor center-crops to 224x224
-and so never sees ~43% of a 672x384 or 384x672 frame.
+Each prompt group samples uniformly from 512x512, 672x384, and 384x672.
+During training, eval uses the global --diffusion-height and --diffusion-width
+(512x512 here). A future eval interface could cover all three sizes in one pass.
 
---micro-batch-size 8 is not a free choice: a train micro-batch must hold one resolution, and
-under stride DP split each rank holds 16 samples / 4 ranks = 4 samples x 2 SDE steps = 8 pairs
-of every prompt group, so 8 is exactly one group's pairs on that rank. The legacy
---micro-batch-size-sample 8 tiling the baseline uses would gather 8 different samples, which
-spans groups and so resolutions; arg validation rejects it.
-
-Per rollout: 32 prompts x 16 samples = 512 samples. num_steps_per_rollout=2 gives 256
-samples per optimizer step.
-
-Layout: the first four GPUs in CUDA_VISIBLE_DEVICES are train+sgld colocate, the fifth is
-a dedicated HPS reward worker.
+Each rollout has 32 prompts x 16 samples, with 256 samples per optimizer step.
+Training and sgl-d share the first four GPUs. The fifth runs the HPSv2.1 scorer.
 
 Usage:
     python3 scripts/run_diffusion_grpo_qwenimage_hps_5gpu_mixed_resolution.py

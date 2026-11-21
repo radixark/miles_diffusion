@@ -35,6 +35,7 @@ class _FixedResolutionConfig:
 def _args(**overrides):
     values = dict(
         custom_expand_samples_to_train_pairs_path=None,
+        custom_convert_samples_to_train_data_path=None,
         diffusion_resolution_strategy_path=WEIGHTED_BUCKETS,
         diffusion_resolution_buckets="512x512,672x384,384x672",
         diffusion_resolution_weights=None,
@@ -165,3 +166,43 @@ def test_a_declaring_conversion_is_accepted():
     validate_resolution_strategy(
         _args(custom_expand_samples_to_train_pairs_path=f"{__name__}.convert"), _MixedResolutionConfig
     )
+
+
+# ---------------------------------------------------------------------------
+# Validation must resolve the conversion the way the run will
+# ---------------------------------------------------------------------------
+
+FULL_OVERRIDE = "custom_convert_samples_to_train_data_path"
+EXPAND_HOOK = "custom_expand_samples_to_train_pairs_path"
+NFT = "miles.ray.data_conversion_hub.nft.expand_samples_to_train_pairs"
+
+
+def test_the_full_override_is_what_gets_checked():
+    """RolloutManager returns from --custom-convert-samples-to-train-data-path and never reaches
+    the expand hook, so an undeclared full override must be rejected even next to a declared
+    one -- and a declared full override must not be rejected for an expand hook that is dead."""
+    from miles.ray.data_conversion_hub import labels_rollout_resolution
+
+    @labels_rollout_resolution
+    def declared(args, samples):
+        raise NotImplementedError
+
+    def undeclared(args, samples):
+        raise NotImplementedError
+
+    sys.modules[__name__].declared = declared
+    sys.modules[__name__].undeclared = undeclared
+
+    # the dead expand hook does not save an undeclared override, nor condemn a declared one
+    with pytest.raises(ValueError, match="does not label train pairs"):
+        validate_resolution_strategy(
+            _args(**{FULL_OVERRIDE: f"{__name__}.undeclared"}), _MixedResolutionConfig
+        )
+    validate_resolution_strategy(
+        _args(**{FULL_OVERRIDE: f"{__name__}.declared", EXPAND_HOOK: NFT}), _MixedResolutionConfig
+    )
+
+
+def test_the_expand_hook_is_checked_when_no_full_override_is_set():
+    with pytest.raises(ValueError, match="does not label train pairs"):
+        validate_resolution_strategy(_args(**{EXPAND_HOOK: NFT}), _MixedResolutionConfig)

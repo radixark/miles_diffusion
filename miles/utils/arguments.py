@@ -2116,10 +2116,7 @@ def validate_resolution_strategy(args, cfg_cls) -> None:
     if args.diffusion_resolution_strategy_path is None:
         return
 
-    from miles.ray.data_conversion_hub import conversion_labels_rollout_resolution
-    from miles.ray.data_conversion_hub.flow_grpo import (
-        expand_samples_to_train_pairs as flow_grpo_expand_samples_to_train_pairs,
-    )
+    from miles.ray.data_conversion_hub import conversion_labels_rollout_resolution, resolve_conversion
     from miles.rollout.resolution_strategy_hub import (
         parse_resolution_buckets,
         parse_resolution_weights,
@@ -2150,14 +2147,8 @@ def validate_resolution_strategy(args, cfg_cls) -> None:
     # writes on each train pair, so a conversion that does not write one makes that check
     # vacuous. Conversions declare this (@labels_rollout_resolution) rather than being listed
     # here, so one that has not thought about it is unsupported by default.
-    conversion = (
-        # unset means the Flow-GRPO conversion, which RolloutManager falls back to
-        load_function(args.custom_expand_samples_to_train_pairs_path)
-        if args.custom_expand_samples_to_train_pairs_path
-        else flow_grpo_expand_samples_to_train_pairs
-    )
+    where, conversion = resolve_conversion(args)
     if not conversion_labels_rollout_resolution(conversion):
-        where = args.custom_expand_samples_to_train_pairs_path or "the Flow-GRPO conversion"
         raise ValueError(
             f"--diffusion-resolution-strategy-path has no effect through {where}: it does not "
             "label train pairs with the resolution their sample was rendered at, so the train side "

@@ -412,7 +412,10 @@ class RolloutManager:
         """
         Convert inference generated samples to training data.
         """
-        # The full override also replaces reward post-processing.
+        # The full override also replaces reward post-processing, and returning here is what
+        # makes an --custom-expand-samples-to-train-pairs-path given alongside it dead. Anything
+        # reasoning about the conversion before the run starts resolves it the same way through
+        # data_conversion_hub.resolve_conversion.
         if self.custom_convert_samples_to_train_data_func is not None:
             return self.custom_convert_samples_to_train_data_func(self.args, samples)
 
