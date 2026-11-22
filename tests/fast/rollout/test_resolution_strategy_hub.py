@@ -11,14 +11,16 @@ from tests.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=5, suite="stage-a-cpu", labels=[])
 
+import asyncio
+import contextlib
 from argparse import Namespace
+from types import SimpleNamespace
 
 import pytest
 
+import miles.rollout.sglang_diffusion_rollout as rollout_module
 from miles.rollout.resolution_strategy_hub import parse_resolution_buckets, parse_resolution_weights, weighted_buckets
 from miles.rollout.sglang_diffusion_rollout import apply_resolution_strategy
-from miles.rollout.step_strategy_hub import sde_window
-from miles.utils.hash_utils import stable_hash
 from miles.utils.types import Sample
 
 
@@ -143,22 +145,48 @@ def test_an_off_grid_custom_strategy_is_rejected_before_the_request():
 # ---------------------------------------------------------------------------
 
 
-def test_the_draw_does_not_track_the_sde_window():
-    """seed_base is also microgroup 0's request seed, which the step strategy draws its SDE
-    window from. Seeding both with it pairs each bucket with one window start forever, so a
-    group of one microgroup would only ever train that bucket at that step."""
-    step_args = Namespace(diffusion_num_sde_steps=1, diffusion_sde_window_range="3,5")
-    res_args = _args(buckets=((512, 512), (672, 384)))
+async def test_the_draw_is_seeded_apart_from_the_request(monkeypatch):
+    """seed_base is microgroup 0's request seed, which the step strategy draws its SDE window
+    from, and the first draw off a seeded Generator is a function of the seed alone. Seeding
+    the resolution with it too pins each bucket to one window start, so a group of one
+    microgroup would train that bucket at one timestep and never the other.
 
-    pairs = set()
-    for group_index in range(200):
-        seed_base = (7 + group_index * 16) % (2**31)
-        bucket = weighted_buckets(res_args, Sample(), stable_hash("resolution", seed_base))
-        window, _, _ = sde_window(step_args, Sample(), 10, seed_base)
-        pairs.add((bucket, window[0]))
+    Driven through generate_and_rm_group rather than by re-deriving the seed here, so that
+    going back to the shared one fails this.
+    """
+    seen = {}
 
-    # 2 buckets x 2 window starts, and the draw must reach all four
-    assert len(pairs) == 4
+    def strategy(args, sample, seed):
+        seen["resolution"] = seed
+        return (512, 512)
+
+    async def generate(args, microgroup, sampling_params, evaluation=False):
+        seen.setdefault("request", sampling_params["seed"])
+        return microgroup
+
+    async def reward(args, samples):
+        return [1.0] * len(samples)
+
+    state = SimpleNamespace(
+        semaphore=asyncio.Semaphore(1),
+        dp_rank_context=contextlib.nullcontext,
+        resolution_strategy_fn=strategy,
+    )
+    monkeypatch.setattr(rollout_module, "GenerateState", lambda args: state)
+    monkeypatch.setattr(rollout_module, "generate_microgroup", generate)
+    monkeypatch.setattr(rollout_module, "batched_async_rm", reward)
+    monkeypatch.setattr(rollout_module.hooks, "record_trajectory", lambda sample: None)
+
+    args = Namespace(
+        custom_generate_function_path=None,
+        group_rm=False,
+        n_samples_per_prompt=2,
+        rollout_seed=7,
+        rollout_microgroup_size=2,
+    )
+    await rollout_module.generate_and_rm_group(args, [Sample(index=i, group_index=3) for i in (0, 1)], {})
+
+    assert seen["resolution"] != seen["request"]
 
 
 @pytest.mark.parametrize("drawn", [(512.9, 384), (512.0, 384), ("512", 384)])
