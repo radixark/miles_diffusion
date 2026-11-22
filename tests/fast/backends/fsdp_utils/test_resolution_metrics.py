@@ -109,8 +109,12 @@ def test_drift_is_split_by_resolution():
 
 
 def test_an_undeclared_resolution_only_feeds_the_overall_metric():
-    metrics = _buffer(_declared((512, 512), (672, 384)))
-    _run_loss(metrics, (384, 672), log_prob_new=[1.0], log_prob_old=[0.75])
+    """A custom strategy may draw a size the run never declared; the schema has no key for it,
+    so it counts in the overall drift and nowhere else."""
+    declared = ((512, 512), (672, 384))
+    metrics = _buffer(_declared(*declared))
+
+    _run_loss(metrics, (384, 672), log_prob_new=[1.0], log_prob_old=[0.75], declared=declared)
 
     out = metrics.reduce()
 
