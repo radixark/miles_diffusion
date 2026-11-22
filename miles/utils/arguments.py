@@ -2146,10 +2146,10 @@ def validate_resolution_strategy(args, cfg_cls) -> None:
     # writes on each train pair, so a conversion that does not write one makes that check
     # vacuous. Conversions declare this (@labels_rollout_resolution) rather than being listed
     # here, so one that has not thought about it is unsupported by default.
-    where, conversion = resolve_conversion(args)
-    if not conversion_labels_rollout_resolution(conversion):
+    conversion = resolve_conversion(args)
+    if not conversion_labels_rollout_resolution(conversion.fn):
         raise ValueError(
-            f"--diffusion-resolution-strategy-path has no effect through {where}: it does not "
+            f"--diffusion-resolution-strategy-path has no effect through {conversion.where}: it does not "
             "label train pairs with the resolution their sample was rendered at, so the train side "
             "cannot keep a micro-batch to one resolution. A conversion that does label its pairs "
             "declares it with @miles.ray.data_conversion_hub.labels_rollout_resolution."

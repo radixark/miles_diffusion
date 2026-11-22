@@ -228,15 +228,6 @@ def _parse_rollout_debug_tensors(
     )
 
 
-def _stored_output_shape(ref: Any, field: str) -> tuple[int, ...] | None:
-    """The shape the store recorded for one field, or None when it did not record one."""
-    for spec in getattr(ref, "fields", ()):
-        if spec.name == field:
-            shape = getattr(spec, "shape", None)
-            return tuple(shape) if shape else None
-    return None
-
-
 def check_generated_resolution(sample: Sample) -> None:
     """Fail when the engine rendered a resolution other than the one this sample asked for.
 
@@ -251,15 +242,10 @@ def check_generated_resolution(sample: Sample) -> None:
     if sample.height is None or sample.width is None:
         return
     output = sample.generated_output
-    if isinstance(output, torch.Tensor):
-        shape = output.shape
-    elif isinstance(output, StoredTensor):
-        shape = _stored_output_shape(sample.rollout_store_ref, output.field)
-        if shape is None:
-            return
-    else:
+    # a stored output answers from the store's field metadata, so the pixels stay where they are
+    if not isinstance(output, (torch.Tensor, StoredTensor)):
         return
-    height, width = generated_output_hw(shape)
+    height, width = generated_output_hw(output.shape)
     if (height, width) != (int(sample.height), int(sample.width)):
         raise ValueError(
             f"rollout returned a {height}x{width} sample for a {sample.height}x{sample.width} "

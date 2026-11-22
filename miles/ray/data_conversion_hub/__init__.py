@@ -1,25 +1,40 @@
 """Rollout-to-train-pair conversion hooks for diffusion algorithms."""
 
-from typing import Any, Callable
+from typing import Any, Callable, NamedTuple
 
 _LABELS_RESOLUTION = "_labels_rollout_resolution"
 
 
-def resolve_conversion(args: Any) -> tuple[str, Callable[..., Any]]:
-    """The conversion a run will actually build its train pairs with, and how to name it.
+class Conversion(NamedTuple):
+    """Which function a run builds its train pairs with, and how it is called.
 
-    RolloutManager tries --custom-convert-samples-to-train-data-path first and returns from it
-    if set, so an --custom-expand-samples-to-train-pairs-path given alongside never runs.
-    Anything that needs to reason about the conversion ahead of time -- arg validation -- has
-    to resolve it the same way, or it checks a function the run will not call.
+    ``kind`` is "full" for --custom-convert-samples-to-train-data-path, which replaces reward
+    post-processing too and takes ``(args, samples)``, or "pairs" for the expand hook and the
+    Flow-GRPO default, which take ``(args, samples, rewards, raw_rewards)``.
+    """
+
+    kind: str
+    where: str
+    fn: Callable[..., Any]
+
+
+def resolve_conversion(args: Any) -> Conversion:
+    """The conversion a run will actually build its train pairs with.
+
+    A full override wins and the expand hook beside it never runs, so resolving it anywhere
+    else -- arg validation, say -- has to agree, and loading a hook this says is unused would
+    fail a run over a function it never calls.
     """
     from miles.ray.data_conversion_hub.flow_grpo import expand_samples_to_train_pairs
     from miles.utils.misc import load_function
 
-    for path in (args.custom_convert_samples_to_train_data_path, args.custom_expand_samples_to_train_pairs_path):
-        if path:
-            return path, load_function(path)
-    return "the Flow-GRPO conversion", expand_samples_to_train_pairs
+    if args.custom_convert_samples_to_train_data_path:
+        path = args.custom_convert_samples_to_train_data_path
+        return Conversion("full", path, load_function(path))
+    if args.custom_expand_samples_to_train_pairs_path:
+        path = args.custom_expand_samples_to_train_pairs_path
+        return Conversion("pairs", path, load_function(path))
+    return Conversion("pairs", "the Flow-GRPO conversion", expand_samples_to_train_pairs)
 
 
 def labels_rollout_resolution(convert: Callable[..., Any]) -> Callable[..., Any]:

@@ -14,9 +14,7 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 
 from miles.backends.sglang_diffusion_utils.sglang_diffusion_engine import SGLangDiffusionEngine
-from miles.ray.data_conversion_hub.flow_grpo import (
-    expand_samples_to_train_pairs as flow_grpo_expand_samples_to_train_pairs,
-)
+from miles.ray.data_conversion_hub import resolve_conversion
 from miles.rollout.base_types import call_rollout_fn
 from miles.rollout.rm_hub import create_colocated_reward_pools
 from miles.rollout.rm_hub.core import ColocatedRewardSlots, bundle_deal_order
@@ -84,16 +82,7 @@ class RolloutManager:
             if self.args.custom_reward_post_process_path is not None
             else None
         )
-        self.custom_convert_samples_to_train_data_func = (
-            load_function(self.args.custom_convert_samples_to_train_data_path)
-            if self.args.custom_convert_samples_to_train_data_path is not None
-            else None
-        )
-        self.custom_expand_samples_to_train_pairs_func = (
-            load_function(self.args.custom_expand_samples_to_train_pairs_path)
-            if self.args.custom_expand_samples_to_train_pairs_path is not None
-            else None
-        )
+        self.conversion = resolve_conversion(self.args)
         self.train_data_dp_splitter = TrainDataDPSplitter()
         logger.info(f"import {self.args.rollout_function_path} as generate_rollout function.")
         logger.info(f"import {self.args.eval_function_path} as eval_generate_rollout function.")
@@ -412,12 +401,9 @@ class RolloutManager:
         """
         Convert inference generated samples to training data.
         """
-        # The full override also replaces reward post-processing, and returning here is what
-        # makes an --custom-expand-samples-to-train-pairs-path given alongside it dead. Anything
-        # reasoning about the conversion before the run starts resolves it the same way through
-        # data_conversion_hub.resolve_conversion.
-        if self.custom_convert_samples_to_train_data_func is not None:
-            return self.custom_convert_samples_to_train_data_func(self.args, samples)
+        # A full override replaces reward post-processing as well, so it returns from here
+        if self.conversion.kind == "full":
+            return self.conversion.fn(self.args, samples)
 
         raw_rewards, rewards = self._post_process_rewards(samples)
 
@@ -467,9 +453,7 @@ class RolloutManager:
                 reward_key=self.args.reward_key,
             )
 
-        if self.custom_expand_samples_to_train_pairs_func is not None:
-            return self.custom_expand_samples_to_train_pairs_func(self.args, samples, rewards, raw_rewards)
-        return flow_grpo_expand_samples_to_train_pairs(self.args, samples, rewards, raw_rewards)
+        return self.conversion.fn(self.args, samples, rewards, raw_rewards)
 
     def _log_images_async(self, *args, **kwargs) -> None:
         # mp4 encode + wandb upload take ~1min per log round; keep them off the train barrier
