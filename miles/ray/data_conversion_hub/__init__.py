@@ -25,9 +25,11 @@ def resolve_conversion(args: Any) -> tuple[str, Callable[..., Any]]:
 def labels_rollout_resolution(convert: Callable[..., Any]) -> Callable[..., Any]:
     """Declare that a conversion labels its train pairs for mixed-resolution training.
 
-    Two fields: ``resolution``, the (height, width) its sample was rendered at, and
-    ``log_prob_rollout``, the log-prob the rollout reported -- kept apart from ``log_prob_old``,
-    which ``--diffusion-recompute-old-log-prob`` overwrites with a train-side value.
+    Two fields, on every pair of a run whose samples carry a drawn resolution: ``resolution``,
+    the (height, width) its sample was rendered at, and ``log_prob_rollout``, the log-prob the
+    rollout reported -- kept apart from ``log_prob_old``, which
+    ``--diffusion-recompute-old-log-prob`` overwrites with a train-side value. A run at a fixed
+    resolution has neither to carry, and the readers treat them as absent.
 
     The train side keeps a micro-batch to one resolution by reading that label
     (``miles.utils.train_data_utils.check_single_resolution``), so a conversion that does not

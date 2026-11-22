@@ -87,16 +87,20 @@ def _build_per_sample_features(
     denoising_env,
 ) -> dict[str, Any]:
     """Fields shared by every train pair produced from one sample."""
-    return {
+    features = {
         "advantage": float(reward),
         "denoising_env": denoising_env,
         "sample_index": sample.index,
         "prompt": sample.prompt,
         "raw_reward": float(raw_reward),
-        # None unless --diffusion-resolution-strategy-path drew one; the train actor keeps
-        # each micro-batch to a single value (check_single_resolution).
-        "resolution": _sample_resolution(sample),
     }
+    # Both labels exist only while --diffusion-resolution-strategy-path is drawing: a
+    # fixed-resolution run has nothing for the train actor to compare (check_single_resolution)
+    # and no per-bucket metric to feed, so it carries neither.
+    resolution = _sample_resolution(sample)
+    if resolution is not None:
+        features["resolution"] = resolution
+    return features
 
 
 def _sample_resolution(sample: Sample) -> tuple[int, int] | None:
@@ -140,7 +144,7 @@ def _build_per_timestep_features(
         )
 
     idx = torch.as_tensor(sde_idx, dtype=torch.long)
-    return {
+    features = {
         "latent": [_own_row(all_latents[position[int(s)]]) for s in sde_idx],
         "next_latent": [_own_row(all_latents[position[int(s) + 1]]) for s in sde_idx],
         "timestep": timesteps[idx],
@@ -149,11 +153,13 @@ def _build_per_timestep_features(
         # The first sigma below 1 on this sample's grid; the SDE kernel substitutes it at sigma == 1.
         "sigma_max": sigmas[1].expand(len(idx)),
         "log_prob_old": rollout_log_probs[idx],
-        # the same values, kept where --diffusion-recompute-old-log-prob will not overwrite
-        # them: measuring how faithfully the trainer replays the rollout needs the rollout's
-        # own log-prob, and the recompute pass replaces "log_prob_old" with a train-side one.
-        "log_prob_rollout": rollout_log_probs[idx],
-    }, idx
+    }
+    if sample.height is not None:
+        # A second copy, where --diffusion-recompute-old-log-prob will not overwrite it:
+        # measuring how faithfully the trainer replays a bucket needs the rollout's own
+        # log-prob, and the recompute pass replaces "log_prob_old" with a train-side one.
+        features["log_prob_rollout"] = rollout_log_probs[idx]
+    return features, idx
 
 
 def _slice_rollout_debug_for_train_pairs(

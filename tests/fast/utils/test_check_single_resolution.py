@@ -38,3 +38,34 @@ def test_unlabeled_pairs_are_rejected_while_a_strategy_draws():
 
 def test_unlabeled_pairs_are_fine_at_a_fixed_resolution():
     check_single_resolution([{"latent": None}, {"latent": None}], labels_required=False)
+
+
+def test_a_fixed_resolution_run_writes_no_labels():
+    """The two labels only exist while a strategy draws, so a fixed-resolution run does not
+    carry a field per train pair that nothing reads."""
+    import torch
+    from types import SimpleNamespace
+
+    from miles.ray.data_conversion_hub.flow_grpo import expand_samples_to_train_pairs
+
+    def sample(height=None, width=None):
+        traj = SimpleNamespace(
+            latents=torch.zeros(4, 2), timesteps=torch.zeros(4), sigmas=torch.ones(4), latent_step_indices=None
+        )
+        return SimpleNamespace(
+            index=0,
+            prompt="p",
+            height=height,
+            width=width,
+            dit_trajectory=traj,
+            denoising_env=SimpleNamespace(tag=0),
+            rollout_log_probs=torch.zeros(3),
+            rollout_debug_tensors=None,
+            train_metadata={"sde_step_indices": [0, 1]},
+        )
+
+    fixed = expand_samples_to_train_pairs(None, [sample()], [1.0], [1.0])["train_data"][0]
+    assert "resolution" not in fixed and "log_prob_rollout" not in fixed
+
+    drawn = expand_samples_to_train_pairs(None, [sample(672, 384)], [1.0], [1.0])["train_data"][0]
+    assert drawn["resolution"] == (672, 384) and "log_prob_rollout" in drawn
