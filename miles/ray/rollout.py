@@ -428,6 +428,7 @@ class RolloutManager:
         norm_t = torch.tensor(rewards, dtype=torch.float)
 
         reward_stats = {
+            **_compute_resolution_metrics(samples, raw_rewards),
             **_reward_stats_dict(raw_t, "rollout/reward/raw_"),
             **_reward_stats_dict(norm_t, "rollout/reward/norm_"),
         }
@@ -819,24 +820,26 @@ def _log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_
 def compute_metrics_from_samples(args, samples):
     log_dict = {}
     log_dict |= _compute_zero_std_metrics(args, samples)
-    log_dict |= _compute_resolution_metrics(args, samples)
     return log_dict
 
 
-def _compute_resolution_metrics(args, all_samples: list[Sample]):
+def _compute_resolution_metrics(samples: list[Sample], raw_rewards: list[float]) -> dict[str, float]:
     """Reward per rollout resolution, so one bad bucket cannot hide in the average.
 
-    Empty unless --diffusion-resolution-strategy-path is drawing resolutions, which is
-    what sets ``sample.height`` / ``sample.width``.
+    Takes the scalars reward post-processing already produced rather than reading
+    ``sample.reward`` again: a reward model may report a dict that only a
+    --custom-reward-post-process-path knows how to collapse, and the chart should show
+    whatever training used. Empty unless --diffusion-resolution-strategy-path is drawing
+    resolutions, which is what sets ``sample.height`` / ``sample.width``.
     """
-    sized = [sample for sample in all_samples if sample.height is not None and sample.width is not None]
-    log_dict = {}
-    for resolution, samples in group_by(sized, lambda s: f"{s.height}x{s.width}").items():
-        rewards = [sample.get_reward_value(args) for sample in samples]
-        # 3 levels under the "rollout/" the caller adds, like rollout/reward/*, so the
-        # wandb step_metric entry for this prefix binds it to rollout/step.
-        log_dict[f"resolution/{resolution}_reward_mean"] = sum(rewards) / len(rewards)
-        log_dict[f"resolution/{resolution}_num_samples"] = len(rewards)
+    sized = [(s, r) for s, r in zip(samples, raw_rewards, strict=True) if s.height is not None and s.width is not None]
+    log_dict: dict[str, float] = {}
+    for resolution, pairs in group_by(sized, lambda pair: f"{pair[0].height}x{pair[0].width}").items():
+        rewards = [reward for _, reward in pairs]
+        # 3 levels, like rollout/reward/*, so the wandb step_metric entry for this prefix
+        # binds it to rollout/step.
+        log_dict[f"rollout/resolution/{resolution}_reward_mean"] = sum(rewards) / len(rewards)
+        log_dict[f"rollout/resolution/{resolution}_num_samples"] = len(rewards)
     return log_dict
 
 

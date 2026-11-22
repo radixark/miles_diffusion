@@ -20,11 +20,7 @@ from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_fil
 from miles.rollout.resolution_strategy_hub import check_resolution
 from miles.utils.async_utils import run
 from miles.utils.diffusion_data import Dataset as DiffusionDataset
-from miles.utils.diffusion_rollout_response import (
-    RolloutImageResponseParserActor,
-    check_generated_resolution,
-    read_generated_outputs,
-)
+from miles.utils.diffusion_rollout_response import RolloutImageResponseParserActor, read_generated_outputs
 from miles.utils.eval_config import EvalDatasetConfig
 from miles.utils.hash_utils import stable_hash
 from miles.utils.http_utils import post
@@ -302,13 +298,6 @@ async def release_generated_outputs(state: GenerateState, samples: list[Sample])
         sample.generated_output = None
     for sample, tensor in zip(media_samples, media_tensors, strict=True):
         sample.generated_output = tensor
-        # The inline path checks every output in apply_rollout_image_response. A stored one is
-        # only a ref there, and with the reward actor reading the store itself these media
-        # samples are the only ones this process turns back into tensors -- reading the rest
-        # to check their shape would undo what the store is for. A size the engine ignored
-        # would be systematic, so this subset still catches it; the per-bucket log-prob drift
-        # is the backstop for anything it misses.
-        check_generated_resolution(sample)
 
 
 async def generate_and_rm_microgroup(

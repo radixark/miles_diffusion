@@ -22,17 +22,17 @@ def stack_train_pair_rollout_debug(
     return torch.stack([item["rollout_debug_tensors"][key] for item in batch], dim=0)
 
 
-def check_single_resolution(batch: list[dict], *, labels_required: bool = False) -> None:
+def check_single_resolution(batch: list[dict]) -> None:
     """Check that a training micro-batch contains a single resolution.
 
     672x384 and 384x672 both yield 1008 tokens, so their latents can stack.
     Qwen-Image uses the first sample's grid for the whole batch, which gives
     the other orientation incorrect position encodings.
 
-    When labels_required is set, every pair must carry its rollout resolution.
+    Called only while a resolution strategy draws, so every pair must carry one.
     """
     resolutions = {pair.get("resolution") for pair in batch}
-    if labels_required and None in resolutions:
+    if None in resolutions:
         raise ValueError(
             "--diffusion-resolution-strategy-path is drawing resolutions, but a train pair reached "
             "the forward without one. Only the Flow-GRPO conversion labels pairs today "

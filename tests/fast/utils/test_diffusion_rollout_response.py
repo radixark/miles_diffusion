@@ -145,3 +145,32 @@ def test_a_fixed_resolution_sample_is_not_checked():
     apply_rollout_image_response(sample, _body(480, 832), deserialize_func=lambda value: value)
 
     assert sample.generated_output.shape[-2:] == (480, 832)
+
+
+def test_a_stored_output_is_checked_from_the_store_metadata():
+    """Reading pixels back to check a size would undo what the output store is for, and with
+    the reward actor reading the store this process may never read them at all. The field
+    metadata carries the shape."""
+    from types import SimpleNamespace
+
+    from miles.utils.diffusion_rollout_response import check_generated_resolution
+    from miles.utils.output_store import StoredTensor
+
+    def stored(shape):
+        ref = SimpleNamespace(fields=(SimpleNamespace(name="generated_output.0", shape=shape),))
+        sample = Sample(index=0, prompt="p", height=384, width=672)
+        sample.rollout_store_ref = ref
+        sample.generated_output = StoredTensor(ref, "generated_output.0")
+        return sample
+
+    check_generated_resolution(stored((3, 384, 672)))
+    with pytest.raises(ValueError, match="672x384 sample for a 384x672 request"):
+        check_generated_resolution(stored((3, 672, 384)))
+
+
+def test_generated_output_hw_reads_both_layouts():
+    from miles.utils.diffusion_rollout_response import generated_output_hw
+
+    assert generated_output_hw((3, 384, 672)) == (384, 672)  # CHW
+    assert generated_output_hw((384, 672, 3)) == (384, 672)  # HWC
+    assert generated_output_hw((3, 1, 384, 672)) == (384, 672)  # CFHW

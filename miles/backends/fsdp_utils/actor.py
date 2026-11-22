@@ -527,7 +527,10 @@ class FSDPTrainRayActor(TrainRayActor):
     ) -> torch.Tensor | None:
         """Run one prepared diffusion micro-batch: number ``microbatch_id`` of the rollout, in optimizer step
         ``optim_step_idx``."""
-        check_single_resolution(batch, labels_required=self.resolution_labels_required)
+        if self.resolution_labels_required:
+            # Off, a pair's "resolution" is whatever a custom conversion happens to put there,
+            # and none of it is read -- so do not reach into it at all.
+            check_single_resolution(batch)
         prepared = self.loss_hooks.prepare(
             ctx, batch, microbatch_id=microbatch_id, optim_step_idx=optim_step_idx, pad_to_len=pad_to_len
         )
