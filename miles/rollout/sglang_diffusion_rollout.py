@@ -2,6 +2,7 @@ import asyncio
 import copy
 import inspect
 import logging
+import operator
 from argparse import Namespace
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -16,10 +17,12 @@ from tqdm import tqdm
 from miles.dashboard import hooks
 from miles.rollout.base_types import RolloutFnEvalOutput, RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
+from miles.rollout.resolution_strategy_hub import check_resolution
 from miles.utils.async_utils import run
 from miles.utils.diffusion_data import Dataset as DiffusionDataset
 from miles.utils.diffusion_rollout_response import RolloutImageResponseParserActor, read_generated_outputs
 from miles.utils.eval_config import EvalDatasetConfig
+from miles.utils.hash_utils import stable_hash
 from miles.utils.http_utils import post
 from miles.utils.misc import SingletonMeta, load_function
 from miles.utils.output_store import StoredTensor, StoredTensorReader, connect_output_store, record_dropped_samples
@@ -120,6 +123,9 @@ class GenerateState(metaclass=SingletonMeta):
         self.sampling_params = build_rollout_sampling_params(args)
         self.step_strategy_fn = (
             load_function(args.diffusion_step_strategy_path) if args.diffusion_step_strategy_path else None
+        )
+        self.resolution_strategy_fn = (
+            load_function(args.diffusion_resolution_strategy_path) if args.diffusion_resolution_strategy_path else None
         )
         self.dp_counts = [0] * args.sglang_dp_size
         self.dp_rank = 0
@@ -331,6 +337,45 @@ async def generate_and_rm_microgroup(
     return microgroup
 
 
+def apply_resolution_strategy(
+    args: Namespace,
+    group: list[Sample],
+    sampling_params: dict[str, Any],
+    *,
+    resolution_strategy_fn: Callable[[Namespace, Sample, int], tuple[int, int]],
+    seed: int,
+) -> tuple[int, int]:
+    """Draw one resolution for a whole prompt group, onto the request and onto every sample.
+
+    Called once per group rather than once per request: GRPO normalizes rewards inside a
+    prompt group, so a group that mixed resolutions would push a reward model's resolution
+    preference into the advantage. It also keeps one group's latents a single shape.
+
+    Concurrent requests at different sizes stay separate engine-side: height and width are
+    part of sgl-d's dynamic-batch signature (``Scheduler._can_dynamic_batch``), so they
+    never merge into one denoising schedule.
+    """
+    drawn = resolution_strategy_fn(args, group[0], seed)
+    where = f"resolution strategy {getattr(resolution_strategy_fn, '__name__', '?')}"
+    # index() rather than int(): a strategy returning 512.9 would otherwise be truncated to a
+    # size that passes the grid check, which is the silent rounding this check exists to stop.
+    # It keeps numpy integers working, which is what a sampling strategy naturally returns.
+    try:
+        height, width = (operator.index(side) for side in drawn)
+    except TypeError:
+        raise ValueError(f"{where} returned {drawn!r}; height and width must be integers") from None
+    # A custom strategy is not covered by the bucket check at startup; catch an off-grid size
+    # before the engine floors it and the response check fails after a full generation.
+    check_resolution(height, width, source=where)
+    sampling_params["height"] = height
+    sampling_params["width"] = width
+    # The response parser cross-checks these against the media the engine returns.
+    for sample in group:
+        sample.height = height
+        sample.width = width
+    return height, width
+
+
 async def generate_and_rm_group(
     args: Namespace, group: list[Sample], sampling_params: dict[str, Any], evaluation: bool = False
 ) -> list[Sample]:
@@ -341,6 +386,17 @@ async def generate_and_rm_group(
     n_per_prompt = args.n_samples_per_prompt
     group_index = int(group[0].group_index or 0)
     seed_base = (args.rollout_seed + group_index * n_per_prompt) % (2**31)
+
+    # Before the per-microgroup copies below, so every microgroup of this group agrees.
+    # A separate seed, so the resolution draw is independent of the SDE window.
+    if not evaluation and state.resolution_strategy_fn is not None:
+        apply_resolution_strategy(
+            args,
+            group,
+            sampling_params,
+            resolution_strategy_fn=state.resolution_strategy_fn,
+            seed=stable_hash("resolution", seed_base),
+        )
 
     tasks = []
     for idx in range(0, len(group), args.rollout_microgroup_size):

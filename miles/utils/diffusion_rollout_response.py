@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
+from collections.abc import Sequence
 from typing import Any
 
 import msgpack
@@ -16,6 +17,8 @@ from miles.utils.types import CondKwargs, DenoisingEnv, DiTTrajectory, RolloutDe
 
 __all__ = [
     "apply_rollout_image_response",
+    "generated_output_hw",
+    "check_generated_resolution",
     "RolloutImageResponseParserActor",
 ]
 
@@ -46,33 +49,48 @@ def _store_deserialize_func(ref, deserialize_func: Callable[[Any], torch.Tensor 
     return deserialize
 
 
+def generated_output_hw(shape: Sequence[int]) -> tuple[int, int]:
+    """The (height, width) a generated output of this shape canonicalizes to.
+
+    Shape alone decides the layout, so the store's own field metadata is enough to check a
+    stored output's size without reading its pixels.
+    """
+    first_is_channel, last_is_channel = _channel_ends(shape)
+    hw = shape[1:3] if last_is_channel and len(shape) == 4 else shape[-3:-1] if last_is_channel else shape[-2:]
+    return int(hw[0]), int(hw[1])
+
+
+def _channel_ends(shape: Sequence[int]) -> tuple[bool, bool]:
+    if len(shape) not in (3, 4):
+        raise ValueError(f"generated_output must be CHW/HWC or CFHW/FHWC, got shape {tuple(shape)}")
+    first_is_channel = shape[0] in _IMAGE_CHANNEL_COUNTS
+    last_is_channel = shape[-1] in _IMAGE_CHANNEL_COUNTS
+    if first_is_channel and last_is_channel:
+        raise ValueError(
+            "generated_output layout is ambiguous because both the first and last "
+            f"dimensions look like channels: {tuple(shape)}"
+        )
+    if not (first_is_channel or last_is_channel):
+        raise ValueError(
+            "generated_output has no recognizable channel dimension; expected "
+            f"1, 3, or 4 channels, got shape {tuple(shape)}"
+        )
+    return first_is_channel, last_is_channel
+
+
 def _normalize_generated_output(tensor: torch.Tensor | None) -> torch.Tensor | None:
     """Normalize a per-sample image/video to ``[C, F, H, W]``."""
     if tensor is None:
         return None
-    if tensor.ndim not in (3, 4):
-        raise ValueError("generated_output must be CHW/HWC or CFHW/FHWC, " f"got shape {tuple(tensor.shape)}")
-
-    first_is_channel = tensor.shape[0] in _IMAGE_CHANNEL_COUNTS
-    last_is_channel = tensor.shape[-1] in _IMAGE_CHANNEL_COUNTS
-    if first_is_channel and last_is_channel:
-        raise ValueError(
-            "generated_output layout is ambiguous because both the first and last "
-            f"dimensions look like channels: {tuple(tensor.shape)}"
-        )
+    first_is_channel, _ = _channel_ends(tensor.shape)
 
     # TODO: Move this canonicalization into sglang-diffusion's rollout response
     # builder once it exposes an explicit generated-output layout contract.
     if first_is_channel:
         canonical = tensor.unsqueeze(1) if tensor.ndim == 3 else tensor
-    elif last_is_channel:
+    else:
         fhwc = tensor.unsqueeze(0) if tensor.ndim == 3 else tensor
         canonical = fhwc_to_cfhw(fhwc)
-    else:
-        raise ValueError(
-            "generated_output has no recognizable channel dimension; expected "
-            f"1, 3, or 4 channels, got shape {tuple(tensor.shape)}"
-        )
 
     return canonical.contiguous()
 
@@ -210,6 +228,31 @@ def _parse_rollout_debug_tensors(
     )
 
 
+def check_generated_resolution(sample: Sample) -> None:
+    """Fail when the engine rendered a resolution other than the one this sample asked for.
+
+    Only a resolution strategy sets ``sample.height`` / ``width`` (a fixed-resolution run
+    leaves them None). A mismatch means the trainer would replay RoPE on a grid the engine
+    never used -- silent at a constant token count -- so it is worth one shape compare.
+
+    A stored output is checked from the store's own field metadata, which carries the shape:
+    the pixels stay where they are, and the check does not depend on this process happening
+    to read them back.
+    """
+    if sample.height is None or sample.width is None:
+        return
+    output = sample.generated_output
+    # a stored output answers from the store's field metadata, so the pixels stay where they are
+    if not isinstance(output, (torch.Tensor, StoredTensor)):
+        return
+    height, width = generated_output_hw(output.shape)
+    if (height, width) != (int(sample.height), int(sample.width)):
+        raise ValueError(
+            f"rollout returned a {height}x{width} sample for a {sample.height}x{sample.width} "
+            f"request (prompt {str(sample.prompt)[:60]!r}); the resolution strategy and the engine disagree"
+        )
+
+
 def apply_rollout_image_response(
     sample: Sample,
     body: dict[str, Any],
@@ -235,6 +278,7 @@ def apply_rollout_image_response(
         if isinstance(generated_output, StoredTensor)
         else _normalize_generated_output(generated_output)
     )
+    check_generated_resolution(sample)
     sample.generated_audio = deserialize_func(body.get("generated_audio"))
     sample.audio_sample_rate = body.get("audio_sample_rate")
     # Eval-mode rollout (rollout=False) sends no log_probs; train-mode always does.

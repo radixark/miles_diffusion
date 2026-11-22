@@ -108,6 +108,12 @@ class StoredTensor:
     ref: StoreRef
     field: str
 
+    @property
+    def shape(self) -> tuple[int, ...]:
+        """The shape the store recorded, so a caller can check one without reading the bytes."""
+        (spec,) = _named_specs(self.ref, [self.field])
+        return tuple(spec.shape)
+
 
 def plugin_keeps_read_buffers() -> bool:
     """Whether the installed radix_transfer_plugins has ``OutputStore.read_slot`` (sgl-project/sglang#50869)."""

@@ -42,6 +42,7 @@ from radix_transfer_plugins.stashes.tensor_stash import TensorStash
 from tests.fast.utils.test_output_store_materialize import MemoryBackend
 
 import miles.ray.rollout as rollout_module
+from miles.ray.data_conversion_hub import Conversion
 import miles.rollout.rm_hub.core as core_module
 import miles.rollout.rm_hub.pickscore as pickscore_module
 import miles.rollout.sglang_diffusion_rollout as rollout_fn_module
@@ -95,6 +96,7 @@ def _state(store, *, media_outputs_left=0):
         output_store=store,
         output_reader=StoredTensorReader(store) if store is not None else None,
         media_outputs_left=media_outputs_left,
+        resolution_strategy_fn=None,
     )
 
 
@@ -401,13 +403,11 @@ def test_media_logging_takes_the_samples_that_kept_an_output(monkeypatch):
             reward_key=None,
         ),
         rollout_id=0,
-        custom_convert_samples_to_train_data_func=None,
-        custom_expand_samples_to_train_pairs_func=None,
+        conversion=Conversion("pairs", "test", lambda *args: None),
         _post_process_rewards=lambda samples: ([1.0] * len(samples), [0.0] * len(samples)),
         _log_images_async=lambda media, **kwargs: logged.append(media["rollout_media/sample_images"]),
     )
     monkeypatch.setattr(rollout_module.tracking_utils, "log", lambda *args, **kwargs: None)
-    monkeypatch.setattr(rollout_module, "flow_grpo_expand_samples_to_train_pairs", lambda *args: None)
 
     _RolloutManager._convert_samples_to_train_data(manager, samples)
 

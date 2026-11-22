@@ -445,6 +445,30 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "miles.rollout.step_strategy_hub read --diffusion-num-sde-steps.",
             )
             parser.add_argument(
+                "--diffusion-resolution-strategy-path",
+                type=str,
+                default=None,
+                help="Dotted path to `fn(args, sample, seed) -> (height, width)`, called once per "
+                "prompt group so every request of that group renders at one resolution. Unset, the "
+                "run stays at --diffusion-height / --diffusion-width. The built-ins live in "
+                "miles.rollout.resolution_strategy_hub; eval keeps the fixed resolution.",
+            )
+            parser.add_argument(
+                "--diffusion-resolution-buckets",
+                type=str,
+                default=None,
+                help="Candidate resolutions for miles.rollout.resolution_strategy_hub.weighted_buckets, "
+                "'HxW[,HxW...]' with height first, e.g. '512x512,672x384,384x672'. Each side must be a "
+                "positive multiple of 16 (8x VAE downsample x 2x2 patch packing).",
+            )
+            parser.add_argument(
+                "--diffusion-resolution-weights",
+                type=str,
+                default=None,
+                help="Optional draw weights for --diffusion-resolution-buckets, e.g. '2,1,1'; "
+                "one per bucket, normalized to probabilities. Unset draws uniformly.",
+            )
+            parser.add_argument(
                 "--diffusion-log-prob-no-const",
                 action="store_true",
                 default=False,
@@ -2078,6 +2102,72 @@ def validate_dmd2_args(args) -> None:
         )
 
 
+def validate_resolution_strategy(args, cfg_cls) -> None:
+    """Reject a mixed-resolution rollout the training side cannot replay.
+
+    Also derives the parsed form of the bucket list: ``args.diffusion_resolution_bucket_list``,
+    the resolutions the run says up front it can draw -- which the train side declares its
+    per-resolution metrics from and ``weighted_buckets`` samples -- and
+    ``args.diffusion_resolution_bucket_weights``, their normalized probabilities or None for
+    uniform. Empty unless a strategy and a bucket list are both set.
+    """
+    args.diffusion_resolution_bucket_list = ()
+    args.diffusion_resolution_bucket_weights = None
+    if args.diffusion_resolution_strategy_path is None:
+        return
+
+    from miles.ray.data_conversion_hub import conversion_labels_rollout_resolution, resolve_conversion
+    from miles.rollout.resolution_strategy_hub import (
+        parse_resolution_buckets,
+        parse_resolution_weights,
+        weighted_buckets,
+    )
+    from miles.utils.misc import load_function
+
+    if not cfg_cls.supports_mixed_resolution:
+        raise ValueError(
+            f"{cfg_cls.__name__} trains at one resolution (supports_mixed_resolution=False); "
+            "drop --diffusion-resolution-strategy-path and set --diffusion-height / --diffusion-width. "
+            "A family qualifies once its train forward takes the grid from each sample's own "
+            "rollout cond instead of the global height and width."
+        )
+    # A micro-batch must hold one resolution (the train actor checks every one; see
+    # check_single_resolution). The flat sample-major schedule keeps it inside one prompt group
+    # when --micro-batch-size divides a group's pairs on a rank. A legacy tile narrower than a
+    # group's samples on a rank would too, but working that bound out needs the DP size, so
+    # this supports flat micro-batching only for now.
+    if args.micro_batch_size_sample is not None and args.micro_batch_size_sample > 1:
+        raise ValueError(
+            "mixed-resolution training supports flat micro-batching only; set --micro-batch-size "
+            f"instead of --micro-batch-size-sample {args.micro_batch_size_sample}"
+        )
+
+    # The train side keeps a micro-batch to one resolution by reading the label the conversion
+    # writes on each train pair, so a conversion that does not write one makes that check
+    # vacuous. Conversions declare this (@labels_rollout_resolution) rather than being listed
+    # here, so one that has not thought about it is unsupported by default.
+    conversion = resolve_conversion(args)
+    if not conversion_labels_rollout_resolution(conversion.fn):
+        raise ValueError(
+            f"--diffusion-resolution-strategy-path has no effect through {conversion.where}: it does not "
+            "label train pairs with the resolution their sample was rendered at, so the train side "
+            "cannot keep a micro-batch to one resolution. A conversion that does label its pairs "
+            "declares it with @miles.ray.data_conversion_hub.labels_rollout_resolution."
+        )
+
+    # Parse here, once: the buckets a run can draw are also what the train side declares its
+    # per-resolution metrics from, and weighted_buckets then only samples.
+    if args.diffusion_resolution_buckets is not None:
+        buckets = parse_resolution_buckets(args.diffusion_resolution_buckets)
+        weights = parse_resolution_weights(args.diffusion_resolution_weights, len(buckets))
+        args.diffusion_resolution_bucket_list = tuple(buckets)
+        args.diffusion_resolution_bucket_weights = None if weights is None else tuple(weights)
+    elif load_function(args.diffusion_resolution_strategy_path) is weighted_buckets:
+        raise ValueError("miles.rollout.resolution_strategy_hub.weighted_buckets needs --diffusion-resolution-buckets")
+    elif args.diffusion_resolution_weights is not None:
+        raise ValueError("--diffusion-resolution-weights weights --diffusion-resolution-buckets, which is unset")
+
+
 def miles_validate_args(args):
     args.eval_datasets = _resolve_eval_datasets(args)
 
@@ -2159,6 +2249,7 @@ def miles_validate_args(args):
             f"{cfg_cls.__name__} trains unguided (supports_cfg_training=False); set "
             f"--diffusion-guidance-scale 1.0 and drop --diffusion-negative-prompt"
         )
+    validate_resolution_strategy(args, cfg_cls)
     if cfg_cls.tasks and args.diffusion_task not in cfg_cls.tasks:
         raise ValueError(
             f"{cfg_cls.__name__} trains --diffusion-task {list(cfg_cls.tasks)}, got {args.diffusion_task!r}"

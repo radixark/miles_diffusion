@@ -42,6 +42,7 @@ from miles.backends.fsdp_utils import model_loader
 from miles.backends.fsdp_utils.ema import EMAOptimizer, reshard_model
 from miles.backends.fsdp_utils.input_dtype_policy import apply_input_dtype_policy
 from miles.backends.fsdp_utils.models.parallel_plan import FSDPParallelPlan
+from miles.utils.train_data_utils import check_single_resolution
 
 
 class TinyBlock(torch.nn.Module):
@@ -138,6 +139,7 @@ def load_actor_forward_method(reshard_model=reshard_model):
         torch=torch,
         reshard_model=reshard_model,
         apply_input_dtype_policy=apply_input_dtype_policy,
+        check_single_resolution=check_single_resolution,
         DiffusionLossContext=object,
         MetricBuffer=object,
     )
@@ -195,6 +197,8 @@ def make_actor_forward_harness(
         train_pipeline_config=TinyPipelineConfig(),
         _forward_dtype=torch.float32,
         loss_hooks=SimpleNamespace(prepare=prepare, formula=loss_formula),
+        # these pairs carry no resolution: this harness is about reference and teacher wiring
+        resolution_labels_required=False,
     )
     return harness, observed
 

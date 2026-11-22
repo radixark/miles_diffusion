@@ -128,6 +128,51 @@ DiffusionNFT picks the timesteps it trains on with a separate hook,
 `--diffusion-nft-timestep-strategy-path`: `(args, num_steps, generator) -> list[int]`, built in
 `drop_random_steps` (default) and `drop_final_steps` in `miles/ray/data_conversion_hub/nft.py`.
 
+### `--diffusion-resolution-strategy-path`
+
+Draw the output resolution of each prompt group during training. With no strategy
+set, training uses `--diffusion-height` and `--diffusion-width`. Built-in strategies
+live in `miles/rollout/resolution_strategy_hub.py`.
+
+```bash
+--diffusion-resolution-strategy-path miles.rollout.resolution_strategy_hub.weighted_buckets \
+--diffusion-resolution-buckets 512x512,672x384,384x672 \
+--diffusion-resolution-weights 2,1,1    # optional; omit this line to draw buckets uniformly
+```
+
+Buckets use `height x width`. Each side must be a positive multiple of 16.
+
+```python
+def strategy(args, sample, seed) -> tuple[int, int]:
+    # Return (height, width) for every request in this prompt group.
+    ...
+```
+
+The strategy receives the group's first `Sample` and can use `seed` for a reproducible
+draw, or read the size from `sample.metadata` if your data source puts one there. All
+samples in the group share one resolution so GRPO compares their rewards at the same
+size. Periodic evaluation during training uses a single resolution set by
+`--diffusion-height` and `--diffusion-width`.
+
+**Training requirements**
+
+- The built-in combination is `qwen_image` with Flow-GRPO. A model family must
+  set `supports_mixed_resolution`. A custom train-pair converter must provide
+  `resolution` and `log_prob_rollout` on each pair and declare
+  `@miles.ray.data_conversion_hub.labels_rollout_resolution`.
+- Each training micro-batch must contain a single resolution because Qwen-Image
+  uses the first sample's grid for the whole batch. Choose a flat
+  `--micro-batch-size` that divides the number of training pairs per prompt group
+  on each rank. With a resolution strategy enabled, the legacy
+  `--micro-batch-size-sample` option is limited to 1.
+
+**Metrics**
+
+- `rollout/resolution/<HxW>_reward_mean` reports mean reward at each sampled size.
+- `train/log_prob_mean_abs_diff_res_<HxW>` reports the mean absolute difference
+  between rollout and training log-probabilities for sizes listed in
+  `--diffusion-resolution-buckets`.
+
 ***
 
 ## Reward

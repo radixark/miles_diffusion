@@ -14,9 +14,7 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 
 from miles.backends.sglang_diffusion_utils.sglang_diffusion_engine import SGLangDiffusionEngine
-from miles.ray.data_conversion_hub.flow_grpo import (
-    expand_samples_to_train_pairs as flow_grpo_expand_samples_to_train_pairs,
-)
+from miles.ray.data_conversion_hub import resolve_conversion
 from miles.rollout.base_types import call_rollout_fn
 from miles.rollout.rm_hub import create_colocated_reward_pools
 from miles.rollout.rm_hub.core import ColocatedRewardSlots, bundle_deal_order
@@ -84,16 +82,7 @@ class RolloutManager:
             if self.args.custom_reward_post_process_path is not None
             else None
         )
-        self.custom_convert_samples_to_train_data_func = (
-            load_function(self.args.custom_convert_samples_to_train_data_path)
-            if self.args.custom_convert_samples_to_train_data_path is not None
-            else None
-        )
-        self.custom_expand_samples_to_train_pairs_func = (
-            load_function(self.args.custom_expand_samples_to_train_pairs_path)
-            if self.args.custom_expand_samples_to_train_pairs_path is not None
-            else None
-        )
+        self.conversion = resolve_conversion(self.args)
         self.train_data_dp_splitter = TrainDataDPSplitter()
         logger.info(f"import {self.args.rollout_function_path} as generate_rollout function.")
         logger.info(f"import {self.args.eval_function_path} as eval_generate_rollout function.")
@@ -340,6 +329,7 @@ class RolloutManager:
                 logger.info(
                     f"Subsample loaded debug rollout data using {ratio=} and change num rows {original_num_rows} -> {len(data)}"
                 )
+            _check_replay_resolutions(self.args, data)
             metrics = None
         else:
             data = call_rollout_fn(self.generate_rollout, self.args, rollout_id, self.data_source, evaluation=False)
@@ -412,9 +402,9 @@ class RolloutManager:
         """
         Convert inference generated samples to training data.
         """
-        # The full override also replaces reward post-processing.
-        if self.custom_convert_samples_to_train_data_func is not None:
-            return self.custom_convert_samples_to_train_data_func(self.args, samples)
+        # A full override replaces reward post-processing as well, so it returns from here
+        if self.conversion.kind == "full":
+            return self.conversion.fn(self.args, samples)
 
         raw_rewards, rewards = self._post_process_rewards(samples)
 
@@ -425,6 +415,7 @@ class RolloutManager:
         norm_t = torch.tensor(rewards, dtype=torch.float)
 
         reward_stats = {
+            **_compute_resolution_metrics(samples, raw_rewards),
             **_reward_stats_dict(raw_t, "rollout/reward/raw_"),
             **_reward_stats_dict(norm_t, "rollout/reward/norm_"),
         }
@@ -463,9 +454,7 @@ class RolloutManager:
                 reward_key=self.args.reward_key,
             )
 
-        if self.custom_expand_samples_to_train_pairs_func is not None:
-            return self.custom_expand_samples_to_train_pairs_func(self.args, samples, rewards, raw_rewards)
-        return flow_grpo_expand_samples_to_train_pairs(self.args, samples, rewards, raw_rewards)
+        return self.conversion.fn(self.args, samples, rewards, raw_rewards)
 
     def _log_images_async(self, *args, **kwargs) -> None:
         # mp4 encode + wandb upload take ~1min per log round; keep them off the train barrier
@@ -795,6 +784,26 @@ def _log_eval_rollout_data(rollout_id, args, data, extra_metrics: dict[str, Any]
     return log_dict
 
 
+def _check_replay_resolutions(args, samples: list[Sample]) -> None:
+    """Refuse to replay a mixed-resolution rollout as if it were a fixed-resolution one.
+
+    Saved samples keep the resolution they were rendered at, and the conversion labels the
+    train pairs from it -- but the train side decides whether to check a micro-batch holds one
+    resolution from this run's --diffusion-resolution-strategy-path, which a replay typically
+    does not repeat. The pairs would then mix resolutions with nothing watching.
+    """
+    if args.diffusion_resolution_strategy_path is not None:
+        return
+    drawn = {(s.height, s.width) for s in samples if s.height is not None and s.width is not None}
+    if len(drawn) > 1:
+        raise ValueError(
+            f"--load-debug-rollout-data holds samples of {len(drawn)} resolutions "
+            f"({sorted(drawn)}), but this run sets no --diffusion-resolution-strategy-path, so the "
+            "train side would not check that a micro-batch holds one of them. Replay with the "
+            "resolution arguments the saved run used."
+        )
+
+
 def _log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_time):
     if args.custom_rollout_log_function_path is not None:
         custom_log_func = load_function(args.custom_rollout_log_function_path)
@@ -816,6 +825,26 @@ def _log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_
 def compute_metrics_from_samples(args, samples):
     log_dict = {}
     log_dict |= _compute_zero_std_metrics(args, samples)
+    return log_dict
+
+
+def _compute_resolution_metrics(samples: list[Sample], raw_rewards: list[float]) -> dict[str, float]:
+    """Reward per rollout resolution, so one bad bucket cannot hide in the average.
+
+    Takes the scalars reward post-processing already produced rather than reading
+    ``sample.reward`` again: a reward model may report a dict that only a
+    --custom-reward-post-process-path knows how to collapse, and the chart should show
+    whatever training used. Empty unless --diffusion-resolution-strategy-path is drawing
+    resolutions, which is what sets ``sample.height`` / ``sample.width``.
+    """
+    sized = [(s, r) for s, r in zip(samples, raw_rewards, strict=True) if s.height is not None and s.width is not None]
+    log_dict: dict[str, float] = {}
+    for resolution, pairs in group_by(sized, lambda pair: f"{pair[0].height}x{pair[0].width}").items():
+        rewards = [reward for _, reward in pairs]
+        # 3 levels, like rollout/reward/*, so the wandb step_metric entry for this prefix
+        # binds it to rollout/step.
+        log_dict[f"rollout/resolution/{resolution}_reward_mean"] = sum(rewards) / len(rewards)
+        log_dict[f"rollout/resolution/{resolution}_num_samples"] = len(rewards)
     return log_dict
 
 

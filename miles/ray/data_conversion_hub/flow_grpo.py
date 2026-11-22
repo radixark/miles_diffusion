@@ -4,9 +4,11 @@ from typing import Any
 
 import torch
 
+from miles.ray.data_conversion_hub import labels_rollout_resolution
 from miles.utils.types import RolloutDebugTensors, Sample
 
 
+@labels_rollout_resolution
 def expand_samples_to_train_pairs(
     args,
     samples: list[Sample],
@@ -85,13 +87,26 @@ def _build_per_sample_features(
     denoising_env,
 ) -> dict[str, Any]:
     """Fields shared by every train pair produced from one sample."""
-    return {
+    features = {
         "advantage": float(reward),
         "denoising_env": denoising_env,
         "sample_index": sample.index,
         "prompt": sample.prompt,
         "raw_reward": float(raw_reward),
     }
+    # Both labels exist only while --diffusion-resolution-strategy-path is drawing: a
+    # fixed-resolution run has nothing for the train actor to compare (check_single_resolution)
+    # and no per-bucket metric to feed, so it carries neither.
+    resolution = _sample_resolution(sample)
+    if resolution is not None:
+        features["resolution"] = resolution
+    return features
+
+
+def _sample_resolution(sample: Sample) -> tuple[int, int] | None:
+    if sample.height is None or sample.width is None:
+        return None
+    return (int(sample.height), int(sample.width))
 
 
 def _build_per_timestep_features(
@@ -129,7 +144,7 @@ def _build_per_timestep_features(
         )
 
     idx = torch.as_tensor(sde_idx, dtype=torch.long)
-    return {
+    features = {
         "latent": [_own_row(all_latents[position[int(s)]]) for s in sde_idx],
         "next_latent": [_own_row(all_latents[position[int(s) + 1]]) for s in sde_idx],
         "timestep": timesteps[idx],
@@ -138,7 +153,11 @@ def _build_per_timestep_features(
         # The first sigma below 1 on this sample's grid; the SDE kernel substitutes it at sigma == 1.
         "sigma_max": sigmas[1].expand(len(idx)),
         "log_prob_old": rollout_log_probs[idx],
-    }, idx
+    }
+    if sample.height is not None:
+        # Recompute reassigns log_prob_old, so this alias keeps the original rollout value.
+        features["log_prob_rollout"] = features["log_prob_old"]
+    return features, idx
 
 
 def _slice_rollout_debug_for_train_pairs(

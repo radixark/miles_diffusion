@@ -92,6 +92,12 @@ class TrainPipelineConfig(abc.ABC):
     # Case-insensitive substrings matched against the checkpoint name (--hf-checkpoint).
     hf_ckpt_name_patterns: tuple[str, ...] = ()
     supports_cfg_training: bool = True
+    # Opt-in: the train forward must take each sample's own grid (from the rollout's cond /
+    # denoising env) rather than --diffusion-height / --diffusion-width. A family that reads the
+    # global size would not raise on a mixed-resolution rollout -- 1024x768 and 768x1024 hold the
+    # same token count, so the latents still stack while every token's position is wrong -- and
+    # the only symptom would be a worse curve.
+    supports_mixed_resolution: bool = False
     # Mirrors serial sgl-d serving; not valid when the rollout engine runs --enable-cfg-parallel (branches split per rank, different combine formula).
     cfg_batching: bool = False
     # Model-boundary input dtypes (see input_dtype_policy); families opt into casts explicitly.

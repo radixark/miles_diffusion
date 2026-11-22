@@ -22,6 +22,32 @@ def stack_train_pair_rollout_debug(
     return torch.stack([item["rollout_debug_tensors"][key] for item in batch], dim=0)
 
 
+def check_single_resolution(batch: list[dict]) -> None:
+    """Check that a training micro-batch contains a single resolution.
+
+    672x384 and 384x672 both yield 1008 tokens, so their latents can stack.
+    Qwen-Image uses the first sample's grid for the whole batch, which gives
+    the other orientation incorrect position encodings.
+
+    Called only while a resolution strategy draws, so every pair must carry one.
+    """
+    resolutions = {pair.get("resolution") for pair in batch}
+    if None in resolutions:
+        raise ValueError(
+            "--diffusion-resolution-strategy-path is drawing resolutions, but a train pair reached "
+            "the forward without one. Only the Flow-GRPO conversion labels pairs today "
+            "(miles.ray.data_conversion_hub.flow_grpo); a custom "
+            "--custom-expand-samples-to-train-pairs-path must copy the sample's height and width "
+            'onto each pair as "resolution" so a micro-batch can be checked for mixing them.'
+        )
+    if len(resolutions) > 1:
+        raise ValueError(
+            f"train micro-batch mixes rollout resolutions {sorted(resolutions)}; pick --micro-batch-size so a "
+            "micro-batch stays inside one prompt group on a rank (e.g. a divisor of "
+            "n_samples_per_prompt / dp_size x SDE steps under --train-dp-split-mode stride), or use 1"
+        )
+
+
 class TrainDataDPSplitter:
     """Split flat train-pair payloads across DP ranks.
 
