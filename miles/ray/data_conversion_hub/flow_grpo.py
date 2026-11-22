@@ -155,10 +155,7 @@ def _build_per_timestep_features(
         "log_prob_old": rollout_log_probs[idx],
     }
     if sample.height is not None:
-        # The same tensor under a key the recompute pass leaves alone: measuring how
-        # faithfully the trainer replays a bucket needs the rollout's own log-prob, and
-        # --diffusion-recompute-old-log-prob rebinds pair["log_prob_old"] to a train-side
-        # value rather than writing into it, so sharing one tensor keeps the original.
+        # Recompute reassigns log_prob_old, so this alias keeps the original rollout value.
         features["log_prob_rollout"] = features["log_prob_old"]
     return features, idx
 
