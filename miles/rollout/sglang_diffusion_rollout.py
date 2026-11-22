@@ -302,8 +302,12 @@ async def release_generated_outputs(state: GenerateState, samples: list[Sample])
         sample.generated_output = None
     for sample, tensor in zip(media_samples, media_tensors, strict=True):
         sample.generated_output = tensor
-        # the inline path checks this in apply_rollout_image_response; a stored output is
-        # only a ref there, so it is checked here, once it is a tensor
+        # The inline path checks every output in apply_rollout_image_response. A stored one is
+        # only a ref there, and with the reward actor reading the store itself these media
+        # samples are the only ones this process turns back into tensors -- reading the rest
+        # to check their shape would undo what the store is for. A size the engine ignored
+        # would be systematic, so this subset still catches it; the per-bucket log-prob drift
+        # is the backstop for anything it misses.
         check_generated_resolution(sample)
 
 
