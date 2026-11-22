@@ -329,6 +329,7 @@ class RolloutManager:
                 logger.info(
                     f"Subsample loaded debug rollout data using {ratio=} and change num rows {original_num_rows} -> {len(data)}"
                 )
+            _check_replay_resolutions(self.args, data)
             metrics = None
         else:
             data = call_rollout_fn(self.generate_rollout, self.args, rollout_id, self.data_source, evaluation=False)
@@ -781,6 +782,26 @@ def _log_eval_rollout_data(rollout_id, args, data, extra_metrics: dict[str, Any]
     tracking_utils.log(args, log_dict, step_key="eval/step")
 
     return log_dict
+
+
+def _check_replay_resolutions(args, samples: list[Sample]) -> None:
+    """Refuse to replay a mixed-resolution rollout as if it were a fixed-resolution one.
+
+    Saved samples keep the resolution they were rendered at, and the conversion labels the
+    train pairs from it -- but the train side decides whether to check a micro-batch holds one
+    resolution from this run's --diffusion-resolution-strategy-path, which a replay typically
+    does not repeat. The pairs would then mix resolutions with nothing watching.
+    """
+    if args.diffusion_resolution_strategy_path is not None:
+        return
+    drawn = {(s.height, s.width) for s in samples if s.height is not None and s.width is not None}
+    if len(drawn) > 1:
+        raise ValueError(
+            f"--load-debug-rollout-data holds samples of {len(drawn)} resolutions "
+            f"({sorted(drawn)}), but this run sets no --diffusion-resolution-strategy-path, so the "
+            "train side would not check that a micro-batch holds one of them. Replay with the "
+            "resolution arguments the saved run used."
+        )
 
 
 def _log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_time):
