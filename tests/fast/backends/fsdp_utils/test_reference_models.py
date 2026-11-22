@@ -197,6 +197,8 @@ def make_actor_forward_harness(
         train_pipeline_config=TinyPipelineConfig(),
         _forward_dtype=torch.float32,
         loss_hooks=SimpleNamespace(prepare=prepare, formula=loss_formula),
+        # these pairs carry no resolution: this harness is about reference and teacher wiring
+        resolution_labels_required=False,
     )
     return harness, observed
 
