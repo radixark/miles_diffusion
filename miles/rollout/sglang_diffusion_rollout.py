@@ -2,6 +2,7 @@ import asyncio
 import copy
 import inspect
 import logging
+import operator
 from argparse import Namespace
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -361,11 +362,18 @@ def apply_resolution_strategy(
     part of sgl-d's dynamic-batch signature (``Scheduler._can_dynamic_batch``), so they
     never merge into one denoising schedule.
     """
-    height, width = resolution_strategy_fn(args, group[0], seed)
-    height, width = int(height), int(width)
+    drawn = resolution_strategy_fn(args, group[0], seed)
+    where = f"resolution strategy {getattr(resolution_strategy_fn, '__name__', '?')}"
+    # index() rather than int(): a strategy returning 512.9 would otherwise be truncated to a
+    # size that passes the grid check, which is the silent rounding this check exists to stop.
+    # It keeps numpy integers working, which is what a sampling strategy naturally returns.
+    try:
+        height, width = (operator.index(side) for side in drawn)
+    except TypeError:
+        raise ValueError(f"{where} returned {drawn!r}; height and width must be integers") from None
     # A custom strategy is not covered by the bucket check at startup; catch an off-grid size
     # before the engine floors it and the response check fails after a full generation.
-    check_resolution(height, width, source=f"resolution strategy {getattr(resolution_strategy_fn, '__name__', '?')}")
+    check_resolution(height, width, source=where)
     sampling_params["height"] = height
     sampling_params["width"] = width
     # The response parser cross-checks these against the media the engine returns.

@@ -159,3 +159,27 @@ def test_the_draw_does_not_track_the_sde_window():
 
     # 2 buckets x 2 window starts, and the draw must reach all four
     assert len(pairs) == 4
+
+
+@pytest.mark.parametrize("drawn", [(512.9, 384), (512.0, 384), ("512", 384)])
+def test_a_strategy_must_return_integers(drawn):
+    """int() would truncate 512.9 to a size that passes the grid check -- the silent rounding
+    these checks exist to stop."""
+    with pytest.raises(ValueError, match="must be integers"):
+        apply_resolution_strategy(
+            _args(), [Sample()], {}, resolution_strategy_fn=lambda args, sample, seed: drawn, seed=0
+        )
+
+
+def test_numpy_integers_are_fine():
+    # what a sampling strategy naturally returns
+    import numpy as np
+
+    drawn = apply_resolution_strategy(
+        _args(),
+        [Sample()],
+        {},
+        resolution_strategy_fn=lambda args, sample, seed: (np.int64(672), np.int64(384)),
+        seed=0,
+    )
+    assert drawn == (672, 384)
