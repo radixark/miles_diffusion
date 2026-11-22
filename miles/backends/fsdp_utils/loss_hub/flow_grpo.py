@@ -226,14 +226,7 @@ def flow_grpo_loss_formula(
                 total=log_prob_abs_diff_sum,
                 count=bsz,
             )
-        # One resolution per micro-batch (check_single_resolution), and only the buckets the
-        # run declared -- membership first, so a "resolution" some other conversion put on its
-        # pairs is never unpacked by a run that is not drawing resolutions.
-        #
-        # Against the rollout's own log-prob, not log_prob_old: this metric exists to show the
-        # trainer replays each bucket's rollout, and --diffusion-recompute-old-log-prob leaves
-        # log_prob_old holding a train-side value (identical to log_prob_new on the first
-        # optimizer step, which would read as a flat zero rather than as no measurement).
+        # Compare against the original rollout log-prob because recompute can replace log_prob_old.
         if batch[0].get("resolution") in getattr(args, "diffusion_resolution_bucket_list", ()):
             key = resolution_metric_key("log_prob_mean_abs_diff", batch[0]["resolution"])
             rollout_log_prob = prepared.extras["log_prob_rollout"]

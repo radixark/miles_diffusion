@@ -40,9 +40,6 @@ class MetricBuffer:
         self._maxes = {key: self._scalar(-math.inf) for key in self._max_keys}
         self._replicated: dict[str, torch.Tensor] = {}
 
-    def __contains__(self, key: str) -> bool:
-        return key in self._schema
-
     def _scalar(self, value: torch.Tensor | float) -> torch.Tensor:
         if not isinstance(value, torch.Tensor):
             return torch.tensor(value, device=self._device, dtype=torch.float64)
