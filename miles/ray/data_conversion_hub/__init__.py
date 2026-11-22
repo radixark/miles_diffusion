@@ -25,18 +25,11 @@ def resolve_conversion(args: Any) -> tuple[str, Callable[..., Any]]:
 def labels_rollout_resolution(convert: Callable[..., Any]) -> Callable[..., Any]:
     """Declare that a conversion labels its train pairs for mixed-resolution training.
 
-    Two fields, on every pair of a run whose samples carry a drawn resolution: ``resolution``,
-    the (height, width) its sample was rendered at, and ``log_prob_rollout``, the log-prob the
-    rollout reported -- kept apart from ``log_prob_old``, which
-    ``--diffusion-recompute-old-log-prob`` overwrites with a train-side value. A run at a fixed
-    resolution has neither to carry, and the readers treat them as absent.
-
-    The train side keeps a micro-batch to one resolution by reading that label
-    (``miles.utils.train_data_utils.check_single_resolution``), so a conversion that does not
-    write one would make the check read ``None`` everywhere and pass -- vacuous exactly where
-    it matters, since two resolutions of equal token count stack without complaint. Declaring
-    it here rather than listing conversions elsewhere means a new one is unsupported until it
-    says otherwise, which is the safe default.
+    Two fields on every pair whose sample carries a drawn resolution: ``resolution``, the
+    (height, width) it was rendered at, and ``log_prob_rollout``, the log-prob the rollout
+    reported -- a key apart from ``log_prob_old``, which ``--diffusion-recompute-old-log-prob``
+    rebinds to a train-side value. Undeclared conversions are unsupported, so one that has not
+    thought about resolution cannot leave the train-side checks reading nothing.
     """
     setattr(convert, _LABELS_RESOLUTION, True)
     return convert
