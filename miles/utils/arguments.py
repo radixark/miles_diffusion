@@ -2133,14 +2133,13 @@ def validate_resolution_strategy(args, cfg_cls) -> None:
         )
     # A micro-batch must hold one resolution (the train actor checks every one; see
     # check_single_resolution). The flat sample-major schedule keeps it inside one prompt group
-    # when --micro-batch-size divides a group's pairs on a rank. The legacy sample x timestep
-    # tiling instead gathers --micro-batch-size-sample different samples per tile, which spans
-    # groups -- and so resolutions -- whenever it exceeds a group's samples on a rank.
+    # when --micro-batch-size divides a group's pairs on a rank. A legacy tile narrower than a
+    # group's samples on a rank would too, but working that bound out needs the DP size, so
+    # this supports flat micro-batching only for now.
     if args.micro_batch_size_sample is not None and args.micro_batch_size_sample > 1:
         raise ValueError(
-            "--diffusion-resolution-strategy-path does not take --micro-batch-size-sample "
-            f"{args.micro_batch_size_sample}: its tiles span prompt groups of different resolutions; "
-            "set --micro-batch-size instead"
+            "mixed-resolution training supports flat micro-batching only; set --micro-batch-size "
+            f"instead of --micro-batch-size-sample {args.micro_batch_size_sample}"
         )
 
     # The train side keeps a micro-batch to one resolution by reading the label the conversion

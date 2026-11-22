@@ -44,9 +44,10 @@ def prepare_flow_grpo_batch(
     next_sigmas = _stack_pair_field(batch, "next_sigma", device)
     sigma_max = _stack_pair_field(batch, "sigma_max", device)
     log_prob_old = _stack_pair_field(batch, "log_prob_old", device)
-    # Only the per-resolution replay metric reads this, so a conversion that does not write it
-    # (any custom one predating the field) keeps working; the metric says so if it is missing.
-    has_rollout_log_prob = all("log_prob_rollout" in pair for pair in batch)
+    # Only the per-resolution replay metric reads this, so it is stacked only by a run that
+    # declares buckets; the metric says so if a conversion owes it and did not write it.
+    wants_rollout_log_prob = bool(getattr(args, "diffusion_resolution_bucket_list", ()))
+    has_rollout_log_prob = wants_rollout_log_prob and all("log_prob_rollout" in pair for pair in batch)
     log_prob_rollout = _stack_pair_field(batch, "log_prob_rollout", device) if has_rollout_log_prob else None
     advantage = torch.tensor(
         [float(pair["advantage"]) for pair in batch],
@@ -225,24 +226,24 @@ def flow_grpo_loss_formula(
                 total=log_prob_abs_diff_sum,
                 count=bsz,
             )
-        # One resolution per micro-batch (check_single_resolution); only the declared buckets.
+        # One resolution per micro-batch (check_single_resolution), and only the buckets the
+        # run declared -- membership first, so a "resolution" some other conversion put on its
+        # pairs is never unpacked by a run that is not drawing resolutions.
+        #
         # Against the rollout's own log-prob, not log_prob_old: this metric exists to show the
         # trainer replays each bucket's rollout, and --diffusion-recompute-old-log-prob leaves
         # log_prob_old holding a train-side value (identical to log_prob_new on the first
         # optimizer step, which would read as a flat zero rather than as no measurement).
-        resolution = batch[0].get("resolution")
-        if resolution is not None:
-            key = resolution_metric_key("log_prob_mean_abs_diff", resolution)
-            if key in metrics:
-                rollout_log_prob = prepared.extras["log_prob_rollout"]
-                if rollout_log_prob is None:
-                    raise ValueError(
-                        "a train pair carries its rollout resolution but not the rollout's log-prob, so "
-                        f"{key} cannot measure how faithfully that bucket replays. A conversion declaring "
-                        "@miles.ray.data_conversion_hub.labels_rollout_resolution writes both."
-                    )
-                replay_diff_sum = torch.abs(log_prob_new - rollout_log_prob).sum()
-                metrics.emit_mean(key, total=replay_diff_sum, count=bsz)
+        if batch[0].get("resolution") in getattr(args, "diffusion_resolution_bucket_list", ()):
+            key = resolution_metric_key("log_prob_mean_abs_diff", batch[0]["resolution"])
+            rollout_log_prob = prepared.extras["log_prob_rollout"]
+            if rollout_log_prob is None:
+                raise ValueError(
+                    "a train pair carries its rollout resolution but not the rollout's log-prob, so "
+                    f"{key} cannot measure how faithfully that bucket replays. A conversion declaring "
+                    "@miles.ray.data_conversion_hub.labels_rollout_resolution writes both."
+                )
+            metrics.emit_mean(key, total=torch.abs(log_prob_new - rollout_log_prob).sum(), count=bsz)
 
         if rollout_prev_mean is not None:
             record_prev_mean_diff_over_noise_std(metrics, rollout_prev_mean, step_out.prev_mean, step_out.noise_std)

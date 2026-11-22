@@ -2,7 +2,7 @@
 
     family declares supports_mixed_resolution     ─► allowed
     family does not                               ─► rejected (its RoPE reads the global size)
-    --micro-batch-size-sample > 1 (legacy tiles)  ─► rejected (a tile spans prompt groups)
+    --micro-batch-size-sample > 1 (legacy tiles)  ─► rejected (flat micro-batching only)
     weighted_buckets without buckets / bad buckets ─► rejected at startup, not in the rollout actor
     no strategy at all                            ─► nothing is checked
 
@@ -65,7 +65,7 @@ def test_no_strategy_checks_nothing():
         (
             dict(micro_batch_size=8, micro_batch_size_sample=8, micro_batch_size_tstep=1),
             _MixedResolutionConfig,
-            "span prompt groups",
+            "flat micro-batching only",
         ),
         (dict(diffusion_resolution_buckets=None), _MixedResolutionConfig, "needs --diffusion-resolution-buckets"),
         (dict(diffusion_resolution_buckets="512x500"), _MixedResolutionConfig, "multiple of 16"),

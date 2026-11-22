@@ -43,7 +43,7 @@ def _declared(*buckets):
     return Namespace(diffusion_resolution_bucket_list=tuple(buckets))
 
 
-def _run_loss(metrics, resolution, log_prob_new, log_prob_old, log_prob_rollout=None, **kwargs):
+def _run_loss(metrics, resolution, log_prob_new, log_prob_old, log_prob_rollout=None, declared=(), **kwargs):
     bsz = len(log_prob_new)
     ctx = SimpleNamespace(
         args=Namespace(
@@ -51,6 +51,7 @@ def _run_loss(metrics, resolution, log_prob_new, log_prob_old, log_prob_rollout=
             diffusion_noise_level=1.0,
             diffusion_kl_beta=0.0,
             diffusion_score_centering=False,
+            diffusion_resolution_bucket_list=tuple(declared),
         ),
         sde_backend=_FixedLogProbBackend(),
         models={"transformer": None},
@@ -96,8 +97,9 @@ def _buffer(args):
 
 def test_drift_is_split_by_resolution():
     metrics = _buffer(_declared((512, 512), (672, 384)))
-    _run_loss(metrics, (672, 384), log_prob_new=[1.0, 1.0], log_prob_old=[1.5, 0.5])  # |diff| 0.5 each
-    _run_loss(metrics, (512, 512), log_prob_new=[2.0], log_prob_old=[1.9])  # |diff| 0.1
+    declared = ((512, 512), (672, 384))
+    _run_loss(metrics, (672, 384), log_prob_new=[1.0, 1.0], log_prob_old=[1.5, 0.5], declared=declared)
+    _run_loss(metrics, (512, 512), log_prob_new=[2.0], log_prob_old=[1.9], declared=declared)
 
     out = metrics.reduce()
 
@@ -138,6 +140,7 @@ def test_the_drift_measures_replay_even_when_old_log_probs_are_recomputed():
         log_prob_new=[1.0],
         log_prob_old=[1.0],  # what recompute leaves behind
         log_prob_rollout=[0.7],  # what the rollout actually reported
+        declared=((512, 512),),
         old_log_prob_from_new=True,
     )
 
@@ -152,4 +155,19 @@ def test_a_bucket_without_the_rollout_log_prob_says_so():
     metrics = _buffer(_declared((512, 512)))
 
     with pytest.raises(ValueError, match="cannot measure how faithfully"):
-        _run_loss(metrics, (512, 512), log_prob_new=[1.0], log_prob_old=[0.5], log_prob_rollout="absent")
+        _run_loss(
+            metrics, (512, 512), log_prob_new=[1.0], log_prob_old=[0.5], log_prob_rollout="absent",
+            declared=((512, 512),),
+        )
+
+
+@pytest.mark.parametrize("stray", [512, "512x512", [512, 512], (512, 512)])
+def test_a_fixed_resolution_run_ignores_a_stray_resolution_field(stray):
+    """Some other conversion may put anything under "resolution". A run that declares no
+    buckets must not reach into it -- unpacking 512 raised TypeError and "512x512" ValueError."""
+    metrics = _buffer(_declared())
+    _run_loss(metrics, stray, log_prob_new=[1.0], log_prob_old=[0.5], log_prob_rollout="absent")
+
+    out = metrics.reduce()
+    assert out[OVERALL] == pytest.approx(0.5)
+    assert not [key for key in out if "_res_" in key]
