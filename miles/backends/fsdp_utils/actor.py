@@ -1,3 +1,4 @@
+import dataclasses
 import logging
 from argparse import Namespace
 from contextlib import nullcontext
@@ -399,6 +400,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 train_pairs=train_pairs,
                 microbatch_schedule=microbatch_schedule,
             )
+        loss_ctx = dataclasses.replace(loss_ctx, num_microbatches_per_optim_step=len(microbatch_schedule[0]))
 
         # ------------- Recompute old log-probs (impl-consistent PPO ratio) -------------
         if self.args.diffusion_recompute_old_log_prob:
@@ -531,60 +533,73 @@ class FSDPTrainRayActor(TrainRayActor):
         train_pipeline_config = self.train_pipeline_config
         forward_dtype = self._forward_dtype
 
-        # Boundary dtypes are family policy; op interiors stay autocast-managed.
-        latents_in, timesteps_in, (pos_cond_in, neg_cond_in, joint_cond_in) = apply_input_dtype_policy(
-            train_pipeline_config.input_dtype_policy,
-            latents=prepared.latents,
-            timesteps=prepared.timesteps_for_model,
-            conds=(prepared.pos_cond, prepared.neg_cond, prepared.joint_cond),
-            default_dtype=forward_dtype,
-        )
+        def _forward_teacher_and_model(prepared):
+            """``prepared``'s DiT forward by model, the teacher prediction it asks for and its model's prediction."""
+            # Boundary dtypes are family policy; op interiors stay autocast-managed.
+            latents_in, timesteps_in, (pos_cond_in, neg_cond_in, joint_cond_in) = apply_input_dtype_policy(
+                train_pipeline_config.input_dtype_policy,
+                latents=prepared.latents,
+                timesteps=prepared.timesteps_for_model,
+                conds=(prepared.pos_cond, prepared.neg_cond, prepared.joint_cond),
+                default_dtype=forward_dtype,
+            )
 
-        def _compute_noise_pred(
-            model,
-            *,
-            use_cfg: bool = prepared.use_cfg,
-            cfg_batching: bool = prepared.cfg_batching,
-            guidance_scale: float = prepared.guidance_scale,
-            true_cfg_scale: float | None = prepared.true_cfg_scale,
-        ) -> dict[str, torch.Tensor]:
-            with torch.autocast(
-                "cuda",
-                dtype=forward_dtype,
-                enabled=forward_dtype != torch.float32 and train_pipeline_config.enable_autocast,
-            ):
-                return train_pipeline_config.compute_noise_pred(
-                    model=model,
-                    latents_input=latents_in,
-                    timesteps_input=timesteps_in,
-                    pos_cond=pos_cond_in,
-                    neg_cond=neg_cond_in,
-                    joint_cond=joint_cond_in,
-                    use_cfg=use_cfg,
-                    cfg_batching=cfg_batching,
-                    guidance_scale=guidance_scale,
-                    true_cfg_scale=true_cfg_scale,
-                )
+            def _compute_noise_pred(
+                model,
+                *,
+                use_cfg: bool = prepared.use_cfg,
+                cfg_batching: bool = prepared.cfg_batching,
+                guidance_scale: float = prepared.guidance_scale,
+                true_cfg_scale: float | None = prepared.true_cfg_scale,
+            ) -> dict[str, torch.Tensor]:
+                with torch.autocast(
+                    "cuda",
+                    dtype=forward_dtype,
+                    enabled=forward_dtype != torch.float32 and train_pipeline_config.enable_autocast,
+                ):
+                    return train_pipeline_config.compute_noise_pred(
+                        model=model,
+                        latents_input=latents_in,
+                        timesteps_input=timesteps_in,
+                        pos_cond=pos_cond_in,
+                        neg_cond=neg_cond_in,
+                        joint_cond=joint_cond_in,
+                        use_cfg=use_cfg,
+                        cfg_batching=cfg_batching,
+                        guidance_scale=guidance_scale,
+                        true_cfg_scale=true_cfg_scale,
+                    )
 
-        # The frozen teacher runs before the training forward, so its gather never overlaps the activations.
-        teacher_pred = None
-        if prepared.teacher_guidance_scale is not None:
-            if prepared.component_name not in self.teacher_models:
-                raise ValueError("the prepared batch asks for a teacher forward, which needs --teacher-load")
-            teacher = self.teacher_models[prepared.component_name]
-            use_cfg = prepared.teacher_guidance_scale > 1.0
+            # The frozen teacher runs before the training forward, so its gather never overlaps the activations.
+            teacher_pred = None
+            if prepared.teacher_guidance_scale is not None:
+                if prepared.component_name not in self.teacher_models:
+                    raise ValueError("the prepared batch asks for a teacher forward, which needs --teacher-load")
+                teacher = self.teacher_models[prepared.component_name]
+                use_cfg = prepared.teacher_guidance_scale > 1.0
+                with torch.no_grad():
+                    teacher_pred = _compute_noise_pred(
+                        teacher,
+                        use_cfg=use_cfg,
+                        cfg_batching=use_cfg and train_pipeline_config.cfg_batching,
+                        guidance_scale=prepared.teacher_guidance_scale,
+                        true_cfg_scale=None,
+                    )
+                # A no-grad forward leaves FSDP's root parameters gathered; sleep must move the shards.
+                reshard_model(teacher)
+            return _compute_noise_pred, teacher_pred, _compute_noise_pred(prepared.model)
+
+        forward_only_preds = {}
+        if prepared.forward_only_batch is not None:
             with torch.no_grad():
-                teacher_pred = _compute_noise_pred(
-                    teacher,
-                    use_cfg=use_cfg,
-                    cfg_batching=use_cfg and train_pipeline_config.cfg_batching,
-                    guidance_scale=prepared.teacher_guidance_scale,
-                    true_cfg_scale=None,
+                _, forward_only_teacher_pred, forward_only_pred = _forward_teacher_and_model(
+                    prepared.forward_only_batch
                 )
-            # A no-grad forward leaves FSDP's root parameters gathered; sleep must move the shards.
-            reshard_model(teacher)
+            forward_only_preds = dict(
+                forward_only_pred=forward_only_pred, forward_only_teacher_pred=forward_only_teacher_pred
+            )
 
-        new_pred = _compute_noise_pred(prepared.model)
+        _compute_noise_pred, teacher_pred, new_pred = _forward_teacher_and_model(prepared)
 
         # pi_old: the latest EMA, also when an async batch was sampled with the EMA before it.
         old_pred = None
@@ -616,4 +631,5 @@ class FSDPTrainRayActor(TrainRayActor):
             train_output_inputs=train_output_inputs,
             write_old_log_prob=write_old_log_prob,
             old_log_prob_from_new=old_log_prob_from_new,
+            **forward_only_preds,
         )

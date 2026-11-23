@@ -269,6 +269,9 @@ On its last step its prepare hook also asks for the teacher at the same noisy in
 formula keeps the critic's x0 from that step's forward, before the update, next to the teacher's; after
 training its train-output hook hands them to the actor as `ctx.external_data["critic"]`. The actor trains on those samples only (its train-input hook):
 it recomputes the student's x0 at the rollout's step and moves it along their difference.
+Under `--dmd2-critic-scoring original` the last step is plain SFT and its prepare hook also returns the
+scoring batch, at a fresh draw, as `PreparedBatch.forward_only_batch`; the formula keeps the x0 of that
+batch's forwards instead.
 
 DiT forward always stays in the FSDP actor; the loss hook only computes the
 objective.
@@ -308,7 +311,9 @@ counts from 0; the old-log-prob recompute of windows 1.. passes their training f
 `timesteps_for_model` are keyed by latent stream name: `"visual"`, plus e.g.
 `"audio"` for joint audio-video models. `PreparedBatch.teacher_guidance_scale` asks the trunk to run the frozen
 teacher (`--teacher-load`) without grad on this micro-batch at that CFG scale, over `neg_cond` / `joint_cond`, before
-the training forward; the formula receives it as `teacher_pred`.
+the training forward; the formula receives it as `teacher_pred`. `PreparedBatch.forward_only_batch` is a second
+prepared batch the trunk forwards without grad before this one, through the teacher it asks for and its model; a
+formula whose prepare sets it also receives `forward_only_teacher_pred` and `forward_only_pred`.
 
 ### `--custom-loss-function-path`
 
