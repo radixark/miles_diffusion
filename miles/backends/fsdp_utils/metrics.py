@@ -81,7 +81,7 @@ def new_metric_buffer(
     """Buffer for one optimizer step, reducing over the DP group.
 
     A run with several DiT ``components``, or with several rollout ``streams``, also logs each one's own
-    train-vs-rollout diffs.
+    train-vs-rollout diffs; several streams also log each one's own KL.
     """
     schema = dict(SCHEMA)
     for key, reduce in STEP_SCHEMA.items():
@@ -95,6 +95,9 @@ def new_metric_buffer(
     for suffix in (*(components if len(components) > 1 else ()), *(streams if len(streams) > 1 else ())):
         schema[f"log_prob_mean_abs_diff_{suffix}"] = MetricReduce.MEAN
         schema[f"model_output_mean_abs_diff_{suffix}"] = MetricReduce.MEAN
+    if len(streams) > 1:
+        for stream_name in streams:
+            schema[f"kl_loss_{stream_name}"] = MetricReduce.MEAN
     return MetricBuffer(group=group, device=device, schema=schema)
 
 

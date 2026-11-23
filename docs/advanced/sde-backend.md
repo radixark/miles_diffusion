@@ -58,6 +58,14 @@ action over the streams it scores:
 - An extra stream whose settings differ from the primary stream's is sent its own (`rollout_extra_stream_sde_args`).
   The engine must echo the settings it applied; a response without the echo, or with other settings, is rejected
   as soon as it arrives.
+- `--diffusion-kl-beta visual=0,audio=0.0001` gives each stream its own weight for the pull toward the reference
+  model, and the loss adds `beta_s * KL_s` over the streams. A scored stream's term is Flow-GRPO's: the squared gap
+  between the two step means over `2·std²`, with `std` = η·√(σ/(1−σ)) for `sde` (the noise std without its
+  √(−dt)) and the transition noise std for `cps`. An `ode` stream's term is the velocity MSE
+  `mean((v_θ − v_ref)²)`, the term `--loss-type nft` adds (DiffusionNFT's code weights it by `1e-4`). The two
+  forms differ by a factor that changes by orders of magnitude from step to step, so a single beta over `ode` and
+  scored streams is rejected. Each stream's term is logged as `kl_loss_<stream>`; `kl_loss` adds them unweighted,
+  so read the per-stream keys when the forms differ.
 
 ## 3. Key flags
 
