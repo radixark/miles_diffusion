@@ -4,7 +4,7 @@ from typing import Any
 
 import torch
 
-from miles.utils.types import RolloutDebugTensors, Sample
+from miles.utils.types import RolloutDebugTensors, RolloutStreamData, Sample
 
 
 def expand_samples_to_train_pairs(
@@ -19,37 +19,24 @@ def expand_samples_to_train_pairs(
     """
     train_data: list[dict[str, Any]] = []
     for sample, rew, raw_r in zip(samples, rewards, raw_rewards, strict=True):
-        traj, denoising_env, rollout_log_probs = _sample_required_inputs(sample)
+        if sample.denoising_env is None:
+            raise ValueError("Sample missing denoising_env")
         per_sample_features = _build_per_sample_features(
             sample,
             reward=rew,
             raw_reward=raw_r,
-            denoising_env=denoising_env,
+            denoising_env=sample.denoising_env,
         )
-        per_timestep_features, idx = _build_per_timestep_features(
-            sample,
-            traj=traj,
-            rollout_log_probs=rollout_log_probs,
-        )
-        pair_debug_steps = None
-        if sample.rollout_debug_tensors is not None:
-            pair_debug_steps = _slice_rollout_debug_for_train_pairs(sample.rollout_debug_tensors, sde_idx=idx)
-        sample_t_steps = len(per_timestep_features["latent"])
-        if pair_debug_steps is not None and len(pair_debug_steps) != sample_t_steps:
-            raise ValueError(
-                f"rollout_debug_tensors step count {len(pair_debug_steps)} != train pairs {sample_t_steps} "
-                f"(sample_index={sample.index})"
-            )
-
-        for t in range(sample_t_steps):
-            per_step = {key: _to_cpu(tensor[t]) for key, tensor in per_timestep_features.items()}
-            if pair_debug_steps is not None:
-                per_step["rollout_debug_tensors"] = pair_debug_steps[t]
-            # These fields are the stream at the top level of the rollout response.
-            pair: dict[str, Any] = {
-                **per_sample_features,
-                **{key: {args.primary_stream: value} for key, value in per_step.items()},
-            }
+        stream_steps = {
+            stream_name: _build_stream_steps(sample, stream_rollout)
+            for stream_name, stream_rollout in _stream_rollouts(args, sample).items()
+        }
+        # The engine rolls every stream out over the same SDE steps, so the streams' step lists line up.
+        for step_by_stream in zip(*stream_steps.values(), strict=True):
+            pair: dict[str, Any] = dict(per_sample_features)
+            for stream_name, per_step in zip(stream_steps, step_by_stream, strict=True):
+                for key, value in per_step.items():
+                    pair.setdefault(key, {})[stream_name] = value
             train_data.append(pair)
 
     if not train_data:
@@ -67,19 +54,48 @@ def _own_row(row):
     return row.detach().cpu().clone() if isinstance(row, torch.Tensor) else row
 
 
-def _sample_required_inputs(sample: Sample):
-    traj = sample.dit_trajectory
-    denoising_env = sample.denoising_env
-    rollout_log_probs = sample.rollout_log_probs
-    if (
-        traj is None
-        or traj.timesteps is None
-        or traj.sigmas is None
-        or denoising_env is None
-        or rollout_log_probs is None
-    ):
-        raise ValueError("Sample missing dit_trajectory timesteps/sigmas, denoising_env, or rollout_log_probs")
-    return traj, denoising_env, rollout_log_probs
+def _stream_rollouts(args, sample: Sample) -> dict[str, RolloutStreamData]:
+    """The rollout data of every stream the run trains on; the primary stream's is the sample's top-level fields."""
+    missing = [stream_name for stream_name in args.rollout_extra_streams if stream_name not in sample.extra_streams]
+    if missing:
+        raise ValueError(
+            f"the rollout response carries no rollout data for --rollout-extra-streams {missing} "
+            f"(sample_index={sample.index}); the response has no rolled-out stream of that name"
+        )
+    return {
+        args.primary_stream: RolloutStreamData(
+            rollout_log_probs=sample.rollout_log_probs,
+            rollout_debug_tensors=sample.rollout_debug_tensors,
+            dit_trajectory=sample.dit_trajectory,
+        ),
+        **{stream_name: sample.extra_streams[stream_name] for stream_name in args.rollout_extra_streams},
+    }
+
+
+def _build_stream_steps(sample: Sample, stream_rollout: RolloutStreamData) -> list[dict[str, Any]]:
+    """One stream's per-step pair fields, one dict per selected SDE step."""
+    traj = stream_rollout.dit_trajectory
+    rollout_log_probs = stream_rollout.rollout_log_probs
+    if traj is None or traj.timesteps is None or traj.sigmas is None or rollout_log_probs is None:
+        raise ValueError("Sample missing dit_trajectory timesteps/sigmas or rollout_log_probs")
+    per_timestep_features, idx = _build_per_timestep_features(
+        sample,
+        traj=traj,
+        rollout_log_probs=rollout_log_probs,
+    )
+    steps = [{key: _to_cpu(tensor[t]) for key, tensor in per_timestep_features.items()} for t in range(len(idx))]
+    pair_debug_steps = None
+    if stream_rollout.rollout_debug_tensors is not None:
+        pair_debug_steps = _slice_rollout_debug_for_train_pairs(stream_rollout.rollout_debug_tensors, sde_idx=idx)
+    if pair_debug_steps is not None:
+        if len(pair_debug_steps) != len(steps):
+            raise ValueError(
+                f"rollout_debug_tensors step count {len(pair_debug_steps)} != train pairs {len(steps)} "
+                f"(sample_index={sample.index})"
+            )
+        for per_step, debug_step in zip(steps, pair_debug_steps, strict=True):
+            per_step["rollout_debug_tensors"] = debug_step
+    return steps
 
 
 def _build_per_sample_features(
