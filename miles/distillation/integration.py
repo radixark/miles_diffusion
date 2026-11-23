@@ -2,10 +2,15 @@
 
 SGLang rolls out each 8-block trajectory with fixed student weights; the actor then
 takes one optimizer update per block, in block order. ``set_pdd_defaults`` wires the
-generic Miles hooks; nothing in the trainer branches on ``--loss-type pdd``.
+generic Miles hooks; nothing in the trainer branches on ``--loss-type pdd``. What
+differs per model family (latent streams, sigma grids, time inputs, rollout patch)
+lives in ``PDD_FAMILIES``.
 """
 
 import functools
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from typing import Any
 
 import torch
 
@@ -59,6 +64,14 @@ def embedded_sigmas(timesteps):
     return (timesteps.bfloat16() / 1000).float()
 
 
+def h3_grid(num_intervals, shift):
+    """MiniMax H3's shifted rectified-flow grid, computed like sgl-d's ``minimax_h3_time_shift_sigmas``."""
+    base = torch.linspace(1.0, 0.0, num_intervals + 1, dtype=torch.float32)
+    grid = float(shift) * base / (1 + (float(shift) - 1) * base)
+    validate_grid(grid)
+    return grid
+
+
 class TokenParallelProjection(torch.nn.Module):
     """An output layer as N heads, emitted as [B, S, N*C] so token selection and masks stay row-wise."""
 
@@ -70,29 +83,123 @@ class TokenParallelProjection(torch.nn.Module):
         return self.parallel(hidden).permute(1, 2, 0, 3).flatten(2)
 
 
-# Validated scope: Qwen-Image 2.1 t2i at 1024 x 1024, 32 intervals in blocks of 4 (8 student forwards).
+# Validated scope: 32 intervals in blocks of 4 (8 student forwards); Qwen-Image 2.1 t2i at 1024 x 1024.
 NUM_INTERVALS, BLOCK_SIZE = 32, 4
 RESOLUTION = 1024
 IMAGE_TOKENS = (RESOLUTION // 16) ** 2
-PATCH_GROUP = "pdd_qwen_image21"
+H3_AUDIO_CHANNELS = 32
 
 
-def pdd_grid(args):
-    """The (N+1)-point sigma grid the rollout and the trainer share."""
-    return make_grid(args.hf_checkpoint, args.pdd_num_intervals, IMAGE_TOKENS)
+@dataclass(frozen=True)
+class PDDFamily:
+    """What PDD needs from one model family, looked up by ``--diffusion-model-family``.
+
+    ``heads`` maps each latent stream to the Diffusers transformer's output layer that becomes N heads;
+    ``grids(args)`` gives each stream's (N+1)-point sigma grid; ``model_time`` / ``teacher_time`` turn a grid
+    sigma into the student's and the teacher's ``timesteps_for_model``; ``split_states`` / ``split_sigmas`` cut
+    the rollout's per-interval states and recorded grid into streams; ``validate`` checks the family's
+    rollout settings. Streams share one loss; each contributes its per-element mean interval loss.
+    """
+
+    task: str
+    heads: dict[str, str]
+    patch_group: str
+    engine_precision: str
+    # None keeps the family's FSDP plan (e.g. FP32 heads over a BF16 all-gather).
+    fsdp_param_dtype: str | None
+    grids: Callable[[Any], dict[str, torch.Tensor]]
+    model_time: Callable[[Any, str, torch.Tensor], torch.Tensor]
+    teacher_time: Callable[[Any, str, torch.Tensor], torch.Tensor]
+    split_states: Callable[[torch.Tensor, Any], dict[str, torch.Tensor]]
+    split_sigmas: Callable[[torch.Tensor], dict[str, torch.Tensor]]
+    validate: Callable[[Any], None]
+    cond_extras: dict[str, Any] = field(default_factory=dict)
 
 
-def model_time(sigma):
-    """The student's time input: the value SGLang's native DiT embedded. The grid dynamics stay unchanged."""
-    return embedded_sigmas(engine_timesteps(sigma))
+def _qwen_validate(args):
+    if (args.diffusion_height, args.diffusion_width) != (RESOLUTION, RESOLUTION):
+        raise ValueError(f"PDD requires {RESOLUTION} x {RESOLUTION} for Qwen-Image 2.1")
+
+
+def _h3_split_states(states, env):
+    """The H3 rollout packs video target rows, then audio rows zero-padded to the video width."""
+    layout = env.pos_cond_kwargs.h3_packed_layout
+    videos, audios = int(layout["update_mask"].sum()), int(layout["audio_pos"].numel())
+    if states.shape[1] != videos + audios:
+        raise ValueError(f"H3 PDD trajectory has {states.shape[1]} rows, layout has {videos} video + {audios} audio")
+    if states[:, videos:, H3_AUDIO_CHANNELS:].any():
+        raise ValueError("H3 PDD audio rows carry data beyond the audio width")
+    return {"visual": states[:, :videos], "audio": states[:, videos:, :H3_AUDIO_CHANNELS]}
+
+
+def _h3_split_sigmas(sigmas):
+    """The H3 rollout records the video grid followed by the audio grid."""
+    if sigmas.ndim != 1 or len(sigmas) % 2:
+        raise ValueError("H3 PDD rollout must record the video and audio grids")
+    video, audio = sigmas.chunk(2)
+    return {"visual": video, "audio": audio}
+
+
+def _h3_validate(args):
+    if args.diffusion_flow_shift is None or args.diffusion_audio_flow_shift is None:
+        raise ValueError("H3 PDD requires --diffusion-flow-shift and --diffusion-audio-flow-shift for its grids")
+    if args.sglang_tp_size not in (None, 1) or args.sglang_sp_degree not in (None, 1):
+        raise ValueError("H3 PDD engines stack the heads per GPU; use --sglang-tp-size 1 --sglang-sp-degree 1")
+
+
+PDD_FAMILIES = {
+    "qwen_image21": PDDFamily(
+        task="t2i",
+        heads={"visual": "proj_out"},
+        patch_group="pdd_qwen_image21",
+        engine_precision="fp32",
+        # Gathered student weights stay FP32 (head biases, norms); autocast handles matmuls.
+        fsdp_param_dtype="fp32",
+        grids=lambda args: {"visual": make_grid(args.hf_checkpoint, args.pdd_num_intervals, IMAGE_TOKENS)},
+        # The student sees the time value SGLang's native DiT embedded; the grid dynamics stay unchanged.
+        model_time=lambda args, stream, sigma: embedded_sigmas(engine_timesteps(sigma)),
+        teacher_time=lambda args, stream, sigma: sigma,
+        split_states=lambda states, env: {"visual": states},
+        split_sigmas=lambda sigmas: {"visual": sigmas},
+        validate=_qwen_validate,
+    ),
+    "h3": PDDFamily(
+        task="t2va",
+        heads={"visual": "proj_out", "audio": "audio_proj_out"},
+        patch_group="pdd_h3",
+        # The native engine keeps BF16 blocks and FP32 output heads, as the trainer's FSDP plan does.
+        engine_precision="bf16",
+        fsdp_param_dtype=None,
+        grids=lambda args: {
+            "visual": h3_grid(args.pdd_num_intervals, args.diffusion_flow_shift),
+            "audio": h3_grid(args.pdd_num_intervals, args.diffusion_audio_flow_shift),
+        },
+        model_time=lambda args, stream, sigma: sigma * 1000.0,
+        teacher_time=lambda args, stream, sigma: sigma * 1000.0,
+        split_states=_h3_split_states,
+        split_sigmas=_h3_split_sigmas,
+        validate=_h3_validate,
+        # Audio rows are PDD targets: the H3 forward returns their prediction only for a soundtrack target.
+        cond_extras={"h3_target_has_soundtrack": True},
+    ),
+}
+
+
+def pdd_family(args):
+    try:
+        return PDD_FAMILIES[args.diffusion_model_family]
+    except KeyError:
+        raise ValueError(f"PDD supports --diffusion-model-family {sorted(PDD_FAMILIES)}") from None
 
 
 def install_student(model, args):
-    """``--custom-train-model-transform-path`` hook: the output layer becomes N heads, trained in full beside
-    the backbone's LoRA adapters."""
-    if not isinstance(model.proj_out, torch.nn.Linear):
-        raise ValueError("PDD needs an unmodified proj_out output layer")
-    model.proj_out = TokenParallelProjection(model.proj_out, args.pdd_num_intervals)
+    """``--custom-train-model-transform-path`` hook: each stream's output layer becomes N heads, trained in
+    full beside the backbone's LoRA adapters."""
+    for attr in pdd_family(args).heads.values():
+        layer = getattr(model, attr)
+        if not isinstance(layer, torch.nn.Linear):
+            raise ValueError(f"PDD needs an unmodified {attr} output layer")
+        setattr(model, attr, TokenParallelProjection(layer, args.pdd_num_intervals))
 
 
 def expand_trajectories(pairs, *, intervals, block_size):
@@ -123,11 +230,12 @@ def set_pdd_defaults(args):
             setattr(args, key, value)
     if args.rollout_function_path == "miles.rollout.sglang_rollout.generate_rollout":
         args.rollout_function_path = _DIFFUSION_ROLLOUT
-    if args.rollout_patch_group is None:
-        args.rollout_patch_group = PATCH_GROUP
-    # Gathered student weights stay FP32 (head biases, norms); autocast handles matmuls.
-    if args.fsdp_param_dtype is None:
-        args.fsdp_param_dtype = "fp32"
+    family = PDD_FAMILIES.get(args.diffusion_model_family)
+    if family is not None:
+        if args.rollout_patch_group is None:
+            args.rollout_patch_group = family.patch_group
+        if args.fsdp_param_dtype is None:
+            args.fsdp_param_dtype = family.fsdp_param_dtype
     if args.teacher_load is None:
         args.teacher_load = args.hf_checkpoint
     args.rollout_return_full_trajectory = True
@@ -140,10 +248,10 @@ def set_pdd_defaults(args):
 
 def validate_pdd_args(args):
     """Narrow, validated integration; unsupported modes fail before loading GPUs."""
-    if args.diffusion_model_family != "qwen_image21" or args.diffusion_task != "t2i":
-        raise ValueError("PDD supports Qwen-Image 2.1 t2i only")
-    if (args.diffusion_height, args.diffusion_width) != (RESOLUTION, RESOLUTION):
-        raise ValueError(f"PDD requires {RESOLUTION} x {RESOLUTION}")
+    family = pdd_family(args)
+    if args.diffusion_task != family.task:
+        raise ValueError(f"PDD supports {args.diffusion_model_family} {family.task} only")
+    family.validate(args)
     if args.train_only or args.train_backend != "fsdp":
         raise ValueError("PDD trains on FSDP from SGLang rollouts; drop --train-only")
     if args.update_weight_target_modules != ["transformer"]:
@@ -186,14 +294,14 @@ def validate_pdd_args(args):
         raise ValueError("PDD requires --diffusion-sde-type ode --diffusion-noise-level 0")
     if args.rollout_num_gpus_per_engine != 1 or args.rollout_microgroup_size != 1:
         raise ValueError("PDD requires one GPU per engine and rollout microgroup size 1")
-    if args.sglang_dit_precision != "fp32":
-        raise ValueError("PDD requires --sglang-dit-precision fp32")
-    if args.fsdp_param_dtype != "fp32":
-        raise ValueError("PDD requires --fsdp-param-dtype fp32")
+    if args.sglang_dit_precision != family.engine_precision:
+        raise ValueError(f"PDD requires --sglang-dit-precision {family.engine_precision}")
+    if args.fsdp_param_dtype != family.fsdp_param_dtype:
+        raise ValueError(f"PDD requires --fsdp-param-dtype {family.fsdp_param_dtype}")
     if args.diffusion_step_strategy_path or args.custom_generate_function_path or args.group_rm:
         raise ValueError("PDD requires the standard full-trajectory rollout without custom generation/group RM")
-    if args.rollout_patch_groups != [PATCH_GROUP]:
-        raise ValueError(f"PDD requires only the {PATCH_GROUP} rollout patch group")
+    if args.rollout_patch_groups != [family.patch_group]:
+        raise ValueError(f"PDD requires only the {family.patch_group} rollout patch group")
     for key, value in {**_HOOK_DEFAULTS, "rollout_function_path": _DIFFUSION_ROLLOUT}.items():
         if getattr(args, key) != value:
             raise ValueError(f"PDD requires {key}={value}")

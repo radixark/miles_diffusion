@@ -42,23 +42,38 @@ class ParallelLinear(nn.Module):
         return result
 
 
+def _each(fn, *trees):
+    """Apply ``fn`` leafwise over tensors or same-keyed dicts of tensors (one entry per latent stream)."""
+    if isinstance(trees[0], dict):
+        return {key: fn(*(tree[key] for tree in trees)) for key in trees[0]}
+    return fn(*trees)
+
+
 @torch.no_grad()
-def teacher_mean_velocity(teacher: Callable, x: torch.Tensor, time, delta, solver: str = "midpoint") -> torch.Tensor:
-    """Teacher closure includes conditioning/CFG; never build a teacher gradient graph."""
+def teacher_mean_velocity(teacher: Callable, x, time, delta, solver: str = "midpoint"):
+    """Teacher closure includes conditioning/CFG; never build a teacher gradient graph.
+
+    ``x``, ``time`` and ``delta`` are tensors, or dicts keyed by latent stream for a joint
+    model whose streams move on their own grids in one teacher call.
+    """
     if solver not in {"euler", "midpoint"}:
         raise ValueError("solver must be euler or midpoint")
 
     def call(state, t):
         velocity = teacher(state, t)
-        if velocity.shape != state.shape:
+        pairs = [(velocity[k], state[k]) for k in state] if isinstance(state, dict) else [(velocity, state)]
+        if any(v.shape != s.shape for v, s in pairs):
             raise ValueError("teacher output must match the latent shape exactly")
         return velocity
 
-    x = x.detach()
+    x = _each(torch.Tensor.detach, x)
     velocity = call(x, time)
     if solver == "midpoint":
-        velocity = call(x + 0.5 * delta * velocity, time + 0.5 * delta)
-    return velocity.detach()
+        velocity = call(
+            _each(lambda s, d, v: s + 0.5 * d * v, x, delta, velocity),
+            _each(lambda t, d: t + 0.5 * d, time, delta),
+        )
+    return _each(torch.Tensor.detach, velocity)
 
 
 def block_update(x: torch.Tensor, predictions: torch.Tensor, grid: torch.Tensor, start: int, end: int) -> torch.Tensor:
