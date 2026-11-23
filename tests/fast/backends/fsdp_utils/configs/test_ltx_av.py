@@ -260,10 +260,12 @@ class TestValidateArgs:
     @pytest.mark.parametrize(
         ("extra_streams", "patch_groups", "message"),
         [
-            (["audio"], ["ltx"], "set --rollout-patch-group ltx_av"),
-            (["audio"], [], "set --rollout-patch-group ltx_av"),
-            (["audio"], ["ltx_av", "ltx"], "set --rollout-patch-group ltx_av"),
-            ([], ["ltx_av"], "trains video alone"),
+            (["audio"], ["ltx"], "needs --rollout-patch-group ltx_av"),
+            (["audio"], [], "needs --rollout-patch-group ltx_av"),
+            (["audio"], ["ltx_av", "ltx"], "needs --rollout-patch-group ltx_av"),
+            ([], ["ltx_av"], "needs --rollout-patch-group ltx,"),
+            ([], [], "needs --rollout-patch-group ltx,"),
+            ([], ["ltx", "ltx_av"], "needs --rollout-patch-group ltx,"),
         ],
     )
     def test_patch_group_must_match_the_streams(self, extra_streams, patch_groups, message):

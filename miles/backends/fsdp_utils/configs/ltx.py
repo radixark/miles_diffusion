@@ -30,15 +30,12 @@ class LTXTrainPipelineConfig(TrainPipelineConfig):
     def validate_args(cls, args: Namespace) -> None:
         # The engine's audio-video cross-attention must match the forward: off for video alone, on with audio.
         trains_audio = "audio" in args.rollout_extra_streams
-        if trains_audio and ("ltx_av" not in args.rollout_patch_groups or "ltx" in args.rollout_patch_groups):
+        expected, other = ("ltx_av", "ltx") if trains_audio else ("ltx", "ltx_av")
+        if expected not in args.rollout_patch_groups or other in args.rollout_patch_groups:
             raise ValueError(
-                "LTX --rollout-extra-streams audio trains the joint audio-video forward; set --rollout-patch-group "
-                f"ltx_av (not ltx), got {args.rollout_patch_groups}"
-            )
-        if not trains_audio and "ltx_av" in args.rollout_patch_groups:
-            raise ValueError(
-                "--rollout-patch-group ltx_av leaves the engine's audio-video cross-attention on, but the forward "
-                "trains video alone; add --rollout-extra-streams audio or use --rollout-patch-group ltx"
+                f"LTX {'audio-video' if trains_audio else 'video-only'} training needs --rollout-patch-group "
+                f"{expected}, not {other}: the engine's audio-video cross-attention must match the training forward; "
+                f"got {args.rollout_patch_groups}"
             )
         # The engine's audio rollout is validated without sequence parallelism. Left unset, the engine's SP degree is
         # the GPUs of an engine that TP and CFG parallelism leave over.
