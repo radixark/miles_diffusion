@@ -4,18 +4,23 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import msgpack
 import ray
 import torch
 
-from miles.utils.output_store import StoredTensor, materialize_stored_tensors
+from miles.utils.output_store import StoredTensor, StoredTensorReader
 from miles.utils.processing_utils import fhwc_to_cfhw
-from miles.utils.types import CondKwargs, DenoisingEnv, DiTTrajectory, RolloutDebugTensors, Sample, decode_tensor
-
-if TYPE_CHECKING:
-    from radix_transfer_plugins import OutputStore
+from miles.utils.types import (
+    CondKwargs,
+    DenoisingEnv,
+    DiTTrajectory,
+    RolloutDebugTensors,
+    RolloutStreamData,
+    Sample,
+    decode_tensor,
+)
 
 __all__ = [
     "apply_rollout_image_response",
@@ -80,11 +85,9 @@ def _normalize_generated_output(tensor: torch.Tensor | None) -> torch.Tensor | N
     return canonical.contiguous()
 
 
-def read_generated_outputs(store: OutputStore, outputs: list[StoredTensor]) -> list[torch.Tensor]:
+def read_generated_outputs(reader: StoredTensorReader, stored_outputs: list[StoredTensor]) -> list[torch.Tensor]:
     """Read stored outputs in one store read, in the ``[C, F, H, W]`` layout an inline output is parsed to."""
-    tensors = list(outputs)
-    materialize_stored_tensors(tensors, store=store)
-    return [_normalize_generated_output(tensor) for tensor in tensors]
+    return [_normalize_generated_output(tensor) for tensor in reader.read(stored_outputs)]
 
 
 def _parse_tensor_or_list(
@@ -215,6 +218,28 @@ def _parse_rollout_debug_tensors(
     )
 
 
+def _parse_extra_streams(
+    data: dict[str, dict[str, Any]] | None,
+    *,
+    deserialize_func: Callable[[Any], torch.Tensor | None],
+) -> dict[str, RolloutStreamData]:
+    """The extra streams the engine rolled out; one that only carries its decoded output is left out."""
+    # An engine without per-stream rollout settings echoes no rollout_sde_kernel.
+    return {
+        stream_name: RolloutStreamData(
+            rollout_log_probs=deserialize_func(stream["rollout_log_probs"]),
+            rollout_debug_tensors=_parse_rollout_debug_tensors(
+                stream["rollout_debug_tensors"],
+                deserialize_func=deserialize_func,
+            ),
+            dit_trajectory=_parse_dit_trajectory(stream["dit_trajectory"], deserialize_func=deserialize_func),
+            rollout_sde_kernel=stream.get("rollout_sde_kernel"),
+        )
+        for stream_name, stream in (data or {}).items()
+        if stream["rollout_log_probs"] is not None
+    }
+
+
 def apply_rollout_image_response(
     sample: Sample,
     body: dict[str, Any],
@@ -250,6 +275,7 @@ def apply_rollout_image_response(
     )
     sample.denoising_env = _parse_denoising_env(body.get("denoising_env"), deserialize_func=deserialize_func)
     sample.dit_trajectory = _parse_dit_trajectory(body.get("dit_trajectory"), deserialize_func=deserialize_func)
+    sample.extra_streams = _parse_extra_streams(body.get("extra_streams"), deserialize_func=deserialize_func)
 
     if "inference_time_s" in body and body["inference_time_s"] is not None:
         sample.inference_time_s = float(body["inference_time_s"])

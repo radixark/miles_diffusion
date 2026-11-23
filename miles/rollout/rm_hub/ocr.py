@@ -99,6 +99,7 @@ class AsyncOcrPool(AsyncRewardActorPool, metaclass=SingletonMeta):
 
     def __init__(self, args) -> None:
         super().__init__(
+            args=args,
             actor_cls=OcrRewardActor,
             actor_kwargs={"use_gpu": False},
             num_workers=args.ocr_num_workers,

@@ -11,15 +11,16 @@ logger = logging.getLogger(__name__)
 def stack_train_pair_rollout_debug(
     batch: list[dict],
     key: str,
+    stream_name: str,
 ) -> torch.Tensor | None:
-    """Stack one rollout debug field across a train micro-batch."""
+    """Stack one rollout debug field of one latent stream across a train micro-batch."""
     if not batch:
         return None
     for item in batch:
-        rollout_debug_tensors = item.get("rollout_debug_tensors")
-        if not isinstance(rollout_debug_tensors, dict) or rollout_debug_tensors.get(key) is None:
+        stream_debug_tensors = item.get("rollout_debug_tensors", {}).get(stream_name)
+        if stream_debug_tensors is None or stream_debug_tensors.get(key) is None:
             return None
-    return torch.stack([item["rollout_debug_tensors"][key] for item in batch], dim=0)
+    return torch.stack([item["rollout_debug_tensors"][stream_name][key] for item in batch], dim=0)
 
 
 class TrainDataDPSplitter:

@@ -22,7 +22,8 @@ from miles.utils.diffusion_rollout_response import RolloutImageResponseParserAct
 from miles.utils.eval_config import EvalDatasetConfig
 from miles.utils.http_utils import post
 from miles.utils.misc import SingletonMeta, load_function
-from miles.utils.output_store import StoredTensor, connect_output_store, record_dropped_samples
+from miles.utils.output_store import StoredTensor, StoredTensorReader, connect_output_store, record_dropped_samples
+from miles.utils.tracking_utils import logs_rollout_media
 from miles.utils.types import Sample
 
 from .rm_hub import batched_async_rm
@@ -59,14 +60,18 @@ def build_rollout_sampling_params(
         sampling_params.update(
             {
                 "rollout": True,
-                "rollout_sde_type": args.diffusion_sde_type,
-                "rollout_noise_level": args.diffusion_noise_level,
-                "rollout_log_prob_no_const": args.diffusion_log_prob_no_const,
+                "rollout_sde_type": args.diffusion_sde_type[args.primary_stream],
+                "rollout_noise_level": args.diffusion_noise_level[args.primary_stream],
+                "rollout_log_prob_no_const": args.diffusion_log_prob_no_const[args.primary_stream],
                 "rollout_debug_mode": args.diffusion_debug_mode,
                 "rollout_return_denoising_env": True,
                 "rollout_return_dit_trajectory": True,
             }
         )
+        if args.rollout_extra_streams:
+            sampling_params["rollout_extra_streams"] = args.rollout_extra_streams
+        if args.rollout_extra_stream_sde_args:
+            sampling_params["rollout_extra_stream_sde_args"] = args.rollout_extra_stream_sde_args
         if args.use_output_store:
             sampling_params["rollout_return_outputs_via_store"] = True
         if args.rm_type == "none" and args.custom_rm_path is None:
@@ -132,6 +137,9 @@ class GenerateState(metaclass=SingletonMeta):
         self._parser_rr = 0
         self.parser_inflight = [0] * args.rollout_parser_num_workers
         self.output_store = connect_output_store(args) if args.use_output_store else None
+        self.output_reader = StoredTensorReader(self.output_store) if args.use_output_store else None
+        # outputs of the running rollout still to keep for its media logging
+        self.media_outputs_left = 0
 
         self.reset()
 
@@ -170,6 +178,29 @@ class GenerateState(metaclass=SingletonMeta):
                 )
             )
         self.remaining_batch_size += len(samples)
+
+
+def check_extra_stream_sde_args(args: Namespace, samples: list[Sample]) -> None:
+    """Reject a response whose extra stream was not rolled out with the settings the request gave it.
+
+    An engine without per-stream settings ignores the request field and echoes nothing; Flow-GRPO would score the
+    stream with settings the engine never used.
+    """
+    for sample in samples:
+        for stream_name, sde_args in args.rollout_extra_stream_sde_args.items():
+            # A stream the engine did not roll out at all is the converter's error to report.
+            if stream_name not in sample.extra_streams:
+                continue
+            echoed = sample.extra_streams[stream_name].rollout_sde_kernel
+            # An ode stream steps without noise, so the engine may report any noise level for it.
+            compared = [
+                key for key in sde_args if key != "rollout_noise_level" or sde_args["rollout_sde_type"] != "ode"
+            ]
+            if echoed is None or any(echoed.get(key) != sde_args[key] for key in compared):
+                raise ValueError(
+                    f"stream {stream_name!r} was rolled out with {echoed}, not {sde_args} "
+                    f"(sample_index={sample.index}); the engine must apply and echo rollout_extra_stream_sde_args"
+                )
 
 
 async def generate_microgroup(
@@ -232,6 +263,8 @@ async def generate_microgroup(
     for sample in microgroup:
         sample.parser_max_queue_depth = float(queued)
     st.attach(microgroup)
+    if not evaluation:
+        check_extra_stream_sde_args(args, microgroup)
 
     # Stash the SDE/training step indices on each sample so _train_core can
     # slice the full-length trajectory & rollout_log_probs down to the window.
@@ -249,33 +282,44 @@ async def generate_microgroup(
     return microgroup
 
 
-async def load_generated_outputs(state: GenerateState, samples: list[Sample]) -> None:
-    """Read the samples' stored outputs into tensors and delete them from the store.
+async def release_generated_outputs(state: GenerateState, samples: list[Sample]) -> None:
+    """Delete the stored outputs of scored samples from the store, first reading the few media logging keeps.
 
-    The store then holds an output only from the engine's put to this read. The rollout's release deletes whatever a
-    failed delete leaves.
+    The samples' outputs become ``None``, except the kept ones, which become tensors. The rollout's release deletes
+    whatever a failed delete leaves.
     """
-    stored = [sample for sample in samples if isinstance(sample.generated_output, StoredTensor)]
-    if not stored:
+    stored_samples = [sample for sample in samples if isinstance(sample.generated_output, StoredTensor)]
+    if not stored_samples:
         return
-    outputs = [sample.generated_output for sample in stored]
-    refs = [
-        msgspec.structs.replace(
-            output.ref, fields=tuple(spec for spec in output.ref.fields if spec.name == output.field)
-        )
-        for output in outputs
-    ]
-    st = hooks.StageTimer()
-    with st.stage("store_read"):
-        tensors = await asyncio.to_thread(read_generated_outputs, state.output_store, outputs)
+    # taken before the read is awaited, so concurrent microgroups keep at most --wandb-log-num-images in all
+    media_samples = stored_samples[: state.media_outputs_left]
+    state.media_outputs_left -= len(media_samples)
+    media_tensors = []
+    if media_samples:
+        media_outputs = [sample.generated_output for sample in media_samples]
         try:
-            await asyncio.to_thread(state.output_store.delete_many, refs)
+            media_tensors = await asyncio.to_thread(read_generated_outputs, state.output_reader, media_outputs)
         except Exception:
             logger.warning(
-                "Failed to delete %d read outputs; the rollout's release deletes them", len(refs), exc_info=True
+                "Failed to read %d outputs kept for media; they are not logged", len(media_samples), exc_info=True
             )
-    st.attach(stored)
-    for sample, tensor in zip(stored, tensors, strict=True):
+            media_samples = []
+    output_refs = [
+        msgspec.structs.replace(
+            stored_output.ref,
+            fields=tuple(spec for spec in stored_output.ref.fields if spec.name == stored_output.field),
+        )
+        for stored_output in (sample.generated_output for sample in stored_samples)
+    ]
+    try:
+        await asyncio.to_thread(state.output_store.delete_many, output_refs)
+    except Exception:
+        logger.warning(
+            "Failed to delete %d scored outputs; the rollout's release deletes them", len(output_refs), exc_info=True
+        )
+    for sample in stored_samples:
+        sample.generated_output = None
+    for sample, tensor in zip(media_samples, media_tensors, strict=True):
         sample.generated_output = tensor
 
 
@@ -299,8 +343,6 @@ async def generate_and_rm_microgroup(
                     microgroup = await custom_generate_func(args, microgroup, sampling_params)
             else:
                 microgroup = await generate_microgroup(args, microgroup, sampling_params, evaluation=evaluation)
-        # inside the semaphore, so the store holds at most one microgroup's outputs per generation slot
-        await load_generated_outputs(state, microgroup)
 
     # for the rm that need the whole group, we will not do the rm here
     if args.group_rm:
@@ -314,13 +356,14 @@ async def generate_and_rm_microgroup(
     for sample, reward in zip(microgroup, rewards, strict=True):
         sample.reward = reward
         hooks.record_trajectory(sample)
+    await release_generated_outputs(state, microgroup)
     return microgroup
 
 
 async def generate_and_rm_group(
     args: Namespace, group: list[Sample], sampling_params: dict[str, Any], evaluation: bool = False
 ) -> list[Sample]:
-    GenerateState(args)
+    state = GenerateState(args)
 
     # N-spaced base so sgl-d's seed→[seed+0..seed+N-1] expansion stays disjoint
     # per (rollout, prompt-group); group_index is monotonic across the run.
@@ -347,6 +390,7 @@ async def generate_and_rm_group(
         rewards = await batched_async_rm(args, group)
         for sample, reward in zip(group, rewards, strict=False):
             sample.reward = reward
+        await release_generated_outputs(state, group)
 
     return group
 
@@ -369,6 +413,7 @@ async def generate_rollout_async(
     assert args.rollout_global_dataset
 
     state = GenerateState(args)
+    state.media_outputs_left = args.wandb_log_num_images if logs_rollout_media(args, rollout_id) else 0
 
     # instantiate data filters
     dynamic_filter = (

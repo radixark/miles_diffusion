@@ -62,6 +62,17 @@ class DiTTrajectory:
 
 
 @dataclass
+class RolloutStreamData:
+    """One latent stream's rollout data; the primary stream's is the same three fields at a response's top level."""
+
+    rollout_log_probs: torch.Tensor | None = None
+    rollout_debug_tensors: RolloutDebugTensors | None = None
+    dit_trajectory: DiTTrajectory | None = None
+    # An extra stream's rollout settings as the engine applied them, echoed in its response.
+    rollout_sde_kernel: dict[str, Any] | None = None
+
+
+@dataclass
 class Sample:
     """The sample generated.
 
@@ -82,7 +93,7 @@ class Sample:
     # reproducibility
     seed: int | None = None
     # Eager tensor on CPU. Image rollout shape: ``[C, T, H, W]`` (``T==1`` typical).
-    # With --use-output-store, a StoredTensor between generation and load_generated_outputs.
+    # With --use-output-store, a StoredTensor from generation until its reward, then None (or a tensor kept for media).
     generated_output: torch.Tensor | None = None
     # [C, L] waveform at audio_sample_rate, for engines that also return audio (e.g. H3 t2va).
     generated_audio: torch.Tensor | None = None
@@ -91,6 +102,9 @@ class Sample:
     rollout_debug_tensors: RolloutDebugTensors | None = None
     denoising_env: DenoisingEnv | None = None
     dit_trajectory: DiTTrajectory | None = None
+    # The other latent streams the engine rolled out, by name; rollout_log_probs, rollout_debug_tensors and
+    # dit_trajectory above are the primary stream's.
+    extra_streams: dict[str, RolloutStreamData] = field(default_factory=dict)
     # The output store object holding this sample's stored tensors (a radix_transfer_plugins StoreRef).
     rollout_store_ref: Any | None = None
 

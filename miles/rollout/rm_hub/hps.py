@@ -128,6 +128,7 @@ class AsyncHPSPool(AsyncRewardActorPool, metaclass=SingletonMeta):
 
     def __init__(self, args, placement_group=None, slots=None) -> None:
         super().__init__(
+            args=args,
             actor_cls=HPSRewardActor,
             actor_kwargs={
                 "hps_version": args.hps_version,

@@ -5,11 +5,12 @@ Optional: ``positions`` (used by ``LTXTrainPipelineConfig`` forward).
 """
 
 from .loading import TRAIN_COMPONENT, load_transformer_for_train, resolve_transformer_checkpoint
-from .positions import prepare_video_positions
+from .positions import prepare_audio_positions, prepare_video_positions
 
 __all__ = [
     "TRAIN_COMPONENT",
     "load_transformer_for_train",
+    "prepare_audio_positions",
     "prepare_video_positions",
     "resolve_transformer_checkpoint",
 ]

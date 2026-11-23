@@ -2,6 +2,7 @@
 
     policy_loss + sde (stock backend) + debug mode + rollout log-probs + clip in (0, 1) --> allowed
     nft / cps / custom backend / no debug mode / recompute old log-prob / clip >= 1    --> rejected
+    extra rollout streams (the closed form is one stream's Gaussian)                  --> rejected
     flag off                                                                          --> anything goes
 """
 
@@ -20,11 +21,12 @@ def _args(**overrides):
     values = dict(
         diffusion_score_centering=True,
         loss_type="policy_loss",
-        diffusion_sde_type="sde",
+        diffusion_sde_type={"visual": "sde"},
         sde_step_backend_path=None,
         diffusion_debug_mode=True,
         diffusion_recompute_old_log_prob=False,
         diffusion_clip_range=1e-4,
+        rollout_extra_streams=[],
     )
     values.update(overrides)
     return Namespace(**values)
@@ -36,11 +38,13 @@ def _args(**overrides):
         (dict(loss_type="nft"), "policy_loss"),
         (dict(loss_type="sft_loss"), "policy_loss"),
         (dict(loss_type="custom_loss"), "policy_loss"),
-        (dict(diffusion_sde_type="cps"), "--diffusion-sde-type sde"),
+        (dict(diffusion_sde_type={"visual": "cps"}), "--diffusion-sde-type sde"),
+        (dict(diffusion_sde_type={"visual": "sde", "audio": "ode"}), "--diffusion-sde-type sde"),
         (dict(sde_step_backend_path="my.Backend"), "default SDE step backend"),
         (dict(diffusion_debug_mode=False), "--diffusion-debug-mode"),
         (dict(diffusion_recompute_old_log_prob=True), "--diffusion-recompute-old-log-prob"),
         (dict(diffusion_clip_range=1.0), "--diffusion-clip-range"),
+        (dict(rollout_extra_streams=["audio"]), "--rollout-extra-streams"),
     ],
 )
 def test_rejects_setups_outside_the_gaussian_closed_form(overrides, match):

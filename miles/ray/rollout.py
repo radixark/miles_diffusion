@@ -449,12 +449,15 @@ class RolloutManager:
         reward_stats["rollout/step"] = compute_rollout_step(self.args, self.rollout_id)
         tracking_utils.log(self.args, reward_stats, step_key="rollout/step")
 
-        max_images = self.args.wandb_log_num_images
-        interval = self.args.wandb_log_image_interval
-        if max_images > 0 and self.rollout_id % interval == 0:
+        if tracking_utils.logs_rollout_media(self.args, self.rollout_id):
+            # with the output store on, only the samples the rollout kept for media hold a tensor
             self._log_images_async(
-                {"rollout_media/sample_images": samples},
-                max_images=max_images,
+                {
+                    "rollout_media/sample_images": [
+                        sample for sample in samples if isinstance(sample.generated_output, torch.Tensor)
+                    ]
+                },
+                max_images=self.args.wandb_log_num_images,
                 step_key="rollout/step",
                 step_value=compute_rollout_step(self.args, self.rollout_id),
                 reward_key=self.args.reward_key,
@@ -689,8 +692,11 @@ def _allocate_rollout_engine_addr_and_ports_normal(*, args, num_engines, rollout
 
         def get_addr_and_ports(engine):
             # use small ports to prevent ephemeral port between 32768 and 65536.
-            # also, ray uses port 10002-19999, thus we avoid near-10002 to avoid racing condition
-            start_port = 15000
+            # also, ray uses port 10002-19999, thus we avoid near-10002 to avoid racing condition.
+            # Mooncake's transfer engine binds its RPC and TCP ports at random in 15000-17000 (one client
+            # per engine, rollout manager and trainer with --use-output-store), and sglang-d binds its
+            # offline-job broker on port + 1, so the engine ports start above that range.
+            start_port = 17001
 
             def port(consecutive=1):
                 nonlocal start_port

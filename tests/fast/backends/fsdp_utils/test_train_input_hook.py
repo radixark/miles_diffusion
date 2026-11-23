@@ -5,6 +5,7 @@
     preprocessed pairs --> micro-batch schedule --> training forwards, in order
     preprocessed pairs --> train-output hook (the same ctx, the list the forwards filled)
     no hook            --> the converted train pairs, as before
+    the metric buffer of the training forwards is created with the run's rollout streams
 
 The trunk numbers each forward: ``microbatch_id`` counts the rollout's micro-batches, ``optim_step_idx`` is the
 window; the old-log-prob recompute of windows 1.. reuses their training forwards' numbers.
@@ -31,7 +32,7 @@ from miles.backends.fsdp_utils.loss_hub.types import DiffusionLossContext
 from miles.utils.train_data_utils import build_microbatch_schedule
 
 
-def _load_train_core():
+def _load_train_core(new_metric_buffer=lambda *args, **kwargs: SimpleNamespace(reduce=lambda: {})):
     path = Path(__file__).resolve().parents[4] / "miles/backends/fsdp_utils/actor.py"
     actor_class = next(
         node
@@ -48,7 +49,7 @@ def _load_train_core():
         build_microbatch_schedule=build_microbatch_schedule,
         validate_same_microbatch_counts_across_train_ranks=lambda **kwargs: None,
         timer=lambda name: nullcontext(),
-        new_metric_buffer=lambda *args, **kwargs: SimpleNamespace(reduce=lambda: {}),
+        new_metric_buffer=new_metric_buffer,
     )
     exec(compile(ast.Module(body=[method], type_ignores=[]), str(path), "exec"), namespace)
     return namespace["_train_core"]
@@ -61,7 +62,7 @@ def _actor(train_input, train_output, forwarded, **args):
         models={},
         reference_models={},
         train_pipeline_config=None,
-        sde_backend=None,
+        sde_backends={},
         args=Namespace(
             num_steps_per_rollout=2,
             micro_batch_size=1,
@@ -69,7 +70,12 @@ def _actor(train_input, train_output, forwarded, **args):
             debug_skip_optimizer_step=True,
             log_loss_sigma_bucket=0,
             diffusion_num_steps=4,
-            **{"diffusion_recompute_old_log_prob": False, **args},
+            **{
+                "diffusion_recompute_old_log_prob": False,
+                "primary_stream": "visual",
+                "rollout_extra_streams": [],
+                **args,
+            },
         ),
         _forward_dtype=torch.float32,
         parallel_state=SimpleNamespace(dp_rank=0, dp_group=None),
@@ -149,3 +155,23 @@ def test_the_recompute_passes_the_numbers_of_the_training_forwards_of_windows_1_
     recompute = [(2, 1, True, [pairs[2]]), (3, 1, True, [pairs[3]])]
     training = [(index, index // 2, False, [pair]) for index, pair in enumerate(pairs)]
     assert forwarded == recompute + training
+
+
+def test_the_metric_buffer_is_created_with_the_runs_streams():
+    """Without them the buffer has no per-stream keys, and a two-stream run's first micro-batch raises on a GPU."""
+    created = []
+
+    def new_metric_buffer(*args, **kwargs):
+        created.append(kwargs)
+        return SimpleNamespace(reduce=lambda: {})
+
+    actor = _actor(None, None, [], primary_stream="main", rollout_extra_streams=["echo"])
+    _load_train_core(new_metric_buffer)(
+        actor,
+        rollout_id=0,
+        rollout_data={"train_data": [{"sample_index": 0}, {"sample_index": 1}]},
+        external_data=None,
+    )
+
+    # one buffer per optimizer step
+    assert [kwargs["streams"] for kwargs in created] == [("main", "echo")] * 2

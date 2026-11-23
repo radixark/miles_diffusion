@@ -48,7 +48,7 @@ def test_flags_parse(monkeypatch: pytest.MonkeyPatch) -> None:
     assert args.use_output_store
     assert args.output_store_mooncake_master == "10.0.0.1:50051"
     assert args.output_store_local_buffer_size == "2gb"
-    assert args.output_store_global_segment_size == "16gb"
+    assert args.output_store_global_segment_size == "72gb"
     assert args.output_store_protocol == "tcp"
     assert args.output_store_device_name == ""
 
@@ -71,6 +71,15 @@ def test_switch_off_passes_and_rejects_a_master() -> None:
 def test_switch_on_rejects(overrides, message) -> None:
     with pytest.raises(ValueError, match=message):
         validate_output_store_args(_args(**overrides))
+
+
+def test_switch_on_rejects_a_plugin_without_read_slot(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An older plugin would fail only when the first reader is built, after the trainers loaded their models."""
+    plugins = types.ModuleType("radix_transfer_plugins")
+    plugins.OutputStore = type("OutputStore", (), {"read_many": lambda self: None})
+    monkeypatch.setitem(sys.modules, "radix_transfer_plugins", plugins)
+    with pytest.raises(ValueError, match="OutputStore.read_slot"):
+        validate_output_store_args(_args())
 
 
 def test_engine_server_args_name_the_run_and_the_engine_host() -> None:
