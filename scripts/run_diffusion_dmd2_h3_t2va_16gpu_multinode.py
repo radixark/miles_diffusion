@@ -36,13 +36,16 @@ Usage (after the multi-node bring-up, on the head node):
     MILES_SCRIPT_EXTERNAL_RAY=1 python3 scripts/run_diffusion_dmd2_h3_t2va_16gpu_multinode.py
 
 Single node, for smoke runs and the e2e CI: the script starts its own ray cluster. Two GPUs hold the
-rollout engine (tp2) and FSDP DP=2 over the student, the critic and the teacher only with their
-parameters, gradients and optimizer states in host memory (--fsdp-cpu-offload; about 1.1 TB). The
-master stays fp32: H3 keeps proj_in / time_embedder / proj_out in fp32, and FSDP2 wants one original
-dtype across a group's trainable parameters, which a bf16 master would break for full-parameter training.
+rollout engine (tp2) and FSDP DP=2 over the student, the critic and the teacher in one of two ways:
+  --lora               the student and the critic train LoRA adapters (rank 64, lr 1e-4) over frozen
+                       bf16 bases, all in GPU memory; what the e2e CI runs, not a tuned recipe;
+  --fsdp-cpu-offload   the full-parameter recipe with its parameters, gradients and optimizer states
+                       in host memory (about 1.6 TB with the engine). The master stays fp32: H3 keeps
+                       proj_in / time_embedder / proj_out in fp32, and FSDP2 wants one original dtype
+                       across a group's trainable parameters.
     python3 scripts/run_diffusion_dmd2_h3_t2va_16gpu_multinode.py --num-nodes 1 --num-gpus-per-node 2 \
         --rollout-batch-size 4 --critic-steps-per-rollout 2 --num-rollout 2 --eval-interval 0 \
-        --save-interval 0 --fsdp-cpu-offload
+        --save-interval 0 --lora
 """
 
 import hashlib
@@ -101,6 +104,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     # Below 16 GPUs the two 31B optimizers do not fit: keep params, grads and optimizer states in
     # host memory (the optimizer steps on the CPU).
     fsdp_cpu_offload: bool = False
+    # Or train LoRA adapters of the student and the critic over frozen bf16 bases.
+    lora: bool = False
     duration_seconds: float = 5.0
     data_dir: str = "/root/datasets"
     # "teacher" or "fasth3": render the eval prompts with that model instead of training.
@@ -241,6 +246,16 @@ def execute(args: ScriptArgs, prompt_dir: str) -> None:
     else:
         save_args = f"--save {run_dir}/ckpt --save-interval {args.save_interval} " if args.save_interval > 0 else ""
         offload_args = "--fsdp-cpu-offload --teacher-cpu-offload " if args.fsdp_cpu_offload else ""
+        if args.lora:
+            # The adapters leave H3's fp32-pinned modules frozen, so the master can be bf16.
+            params_args = (
+                "--use-lora --lora-ipc-weight-sync --lora-rank 64 --lora-alpha 128 "
+                "--sglang-lora-merge-mode merge "
+                "--lr 1e-4 --critic-lr 1e-4 "
+                "--fsdp-master-dtype bf16 --fsdp-reduce-dtype bf16 "
+            )
+        else:
+            params_args = "--lr 2e-6 --critic-lr 2e-6 --fsdp-master-dtype fp32 --fsdp-reduce-dtype fp32 "
         mode_args = (
             f"--hf-checkpoint {MODEL} "
             f"{save_args}"
@@ -255,12 +270,9 @@ def execute(args: ScriptArgs, prompt_dir: str) -> None:
             "--fsdp-flow-shift visual=5.0 "
             "--diffusion-step-strategy-path miles.rollout.step_strategy_hub.stop_at_random_step "
             "--diffusion-sde-type ode "
-            "--lr 2e-6 "
-            "--critic-lr 2e-6 "
+            f"{params_args}"
             "--weight-decay 0.01 "
             "--train-backend fsdp "
-            "--fsdp-master-dtype fp32 "
-            "--fsdp-reduce-dtype fp32 "
             "--diffusion-forward-dtype bf16 "
             "--gradient-checkpointing "
             f"{offload_args}"
