@@ -68,7 +68,7 @@ def _request_teacher_forward(
     if any(env.neg_cond_kwargs is None for env in envs):
         raise ValueError(
             "--dmd2-teacher-guidance-scale > 1 needs the rollout's negative cond, "
-            "which the engine returns only for requests that run CFG"
+            "which the engine returns only with a negative prompt (--diffusion-negative-prompt)"
         )
     pos_list = [config.prepare_cond_kwargs(env.pos_cond_kwargs, ctx.device) for env in envs]
     neg_list = [config.prepare_cond_kwargs(env.neg_cond_kwargs, ctx.device) for env in envs]

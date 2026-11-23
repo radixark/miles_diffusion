@@ -373,6 +373,7 @@ async def test_only_a_rollout_that_logs_media_keeps_outputs(monkeypatch, rollout
         rollout_batch_size=1,
         over_sampling_batch_size=1,
         n_samples_per_prompt=1,
+        rollout_neg_cond_guidance_scale=None,
     )
 
     with pytest.raises(_Stop):

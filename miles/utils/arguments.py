@@ -1105,7 +1105,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--dmd2-teacher-guidance-scale",
                 type=float,
                 default=None,
-                help="CFG scale of the frozen teacher when DMD2 scores the student's samples; 1 runs it unguided.",
+                help=(
+                    "CFG scale of the frozen teacher when DMD2 scores the student's samples; 1 runs it unguided. "
+                    "Above 1 the rollout fetches the negative cond with one CFG request per run."
+                ),
             )
             parser.add_argument(
                 "--dmd2-score-sigma-range",
@@ -1906,6 +1909,10 @@ def set_default_diffusion_args(args) -> None:
         if args.critic_lr is None:
             args.critic_lr = args.lr
 
+    # An unguided rollout returns no negative cond; a teacher that runs CFG has the rollout fetch it at this scale.
+    teacher_runs_cfg = args.loss_type == "dmd2" and (args.dmd2_teacher_guidance_scale or 1) > 1
+    args.rollout_neg_cond_guidance_scale = args.dmd2_teacher_guidance_scale if teacher_runs_cfg else None
+
     if args.ref_mode is None:
         args.ref_mode = "lora_base" if any(beta > 0 for beta in args.diffusion_kl_beta.values()) else "none"
 
@@ -2251,11 +2258,13 @@ def miles_validate_args(args):
         args.model_backend_path = cfg_cls.model_backend_path
     args.primary_stream = cfg_cls.primary_stream
     if not cfg_cls.supports_cfg_training and (
-        args.diffusion_guidance_scale != 1.0 or args.diffusion_negative_prompt is not None
+        args.diffusion_guidance_scale != 1.0
+        or args.diffusion_negative_prompt is not None
+        or args.rollout_neg_cond_guidance_scale is not None
     ):
         raise ValueError(
-            f"{cfg_cls.__name__} trains unguided (supports_cfg_training=False); set "
-            f"--diffusion-guidance-scale 1.0 and drop --diffusion-negative-prompt"
+            f"{cfg_cls.__name__} trains unguided (supports_cfg_training=False); set --diffusion-guidance-scale 1.0 "
+            f"and --dmd2-teacher-guidance-scale 1, and drop --diffusion-negative-prompt"
         )
     if cfg_cls.tasks and args.diffusion_task not in cfg_cls.tasks:
         raise ValueError(
