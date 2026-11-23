@@ -147,7 +147,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--ulysses-degree` | int | `0` | `0` = auto (Ulysses fills SP). Ring degree > 1 needs torch ≥ 2.11 and a ring-capable attention backend. |
 | `--fsdp-attention-backend` | str | – | diffusers `set_attention_backend` value. |
 | `--fsdp-flow-shift` | str | – | SFT training sigma grid shift per latent stream, e.g. `visual=12,audio=3`; a bare number is the visual shift. RL pairs carry their rollout sigmas instead. Distinct from `--diffusion-flow-shift`. |
-| `--fsdp-supervised-streams` | str | `visual,audio` | Comma-separated latent streams the SFT loss supervises, among those the pair carries; must include `visual`. A stream left out is still noised and fed to the DiT but adds no loss. RL trajectories carry only the visual stream. |
+| `--fsdp-supervised-streams` | str | `visual,audio` | Comma-separated latent streams the SFT loss supervises, among those the pair carries; must include `visual`. A stream left out is still noised and fed to the DiT but adds no loss. RL trajectories carry the primary stream, plus any `--rollout-extra-streams`. |
 | `--gradient-checkpointing` | flag | off | |
 | `--deterministic-mode` | flag | off | See [Deterministic Training](../advanced/deterministic.md). |
 | `--train-env-vars` | JSON | `{}` | Extra env for the training processes. |
@@ -187,7 +187,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--rollout-microgroup-size` | int | `1` | |
 | `--diffusion-fps` | float | – | Video only. Also the fps logged and saved media play at (8 when unset); H3 drops it from the request, so set it to 24 there. |
 | `--diffusion-output-num-frames` | int | `1` | |
-| `--rollout-extra-streams` | str | – | Comma-separated latent streams the engine rolls out besides the primary one, e.g. `audio`. The Flow-GRPO converter pairs them with the primary stream; the model must list them in its `trainable_extra_streams`. No model does yet. |
+| `--rollout-extra-streams` | str | – | Comma-separated latent streams the engine rolls out besides the primary one, e.g. `audio`. The Flow-GRPO converter pairs them with the primary stream; the model must list them in its `trainable_extra_streams`. LTX-2.3 trains `audio`, with `--rollout-patch-group ltx_av`. |
 | `--rollout-video-dtype` | enum | `keep` | `keep` / `uint8`: dtype of the decoded video in rollout and eval responses. `uint8` quantizes engine-side by truncation (×255, then clamp), cutting the response ~4x (with `--use-output-store`, the stored output). That matches the PickScore reward path; HPS, OCR and the OpenAI-API reward round instead, so keep `keep` for them and for any consumer that needs the float tensor. |
 | `--diffusion-guidance-scale` | float | `4.0` | |
 | `--diffusion-guidance-scale-2` | float | – | Wan2.2 low-noise expert; **required** when training it. |

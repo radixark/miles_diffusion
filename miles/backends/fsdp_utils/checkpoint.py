@@ -105,15 +105,17 @@ class ModelState(Stateful):
 
 
 class OptimizerState(Stateful):
-    """Wrapper for optimizer state only. ``allowed_missing`` is a list of
-    substring patterns; matching params are filtered out of the saved/loaded
-    state dict so DCP's strict matching tolerates trainable params whose
-    forward output is unreachable from the loss (architectural dead params)."""
+    """Wrapper for optimizer state only. ``allowed_missing`` is for a load: a
+    list of substring patterns; matching params the checkpoint holds no state
+    for (not in ``saved_param_names``) are filtered out of the loaded state
+    dict so DCP's strict matching tolerates trainable params the saving run
+    never stepped."""
 
-    def __init__(self, model, optimizer, allowed_missing: list[str] | None = None):
+    def __init__(self, model, optimizer, allowed_missing: list[str] | None = None, saved_param_names=frozenset()):
         self.model = model
         self.optimizer = optimizer
         self.allowed_missing = tuple(allowed_missing or ())
+        self.saved_param_names = saved_param_names
 
     def state_dict(self):
         _, optimizer_state_dict = get_state_dict(self.model, optimizers=self.optimizer)
@@ -121,7 +123,8 @@ class OptimizerState(Stateful):
             optimizer_state_dict["state"] = {
                 param_name: param_state
                 for param_name, param_state in optimizer_state_dict["state"].items()
-                if not any(pattern in param_name for pattern in self.allowed_missing)
+                if param_name in self.saved_param_names
+                or not any(pattern in param_name for pattern in self.allowed_missing)
             }
         return {"optim": optimizer_state_dict}
 
@@ -244,8 +247,15 @@ def load(actor: Any) -> dict[str, Any] | None:
     load_optimizer = not actor.args.no_load_optim
     if load_optimizer and (optimizer_dir / ".metadata").exists():
         allowed_missing = actor.train_pipeline_config.optimizer_state_allowed_missing
-        optimizer_state = OptimizerState(actor.model, actor.optimizer, allowed_missing=allowed_missing)
-        optim_state_dict = {"optim_state": optimizer_state}
+        state_key = "optim_state"
+        # A saved state key is "<state_key>.optim.state.<param name>.<state field>"; param_groups keys sit next to them.
+        prefix = f"{state_key}.optim.state."
+        saved_keys = dcp.FileSystemReader(str(optimizer_dir)).read_metadata().state_dict_metadata
+        saved_param_names = {
+            key.removeprefix(prefix).rpartition(".")[0] for key in saved_keys if key.startswith(prefix)
+        }
+        optimizer_state = OptimizerState(actor.model, actor.optimizer, allowed_missing, saved_param_names)
+        optim_state_dict = {state_key: optimizer_state}
         try:
             dcp.load(state_dict=optim_state_dict, checkpoint_id=str(optimizer_dir))
             logger.info(f"[FSDP] Loaded optimizer from {optimizer_dir}")
@@ -341,8 +351,7 @@ def save(actor: Any, iteration: int) -> None:
 
     # --no-save-optim drops both the optimizer and the LR scheduler.
     if not actor.args.no_save_optim:
-        allowed_missing = actor.train_pipeline_config.optimizer_state_allowed_missing
-        optimizer_state = OptimizerState(actor.model, actor.optimizer, allowed_missing=allowed_missing)
+        optimizer_state = OptimizerState(actor.model, actor.optimizer)
         dcp.save({"optim_state": optimizer_state}, checkpoint_id=str(optimizer_dir))
 
         lr_scheduler_state = LRSchedulerState(actor.lr_scheduler)
