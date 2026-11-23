@@ -7,7 +7,7 @@ from PIL import Image
 
 from miles.utils.misc import SingletonMeta
 from miles.utils.processing_utils import generated_output_to_rgb_hwc_uint8_frames
-from miles.utils.types import Sample
+from miles.utils.types import GeneratedMedia, Sample
 
 from .core import AsyncRewardActorPool, record_reward_queue_depth
 
@@ -84,13 +84,15 @@ class OcrScorer:
 
 
 class OcrRewardActor:
+    required_media = frozenset({"visual"})
+
     def __init__(self, use_gpu: bool = False):
         self.scorer = OcrScorer(use_gpu=use_gpu)
 
-    def score_batch(self, outputs: list[torch.Tensor], prompts: list[str]) -> list[float]:
+    def score_batch(self, outputs: list[GeneratedMedia], prompts: list[str]) -> list[float]:
         assert len(outputs) == 1, f"OCR scores one image per call, got {len(outputs)}"
         # flow_grpo feeds PaddleOCR rounded RGB (not BGR) uint8; matching it keeps the reward bit-identical
-        (image,) = generated_output_to_rgb_hwc_uint8_frames(outputs[0], None, round_normalized=True)
+        (image,) = generated_output_to_rgb_hwc_uint8_frames(outputs[0].visual, None, round_normalized=True)
         return self.scorer([image], prompts)
 
 
@@ -112,6 +114,6 @@ class AsyncOcrPool(AsyncRewardActorPool, metaclass=SingletonMeta):
 
 async def ocr_rm(args, samples: Sequence[Sample]) -> list[float]:
     pool = AsyncOcrPool(args)
-    scores, max_queue_depth = await pool.score([s.generated_output for s in samples], [s.prompt for s in samples])
+    scores, max_queue_depth = await pool.score([s.generated_media for s in samples], [s.prompt for s in samples])
     record_reward_queue_depth(samples, "ocr", max_queue_depth)
     return scores

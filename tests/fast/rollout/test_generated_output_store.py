@@ -12,7 +12,8 @@ Mental model (one microgroup, store on; the rollout process never reads an outpu
         |  read_generated_outputs                       (4) == the inline parse; the buffer is registered once,
         |                                                   and again only to grow
         |                                               (5) reads from several threads get their own tensors
-        |  scorer.score_batch(tensors)                  (6) refs read, inline tensors passed through
+        |  scorer.score_batch(outputs)                  (6) refs read: visual normalized, audio as stored;
+        |                                                   inline fields passed through
         |  PickScore: pickscore_rm hands a stored video over unsliced   (7)
         |             the actor picks its frames of the whole video     (8) == the frames picked inline
         v
@@ -61,7 +62,7 @@ from miles.utils.diffusion_rollout_response import (
 )
 from miles.utils.output_store import StoredTensor, StoredTensorReader
 from miles.utils.processing_utils import sample_frame_indices
-from miles.utils.types import Sample
+from miles.utils.types import GeneratedMedia, Sample
 
 _CHW = torch.arange(3 * 5 * 6, dtype=torch.float32).reshape(3, 5, 6) / 90
 _HWC = _CHW.permute(1, 2, 0).contiguous()
@@ -232,8 +233,10 @@ def test_concurrent_reads_return_their_own_tensors():
 
 
 def test_reward_actor_reads_refs_and_passes_tensors_through(monkeypatch):
-    """The scorer must get tensors in the order it was given outputs; eval outputs arrive inline."""
-    store, _, ref = _stored({"generated_output.0": _CHW, "generated_output.1": _HWC})
+    """The scorer must get each sample's fields in the order it was given them, the video in its CFHW layout and
+    the waveform as stored; eval outputs arrive inline."""
+    waveform = torch.linspace(-1, 1, 2 * 9).reshape(2, 9)
+    store, backend, ref = _stored({"generated_output.0": _CHW, "generated_output.1": _HWC, "audio.0": waveform})
     monkeypatch.setattr(core_module, "connect_output_store", lambda args: store)
     received = []
 
@@ -244,12 +247,21 @@ def test_reward_actor_reads_refs_and_passes_tensors_through(monkeypatch):
 
     actor = _StoredOutputRewardActor(scorer_cls=FakeScorer, scorer_kwargs={}, args=Namespace())
     inline = torch.zeros(3, 1, 4, 5)
-    outputs = [StoredTensor(ref, "generated_output.0"), inline, StoredTensor(ref, "generated_output.1")]
+    outputs = [
+        GeneratedMedia(
+            visual=StoredTensor(ref, "generated_output.0"), audio=StoredTensor(ref, "audio.0"), audio_sample_rate=16
+        ),
+        GeneratedMedia(visual=inline),
+        GeneratedMedia(visual=StoredTensor(ref, "generated_output.1")),
+    ]
 
     assert actor.score_batch(outputs, ["a", "b", "c"]) == [1.0, 1.0, 1.0]
-    assert torch.equal(received[0], _normalize_generated_output(_CHW))
-    assert received[1] is inline
-    assert torch.equal(received[2], _normalize_generated_output(_HWC))
+    assert torch.equal(received[0].visual, _normalize_generated_output(_CHW))
+    assert torch.equal(received[0].audio, waveform) and received[0].audio_sample_rate == 16
+    assert received[1].visual is inline
+    assert torch.equal(received[2].visual, _normalize_generated_output(_HWC))
+    # one read for the batch's videos, one for its waveforms
+    assert len(backend.range_reads) == 2
 
 
 @pytest.mark.asyncio
@@ -272,7 +284,7 @@ async def test_pickscore_hands_a_stored_video_over_unsliced(monkeypatch):
 
     await pickscore_module.pickscore_rm(Namespace(pickscore_num_frames=3), samples)
 
-    assert scored[0] is stored_video and scored[1].shape == (3, 3, 4, 5)
+    assert scored[0].visual is stored_video and scored[1].visual.shape == (3, 3, 4, 5)
 
 
 @pytest.mark.parametrize(
@@ -292,8 +304,8 @@ def test_pickscore_picks_the_same_frames_from_a_whole_stored_video(total_frames,
     for frame in set(range(total_frames)) - set(picked_frames):
         video[:, frame] = 200.0
 
-    whole = actor.score_batch([video], ["p"])
-    picked = actor.score_batch([video[:, picked_frames]], ["p"])
+    whole = actor.score_batch([GeneratedMedia(visual=video)], ["p"])
+    picked = actor.score_batch([GeneratedMedia(visual=video[:, picked_frames])], ["p"])
 
     assert whole == picked
 

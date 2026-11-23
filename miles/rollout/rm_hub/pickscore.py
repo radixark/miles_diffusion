@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
 
 import ray
 import torch
@@ -9,7 +10,7 @@ from PIL import Image
 from miles.utils.misc import SingletonMeta
 from miles.utils.output_store import StoredTensor
 from miles.utils.processing_utils import generated_output_to_rgb_hwc_uint8_frames, sample_frame_indices
-from miles.utils.types import Sample
+from miles.utils.types import GeneratedMedia, Sample
 
 from .core import AsyncRewardActorPool, record_reward_queue_depth
 
@@ -69,6 +70,8 @@ class PickScoreScorer(torch.nn.Module):
 
 
 class PickScoreRewardActor:
+    required_media = frozenset({"visual"})
+
     def __init__(
         self,
         *,
@@ -90,11 +93,11 @@ class PickScoreRewardActor:
             model_path=model_path,
         )
 
-    def score_batch(self, outputs: list[torch.Tensor], prompts: list[str]) -> list[float]:
+    def score_batch(self, outputs: list[GeneratedMedia], prompts: list[str]) -> list[float]:
         # a video is scored on --pickscore-num-frames of its frames, averaged; already picked frames pass unchanged
         images, frame_counts = [], []
         for output in outputs:
-            frames = generated_output_to_rgb_hwc_uint8_frames(output, self.num_frames)
+            frames = generated_output_to_rgb_hwc_uint8_frames(output.visual, self.num_frames)
             images.extend(Image.fromarray(frame) for frame in frames)
             frame_counts.append(len(frames))
         flat_prompts = [p for p, n in zip(prompts, frame_counts, strict=True) for _ in range(n)]
@@ -137,14 +140,13 @@ async def pickscore_rm(args, samples: Sequence[Sample]) -> list[float]:
     pool = AsyncPickScorePool(args)
     # pick --pickscore-num-frames here so only the scored frames cross the object store; a stored output is not
     # here to pick from, so its actor picks them
-    outputs = [
-        (
-            output
-            if isinstance(output, StoredTensor)
-            else output[:, sample_frame_indices(output.shape[1], args.pickscore_num_frames)]
-        )
-        for output in (s.generated_output for s in samples)
-    ]
+    outputs = []
+    for sample in samples:
+        output = sample.generated_media
+        if not isinstance(output.visual, StoredTensor):
+            frame_indices = sample_frame_indices(output.visual.shape[1], args.pickscore_num_frames)
+            output = replace(output, visual=output.visual[:, frame_indices])
+        outputs.append(output)
     scores, max_queue_depth = await pool.score(outputs, [s.prompt for s in samples])
     record_reward_queue_depth(samples, "pickscore", max_queue_depth)
     return scores

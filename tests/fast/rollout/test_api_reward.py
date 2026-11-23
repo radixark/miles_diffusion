@@ -2,8 +2,8 @@
 
 Mental model:
 
-    generated_output -> actor -> prompt + PNG request -> validated numeric score
-    custom_api_rm -> singleton pool -> raw tensors in, scores and queue depth out
+    GeneratedMedia -> actor -> prompt + PNG request -> validated numeric score
+    custom_api_rm -> singleton pool -> GeneratedMedia in, scores and queue depth out
 
 Covered: the shared scoring contract; OpenAI image/prompt pairing and client configuration;
 fatal HTTP errors; image-only input; reward dispatch; YAML rubric loading and credential safety.
@@ -42,7 +42,7 @@ from miles.utils.api_rm_config import (
     load_api_rm_config,
     resolve_api_rm_configs,
 )
-from miles.utils.types import Sample
+from miles.utils.types import GeneratedMedia, Sample
 
 
 def _config(**overrides):
@@ -132,7 +132,7 @@ def test_actor_preserves_image_prompt_pairing(sdk_transport):
     actor = OpenAIImageRewardActor(**asdict(_config(base_url="http://judge.test/v1", timeout_s=17)))
     samples = [_sample(2), _sample(1)]
     with ThreadPoolExecutor(max_workers=2) as executor:
-        futures = [executor.submit(actor.score_batch, [s.generated_output], [s.prompt]) for s in samples]
+        futures = [executor.submit(actor.score_batch, [s.generated_media], [s.prompt]) for s in samples]
         assert [future.result()[0] for future in futures] == [2.0, 1.0]
     assert clients[0]["max_retries"] == 2
     assert clients[0]["timeout"] == 17
@@ -156,7 +156,7 @@ async def test_rm_passes_raw_tensor_and_preserves_pool_results_and_errors(
     sample = _sample(1)
     assert await rm_function(args, [sample]) == [1.0]
     (output,), prompts = pool.score.await_args.args
-    assert output is sample.generated_output
+    assert output.visual is sample.generated_output
     assert prompts == [sample.prompt]
     assert sample.reward_max_queue_depth == {reward_name: 3.0}
 
@@ -179,7 +179,7 @@ def test_http_error_propagates_after_sdk_retries(sdk_transport, status, error):
     sdk_transport(handler)
     actor = OpenAIImageRewardActor(**asdict(_config()))
     with pytest.raises(error):
-        actor.score_batch([_sample(1).generated_output], ["1"])
+        actor.score_batch([_sample(1).generated_media], ["1"])
     assert calls == 3
 
 
@@ -206,7 +206,7 @@ def test_invalid_response_never_becomes_a_reward(content, sdk_transport):
     sdk_transport(handler)
     actor = OpenAIImageRewardActor(**asdict(_config()))
     with pytest.raises(ValueError):
-        actor.score_batch([_sample(1).generated_output], ["1"])
+        actor.score_batch([_sample(1).generated_media], ["1"])
     assert len(requests) == 1
 
 
@@ -217,7 +217,7 @@ def test_video_is_rejected_before_http(sdk_transport):
     sdk_transport(handler)
     actor = OpenAIImageRewardActor(**asdict(_config()))
     with pytest.raises(ValueError):
-        actor.score_batch([torch.zeros(3, 2, 8, 8)], ["1"])
+        actor.score_batch([GeneratedMedia(visual=torch.zeros(3, 2, 8, 8))], ["1"])
 
 
 @pytest.mark.asyncio
@@ -283,6 +283,8 @@ def test_invalid_api_concurrency_is_rejected_at_startup(tmp_path, concurrency):
 
 
 class StubApiRewardActor(ApiRewardActor):
+    required_media = frozenset({"visual"})
+
     def __init__(self, scores):
         self.scores = iter(scores)
         self.calls = []
@@ -299,7 +301,7 @@ class StubApiRewardActor(ApiRewardActor):
 
 
 def test_base_actor_preserves_raw_inputs_and_backend_score_range():
-    outputs = [torch.zeros(3, 2, 8, 8), _sample(1).generated_output]
+    outputs = [GeneratedMedia(visual=torch.zeros(3, 2, 8, 8)), _sample(1).generated_media]
     prompts = ["video", "image"]
     actor = StubApiRewardActor([-7, 12.5])
     assert actor.score_batch(outputs, prompts) == [-7.0, 12.5]
@@ -312,7 +314,7 @@ def test_base_actor_preserves_raw_inputs_and_backend_score_range():
 def test_invalid_input_pairing_and_empty_batches_do_not_call_backend():
     actor = StubApiRewardActor([])
     with pytest.raises(ValueError, match="one prompt per output"):
-        actor.score_batch([_sample(1).generated_output], [])
+        actor.score_batch([_sample(1).generated_media], [])
     assert actor.score_batch([], []) == []
     assert actor.calls == []
 
@@ -320,7 +322,7 @@ def test_invalid_input_pairing_and_empty_batches_do_not_call_backend():
 @pytest.mark.parametrize("score", [[], [1, 2], True, "2", None, float("nan"), float("inf"), -float("inf")])
 def test_base_actor_rejects_invalid_backend_scores(score):
     with pytest.raises(ValueError, match="finite numbers"):
-        StubApiRewardActor([score]).score_batch([_sample(1).generated_output], ["prompt"])
+        StubApiRewardActor([score]).score_batch([_sample(1).generated_media], ["prompt"])
 
 
 @pytest.mark.parametrize(

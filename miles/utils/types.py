@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 from safetensors.torch import load
+
+if TYPE_CHECKING:
+    from miles.utils.output_store import StoredTensor
 
 
 def decode_tensor(data: bytes) -> torch.Tensor:
@@ -70,6 +73,22 @@ class RolloutStreamData:
     dit_trajectory: DiTTrajectory | None = None
     # An extra stream's rollout settings as the engine applied them, echoed in its response.
     rollout_sde_kernel: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class GeneratedMedia:
+    """What one sample generated, by stream name; the record every reward scores.
+
+    ``visual`` is ``Sample.generated_output`` and ``audio`` is ``Sample.generated_audio``, renamed only in
+    `Sample.generated_media`. With ``--use-output-store`` a tensor field is a ``StoredTensor`` until a reward actor
+    reads it.
+    """
+
+    # [C, F, H, W]; F == 1 for an image.
+    visual: torch.Tensor | StoredTensor | None = None
+    # [C, L] waveform at audio_sample_rate.
+    audio: torch.Tensor | StoredTensor | None = None
+    audio_sample_rate: int | None = None
 
 
 @dataclass
@@ -158,3 +177,12 @@ class Sample:
 
     def get_reward_value(self, args) -> float:
         return self.reward if not args.reward_key else self.reward[args.reward_key]
+
+    @property
+    def generated_media(self) -> GeneratedMedia:
+        """What this sample generated, as rewards score it."""
+        return GeneratedMedia(
+            visual=self.generated_output,
+            audio=self.generated_audio,
+            audio_sample_rate=self.audio_sample_rate,
+        )
