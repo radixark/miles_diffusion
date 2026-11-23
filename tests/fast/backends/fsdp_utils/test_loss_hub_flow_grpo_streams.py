@@ -28,6 +28,9 @@ What each test pins:
   two streams, KL             the KL term weights the streams like the log-prob
   recomputed old log-probs    written back per stream, not as one joint value
   debug diffs                 every stream's rollout model output and transition mean reach the logged diffs
+  per-stream diffs            two streams also log each stream's own log-prob and model-output diff
+  one stream, logged keys     a single stream logs exactly the keys it logged before streams existed, with one
+                              DiT and with two
 """
 
 from tests.ci.ci_register import register_cpu_ci
@@ -134,7 +137,7 @@ def _loss(rollout, stream_names, new_pred, *, batch=None, metrics=None, ref_pred
         new_pred=new_pred,
         old_pred=None,
         ref_pred=ref_pred,
-        metrics=metrics if metrics is not None else new_metric_buffer(None, torch.device("cpu"), ["dit"]),
+        metrics=metrics if metrics is not None else _metrics(stream_names),
         optim_step_idx=0,
         train_output_inputs=[],
         **kwargs,
@@ -159,6 +162,10 @@ def _element_log_probs(backend, stream, pred):
         - 0.5 * math.log(2 * math.pi)
     )
     return density.flatten(1)
+
+
+def _metrics(stream_names, components=("dit",)):
+    return new_metric_buffer(None, torch.device("cpu"), components, streams=stream_names)
 
 
 def _prepare_ctx():
@@ -501,7 +508,7 @@ def test_every_streams_rollout_model_output_reaches_the_logged_diff(rollout):
         }
         for index in range(BATCH_SIZE)
     ]
-    metrics = new_metric_buffer(None, torch.device("cpu"), ["dit"])
+    metrics = _metrics(list(STREAM_SPECS))
 
     _loss(rollout, list(STREAM_SPECS), rollout.new_pred, batch=batch, metrics=metrics)
 
@@ -518,3 +525,72 @@ def test_every_streams_rollout_model_output_reaches_the_logged_diff(rollout):
         prev_mean, noise_std, _ = _transition_mean_and_std(backend, stream, rollout.new_pred[stream_name])
         mean_gaps.append(((rollout_means[stream_name] - prev_mean) / noise_std).flatten(1).square().mean(dim=1).sqrt())
     assert logged["prev_mean_diff_over_noise_std"] == pytest.approx(torch.cat(mean_gaps).mean().item())
+
+
+def _model_output_batch(rollout, stream_names):
+    return [
+        {
+            "rollout_debug_tensors": {
+                stream_name: {"rollout_step_model_output": rollout.streams[stream_name].rollout_pred[index]}
+                for stream_name in stream_names
+            }
+        }
+        for index in range(BATCH_SIZE)
+    ]
+
+
+def test_two_streams_also_log_each_streams_own_diffs(rollout):
+    """The joint diff is almost all the larger stream; a stream replayed wrongly only shows in its own key."""
+    backend, stream_names = rollout.ctx.sde_backend, list(STREAM_SPECS)
+    metrics = _metrics(stream_names)
+
+    _loss(rollout, stream_names, rollout.new_pred, batch=_model_output_batch(rollout, stream_names), metrics=metrics)
+
+    logged = metrics.reduce()
+    for stream_name, stream in rollout.streams.items():
+        prev_mean, noise_std, _ = _transition_mean_and_std(backend, stream, rollout.new_pred[stream_name])
+        log_prob_new = backend.log_prob(stream.next_latent, prev_mean, noise_std)
+        assert logged[f"log_prob_mean_abs_diff_{stream_name}"] == pytest.approx(
+            (log_prob_new - stream.log_prob_old).abs().mean().item()
+        )
+        assert logged[f"model_output_mean_abs_diff_{stream_name}"] == pytest.approx(
+            (rollout.new_pred[stream_name] - stream.rollout_pred).abs().mean().item()
+        )
+
+
+@pytest.mark.parametrize(
+    ("components", "component_keys"),
+    [
+        pytest.param(("dit",), [], id="one DiT"),
+        pytest.param(
+            ("dit", "dit_2"), ["log_prob_mean_abs_diff_dit", "model_output_mean_abs_diff_dit"], id="two DiTs"
+        ),
+    ],
+)
+def test_one_stream_logs_the_keys_it_logged_before_streams_existed(rollout, components, component_keys):
+    """A per-stream key leaking into a single-stream run, or a lost per-DiT key, changes every existing run's logs."""
+    rollout.ctx.models = dict.fromkeys(components)
+    metrics = _metrics(["wide"], components)
+    batch = _model_output_batch(rollout, ["wide"])
+
+    _loss(rollout, ["wide"], {"wide": rollout.new_pred["wide"]}, batch=batch, metrics=metrics)
+
+    assert sorted(metrics.reduce()) == sorted(
+        [
+            *component_keys,
+            "adv_abs_mean",
+            "approx_kl",
+            "clipfrac",
+            "kl_loss",
+            "log_prob_mean_abs_diff",
+            "log_prob_new_idx_0",
+            "log_prob_old_idx_0",
+            "loss",
+            "loss_abs_mean",
+            "model_output_max_abs_diff",
+            "model_output_mean_abs_diff",
+            "model_output_rel_max",
+            "policy_loss",
+            "ratio_abs_minus_1",
+        ]
+    )
