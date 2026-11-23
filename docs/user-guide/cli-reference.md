@@ -11,10 +11,12 @@ places:
 | miles flags | `miles/utils/arguments.py` | Added on top as an `extra_args_provider` |
 | sglang-d passthrough | The rollout engine's own CLI | Re-registered with a `--sglang-` prefix; a short skip list covers what miles sets itself (`model_path`, ports, `base_gpu_id`, `random_seed`, …) |
 
-`--custom-config-path <file.yaml>` loads YAML keys into the namespace at the very end of argument
-validation. A key that collides with an existing argument **overrides it** (with a logged warning) —
-the YAML wins over the command line, but the override skips every check and derived value computed
-before it (a YAML `global_batch_size`, for example, does not re-derive `num_steps_per_rollout`).
+`--custom-config-path <file.yaml>` sets arguments right after the command line is parsed, before any
+check or derived value, and **overrides** the command-line value. Each key is an argument's dest (the
+flag name with underscores, e.g. `global_batch_size`), and its value is parsed as that flag's command-line
+text would be: through its type, choices and `nargs`, with a YAML boolean for an on/off flag and a mapping
+for a per-stream flag (`fsdp_flow_shift: {visual: 3.0, audio: 1.0}`). A key that is no argument's dest is
+an error. A YAML `global_batch_size`, for example, re-derives `num_steps_per_rollout` as the flag would.
 
 `--config <file.yaml>` is different: it only adds YAML keys that are not arguments at all, so it
 cannot change any flag.
