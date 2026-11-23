@@ -27,10 +27,22 @@ def load_fsdp_models(
     trainable: bool = False,
     cpu_offload: bool = False,
 ) -> dict[str, torch.nn.Module]:
-    materialize_weights = dist.get_rank() == 0
-    master_dtype = parse_dtype_from_str(args.fsdp_master_dtype)
     models = {}
     for component_index, component in enumerate(args.update_weight_target_modules):
+        # Without LoRA every rank reads its own shards from the safetensors files; else rank 0 loads and broadcasts.
+        use_lora = lora_adapter_paths is not None or (trainable and args.use_lora)
+        safetensors_files = (
+            None if use_lora else model_backend.safetensors_files(component, checkpoint_path=checkpoint_path)
+        )
+        # Decided before building, on every rank alike: ranks that see the files while others do not raise together.
+        if not use_lora and not checkpoint.holds_on_every_rank(
+            safetensors_files is not None,
+            what=f"the safetensors files of {component} under {checkpoint_path} are seen",
+        ):
+            safetensors_files = None
+        materialize_weights = safetensors_files is None and dist.get_rank() == 0
+        master_dtype = parse_dtype_from_str(args.fsdp_master_dtype)
+
         with model_init_context(materialize_weights=materialize_weights):
             model = model_backend.load_component(
                 component,
@@ -52,6 +64,13 @@ def load_fsdp_models(
 
         if not materialize_weights and any(not parameter.is_meta for parameter in model.parameters()):
             raise RuntimeError(f"{component} did not honor meta initialization")
+        if dist.get_rank() == 0:
+            source = "rank 0 loads and broadcasts"
+            if safetensors_files is not None:
+                source = (
+                    f"every rank reads {len(safetensors_files)} safetensors files of {safetensors_files[0].parent}"
+                )
+            logger.info(f"FSDP: {component} weights of {checkpoint_path}: {source}")
         checkpoint.sync_model_dtypes(model)
         full_state = model.state_dict() if materialize_weights else {}
         model = apply_fsdp2(
@@ -61,7 +80,10 @@ def load_fsdp_models(
             cpu_offload=cpu_offload,
             args=args,
         )
-        checkpoint.broadcast_full_state_to_fsdp(model, full_state, cpu_offload=cpu_offload)
+        if safetensors_files is not None:
+            checkpoint.load_safetensors_to_fsdp(model, safetensors_files, cpu_offload=cpu_offload)
+        else:
+            checkpoint.broadcast_full_state_to_fsdp(model, full_state, cpu_offload=cpu_offload)
         del full_state
         train_pipeline_config.postprocess_model_after_materialize(model)
         if parallel_state.get_optional_mesh("sp") is not None:

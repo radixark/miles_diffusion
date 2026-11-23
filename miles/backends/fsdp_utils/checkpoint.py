@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import tempfile
 import time
 from itertools import chain
 from pathlib import Path
@@ -63,6 +65,66 @@ def broadcast_full_state_to_fsdp(
         # CPUOffloadPolicy manages params only; buffers must live on GPU for forward.
         for buffer in model.buffers():
             buffer.data = buffer.data.to(torch.cuda.current_device())
+
+
+def holds_on_every_rank(condition: bool, *, what: str) -> bool:
+    """Whether ``condition`` holds on every rank; ranks that answer differently all raise, naming ``what`` holds where."""
+    conditions = [None] * dist.get_world_size()
+    dist.all_gather_object(conditions, condition)
+    if any(conditions) and not all(conditions):
+        raise ValueError(f"{what} on ranks {[rank for rank, held in enumerate(conditions) if held]} only")
+    return all(conditions)
+
+
+def _state_mismatch(model: torch.nn.Module, files: list[Path]) -> str | None:
+    """Why the files cannot hold the model's state dict: a tensor of it missing from the files or saved with another
+    shape, or a buffer outside the state dict that the constructor left on meta (no file holds it). The files may
+    hold tensors the model does not have."""
+    from safetensors import safe_open
+
+    state = model.state_dict()
+    on_meta = [name for name, buffer in model.named_buffers() if name not in state and buffer.is_meta]
+    if on_meta:
+        return f"buffers outside the state dict are on meta and in no file: {on_meta}"
+    saved = {}
+    for file in files:
+        with safe_open(file, framework="pt") as tensors:
+            saved.update({name: tuple(tensors.get_slice(name).get_shape()) for name in tensors.keys()})
+    differing = sorted(name for name, tensor in state.items() if saved.get(name) != tuple(tensor.shape))
+    if differing:
+        return f"{len(differing)} tensors of the model are missing from the files or saved with another shape, e.g. {differing[:5]}"
+    return None
+
+
+@torch.no_grad()
+def load_safetensors_to_fsdp(model: torch.nn.Module, files: list[Path], *, cpu_offload: bool) -> None:
+    """Materialize FSDP2 shards by reading each rank's own slice of every parameter from the files.
+
+    A buffer outside the state dict is in no file: it keeps the value the constructor computed on this rank.
+    """
+    # Every rank raises or none does: a rank raising alone would leave the others in the collective read.
+    mismatches = [None] * dist.get_world_size()
+    dist.all_gather_object(mismatches, _state_mismatch(model, files))
+    if any(mismatches):
+        found = "; ".join(f"rank {rank}: {why}" for rank, why in enumerate(mismatches) if why)
+        raise ValueError(f"{[str(file) for file in files]} do not hold the model's state dict ({found})")
+    device = torch.cuda.current_device()
+    # Buffers were computed for real on every rank; to_empty would wipe them. One still on meta is in the state
+    # dict, and the read fills it. to_empty splits a tensor two modules share, so each name keeps its own entry.
+    buffers = dict(model.named_buffers(remove_duplicate=False))
+    model.to_empty(device="cpu" if cpu_offload else device)
+    for name, buffer in model.named_buffers(remove_duplicate=False):
+        if not buffers[name].is_meta:
+            buffer.copy_(buffers[name])
+    # The reader takes every safetensors file of one folder, and the files' own folder may hold others (a variant).
+    with tempfile.TemporaryDirectory() as folder:
+        for file in files:
+            os.symlink(file.resolve(), Path(folder) / file.name)
+        dcp.load(model.state_dict(), storage_reader=dcp.HuggingFaceStorageReader(folder, thread_count=4))
+    if cpu_offload:
+        # CPUOffloadPolicy manages params only; buffers must live on GPU for forward.
+        for buffer in model.buffers():
+            buffer.data = buffer.data.to(device)
 
 
 def _is_lora_param_name(name: str) -> bool:
