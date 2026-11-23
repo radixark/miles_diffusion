@@ -38,7 +38,7 @@ Usage (after the multi-node bring-up, on the head node):
 Single node, for smoke runs and the e2e CI: the script starts its own ray cluster. Two GPUs hold the
 rollout engine (tp2) and FSDP DP=2 over the student, the critic and the teacher in one of two ways:
   --lora               the student and the critic train LoRA adapters (rank 64, lr 1e-4) over frozen
-                       bf16 bases, all in GPU memory; what the e2e CI runs, not a tuned recipe;
+                       bf16 bases, with no CPU offload; what the e2e CI runs, not a tuned recipe;
   --fsdp-cpu-offload   the full-parameter recipe with its parameters, gradients and optimizer states
                        in host memory (about 1.6 TB with the engine). The master stays fp32: H3 keeps
                        proj_in / time_embedder / proj_out in fp32, and FSDP2 wants one original dtype

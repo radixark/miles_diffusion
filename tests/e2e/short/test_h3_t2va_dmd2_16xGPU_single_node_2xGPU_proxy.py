@@ -5,7 +5,7 @@ script itself with its single-node knobs and checks its metric series against th
 standard (tests/ci/fixtures/e2e_standards/). Two GPUs cannot hold the full-parameter recipe,
 and its CPU-offloaded form (--fsdp-cpu-offload, about 1.6 TB of host memory) does not fit the
 shared CI node next to another e2e, so the student and the critic train LoRA adapters over
-frozen bf16 bases here (--lora, about 112 GB per GPU at the critic step). Runs with
+frozen bf16 bases here (--lora, about 110 GB per GPU at the critic step). Runs with
 --deterministic-mode, so every metric is compared strictly, bit for bit. The only e2e
 exercising the multi-trainer-group driver, the critic -> actor hand-off and the rollout
 stopped at a random step."""
