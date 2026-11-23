@@ -171,12 +171,27 @@ def make_actor_forward_harness(
         cfg_batching=False,
         guidance_scale=1.0,
         true_cfg_scale=true_cfg_scale,
-        teacher_guidance_scale=teacher_guidance_scale,
-        forward_only_batch=None,
+        teacher_batch=None,
+        actor_forward_batch=None,
     )
+    config = TinyPipelineConfig()
 
     def prepare(ctx, batch, **kwargs):
         observed["prepare_kwargs"] = kwargs
+        if teacher_guidance_scale is not None:
+            # The teacher's input: this batch at the teacher's CFG, as dmd2's prepare hook builds it.
+            use_cfg = teacher_guidance_scale > 1.0
+            prepared.teacher_batch = SimpleNamespace(
+                **{
+                    **vars(prepared),
+                    "use_cfg": use_cfg,
+                    "cfg_batching": use_cfg and config.cfg_batching,
+                    "guidance_scale": teacher_guidance_scale,
+                    "true_cfg_scale": None,
+                    "teacher_batch": None,
+                    "actor_forward_batch": None,
+                }
+            )
         return prepared
 
     def loss_formula(ctx, batch, prepared, *, new_pred, old_pred, ref_pred, teacher_pred, **kwargs):
@@ -193,7 +208,7 @@ def make_actor_forward_harness(
         model=torch.nn.ModuleDict(models),
         reference_models=reference_models,
         teacher_models={} if teacher_models is None else teacher_models,
-        train_pipeline_config=TinyPipelineConfig(),
+        train_pipeline_config=config,
         _forward_dtype=torch.float32,
         loss_hooks=SimpleNamespace(prepare=prepare, formula=loss_formula),
     )
@@ -599,25 +614,23 @@ def test_an_unguided_teacher_runs_without_cfg():
     )
 
 
-def test_a_forward_only_batch_runs_without_grad_before_the_training_forward():
+def test_an_actor_forward_batch_runs_without_grad_before_the_training_forward():
     harness, observed, actor, teacher = _teacher_harness(None)
     prepared = harness.loss_hooks.prepare(None, [])
-    forward_only_inputs = torch.full((2, 3), 2.0)
-    prepared.forward_only_batch = SimpleNamespace(
-        **{**vars(prepared), "latents": {"visual": forward_only_inputs}, "teacher_guidance_scale": 1.0}
-    )
+    other_inputs = torch.full((2, 3), 2.0)
+    other = {**vars(prepared), "latents": {"visual": other_inputs}, "teacher_batch": None, "actor_forward_batch": None}
+    prepared.actor_forward_batch = SimpleNamespace(**other)
+    prepared.teacher_batch = SimpleNamespace(**other)
 
     _run_forward(harness, reshard_model=lambda model: None).backward()
 
-    # Its teacher and its model, then the training forward, which asked for no teacher.
+    # The teacher on its batch, the model on the actor-forward batch, then the training forward.
     assert observed["order"] == ["teacher", "actor", "actor"]
-    assert "teacher_pred" not in observed
-    forward_only_pred = observed["formula_kwargs"]["forward_only_pred"]["visual"]
-    forward_only_teacher_pred = observed["formula_kwargs"]["forward_only_teacher_pred"]["visual"]
-    assert not forward_only_pred.requires_grad and not forward_only_teacher_pred.requires_grad
+    actor_forward_pred = observed["formula_kwargs"]["actor_forward_pred"]["visual"]
+    assert not actor_forward_pred.requires_grad and not observed["teacher_pred"].requires_grad
     with torch.no_grad():
-        torch.testing.assert_close(forward_only_pred, actor(forward_only_inputs))
-        torch.testing.assert_close(forward_only_teacher_pred, teacher(forward_only_inputs))
+        torch.testing.assert_close(actor_forward_pred, actor(other_inputs))
+        torch.testing.assert_close(observed["teacher_pred"], teacher(other_inputs))
         torch.testing.assert_close(observed["new_pred"], actor(torch.ones(2, 3)))
 
 

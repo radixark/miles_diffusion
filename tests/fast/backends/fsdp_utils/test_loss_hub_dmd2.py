@@ -7,8 +7,8 @@
                               whose samples get scored, draws grid points whose unshifted sigma lies in
                               --dmd2-score-sigma-range, default [0.02, 0.98])
                 │
-                             the last step also asks the trunk for the teacher, PreparedBatch.teacher_guidance_scale,
-                             with the rollout's neg cond collated for its CFG)
+                             the last step also carries the teacher's input, PreparedBatch.teacher_batch, the same
+                             noisy latents at --dmd2-teacher-guidance-scale with the rollout's neg cond for its CFG)
                 │
     the trunk runs the teacher without grad at x_s before the critic's training forward ──► v_real
                 │
@@ -48,10 +48,10 @@ What each test pins:
   test_health_metrics_are_recorded_overall_and_per_step  score gap, teacher distance, x0 stats, split by stop step
 
 --dmd2-critic-scoring original: the critic's last step is plain SFT and carries the scoring batch, a fresh draw in the
-scoring range, as its forward-only batch; the formula keeps the x0 of that batch's forwards:
+scoring range, as the teacher's and the critic's actor-forward input; the formula keeps the x0 of those forwards:
   test_under_original_only_the_last_step_carries_a_scoring_batch_and_it_stays_plain_sft
   test_the_scoring_batch_is_the_reuse_last_step_batch_one_step_of_micro_batches_later
-  test_under_original_the_formula_keeps_the_x0_of_the_forward_only_batch
+  test_under_original_the_formula_keeps_the_x0_of_the_actor_forward_batch
   test_either_mode_scores_the_last_step_once             by its training forward or before it, never both or neither
 """
 
@@ -164,33 +164,20 @@ def _forward(config, model, prepared, *, use_cfg, cfg_batching, guidance_scale):
 
 
 def _critic_step(ctx, pairs, optim_step_idx, train_output_inputs, metrics=None, teacher=None):
-    """One critic optimizer step as _train_core runs it: prepare, the forward-only batch it carries, the teacher
-    forward it asks for, the critic's training forward, the loss hook."""
+    """One critic optimizer step as _train_core runs it: prepare, the teacher on its batch, the critic's no-grad
+    forward on the actor-forward batch, the training forward, the loss hook."""
     config = ctx.train_pipeline_config
     teacher = _CondVelocity(1.0) if teacher is None else teacher
 
-    def forward_teacher_and_model(prepared):
-        teacher_pred = None
-        if prepared.teacher_guidance_scale is not None:
-            use_cfg = prepared.teacher_guidance_scale > 1.0
-            with torch.no_grad():
-                teacher_pred = _forward(
-                    config,
-                    teacher,
-                    prepared,
-                    use_cfg=use_cfg,
-                    cfg_batching=use_cfg and config.cfg_batching,
-                    guidance_scale=prepared.teacher_guidance_scale,
-                )
-        new_pred = _forward(
+    def forward(model, prepared):
+        return _forward(
             config,
-            prepared.model,
+            model,
             prepared,
             use_cfg=prepared.use_cfg,
             cfg_batching=prepared.cfg_batching,
             guidance_scale=prepared.guidance_scale,
         )
-        return teacher_pred, new_pred
 
     steps = []
     for start in range(0, len(pairs), ctx.args.micro_batch_size):
@@ -198,14 +185,15 @@ def _critic_step(ctx, pairs, optim_step_idx, train_output_inputs, metrics=None, 
         prepared = dmd2.prepare_critic_batch(
             ctx, batch, microbatch_id=optim_step_idx * 10 + start, optim_step_idx=optim_step_idx
         )
-        forward_only_preds = {}
-        if prepared.forward_only_batch is not None:
+        teacher_pred = None
+        if prepared.teacher_batch is not None:
             with torch.no_grad():
-                forward_only_teacher_pred, forward_only_pred = forward_teacher_and_model(prepared.forward_only_batch)
-            forward_only_preds = dict(
-                forward_only_pred=forward_only_pred, forward_only_teacher_pred=forward_only_teacher_pred
-            )
-        teacher_pred, new_pred = forward_teacher_and_model(prepared)
+                teacher_pred = forward(teacher, prepared.teacher_batch)
+        actor_forward_preds = {}
+        if prepared.actor_forward_batch is not None:
+            with torch.no_grad():
+                actor_forward_preds["actor_forward_pred"] = forward(prepared.model, prepared.actor_forward_batch)
+        new_pred = forward(prepared.model, prepared)
         loss = dmd2.critic_loss_formula(
             ctx,
             batch,
@@ -217,7 +205,7 @@ def _critic_step(ctx, pairs, optim_step_idx, train_output_inputs, metrics=None, 
             metrics=metrics or _Metrics(),
             optim_step_idx=optim_step_idx,
             train_output_inputs=train_output_inputs,
-            **forward_only_preds,
+            **actor_forward_preds,
         )
         steps.append((batch, prepared, new_pred, loss))
     return steps
@@ -344,7 +332,7 @@ def test_earlier_steps_ask_for_no_teacher():
     ctx = _ctx(teacher_guidance_scale=3.0)
     for optim_step_idx in range(CRITIC_STEPS - 1):
         prepared = dmd2.prepare_critic_batch(ctx, _pairs(2), microbatch_id=0, optim_step_idx=optim_step_idx)
-        assert prepared.teacher_guidance_scale is None
+        assert prepared.teacher_batch is None
         assert prepared.neg_cond is None and prepared.joint_cond is None
 
 
@@ -357,20 +345,29 @@ def test_last_step_asks_for_the_guided_teacher(cfg_batching):
 
     prepared = dmd2.prepare_critic_batch(ctx, pairs, microbatch_id=0, optim_step_idx=CRITIC_STEPS - 1)
 
-    assert prepared.teacher_guidance_scale == 3.0
+    # The training batch stays unguided; the teacher's input carries the CFG and the negative cond.
     assert not prepared.use_cfg and not prepared.cfg_batching
+    assert prepared.neg_cond is None and prepared.joint_cond is None
+    teacher_batch = prepared.teacher_batch
+    assert torch.equal(teacher_batch.latents["visual"], prepared.latents["visual"])
+    assert (teacher_batch.use_cfg, teacher_batch.cfg_batching, teacher_batch.guidance_scale) == (
+        True,
+        cfg_batching,
+        3.0,
+    )
+    assert teacher_batch.true_cfg_scale is None
     pos_list = [config.prepare_cond_kwargs(pair["denoising_env"].pos_cond_kwargs, ctx.device) for pair in pairs]
     neg_list = [config.prepare_cond_kwargs(pair["denoising_env"].neg_cond_kwargs, ctx.device) for pair in pairs]
     pos = config.collate_cond_for_sample_batch(pos_list, ctx.device)["encoder_hidden_states"]
-    assert torch.equal(prepared.pos_cond["encoder_hidden_states"], pos)
+    assert torch.equal(teacher_batch.pos_cond["encoder_hidden_states"], pos)
     if cfg_batching:
         joint = config.collate_cond_for_sample_batch(pos_list + neg_list, ctx.device)["encoder_hidden_states"]
-        assert prepared.neg_cond is None
-        assert torch.equal(prepared.joint_cond["encoder_hidden_states"], joint)
+        assert teacher_batch.neg_cond is None
+        assert torch.equal(teacher_batch.joint_cond["encoder_hidden_states"], joint)
     else:
         neg = config.collate_cond_for_sample_batch(neg_list, ctx.device)["encoder_hidden_states"]
-        assert prepared.joint_cond is None
-        assert torch.equal(prepared.neg_cond["encoder_hidden_states"], neg)
+        assert teacher_batch.joint_cond is None
+        assert torch.equal(teacher_batch.neg_cond["encoder_hidden_states"], neg)
 
 
 def test_unguided_teacher_needs_no_negative_cond():
@@ -378,8 +375,9 @@ def test_unguided_teacher_needs_no_negative_cond():
     prepared = dmd2.prepare_critic_batch(
         ctx, _pairs(2, with_neg=False), microbatch_id=0, optim_step_idx=CRITIC_STEPS - 1
     )
-    assert prepared.teacher_guidance_scale == 1.0
-    assert prepared.neg_cond is None and prepared.joint_cond is None
+    teacher_batch = prepared.teacher_batch
+    assert (teacher_batch.use_cfg, teacher_batch.cfg_batching, teacher_batch.guidance_scale) == (False, False, 1.0)
+    assert teacher_batch.neg_cond is None and teacher_batch.joint_cond is None
 
 
 def test_teacher_cfg_needs_the_rollout_negative_cond():
@@ -645,10 +643,14 @@ def test_under_original_only_the_last_step_carries_a_scoring_batch_and_it_stays_
     sft_batch = prepare_sft_batch(ctx, _sft_pairs(ctx, pairs), microbatch_id=6, optim_step_idx=last_step)
     assert torch.equal(critic_batch.latents["visual"], sft_batch.latents["visual"])
     assert torch.equal(critic_batch.extras["target"]["visual"], sft_batch.extras["target"]["visual"])
-    assert critic_batch.teacher_guidance_scale is None
     assert critic_batch.neg_cond is None and critic_batch.joint_cond is None
-    assert critic_batch.forward_only_batch is not None
-    assert dmd2.prepare_critic_batch(ctx, pairs, microbatch_id=0, optim_step_idx=0).forward_only_batch is None
+    # The teacher and the critic's actor forward both run on the scoring draw.
+    assert torch.equal(
+        critic_batch.teacher_batch.latents["visual"], critic_batch.actor_forward_batch.latents["visual"]
+    )
+    assert critic_batch.actor_forward_batch.teacher_batch is None
+    first_step = dmd2.prepare_critic_batch(ctx, pairs, microbatch_id=0, optim_step_idx=0)
+    assert first_step.teacher_batch is None and first_step.actor_forward_batch is None
 
 
 @pytest.mark.parametrize("cfg_batching", [False, True])
@@ -661,23 +663,22 @@ def test_the_scoring_batch_is_the_reuse_last_step_batch_one_step_of_micro_batche
     original_ctx = _original_ctx(num_microbatches_per_optim_step=3)
     original_ctx.train_pipeline_config.cfg_batching = cfg_batching
     # Micro-batch 6 of a step of 3: its scoring draw is micro-batch 9, past the last step's training ids.
-    scoring = dmd2.prepare_critic_batch(
-        original_ctx, pairs, microbatch_id=6, optim_step_idx=CRITIC_STEPS - 1
-    ).forward_only_batch
+    original = dmd2.prepare_critic_batch(original_ctx, pairs, microbatch_id=6, optim_step_idx=CRITIC_STEPS - 1)
+    scoring = original.actor_forward_batch
 
     for field in ("latents", "timesteps", "timesteps_for_model"):
         assert torch.equal(getattr(scoring, field)["visual"], getattr(reuse, field)["visual"])
     assert torch.equal(scoring.extras["sigmas"]["visual"], reuse.extras["sigmas"]["visual"])
-    assert scoring.teacher_guidance_scale == reuse.teacher_guidance_scale == 3.0
+    assert original.teacher_batch.guidance_scale == reuse.teacher_batch.guidance_scale == 3.0
     for cond in ("pos_cond", "neg_cond", "joint_cond"):
-        reuse_cond, scoring_cond = getattr(reuse, cond), getattr(scoring, cond)
+        reuse_cond, scoring_cond = getattr(reuse.teacher_batch, cond), getattr(original.teacher_batch, cond)
         if reuse_cond is None:
             assert scoring_cond is None
         else:
             assert torch.equal(scoring_cond["encoder_hidden_states"], reuse_cond["encoder_hidden_states"])
 
 
-def test_under_original_the_formula_keeps_the_x0_of_the_forward_only_batch():
+def test_under_original_the_formula_keeps_the_x0_of_the_actor_forward_batch():
     ctx = _original_ctx(teacher_guidance_scale=1.0)
     ctx.models["transformer"] = _NoisyInputVelocity()
     pairs = _pairs(2)
@@ -687,7 +688,7 @@ def test_under_original_the_formula_keeps_the_x0_of_the_forward_only_batch():
     scores = dmd2.score_last_step_samples(ctx, pairs, inputs)
 
     assert list(scores) == [100, 101]
-    scoring = prepared.forward_only_batch
+    scoring = prepared.actor_forward_batch
     x_s = scoring.latents["visual"]
     sigma = scoring.extras["sigmas"]["visual"].view(-1, 1, 1, 1)
     critic_velocity = x_s + scoring.timesteps_for_model["visual"].view(-1, 1, 1, 1)

@@ -71,8 +71,7 @@ class PreparedBatch:
     joint_cond: dict | None
     advantage: torch.Tensor
     extras: dict[str, Any] = field(default_factory=dict)
-    # CFG scale of the frozen teacher's no-grad forward on this batch; None runs no teacher forward.
-    teacher_guidance_scale: float | None = None
-    # A second batch the trunk forwards without grad before this one: the teacher it asks for and its model. The
-    # formula receives them as ``forward_only_teacher_pred`` and ``forward_only_pred``.
-    forward_only_batch: PreparedBatch | None = None
+    # The frozen teacher's input, with its own CFG fields; its no-grad prediction reaches the formula as ``teacher_pred``.
+    teacher_batch: PreparedBatch | None = None
+    # A second input for the model's own no-grad forward; its prediction reaches the formula as ``actor_forward_pred``.
+    actor_forward_batch: PreparedBatch | None = None

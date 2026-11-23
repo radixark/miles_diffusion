@@ -2,7 +2,7 @@
 
 --dmd2-critic-scoring picks how the critic scores its last step's samples: ``reuse-critic-step`` scores them with
 that step's training forward (the critic hooks' last step is the scoring batch), ``original`` scores them with a
-separate draw and forward (the last step's forward-only batch) before the critic trains that step on them, as
+separate draw and forward (the last step's actor-forward batch) before the critic trains that step on them, as
 tianweiy/DMD2 does.
 """
 
@@ -29,8 +29,8 @@ def prepare_critic_batch(
     """SFT flow matching on the student's x0 predictions, conditioned on their rollout prompts.
 
     The last step's samples are scored at their noisy inputs. Under --dmd2-critic-scoring reuse-critic-step that step
-    prepares the scoring batch: grid points from the scoring range, the teacher asked for. Under original it stays
-    plain SFT and carries the scoring batch as its forward-only batch.
+    prepares the scoring batch: grid points from the scoring range, the teacher's input alongside. Under original it
+    stays plain SFT and carries the scoring batch as the teacher's and the critic's actor-forward input.
     """
     if _is_scoring_step(ctx, optim_step_idx):
         return prepare_scoring_batch(
@@ -48,7 +48,11 @@ def prepare_critic_batch(
             optim_step_idx=optim_step_idx,
             pad_to_len=pad_to_len,
         )
-        prepared = dataclasses.replace(prepared, forward_only_batch=scoring_batch)
+        prepared = dataclasses.replace(
+            prepared,
+            teacher_batch=scoring_batch.teacher_batch,
+            actor_forward_batch=dataclasses.replace(scoring_batch, teacher_batch=None),
+        )
     return prepared
 
 
@@ -60,8 +64,8 @@ def prepare_scoring_batch(
     optim_step_idx: int,
     pad_to_len: int | None = None,
 ) -> PreparedBatch:
-    """The critic's SFT draw on the student's x0 at grid points in --dmd2-score-sigma-range, with the teacher asked
-    for at the same noisy inputs."""
+    """The critic's SFT draw on the student's x0 at grid points in --dmd2-score-sigma-range, with the teacher's
+    input at the same noisy inputs."""
     prepared = prepare_sft_batch(
         ctx,
         _sft_batch(ctx, batch),
@@ -70,7 +74,7 @@ def prepare_scoring_batch(
         pad_to_len=pad_to_len,
         grid_index_range=_score_grid_index_range(ctx),
     )
-    return _request_teacher_forward(ctx, batch, prepared, pad_to_len=pad_to_len)
+    return dataclasses.replace(prepared, teacher_batch=_teacher_batch(ctx, batch, prepared, pad_to_len=pad_to_len))
 
 
 def _sft_batch(ctx: DiffusionLossContext, batch: list[dict]) -> list[dict]:
@@ -91,15 +95,18 @@ def _score_grid_index_range(ctx: DiffusionLossContext) -> tuple[int, int]:
     return round(num_train_timesteps * (1 - max_sigma)), round(num_train_timesteps * (1 - min_sigma))
 
 
-def _request_teacher_forward(
+def _teacher_batch(
     ctx: DiffusionLossContext, batch: list[dict], prepared: PreparedBatch, *, pad_to_len: int | None
 ) -> PreparedBatch:
-    """Ask the trunk for the teacher at --dmd2-teacher-guidance-scale on this batch, with the rollout's negative
+    """The teacher's input: ``prepared``'s noisy latents at --dmd2-teacher-guidance-scale, with the rollout's negative
     cond collated for its CFG when the scale needs one."""
     config = ctx.train_pipeline_config
     guidance_scale = ctx.args.dmd2_teacher_guidance_scale
+    unguided = dataclasses.replace(
+        prepared, use_cfg=False, cfg_batching=False, guidance_scale=guidance_scale, true_cfg_scale=None
+    )
     if guidance_scale <= 1.0:
-        return dataclasses.replace(prepared, teacher_guidance_scale=guidance_scale)
+        return unguided
     envs = [pair["denoising_env"] for pair in batch]
     if any(env.neg_cond_kwargs is None for env in envs):
         raise ValueError(
@@ -110,9 +117,9 @@ def _request_teacher_forward(
     neg_list = [config.prepare_cond_kwargs(env.neg_cond_kwargs, ctx.device) for env in envs]
     if config.cfg_batching:
         joint_cond = config.collate_cond_for_sample_batch(pos_list + neg_list, ctx.device, pad_to_len=pad_to_len)
-        return dataclasses.replace(prepared, joint_cond=joint_cond, teacher_guidance_scale=guidance_scale)
+        return dataclasses.replace(unguided, use_cfg=True, cfg_batching=True, joint_cond=joint_cond)
     neg_cond = config.collate_cond_for_sample_batch(neg_list, ctx.device, pad_to_len=pad_to_len)
-    return dataclasses.replace(prepared, neg_cond=neg_cond, teacher_guidance_scale=guidance_scale)
+    return dataclasses.replace(unguided, use_cfg=True, neg_cond=neg_cond)
 
 
 def critic_loss_formula(
@@ -124,8 +131,7 @@ def critic_loss_formula(
     old_pred: dict[str, torch.Tensor] | None,
     ref_pred: dict[str, torch.Tensor] | None,
     teacher_pred: dict[str, torch.Tensor] | None = None,
-    forward_only_pred: dict[str, torch.Tensor] | None = None,
-    forward_only_teacher_pred: dict[str, torch.Tensor] | None = None,
+    actor_forward_pred: dict[str, torch.Tensor] | None = None,
     metrics: MetricBuffer,
     optim_step_idx: int,
     train_output_inputs: list,
@@ -135,14 +141,14 @@ def critic_loss_formula(
     """The SFT loss in --dmd2-critic-loss-space.
 
     On the last step it also keeps the critic's and the teacher's x0 at each noisy input, before that step's update:
-    those of the training forward, or of the forward-only batch when the step carries one.
+    the critic's from the actor-forward batch when the step carries one, else from the training forward.
     """
-    if _is_scoring_step(ctx, optim_step_idx):
-        keep_scores(batch, prepared, new_pred, teacher_pred, train_output_inputs)
-    elif prepared.forward_only_batch is not None:
-        keep_scores(
-            batch, prepared.forward_only_batch, forward_only_pred, forward_only_teacher_pred, train_output_inputs
-        )
+    if teacher_pred is not None:
+        if actor_forward_pred is None:
+            fake_batch, fake_pred = prepared, new_pred
+        else:
+            fake_batch, fake_pred = prepared.actor_forward_batch, actor_forward_pred
+        keep_scores(batch, fake_batch, fake_pred, prepared.teacher_batch, teacher_pred, train_output_inputs)
     if ctx.args.dmd2_critic_loss_space == "x0":
         latents = prepared.latents["visual"]
         sigmas = prepared.extras["sigmas"]["visual"].view(len(batch), *([1] * (latents.ndim - 1)))
@@ -167,17 +173,21 @@ def critic_loss_formula(
 
 def keep_scores(
     batch: list[dict],
-    prepared: PreparedBatch,
-    new_pred: dict[str, torch.Tensor],
-    teacher_pred: dict[str, torch.Tensor] | None,
+    fake_batch: PreparedBatch,
+    fake_pred: dict[str, torch.Tensor],
+    real_batch: PreparedBatch,
+    real_pred: dict[str, torch.Tensor],
     train_output_inputs: list,
 ) -> None:
-    """Per sample, x0_fake = x_s - sigma v_critic and x0_real = x_s - sigma v_teacher, for score_last_step_samples."""
-    latents = prepared.latents["visual"]
-    sigmas = prepared.extras["sigmas"]["visual"].view(len(batch), *([1] * (latents.ndim - 1)))
-    x0_fake = latents - sigmas * new_pred["visual"].detach().float()
-    x0_real = latents - sigmas * teacher_pred["visual"].float()
-    for pair, real, fake in zip(batch, x0_real, x0_fake, strict=True):
+    """Per sample, x0_fake = x_s - sigma v_critic and x0_real = x_s - sigma v_teacher, each at its own batch's
+    noisy input, for score_last_step_samples."""
+
+    def x0(prepared: PreparedBatch, pred: dict[str, torch.Tensor]) -> torch.Tensor:
+        latents = prepared.latents["visual"]
+        sigmas = prepared.extras["sigmas"]["visual"].view(len(batch), *([1] * (latents.ndim - 1)))
+        return latents - sigmas * pred["visual"].detach().float()
+
+    for pair, real, fake in zip(batch, x0(real_batch, real_pred), x0(fake_batch, fake_pred), strict=True):
         train_output_inputs.append((pair["sample_index"], real, fake))
 
 
@@ -194,7 +204,7 @@ def _is_scoring_step(ctx: DiffusionLossContext, optim_step_idx: int) -> bool:
 
 
 def _is_scored_before_training(ctx: DiffusionLossContext, optim_step_idx: int) -> bool:
-    """Under original the last step's samples are scored forward-only, before the critic trains that step."""
+    """Under original the last step's samples are scored by an actor forward, before the critic trains that step."""
     return ctx.args.dmd2_critic_scoring == "original" and optim_step_idx == ctx.args.num_steps_per_rollout - 1
 
 

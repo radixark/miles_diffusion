@@ -258,8 +258,8 @@ formula keeps the critic's x0 from that step's forward, before the update, next 
 training its train-output hook hands them to the actor as `ctx.external_data["critic"]`. The actor trains on those samples only (its train-input hook):
 it recomputes the student's x0 at the rollout's step and moves it along their difference.
 Under `--dmd2-critic-scoring original` the last step is plain SFT and its prepare hook also returns the
-scoring batch, at a fresh draw, as `PreparedBatch.forward_only_batch`; the formula keeps the x0 of that
-batch's forwards instead.
+scoring batch, at a fresh draw, as the teacher's input and as `PreparedBatch.actor_forward_batch`, the critic's
+own no-grad forward; the formula keeps the x0 of those two forwards instead.
 
 DiT forward always stays in the FSDP actor; the loss hook only computes the
 objective.
@@ -297,11 +297,11 @@ counts from 0; the old-log-prob recompute of windows 1.. passes their training f
 `optim_step_idx` is its optimizer step; the built-in hooks seed their noise from `microbatch_id`.
 `PreparedBatch.latents`, `timesteps` and
 `timesteps_for_model` are keyed by latent stream name: `"visual"`, plus e.g.
-`"audio"` for joint audio-video models. `PreparedBatch.teacher_guidance_scale` asks the trunk to run the frozen
-teacher (`--teacher-load`) without grad on this micro-batch at that CFG scale, over `neg_cond` / `joint_cond`, before
-the training forward; the formula receives it as `teacher_pred`. `PreparedBatch.forward_only_batch` is a second
-prepared batch the trunk forwards without grad before this one, through the teacher it asks for and its model; a
-formula whose prepare sets it also receives `forward_only_teacher_pred` and `forward_only_pred`.
+`"audio"` for joint audio-video models. `PreparedBatch.teacher_batch` is the frozen teacher's input
+(`--teacher-load`): a prepared batch with the teacher's own CFG fields and `neg_cond` / `joint_cond`, forwarded
+without grad before the training forward; the formula receives it as `teacher_pred`. `PreparedBatch.actor_forward_batch`
+is a second input for the model's own no-grad forward before the training forward; a formula whose prepare sets it also
+receives that prediction as `actor_forward_pred`. The EMA and reference forwards always use the training batch.
 
 ### `--custom-loss-function-path`
 
@@ -318,8 +318,8 @@ Read only under `--loss-type custom_loss`. `optim_step_idx` is the micro-batch's
 call. `new_pred`, `old_pred` and `ref_pred` are keyed by the same stream
 names as `prepared.latents`. `old_pred` (the EMA forward) is `None` for a custom formula, since the trunk runs it
 only under `--loss-type nft`; `ref_pred` is `None` with `--ref-mode none`. `teacher_pred` is the frozen teacher's
-no-grad prediction at `prepared.teacher_guidance_scale`, which the trunk runs before the training forward when the
-prepare hook sets that scale, else `None`.
+no-grad prediction on `prepared.teacher_batch`, which the trunk runs before the training forward when the prepare
+hook sets that batch, else `None`.
 
 ### `--custom-train-input-postprocess-path`
 

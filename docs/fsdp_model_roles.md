@@ -38,8 +38,8 @@ access `ctx.reference_models` by component name.
 A third source, the teacher (`--teacher-load`, with `--teacher-lora-adapter-path` for its
 adapters), is loaded by `--loss-type dmd2`, without adapters, into its critic group, which
 scores the student's samples with it. The actor runs it like the reference: on a micro-batch whose
-prepare hook sets `PreparedBatch.teacher_guidance_scale`, the teacher's no-grad forward at that CFG
-scale runs before the training forward, and the loss formula receives it as `teacher_pred`.
+prepare hook sets `PreparedBatch.teacher_batch`, the teacher's no-grad forward on that input, at its
+own CFG, runs before the training forward, and the loss formula receives it as `teacher_pred`.
 
 Each source may load pretrained PEFT LoRA adapters, one plain PEFT directory (what
 `save_pretrained` writes) per `--update-weight-target-module` entry, in the same order:
