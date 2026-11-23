@@ -9,10 +9,18 @@ from tests.ci.ci_register import register_cpu_ci
 register_cpu_ci(est_time=15, suite="stage-a-cpu", labels=[])
 
 import json
+from itertools import chain
 
+import httpx
+import pytest
 import torch
+from diffusers import ConfigMixin, ModelMixin, SD3Transformer2DModel, WanTransformer3DModel
+from diffusers.configuration_utils import register_to_config
+from huggingface_hub.errors import LocalEntryNotFoundError, RepositoryNotFoundError
+from safetensors.torch import load_file, save_file
 
 from miles.backends.fsdp_utils.model_backend import BaseModelBackend, DiffusersModelBackend, MilesModelBackend
+from miles.backends.fsdp_utils.model_loader import model_init_context
 from miles.backends.fsdp_utils.models.diffusers import load_fsdp_parallel_plan
 
 
@@ -37,6 +45,151 @@ class _CheckpointComponent(torch.nn.Module):
         model.checkpoint_path = checkpoint_path
         model.load_kwargs = kwargs
         return model
+
+
+class _PinnedComponent(torch.nn.Module):
+    _keep_in_fp32_modules = ["norm"]
+
+    def __init__(self):
+        super().__init__()
+        self.proj = torch.nn.Linear(2, 2)
+        self.norm = torch.nn.LayerNorm(2)
+
+    @classmethod
+    def from_pretrained(cls, checkpoint_path, *, torch_dtype, **kwargs):
+        assert cls._keep_in_fp32_modules is None
+        return cls().to(torch_dtype)
+
+
+WEIGHTS_FILE = "diffusion_pytorch_model.safetensors"
+
+
+class _PinnedBufferModel(ModelMixin, ConfigMixin):
+    """Persistent buffers (BatchNorm's running statistics) under a module the class pins to fp32."""
+
+    _keep_in_fp32_modules = ["norm"]
+
+    @register_to_config
+    def __init__(self):
+        super().__init__()
+        self.proj = torch.nn.Linear(2, 2)
+        self.norm = torch.nn.BatchNorm1d(2)
+
+
+class _TransientBufferModel(ModelMixin, ConfigMixin):
+    """A buffer outside the state dict, made in fp32 whatever the default dtype (H3's and Cosmos3's inv_freq)."""
+
+    @register_to_config
+    def __init__(self):
+        super().__init__()
+        self.proj = torch.nn.Linear(2, 2)
+        self.register_buffer("inv_freq", torch.arange(4, dtype=torch.float32) / 10, persistent=False)
+
+
+def _tiny_sd3():
+    # Its pos_embed is a persistent buffer the constructor makes in fp32 whatever the default dtype.
+    return SD3Transformer2DModel(
+        sample_size=8,
+        patch_size=2,
+        in_channels=4,
+        num_layers=1,
+        attention_head_dim=8,
+        num_attention_heads=2,
+        joint_attention_dim=16,
+        caption_projection_dim=16,
+        pooled_projection_dim=16,
+        out_channels=4,
+        pos_embed_max_size=8,
+    )
+
+
+def _tiny_wan():
+    # Pins modules to fp32 and has buffers outside the state dict (the rope tables).
+    return WanTransformer3DModel(
+        patch_size=(1, 2, 2),
+        num_attention_heads=2,
+        attention_head_dim=12,
+        in_channels=4,
+        out_channels=4,
+        text_dim=16,
+        freq_dim=16,
+        ffn_dim=32,
+        num_layers=1,
+        cross_attn_norm=True,
+        rope_max_seq_len=32,
+    )
+
+
+@pytest.mark.parametrize(
+    "make, class_spec",
+    [
+        pytest.param(_tiny_sd3, ["diffusers", "SD3Transformer2DModel"], id="a persistent buffer made in fp32"),
+        pytest.param(_tiny_wan, ["diffusers", "WanTransformer3DModel"], id="modules pinned to fp32"),
+        pytest.param(_PinnedBufferModel, [__name__, "_PinnedBufferModel"], id="a persistent buffer under the pin"),
+        pytest.param(_TransientBufferModel, [__name__, "_TransientBufferModel"], id="a buffer no load casts"),
+    ],
+)
+@pytest.mark.parametrize("master_dtype", [torch.bfloat16, torch.float16, torch.float32])
+def test_a_component_built_without_weights_has_the_dtypes_a_load_with_weights_gives(
+    tmp_path, make, class_spec, master_dtype
+):
+    # Every rank may build on meta and read its shards from the files, so no loaded model is there to copy from.
+    make().save_pretrained(tmp_path / "transformer")
+    (tmp_path / "model_index.json").write_text(
+        json.dumps({"_class_name": "DiffusionPipeline", "transformer": class_spec})
+    )
+    dtypes = {}
+    for materialize_weights in (True, False):
+        with model_init_context(materialize_weights=materialize_weights):
+            model = DiffusersModelBackend(None).load_component(
+                "transformer",
+                checkpoint_path=str(tmp_path),
+                master_dtype=master_dtype,
+                materialize_weights=materialize_weights,
+            )
+        tensors = chain(model.named_parameters(), model.named_buffers())
+        dtypes[materialize_weights] = {name: tensor.dtype for name, tensor in tensors}
+    assert dtypes[False] == dtypes[True]
+
+
+def _save_as_pipeline(model, path, **kwargs):
+    model.save_pretrained(path / "transformer", **kwargs)
+    (path / "model_index.json").write_text(
+        json.dumps({"_class_name": "DiffusionPipeline", "transformer": ["diffusers", "SD3Transformer2DModel"]})
+    )
+
+
+def _load_with_weights(path):
+    with model_init_context(materialize_weights=True):
+        return DiffusersModelBackend(None).load_component(
+            "transformer", checkpoint_path=str(path), master_dtype=torch.float32, materialize_weights=True
+        )
+
+
+@pytest.mark.parametrize("sharded", [False, True], ids=["the single file", "the files the index lists"])
+@pytest.mark.parametrize("variant", [False, True], ids=["alone", "beside a variant with other weights"])
+def test_the_named_files_hold_the_state_a_load_with_weights_gives(tmp_path, sharded, variant):
+    # safetensors_files mirrors which files diffusers' from_pretrained reads; this ties it to diffusers itself.
+    _save_as_pipeline(_tiny_sd3(), tmp_path, max_shard_size="20KB" if sharded else "10GB")
+    if variant:
+        _tiny_sd3().save_pretrained(tmp_path / "transformer", variant="fp16")
+
+    files = DiffusersModelBackend(None).safetensors_files("transformer", checkpoint_path=str(tmp_path))
+
+    assert (len(files) > 1) is sharded
+    named = {name: tensor for file in files for name, tensor in load_file(file).items()}
+    loaded = _load_with_weights(tmp_path).state_dict()
+    assert named.keys() == loaded.keys() and all(torch.equal(named[name], loaded[name]) for name in named)
+
+
+def test_a_load_with_weights_reads_the_weights_file_at_the_root_of_a_local_checkpoint(tmp_path):
+    # Why such a checkpoint names no files: diffusers reads the root's file, not the component's.
+    _save_as_pipeline(_tiny_sd3(), tmp_path)
+    component = load_file(tmp_path / "transformer" / "diffusion_pytorch_model.safetensors")
+    save_file({name: torch.zeros_like(tensor) for name, tensor in component.items()}, tmp_path / WEIGHTS_FILE)
+
+    assert DiffusersModelBackend(None).safetensors_files("transformer", checkpoint_path=str(tmp_path)) is None
+    assert all(tensor.count_nonzero() == 0 for tensor in _load_with_weights(tmp_path).state_dict().values())
 
 
 class TestBackendHierarchy:
@@ -83,3 +236,86 @@ class TestBackendHierarchy:
             "torch_dtype": torch.float32,
             "low_cpu_mem_usage": True,
         }
+
+    def test_a_component_built_without_weights_keeps_its_fp32_modules(self, tmp_path):
+        # Every rank may build on meta, so rank 0's loaded dtypes are not there to copy the fp32 pin from.
+        (tmp_path / "model_index.json").write_text(
+            json.dumps({"_class_name": "DiffusionPipeline", "transformer": [__name__, "_PinnedComponent"]})
+        )
+
+        model = DiffusersModelBackend(None).load_component(
+            "transformer", checkpoint_path=str(tmp_path), master_dtype=torch.bfloat16, materialize_weights=False
+        )
+
+        assert {name: parameter.dtype for name, parameter in model.named_parameters()} == {
+            "proj.weight": torch.bfloat16,
+            "proj.bias": torch.bfloat16,
+            "norm.weight": torch.float32,
+            "norm.bias": torch.float32,
+        }
+        assert _PinnedComponent._keep_in_fp32_modules == ["norm"]
+
+    def test_a_hub_checkpoint_resolves_to_the_weight_files_of_its_snapshot(self, tmp_path, monkeypatch):
+        folder = tmp_path / "transformer"
+        folder.mkdir()
+        (folder / "diffusion_pytorch_model.safetensors").touch()
+        (folder / "diffusion_pytorch_model.fp16.safetensors").touch()
+        downloads = []
+
+        def snapshot_download(repo_id, *, allow_patterns):
+            downloads.append((repo_id, allow_patterns))
+            return str(tmp_path)
+
+        monkeypatch.setattr("huggingface_hub.snapshot_download", snapshot_download)
+
+        files = DiffusersModelBackend(None).safetensors_files("transformer", checkpoint_path="org/model")
+
+        assert files == [folder / "diffusion_pytorch_model.safetensors"]
+        assert downloads == [
+            (
+                "org/model",
+                [
+                    "transformer/diffusion_pytorch_model.safetensors*",
+                    "transformer/diffusion_pytorch_model-*.safetensors",
+                ],
+            )
+        ]
+
+    def test_a_weights_file_at_the_root_of_a_local_checkpoint_leaves_the_load_to_rank_0(self, tmp_path):
+        # from_pretrained reads <checkpoint>/diffusion_pytorch_model.safetensors before the component's own file.
+        (tmp_path / "transformer").mkdir()
+        (tmp_path / "transformer" / "diffusion_pytorch_model.safetensors").touch()
+        backend = DiffusersModelBackend(None)
+        assert backend.safetensors_files("transformer", checkpoint_path=str(tmp_path)) == [
+            tmp_path / "transformer" / "diffusion_pytorch_model.safetensors"
+        ]
+
+        (tmp_path / "diffusion_pytorch_model.safetensors").touch()
+
+        assert backend.safetensors_files("transformer", checkpoint_path=str(tmp_path)) is None
+
+    def test_a_checkpoint_that_is_neither_a_folder_nor_a_repo_id_names_no_files(self, tmp_path):
+        # load_component then reports the path, as it does without this hook.
+        backend = DiffusersModelBackend(None)
+        assert backend.safetensors_files("transformer", checkpoint_path=str(tmp_path / "missing")) is None
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            pytest.param(LocalEntryNotFoundError("no cached snapshot"), id="offline and not in the cache"),
+            pytest.param(
+                RepositoryNotFoundError(
+                    "404", response=httpx.Response(404, request=httpx.Request("GET", "https://huggingface.co"))
+                ),
+                id="no such repo",
+            ),
+        ],
+    )
+    def test_a_repo_id_that_does_not_resolve_names_no_files(self, monkeypatch, error):
+        # A mistyped relative folder such as ckpts/h3 parses as a repo id; load_component names it in its error.
+        def snapshot_download(repo_id, *, allow_patterns):
+            raise error
+
+        monkeypatch.setattr("huggingface_hub.snapshot_download", snapshot_download)
+
+        assert DiffusersModelBackend(None).safetensors_files("transformer", checkpoint_path="ckpts/h3") is None
