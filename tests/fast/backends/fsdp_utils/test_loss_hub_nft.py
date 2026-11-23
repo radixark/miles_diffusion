@@ -246,7 +246,7 @@ class TestPrepareNftBatch:
         return DiffusionLossContext(
             models={"transformer": torch.nn.Identity()},
             train_pipeline_config=config,
-            sde_backend=None,
+            sde_backends={},
             args=Namespace(seed=42),
             forward_dtype=torch.float32,
             device=torch.device("cpu"),

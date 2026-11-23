@@ -48,11 +48,14 @@ def transition():
     backend = FlowSdeStepBackend()
     args = SimpleNamespace(
         diffusion_clip_range=CLIP_RANGE,
-        diffusion_noise_level=NOISE_LEVEL,
+        diffusion_noise_level={STREAM: NOISE_LEVEL},
+        sde_step_backend_path={STREAM: "a backend"},
         diffusion_kl_beta=0.0,
         diffusion_score_centering=True,
     )
-    ctx = SimpleNamespace(args=args, sde_backend=backend, models={"dit": object()}, device=torch.device("cpu"))
+    ctx = SimpleNamespace(
+        args=args, sde_backends={STREAM: backend}, models={"dit": object()}, device=torch.device("cpu")
+    )
     latent = torch.zeros((4, 1, 2, 2), dtype=torch.float32)
     sigmas = torch.tensor([0.8, 0.55, 0.8, 0.55])
     next_sigmas = torch.tensor([0.55, 0.25, 0.55, 0.25])
@@ -132,7 +135,7 @@ def test_gradient_matches_the_closed_form_oracle_and_the_loss_value_is_unchanged
     # Independent float64 objective -A * (clip(r) - center), with ordinary autograd
     # through the closed-form lognormal expectation (every kappa is strictly > 0).
     oracle_pred = t.new_pred.detach().clone().requires_grad_(True)
-    prev_mean, _, _ = t.ctx.sde_backend.prev_sample_mean_and_std(
+    prev_mean, _, _ = t.ctx.sde_backends[STREAM].prev_sample_mean_and_std(
         oracle_pred,
         t.prepared.latents[STREAM],
         t.prepared.extras["sigmas"][STREAM].view(VIEW),
