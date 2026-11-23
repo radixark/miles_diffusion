@@ -381,6 +381,14 @@ resolves to `qwen_image21`. `--diffusion-task` (e.g. `t2i`) must be one of the
 **Class** for loading components / FSDP. Default comes from the
 family config (usually a `DiffusersModelBackend`).
 
+`DiffusersModelBackend` lets every rank read its own shards of a component from the checkpoint's safetensors
+files (`safetensors_files`). A subclass whose `load_component` loads other weights overrides `safetensors_files`
+too, naming the files that hold what it loads or `None` for "rank 0 loads and broadcasts". A backend that names
+files gives every tensor its final dtype when `load_component` builds without weights (`materialize_weights=False`):
+the file values are cast into those dtypes, and no rank loads a model the others could copy them from. Files that
+exist but do not hold the model's state dict, or that only some ranks see, are an error, not a fallback; a file may
+hold tensors the model does not have.
+
 ***
 
 ## Worked example
