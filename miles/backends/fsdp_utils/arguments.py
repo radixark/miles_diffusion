@@ -1,8 +1,12 @@
 import argparse
 import dataclasses
+import json
+import logging
 from dataclasses import dataclass
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -86,8 +90,7 @@ def parse_fsdp_cli(extra_args_provider=None):
 
     if extra_args_provider is not None:
         parser = extra_args_provider(parser)
-    args = parser.parse_args()
-    return args
+    return parser.parse_args(), parser
 
 
 # Deterministic-mode attention support matrix — KEEP IN SYNC. torch's flag only
@@ -208,12 +211,91 @@ def validate_sp_args(args) -> None:
 
 
 def load_fsdp_args(extra_args_provider=None):
-    args = parse_fsdp_cli(extra_args_provider)
+    args, parser = parse_fsdp_cli(extra_args_provider)
     if args.config:
         with open(args.config) as f:
             data = yaml.safe_load(f) or {}
         for k, v in data.items():
             if not hasattr(args, k):
                 setattr(args, k, v)
+    # Before any check or derived value, so a YAML value is treated like a command-line one.
+    if args.custom_config_path:
+        with open(args.custom_config_path) as f:
+            apply_custom_config(args, parser, yaml.safe_load(f) or {})
     validate_attention_args(args)
     return args
+
+
+_BOOLEAN_ACTIONS = (argparse._StoreTrueAction, argparse._StoreFalseAction, argparse.BooleanOptionalAction)
+
+
+def apply_custom_config(args, parser: argparse.ArgumentParser, data: dict) -> None:
+    """Set each ``--custom-config-path`` key, an argument's dest, to its value parsed as the command line would.
+
+    Args:
+        args: the parsed namespace, updated in place.
+        parser: the parser that produced ``args``; its actions give each dest's type, choices and nargs.
+        data: the YAML mapping of dest to value.
+    """
+    actions = {action.dest: action for action in parser._actions if action.option_strings}
+    for key, value in data.items():
+        if key not in actions:
+            raise ValueError(
+                f"--custom-config-path sets {key!r}, which is no argument's dest (an argument's dest is its "
+                "flag name with underscores, e.g. global_batch_size); put other keys in --config"
+            )
+        parsed = _parse_like_command_line(actions[key], value)
+        if parsed != getattr(args, key):
+            logger.info(f"--custom-config-path sets {key}={parsed!r} (was {getattr(args, key)!r})")
+        setattr(args, key, parsed)
+
+
+def _parse_like_command_line(action: argparse.Action, value):
+    flag = action.option_strings[0]
+    if isinstance(action, _BOOLEAN_ACTIONS):
+        if not isinstance(value, bool):
+            raise ValueError(f"--custom-config-path {action.dest}: {flag} takes a YAML boolean, got {value!r}")
+        return value
+    if value is None:
+        return None
+    if action.nargs in ("+", "*") or isinstance(action.nargs, int):
+        if not isinstance(value, list):
+            raise ValueError(f"--custom-config-path {action.dest}: {flag} takes a YAML list, got {value!r}")
+        if isinstance(action.nargs, int) and len(value) != action.nargs:
+            raise ValueError(f"--custom-config-path {action.dest}: {flag} takes {action.nargs} values, got {value!r}")
+        parsed = [_parse_one(action, item) for item in value]
+        for item in parsed:
+            _check_choice(action, item)
+        return parsed
+    parsed = _parse_one(action, value)
+    _check_choice(action, parsed)
+    return parsed
+
+
+def _parse_one(action: argparse.Action, value):
+    """The value a command line would give: the YAML value written as its command-line text, through the type."""
+    if action.type is json.loads and not isinstance(value, str):
+        text = json.dumps(value)
+    elif isinstance(value, dict):
+        # A per-stream flag's command-line form, e.g. visual=3.0,audio=1.0.
+        text = ",".join(f"{name}={item}" for name, item in value.items())
+    elif isinstance(value, list):
+        text = ",".join(str(item) for item in value)
+    else:
+        text = str(value)
+    if action.type is None:
+        return text
+    try:
+        return action.type(text)
+    except (TypeError, ValueError, argparse.ArgumentTypeError) as error:
+        raise ValueError(
+            f"--custom-config-path {action.dest}: {value!r} is not a valid {action.option_strings[0]}"
+        ) from error
+
+
+def _check_choice(action: argparse.Action, value) -> None:
+    if action.choices is not None and value not in action.choices:
+        raise ValueError(
+            f"--custom-config-path {action.dest}: {value!r} is not one of {list(action.choices)} "
+            f"for {action.option_strings[0]}"
+        )

@@ -18,8 +18,6 @@ import os
 import uuid
 from typing import Any
 
-import yaml
-
 from miles.backends.sglang_diffusion_utils.arguments import add_sglang_diffusion_arguments
 from miles.backends.sglang_diffusion_utils.arguments import validate_args as sglang_validate_args
 from miles.utils.api_rm_config import resolve_api_rm_configs
@@ -1756,7 +1754,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             "--custom-config-path",
             type=str,
             default=None,
-            help="Path to the YAML config for custom function arguments.",
+            help="YAML of argument dests and values, applied as if given on the command line, right after "
+            "parsing; it overrides the command-line value. Put keys that are not arguments in --config.",
         )
 
         return parser
@@ -2438,11 +2437,3 @@ def miles_validate_args(args):
         assert args.num_rollout is not None, (
             "num_epoch is not set, but num_rollout is not set, " "please set --num-rollout or --num-epoch"
         )
-
-    if args.custom_config_path:
-        with open(args.custom_config_path) as f:
-            data = yaml.safe_load(f) or {}
-        for k, v in data.items():
-            if hasattr(args, k):
-                logger.info(f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}.")
-            setattr(args, k, v)
