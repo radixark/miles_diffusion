@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from argparse import Namespace
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -71,3 +72,7 @@ class PreparedBatch:
     extras: dict[str, Any] = field(default_factory=dict)
     # CFG scale of the frozen teacher's no-grad forward on this batch; None runs no teacher forward.
     teacher_guidance_scale: float | None = None
+    # With a teacher scale set: ``solver(forward)`` replaces the single teacher forward on this batch's inputs.
+    # ``forward(latents, timesteps_for_model)`` runs the frozen teacher, owned by the actor, on other latent
+    # states with this batch's conditioning; the solver's return value reaches the formula as ``teacher_pred``.
+    teacher_solver: Callable[[Callable[[dict, dict], dict]], Any] | None = None

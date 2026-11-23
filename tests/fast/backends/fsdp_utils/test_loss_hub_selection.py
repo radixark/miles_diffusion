@@ -48,6 +48,11 @@ HOOK_PATHS_BY_LOSS_TYPE_AND_ROLE = {
         formula="miles.backends.fsdp_utils.loss_hub.dmd2.critic_loss_formula",
         train_output="miles.backends.fsdp_utils.loss_hub.dmd2.score_last_step_samples",
     ),
+    ("pdd", "actor"): dict(
+        prepare="miles.backends.fsdp_utils.loss_hub.pdd.prepare_pdd_batch",
+        formula="miles.backends.fsdp_utils.loss_hub.pdd.pdd_loss_formula",
+        train_input="miles.distillation.integration.expand_train_pairs",
+    ),
 }
 
 

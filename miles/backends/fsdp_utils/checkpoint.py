@@ -70,17 +70,24 @@ def _is_lora_param_name(name: str) -> bool:
 
 
 class ModelState(Stateful):
-    """Wrapper for model state. ``lora_only=True`` saves/loads only LoRA
-    adapter weights; base weights come from ``args.hf_checkpoint`` on init."""
+    """Wrapper for model state. ``lora_only=True`` saves/loads only the LoRA adapter weights and any
+    parameter trained in full beside them (e.g. a layer the model-transform hook added); frozen base
+    weights come from ``args.hf_checkpoint`` on init."""
 
     def __init__(self, model, lora_only: bool = False):
         self.model = model
         self.lora_only = lora_only
+        self.trained_in_full = {
+            name for name, param in model.named_parameters() if param.requires_grad and not _is_lora_param_name(name)
+        }
+
+    def _saved(self, name: str) -> bool:
+        return _is_lora_param_name(name) or name in self.trained_in_full
 
     def state_dict(self):
         model_state_dict, _ = get_state_dict(self.model, optimizers=[])
         if self.lora_only:
-            model_state_dict = {k: v for k, v in model_state_dict.items() if _is_lora_param_name(k)}
+            model_state_dict = {k: v for k, v in model_state_dict.items() if self._saved(k)}
         return {"model": model_state_dict}
 
     def load_state_dict(self, state_dict):
@@ -94,7 +101,7 @@ class ModelState(Stateful):
         )
         # strict=False swallows mismatches; lora_only expects missing base keys, anything else is a bad checkpoint
         unclaimed = list(incompatible.unexpected_keys)
-        unfilled = [k for k in incompatible.missing_keys if not self.lora_only or _is_lora_param_name(k)]
+        unfilled = [k for k in incompatible.missing_keys if not self.lora_only or self._saved(k)]
         if unclaimed or unfilled:
             logger.error(
                 f"[FSDP] Checkpoint mismatch: {len(unclaimed)} unclaimed checkpoint keys, "
