@@ -2,9 +2,9 @@
 
     args.rollout_neg_cond_guidance_scale   (dmd2 sets it when its teacher runs CFG)
 
-    fetch_neg_cond              --> the run's sampling params, with CFG at that scale, stopped after step 0, no
-                                    trajectory and inline tensors; returns the reply's negative cond,
-                                    and raises when the reply has none
+    fetch_neg_cond              --> the run's sampling params, with CFG at that scale, stopped after step 0, with
+                                    inline tensors; returns the reply's negative cond, and raises when the reply
+                                    has none
     generate_rollout_async      --> fetches before the run's first rollout only
     generate_and_rm_microgroup  --> after either generate function, a training sample without a negative cond
                                     gets the fetched one; a sample that has its own keeps it
@@ -51,7 +51,6 @@ async def test_the_fetch_runs_cfg_for_one_step_on_the_runs_params_and_returns_th
         "negative_prompt": "blurry",
         "width": 512,
         "guidance_scale": 1.0,
-        "rollout_return_dit_trajectory": True,
         "rollout_return_outputs_via_store": True,
     }
 
@@ -60,7 +59,7 @@ async def test_the_fetch_runs_cfg_for_one_step_on_the_runs_params_and_returns_th
     assert torch.equal(neg_cond.encoder_hidden_states[0], NEG_EMBEDS)
     assert (sent["negative_prompt"], sent["width"]) == ("blurry", 512)
     assert (sent["guidance_scale"], sent["rollout_stop_step_index"]) == (4.5, 0)
-    assert not sent["rollout_return_dit_trajectory"] and not sent["rollout_return_outputs_via_store"]
+    assert not sent["rollout_return_outputs_via_store"]
     assert sampling_params["guidance_scale"] == 1.0
 
 
