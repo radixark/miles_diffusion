@@ -116,7 +116,7 @@ def build_rollout_generate_payload(
     return sampling_params
 
 
-async def fetch_neg_cond(args: Namespace, sampling_params: dict[str, Any]) -> CondKwargs | None:
+async def fetch_neg_cond(args: Namespace, sampling_params: dict[str, Any]) -> CondKwargs:
     """The negative cond of the run's samples, from one request that runs CFG and stops after its first step.
 
     A sample rolled out without CFG returns none. It depends on the negative prompt and the sample size, not on the
@@ -135,7 +135,13 @@ async def fetch_neg_cond(args: Namespace, sampling_params: dict[str, Any]) -> Co
         prompt="",
     )
     bodies = await post(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/rollout/generate", payload)
-    return apply_rollout_image_response(Sample(), bodies[0]).denoising_env.neg_cond_kwargs
+    neg_cond = apply_rollout_image_response(Sample(), bodies[0]).denoising_env.neg_cond_kwargs
+    if neg_cond is None:
+        raise ValueError(
+            f"the request at guidance scale {args.rollout_neg_cond_guidance_scale} returned no negative cond; "
+            "the engine runs CFG only with a negative prompt (--diffusion-negative-prompt)"
+        )
+    return neg_cond
 
 
 class GenerateState(metaclass=SingletonMeta):
