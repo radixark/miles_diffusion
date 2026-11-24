@@ -137,7 +137,8 @@ Built-in scorers (`--rm-type pickscore` / `hps` / `ocr` / `custom_api` / `openai
 replaces the normalization that runs after scoring.
 
 With `--use-output-store`, the rollout process does not read a training rollout's output. There,
-`sample.generated_output` is a `StoredTensor`, and the actors of a reward pool read it when they score it. A
+`sample.generated_output` (and `sample.generated_audio`, when the engine returns audio) is a `StoredTensor`, and the
+actors of a reward pool read it when they score it. A
 `--custom-rm-path` function therefore scores through a pool, a built-in `*_rm` or its own `AsyncRewardActorPool`, and
 does not read the tensor itself. Once a sample is scored its output is `None`; the first `--wandb-log-num-images`
 scored samples of a rollout that logs media keep it as a tensor, so a rollout whose first groups a filter drops logs
@@ -193,7 +194,9 @@ async def api_rm(args, samples: list[Sample], **kwargs) -> list[float]:
 ```
 
 With `--use-output-store` this function cannot read the output. Send it through `--custom-api-rm-config`, whose
-`ApiRewardActor` reads it in the actor, or through your own `AsyncRewardActorPool(args=args, ...)`.
+`ApiRewardActor` reads it in the actor, or through your own `AsyncRewardActorPool(args=args, ...)`, whose actor class
+declares `required_media` and implements `score_batch(outputs: list[GeneratedMedia], prompts)` (see
+[Rewards](rewards.md) § 3).
 
 ### `--custom-reward-post-process-path`
 

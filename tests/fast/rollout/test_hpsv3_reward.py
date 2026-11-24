@@ -3,7 +3,7 @@ tests/fast-gpu/test_hpsv3_alignment.py.
 
 Mental model (one image sample):
 
-    sample.generated_output (float CFHW, F == 1)
+    sample.generated_media.visual (float CFHW, F == 1)
         -> HPSv3RewardActor.score_batch : round -> uint8 -> PIL
         -> HPSv3Scorer                  : smart_resize to ~256 visual tokens -> Qwen2-VL -> rm_head at <|Reward|> -> mu
 
@@ -28,7 +28,7 @@ import miles.rollout.rm_hub.hpsv3 as hpsv3_module
 from miles.rollout.rm_hub import batched_async_rm
 from miles.rollout.rm_hub.hpsv3 import HPSv3RewardActor, split_official_state_dict
 from miles.rollout.rm_hub.weighted_mixture_rm import parse_weights
-from miles.utils.types import Sample
+from miles.utils.types import GeneratedMedia, Sample
 
 # one pixel row [0, 0.5, 1] per channel; rounding gives 128 in the middle, truncation 127
 _ROW = torch.tensor([0.0, 0.5, 1.0]).reshape(1, 1, 1, 3).repeat(3, 1, 1, 1)
@@ -44,14 +44,14 @@ def test_actor_rounds_when_quantising():
     """The official scorer reads PNGs, which diffusers writes with rounding."""
     actor = _actor_with(lambda prompts, images: [float(np.asarray(image)[0, 1, 0]) for image in images])
 
-    assert actor.score_batch([_ROW], ["prompt"]) == [128.0]
+    assert actor.score_batch([GeneratedMedia(visual=_ROW)], ["prompt"]) == [128.0]
 
 
 def test_actor_rejects_videos():
     actor = _actor_with(lambda prompts, images: [0.0] * len(images))
 
     with pytest.raises(ValueError, match="images only, got 2 frames"):
-        actor.score_batch([torch.cat([_ROW, _ROW], dim=1)], ["prompt"])
+        actor.score_batch([GeneratedMedia(visual=torch.cat([_ROW, _ROW], dim=1))], ["prompt"])
 
 
 def test_official_keys_split_onto_model_and_head():
@@ -92,7 +92,7 @@ async def test_hpsv3_rm_hands_the_raw_tensor_to_its_pool(monkeypatch):
 
     assert await hpsv3_module.hpsv3_rm(Namespace(), [sample]) == [7.5]
     (outputs, prompts), _ = pool.score.await_args
-    assert torch.equal(outputs[0], _ROW) and prompts == ["prompt"]
+    assert torch.equal(outputs[0].visual, _ROW) and prompts == ["prompt"]
     assert sample.reward_max_queue_depth == {"hpsv3": 3.0}
 
 
