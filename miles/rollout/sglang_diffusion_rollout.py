@@ -119,8 +119,8 @@ def build_rollout_generate_payload(
 async def fetch_neg_cond(args: Namespace, sampling_params: dict[str, Any]) -> CondKwargs:
     """The negative cond of the run's samples, from one request that runs CFG and stops after its first step.
 
-    A sample rolled out without CFG returns none. It depends on the negative prompt and the sample size, not on the
-    prompt or the seed, so one request serves every sample.
+    The negative cond depends on the negative prompt and the sample size, not on the prompt or the seed, so one
+    request serves every sample.
     """
     payload = build_rollout_generate_payload(
         sampling_params
@@ -378,7 +378,7 @@ async def generate_and_rm_microgroup(
 
     if not evaluation and state.neg_cond is not None:
         for sample in microgroup:
-            # a sample that ran CFG, or whose engine always returns one, keeps its own
+            # a sample whose engine always returns one keeps its own
             if sample.denoising_env.neg_cond_kwargs is None:
                 sample.denoising_env.neg_cond_kwargs = state.neg_cond
 
