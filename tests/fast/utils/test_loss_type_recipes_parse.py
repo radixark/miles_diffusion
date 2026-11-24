@@ -102,7 +102,8 @@ def test_a_dmd2_teacher_that_runs_cfg_has_the_rollout_fetch_the_neg_cond(parse, 
         "--dmd2-teacher-guidance-scale 1.0", f"--dmd2-teacher-guidance-scale {teacher_scale}"
     )
     assert parse(argv).rollout_neg_cond_guidance_scale == fetch_scale
-    assert parse(ARGV_BY_LOSS_TYPE["policy_loss"]).rollout_neg_cond_guidance_scale is None
+    other_loss = ARGV_BY_LOSS_TYPE["policy_loss"] + f" --dmd2-teacher-guidance-scale {teacher_scale}"
+    assert parse(other_loss).rollout_neg_cond_guidance_scale is None
 
 
 def test_a_dmd2_teacher_that_runs_cfg_is_rejected_on_a_model_that_trains_unguided(parse, monkeypatch):
