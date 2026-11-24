@@ -13,7 +13,7 @@ For `--custom-rm-path`, `--custom-reward-post-process-path`, and other
 
 | Stage | Flag | Role |
 |---|---|---|
-| Reward type | `--rm-type` | Selects built-in scorer (`pickscore`, `hps`, `hpsv3`, `ocr`, `openai_api`, `custom_api`), or `none` for a constant 0 when the loss reads no reward (DMD2), which also skips decoding training rollouts; ignored when `--custom-rm-path` is set |
+| Reward type | `--rm-type` | Selects built-in scorer (`pickscore`, `hps`, `hpsv3`, `ocr`, `openai_api`, `custom_api`, `videoalign`), or `none` for a constant 0 when the loss reads no reward (DMD2), which also skips decoding training rollouts; ignored when `--custom-rm-path` is set |
 | API reward config | `--openai-api-rm-config`, `--custom-api-rm-config` | YAML file or inline `base64:<payload>` for the two API rewards |
 | Per-sample override | `metadata.rm_type` in JSONL | Overrides global `--rm-type` |
 | Custom reward / norm | see [Customization](customization.md) | `--custom-rm-path`, `--custom-reward-post-process-path` |
@@ -140,6 +140,66 @@ Example from `scripts/run_diffusion_grpo_sd3_hpsv3_sglang.py`:
 --hpsv3-batch-size 8 \
 --hpsv3-reward-colocate
 ```
+
+### VideoAlign (`--rm-type videoalign`)
+
+Implementation: `miles/rollout/rm_hub/videoalign.py`.
+
+VideoAlign / [VideoReward](https://github.com/KwaiVGI/VideoAlign) scores a whole generated video against its prompt with a Qwen2-VL-2B-Instruct fine-tuned as a preference model:
+
+- Model: `Qwen/Qwen2-VL-2B-Instruct` + a linear `rm_head` read at three added reward tokens `<|VQ_reward|>` / `<|MQ_reward|>` / `<|TA_reward|>`
+- Checkpoint: `--videoalign-checkpoint-path` (optional; defaults to `KwaiVGI/VideoReward`, downloaded on first use)
+
+One forward returns three raw scores — Visual Quality, Motion Quality, Text Alignment. With the
+published `KwaiVGI/VideoReward` normalisation constants (`--videoalign-no-normalize` turns it off), each sample's
+reward is a dict:
+
+```
+{"vq": ..., "mq": ..., "ta": ..., "overall": vq + mq + ta}
+```
+
+`--reward-key` picks the entry GRPO trains on (e.g. `--reward-key overall`, or `--reward-key ta` for
+text-alignment only); every key also gets its own `rollout/reward/<name>_mean` panel. The actor scores
+`--videoalign-num-frames` evenly spaced frames per video (None = every frame).
+
+| Flag | Default | Description |
+|---|---|---|
+| `--videoalign-num-workers` | 1 | Ray actor count |
+| `--videoalign-num-gpus-per-worker` | 1.0 | GPU per worker (non-colocate) |
+| `--videoalign-batch-size` | 4 | Batch size per actor call |
+| `--videoalign-checkpoint-path` | None | `KwaiVGI/VideoReward` repo id or local dir with `checkpoint-11352/model.pth` |
+| `--videoalign-model-path` | None | Qwen2-VL-2B base model (defaults to `Qwen/Qwen2-VL-2B-Instruct`) |
+| `--videoalign-num-frames` | None | Evenly spaced frames scored per video (None = every frame) |
+| `--videoalign-max-pixels` | 200704 | Max pixels per frame for the visual encoder |
+| `--videoalign-no-normalize` | False | Return raw VQ/MQ/TA instead of the checkpoint's normalisation |
+| `--videoalign-reward-colocate` | False | Seat actors on rollout GPUs, one per placement-group bundle (requires `--colocate`) |
+
+#### LTX-2.3 Flow-GRPO smoke recipe
+
+`scripts/run_diffusion_grpo_ltx23_videoalign_sglang.py` keeps the existing LTX-2.3
+PickScore recipe's generator and optimizer settings, but selects VideoAlign:
+
+- Four colocated train/rollout GPUs plus one dedicated reward GPU.
+- Text-only prompts from `rockdu/miles-diffusion-datasets`, `flowgrpo_pickscore/train.jsonl`.
+- 8 prompts × 8 samples = 64 videos per rollout, at 768×512, 57 frames, 24 FPS and 24 denoising steps.
+- VideoAlign jointly scores 8 uniformly sampled frames, batch size 4.
+- `--reward-key overall` optimizes the sum of normalized VQ, MQ and TA.
+- Defaults to two rollouts (128 videos); this is an integration test configuration, not a verified training curve.
+
+A local two-rollout run completes end-to-end: both rollouts return finite `overall`
+rewards (raw mean ≈ -3.54 / -3.64; early LTX-2.3 videos score negatively on temporal/
+text alignment), four optimizer steps execute, and checkpoints are written. Training
+metrics match the registered LTX-2.3 PickScore e2e: `log_prob_new_idx_0` / `log_prob_old_idx_0`
+agree to ~5-6 decimal places and `grad_norm` stays in the baseline ~1e-5 range. Two
+rollouts are not enough to show reward improvement; treat this as a reward-integration
+smoke gate, not a convergence curve.
+
+The GPU alignment tests compare input IDs, video grids, pixel hashes and bf16 scores
+against upstream revision `219ab9db64c045e5181a2202d11f686439351292`, including a padded batch.
+They do not establish fp32 parity, training convergence or output-store integration.
+
+Like other example scripts, the launcher uses `execute_train`, which performs machine-wide
+process cleanup. Run it only on a dedicated allocation; do not use it unchanged on a shared host.
 
 ### Reward placement
 

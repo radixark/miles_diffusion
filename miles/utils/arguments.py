@@ -908,6 +908,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help="Number of diffusion inference steps for eval rollout. Defaults to diffusion-num-steps.",
             )
+            parser.add_argument(
+                "--diffusion-eval-guidance-scale",
+                type=float,
+                default=None,
+                help=(
+                    "Classifier-free guidance scale for eval rollout. Defaults to "
+                    "--diffusion-guidance-scale. LTX-2.3 eval uses the embedded CFG guider, "
+                    "which needs > 1.0 so the negative prompt gets encoded."
+                ),
+            )
             return parser
 
         def add_algo_arguments(parser):
@@ -1488,7 +1498,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--rm-type",
                 type=str,
                 default=None,
-                help="Built-in reward (pickscore / hps / hpsv3 / ocr / openai_api), custom_api for a configurable actor, "
+                help="Built-in reward (pickscore / hps / hpsv3 / ocr / openai_api / videoalign), custom_api for a configurable actor, "
                 "or none for a constant 0 when the loss reads no reward; none also has the engine skip decoding "
                 "training rollouts, whose media nothing reads. Ignored when --custom-rm-path is set.",
             )
@@ -1664,6 +1674,60 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help="Optional local HPSv3.safetensors; otherwise download it from MizzenAI/HPSv3.",
+            )
+            parser.add_argument(
+                "--videoalign-num-workers",
+                type=int,
+                default=1,
+                help="Number of Ray VideoAlign actors used when --rm-type videoalign.",
+            )
+            parser.add_argument(
+                "--videoalign-num-gpus-per-worker",
+                type=float,
+                default=1.0,
+                help="GPU resources per VideoAlign actor when reward is not colocated.",
+            )
+            parser.add_argument(
+                "--videoalign-reward-colocate",
+                action="store_true",
+                default=False,
+                help="Seat VideoAlign actors on the rollout GPUs, one per placement-group bundle. Requires --colocate.",
+            )
+            parser.add_argument(
+                "--videoalign-batch-size",
+                type=int,
+                default=4,
+                help="Batch size per VideoAlign actor call.",
+            )
+            parser.add_argument(
+                "--videoalign-model-path",
+                type=str,
+                default=None,
+                help="Qwen2-VL-2B base model for VideoAlign; defaults to Qwen/Qwen2-VL-2B-Instruct.",
+            )
+            parser.add_argument(
+                "--videoalign-checkpoint-path",
+                type=str,
+                default=None,
+                help="KwaiVGI/VideoReward repo id or local dir holding checkpoint-11352/model.pth.",
+            )
+            parser.add_argument(
+                "--videoalign-num-frames",
+                type=int,
+                default=None,
+                help="Evenly spaced frames to score per video (None = every frame).",
+            )
+            parser.add_argument(
+                "--videoalign-max-pixels",
+                type=int,
+                default=200704,
+                help="Max pixels per frame for the VideoAlign visual encoder.",
+            )
+            parser.add_argument(
+                "--videoalign-no-normalize",
+                action="store_true",
+                default=False,
+                help="Return raw (un-normalised) VQ/MQ/TA instead of the checkpoint's inference_config normalisation.",
             )
 
             parser.add_argument(
@@ -2333,6 +2397,14 @@ def miles_validate_args(args):
         raise ValueError(f"--hpsv3-batch-size must be positive, got {args.hpsv3_batch_size}")
     if args.hpsv3_num_gpus_per_worker < 0:
         raise ValueError(f"--hpsv3-num-gpus-per-worker must be non-negative, got {args.hpsv3_num_gpus_per_worker}")
+    if args.videoalign_num_workers <= 0:
+        raise ValueError(f"--videoalign-num-workers must be positive, got {args.videoalign_num_workers}")
+    if args.videoalign_batch_size <= 0:
+        raise ValueError(f"--videoalign-batch-size must be positive, got {args.videoalign_batch_size}")
+    if args.videoalign_num_gpus_per_worker < 0:
+        raise ValueError(
+            f"--videoalign-num-gpus-per-worker must be non-negative, got {args.videoalign_num_gpus_per_worker}"
+        )
 
     colocated_reward_workers = {
         name: num_workers
@@ -2340,6 +2412,7 @@ def miles_validate_args(args):
             ("pickscore", args.pickscore_reward_colocate, args.pickscore_num_workers),
             ("hps", args.hps_reward_colocate, args.hps_num_workers),
             ("hpsv3", args.hpsv3_reward_colocate, args.hpsv3_num_workers),
+            ("videoalign", args.videoalign_reward_colocate, args.videoalign_num_workers),
         )
         if colocate
     }

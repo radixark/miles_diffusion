@@ -91,7 +91,7 @@ class _StoredOutputRewardActor:
         self._scorer = scorer_cls(**scorer_kwargs)
         self._reader = StoredTensorReader(connect_output_store(args))
 
-    def score_batch(self, outputs: list, prompts: list[str]) -> list[float]:
+    def score_batch(self, outputs: list, prompts: list[str]) -> list[float | dict[str, float]]:
         # eval outputs arrive inline
         stored_outputs = [output for output in outputs if isinstance(output, StoredTensor)]
         if stored_outputs:
@@ -167,7 +167,7 @@ class AsyncRewardActorPool:
         self._round_robin_index += 1
         return i
 
-    async def score(self, outputs: list, prompts: list[str]) -> tuple[list[float], int]:
+    async def score(self, outputs: list, prompts: list[str]) -> tuple[list[float | dict[str, float]], int]:
         """Score samples in batches; also report the deepest dispatch-time backlog this call saw."""
         refs, idxs, max_queue_depth = [], [], 0
         for start in range(0, len(outputs), self._batch_size):
@@ -184,4 +184,6 @@ class AsyncRewardActorPool:
         finally:
             for i in idxs:
                 self._inflight[i] -= 1
-        return [float(score) for chunk in chunked_scores for score in chunk], max_queue_depth
+        return [
+            score if isinstance(score, dict) else float(score) for chunk in chunked_scores for score in chunk
+        ], max_queue_depth
