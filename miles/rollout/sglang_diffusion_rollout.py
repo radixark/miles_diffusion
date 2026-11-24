@@ -292,10 +292,6 @@ async def generate_microgroup(
     st.attach(microgroup)
     if not evaluation:
         check_extra_stream_sde_args(args, microgroup)
-        for sample in microgroup:
-            # a sample that ran CFG, or whose engine always returns one, keeps its own
-            if sample.denoising_env.neg_cond_kwargs is None:
-                sample.denoising_env.neg_cond_kwargs = state.neg_cond
 
     # Stash the SDE/training step indices on each sample so _train_core can
     # slice the full-length trajectory & rollout_log_probs down to the window.
@@ -374,6 +370,12 @@ async def generate_and_rm_microgroup(
                     microgroup = await custom_generate_func(args, microgroup, sampling_params)
             else:
                 microgroup = await generate_microgroup(args, microgroup, sampling_params, evaluation=evaluation)
+
+    if not evaluation and state.neg_cond is not None:
+        for sample in microgroup:
+            # a sample that ran CFG, or whose engine always returns one, keeps its own
+            if sample.denoising_env.neg_cond_kwargs is None:
+                sample.denoising_env.neg_cond_kwargs = state.neg_cond
 
     # for the rm that need the whole group, we will not do the rm here
     if args.group_rm:
