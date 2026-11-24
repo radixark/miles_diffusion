@@ -63,7 +63,6 @@ def test_dmd2_critic_defaults_to_the_teacher_and_the_actor_lr(user, expected):
         ref_mode=None,
         diffusion_kl_beta={None: 0.0},
         teacher_load="teacher",
-        dmd2_teacher_guidance_scale=1.0,
         lr=2e-6,
         **{"critic_load": None, "critic_lr": None, **user},
     )
@@ -89,7 +88,6 @@ def test_dmd2_fills_the_expand_path_and_touches_no_hook_path():
         ref_mode=None,
         diffusion_kl_beta={None: 0.0},
         teacher_load="teacher",
-        dmd2_teacher_guidance_scale=1.0,
         lr=2e-6,
         critic_load=None,
         critic_lr=None,
@@ -103,7 +101,6 @@ def test_dmd2_fills_the_expand_path_and_touches_no_hook_path():
         "critic_load": "teacher",
         "critic_lr": 2e-6,
         "ref_mode": "none",
-        "rollout_neg_cond_guidance_scale": None,
     }
 
 
