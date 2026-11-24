@@ -129,7 +129,7 @@ async def fetch_neg_cond(args: Namespace, sampling_params: dict[str, Any]) -> Co
             "guidance_scale": args.rollout_neg_cond_guidance_scale,
             "rollout_stop_step_index": 0,
             "rollout_return_dit_trajectory": False,
-            # the store's objects are released with their rollout
+            # no rollout's release would own a stored copy
             "rollout_return_outputs_via_store": False,
         },
         prompt="",
