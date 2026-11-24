@@ -17,7 +17,7 @@ from PIL import Image
 
 from miles.utils.misc import SingletonMeta
 from miles.utils.processing_utils import generated_output_to_rgb_hwc_uint8_frames
-from miles.utils.types import Sample
+from miles.utils.types import GeneratedMedia, Sample
 
 from .core import AsyncRewardActorPool, record_reward_queue_depth
 
@@ -212,18 +212,20 @@ class HPSv3Scorer(torch.nn.Module):
 
 
 class HPSv3RewardActor:
+    required_media = frozenset({"visual"})
+
     def __init__(self, **scorer_kwargs) -> None:
         use_cuda = bool(ray.get_gpu_ids()) and torch.cuda.is_available()
         if use_cuda:
             torch.cuda.set_device(0)
         self.scorer = HPSv3Scorer(device="cuda" if use_cuda else "cpu", **scorer_kwargs)
 
-    def score_batch(self, outputs: list[torch.Tensor], prompts: list[str]) -> list[float]:
+    def score_batch(self, outputs: list[GeneratedMedia], prompts: list[str]) -> list[float]:
         images = []
         for output in outputs:
-            if output.shape[1] != 1:
-                raise ValueError(f"HPSv3 scores images only, got {output.shape[1]} frames")
-            (image,) = generated_output_to_rgb_hwc_uint8_frames(output, None, round_normalized=True)
+            if output.visual.shape[1] != 1:
+                raise ValueError(f"HPSv3 scores images only, got {output.visual.shape[1]} frames")
+            (image,) = generated_output_to_rgb_hwc_uint8_frames(output.visual, None, round_normalized=True)
             images.append(Image.fromarray(image))
         return self.scorer(prompts, images)
 
@@ -248,6 +250,6 @@ class AsyncHPSv3Pool(AsyncRewardActorPool, metaclass=SingletonMeta):
 
 async def hpsv3_rm(args, samples: Sequence[Sample]) -> list[float]:
     pool = AsyncHPSv3Pool(args)
-    scores, max_queue_depth = await pool.score([s.generated_output for s in samples], [s.prompt for s in samples])
+    scores, max_queue_depth = await pool.score([s.generated_media for s in samples], [s.prompt for s in samples])
     record_reward_queue_depth(samples, "hpsv3", max_queue_depth)
     return scores
