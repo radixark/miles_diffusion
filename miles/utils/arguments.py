@@ -2149,9 +2149,9 @@ def validate_dmd2_args(args) -> None:
             "--loss-type dmd2 samples the student unguided; set --diffusion-guidance-scale 1.0 "
             "and drop --diffusion-true-cfg-scale"
         )
-    if args.use_lora or args.teacher_lora_adapter_paths is not None:
+    if args.teacher_lora_adapter_paths is not None:
         raise ValueError(
-            "--loss-type dmd2 trains the full student and critic; drop --use-lora and --teacher-lora-adapter-path"
+            "--loss-type dmd2 takes its teacher from --teacher-load alone; drop --teacher-lora-adapter-path"
         )
     if args.ref_mode != "none":
         raise ValueError("--loss-type dmd2 uses no reference model; drop --ref-mode and --diffusion-kl-beta")
