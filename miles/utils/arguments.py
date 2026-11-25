@@ -1729,6 +1729,34 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=False,
                 help="Return raw (un-normalised) VQ/MQ/TA instead of the checkpoint's inference_config normalisation.",
             )
+            parser.add_argument(
+                "--videoalign-vq-weight",
+                type=float,
+                default=1.0,
+                help=(
+                    "Weight applied to the visual-quality (VQ) head inside the summed "
+                    "`overall` reward: overall = vq_weight*vq + mq_weight*mq + ta_weight*ta."
+                ),
+            )
+            parser.add_argument(
+                "--videoalign-mq-weight",
+                type=float,
+                default=1.0,
+                help=(
+                    "Weight applied to the motion-quality (MQ) head inside the summed "
+                    "`overall` reward: overall = vq_weight*vq + mq_weight*mq + ta_weight*ta."
+                ),
+            )
+            parser.add_argument(
+                "--videoalign-ta-weight",
+                type=float,
+                default=1.0,
+                help=(
+                    "Weight applied to the text-alignment (TA) head inside the summed "
+                    "`overall` reward: overall = vq_weight*vq + mq_weight*mq + ta_weight*ta. "
+                    "Raise above 1 to discourage prompt-mismatch reward hacking."
+                ),
+            )
 
             parser.add_argument(
                 "--rm-url",

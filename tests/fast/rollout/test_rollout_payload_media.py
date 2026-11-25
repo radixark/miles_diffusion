@@ -21,6 +21,7 @@ def _args(**overrides):
         diffusion_width=832,
         diffusion_height=480,
         diffusion_guidance_scale=1.0,
+        diffusion_eval_guidance_scale=None,
         diffusion_guidance_scale_2=None,
         diffusion_true_cfg_scale=None,
         diffusion_output_num_frames=None,

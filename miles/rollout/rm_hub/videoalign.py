@@ -4,7 +4,7 @@ The model is a Qwen2-VL-2B-Instruct with a linear 'rm_head' (hidden_size -> 1, n
 the hidden state of three added special tokens <|VQ_reward|> / <|MQ_reward|> / <|TA_reward|>,
 fine-tuned with a LoRA adapter.  Each token ends a section of a fixed rubric, so one forward
 returns three raw scores (Visual Quality, Motion Quality, Text Alignment).  videoalign_rm returns
-a dict per sample {"vq", "mq", "ta", "overall"}; overall = vq + mq + ta, and --reward-key picks the
+a dict per sample {"vq", "mq", "ta", "overall"}; overall = vq_weight*vq + mq_weight*mq + ta_weight*ta, and --reward-key picks the
 entry GRPO trains on (every key also gets its own rollout/reward/<name>_mean panel).
 
 The official implementation normalises each dimension with the means/stds shipped in the
@@ -280,6 +280,9 @@ class VideoAlignScorer(torch.nn.Module):
         checkpoint_path: str | None = None,
         max_pixels: int = _DEFAULT_MAX_PIXELS,
         normalize: bool = True,
+        vq_weight: float = 1.0,
+        mq_weight: float = 1.0,
+        ta_weight: float = 1.0,
     ) -> None:
         super().__init__()
         from pathlib import Path
@@ -292,6 +295,9 @@ class VideoAlignScorer(torch.nn.Module):
         self.device = torch.device(device)
         self.max_pixels = max_pixels
         self.normalize = normalize
+        self.vq_weight = vq_weight
+        self.mq_weight = mq_weight
+        self.ta_weight = ta_weight
         repo = checkpoint_path or _VIDEOALIGN_REPO
 
         # tokenizer/processor from the base model + the three added reward tokens, as the official does
@@ -388,7 +394,7 @@ class VideoAlignScorer(torch.nn.Module):
                 for dim in _DIMENSIONS:
                     mean, std = _NORM[dim]
                     dims[dim] = (dims[dim] - mean) / std
-            dims["overall"] = dims["vq"] + dims["mq"] + dims["ta"]
+            dims["overall"] = self.vq_weight * dims["vq"] + self.mq_weight * dims["mq"] + self.ta_weight * dims["ta"]
             rewards.append(dims)
         return rewards
 
@@ -422,6 +428,9 @@ class AsyncVideoAlignPool(AsyncRewardActorPool, metaclass=SingletonMeta):
                 "checkpoint_path": args.videoalign_checkpoint_path,
                 "max_pixels": args.videoalign_max_pixels,
                 "normalize": not args.videoalign_no_normalize,
+                "vq_weight": args.videoalign_vq_weight,
+                "mq_weight": args.videoalign_mq_weight,
+                "ta_weight": args.videoalign_ta_weight,
             },
             num_workers=args.videoalign_num_workers,
             batch_size=args.videoalign_batch_size,
