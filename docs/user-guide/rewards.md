@@ -1,8 +1,8 @@
 ---
 title: Rewards
-description: Built-in reward models (PickScore, HPS, HPSv3, OCR, API rewards), rm_hub dispatch, and prompt data format.
+description: Built-in reward models (PickScore, HPS, HPSv3, OCR, CLAP, API rewards), rm_hub dispatch, and prompt data format.
 ---
-Miles-diffusion scores generated images (or video frames) after each rollout
+Miles-diffusion scores generated images (or video frames, or the soundtrack) after each rollout
 microgroup. Reward computation lives in `miles/rollout/rm_hub/` and is invoked
 from `sglang_diffusion_rollout.generate_and_rm_microgroup`.
 
@@ -13,7 +13,7 @@ For `--custom-rm-path`, `--custom-reward-post-process-path`, and other
 
 | Stage | Flag | Role |
 |---|---|---|
-| Reward type | `--rm-type` | Selects built-in scorer (`pickscore`, `hps`, `hpsv3`, `ocr`, `openai_api`, `custom_api`), or `none` for a constant 0 when the loss reads no reward (DMD2), which also skips decoding training rollouts; ignored when `--custom-rm-path` is set |
+| Reward type | `--rm-type` | Selects built-in scorer (`pickscore`, `hps`, `hpsv3`, `ocr`, `clap`, `openai_api`, `custom_api`), or `none` for a constant 0 when the loss reads no reward (DMD2), which also skips decoding training rollouts; ignored when `--custom-rm-path` is set |
 | API reward config | `--openai-api-rm-config`, `--custom-api-rm-config` | YAML file or inline `base64:<payload>` for the two API rewards |
 | Per-sample override | `metadata.rm_type` in JSONL | Overrides global `--rm-type` |
 | Custom reward / norm | see [Customization](customization.md) | `--custom-rm-path`, `--custom-reward-post-process-path` |
@@ -141,6 +141,44 @@ Example from `scripts/run_diffusion_grpo_sd3_hpsv3_sglang.py`:
 --hpsv3-reward-colocate
 ```
 
+### CLAP (`--rm-type clap`)
+
+Implementation: `miles/rollout/rm_hub/clap.py`.
+
+[CLAP](https://github.com/LAION-AI/CLAP) scores how well a rollout's **soundtrack** matches its prompt, for
+models that return a waveform with the video (LTX audio-video, MiniMax H3 t2va). The other built-in rewards
+only see frames; mixed with one of them (see [Combining rewards](#combining-rewards)) it gives the audio
+stream a reward of its own.
+
+- Model: `--clap-model-path`, a transformers `ClapModel` checkpoint (default `laion/larger_clap_general`)
+
+Scoring formula:
+
+```
+score = cos(text_emb, audio_emb)        # in [-1, 1]
+```
+
+The waveform is averaged to mono and resampled to the model's 48 kHz. A clip longer than the model's 10 s
+window is scored on evenly spaced windows that cover it, averaged; CLAP's own handling of a long clip is a
+random crop, which would make a sample's reward change from call to call. The prompt is cut at 77 tokens,
+the length CLAP's text tower was trained with. A sample without a waveform is an error (its pool requires `audio`), so the reward
+cannot be used with a model that returns no audio. `tests/fast-gpu/test_clap_scorer.py` runs the real checkpoints.
+
+| Flag | Default | Description |
+|---|---|---|
+| `--clap-num-workers` | 1 | Ray actor count |
+| `--clap-num-gpus-per-worker` | 1.0 | GPU per worker (non-colocate) |
+| `--clap-batch-size` | 8 | Batch size per actor call |
+| `--clap-model-path` | `laion/larger_clap_general` | Hugging Face repo or local path of the CLAP checkpoint |
+| `--clap-reward-colocate` | False | Seat the `--clap-num-workers` actors on rollout GPUs, one per placement-group bundle (requires `--colocate`) |
+
+Example, PickScore on the frames plus CLAP on the soundtrack:
+
+```bash
+--custom-rm-path miles.rollout.rm_hub.weighted_mixture_rm.weighted_mixture_rm \
+--custom-rm-args "pickscore=1.0,clap=1.0" --reward-key weighted
+```
+
 ### Reward placement
 
 Every GPU reward pool is placed one of two ways:
@@ -161,7 +199,7 @@ built on first use.
 directly; `--custom-rm-args` is an opaque string the framework hands to that function
 through `args`, so the function owns its own config grammar. The shipped example
 `miles/rollout/rm_hub/weighted_mixture_rm.py` reads `name=weight,name=weight`, with names
-from `hps`, `hpsv3`, `pickscore`, `ocr`, `custom_api`, `openai_api`:
+from `hps`, `hpsv3`, `pickscore`, `ocr`, `clap`, `custom_api`, `openai_api`:
 
 ```bash
 --custom-rm-path miles.rollout.rm_hub.weighted_mixture_rm.weighted_mixture_rm \
@@ -176,12 +214,12 @@ The example returns a dict per sample (`{"hps": ..., "pickscore": ..., "weighted
 `rollout/reward/<name>_mean` panel, so the components stay visible while the sum is optimized.
 
 Weights apply to raw scores (HPSv2.1 ≈ 0.25–0.35, HPSv3 μ unbounded and roughly −10 to +16,
-PickScore/26 ≈ 0.8–0.9, OCR ∈ [0, 1], default OpenAI API rubric ∈ [0, 4]), so pick them with the
+PickScore/26 ≈ 0.8–0.9, OCR ∈ [0, 1], CLAP cosine ∈ [−1, 1], default OpenAI API rubric ∈ [0, 4]), so pick them with the
 scales in mind. A zero weight keeps a reward as a monitor only, e.g.
 `--custom-rm-args "hpsv3=1.0,hps=0,pickscore=0" --reward-key hpsv3` trains on HPSv3 and plots the
 other two to catch reward hacking. Colocated pools share one slot ledger, so several rewards
 can colocate without overlapping. Rewards receive each sample's `GeneratedMedia` (see § 3), and every reward actor
-quantises its `visual` to uint8 on its own terms.
+quantises its `visual` to uint8 on its own terms; CLAP scores its `audio` instead.
 
 A shipped recipe uses it: `scripts/run_diffusion_grpo_sd3_ocr_pickscore_sglang.py` trains SD3.5 on
 0.8 OCR + 0.2 PickScore with `--rollout-shuffle`; see [SD3](../models/sd3/sd3.md) § 5.4 for the
@@ -250,10 +288,11 @@ generate_and_rm_microgroup()
     → all pickscore?   pickscore_rm (batched)
     → all hps?         hps_rm (batched)
     → all hpsv3?       hpsv3_rm (batched)
+    → all clap?        clap_rm (batched, scores the waveform)
     → all ocr?         ocr_rm (batched, one image per actor call)
     → all custom_api?  custom_api_rm (batched, one request per actor call)
     → all openai_api?  openai_api_rm (batched, one request per actor call)
-    → else             per-sample async_rm → ocr / pickscore / hps / hpsv3 / custom_api / openai_api / NotImplementedError
+    → else             per-sample async_rm → ocr / pickscore / hps / hpsv3 / clap / custom_api / openai_api / NotImplementedError
   → sample.reward = score
 
 # after the rollout, in the RolloutManager Ray actor:
@@ -263,7 +302,8 @@ RolloutManager._convert_samples_to_train_data()
 
 Every built-in reward hands its pool one `GeneratedMedia` per sample (`miles/utils/types.py`): `visual` is
 `generated_output` (`[C, F, H, W]`), `audio` is `generated_audio` (`[C, L]`) with its `audio_sample_rate`. The scorer
-class declares `required_media`, e.g. `frozenset({"visual"})` for the image rewards; the pool rejects a sample that
+class declares `required_media`, e.g. `frozenset({"visual"})` for the image rewards and
+`frozenset({"audio"})` for CLAP; the pool rejects a sample that
 lacks one of them and sends no other tensor field, so an image reward never moves or reads a waveform. With
 `--use-output-store` the fields are `StoredTensor`s, which the reward actor reads.
 
