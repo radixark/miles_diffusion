@@ -12,7 +12,15 @@ import torch
 
 from miles.utils.output_store import StoredTensor, StoredTensorReader
 from miles.utils.processing_utils import fhwc_to_cfhw
-from miles.utils.types import CondKwargs, DenoisingEnv, DiTTrajectory, RolloutDebugTensors, Sample, decode_tensor
+from miles.utils.types import (
+    CondKwargs,
+    DenoisingEnv,
+    DiTTrajectory,
+    RolloutDebugTensors,
+    RolloutStreamData,
+    Sample,
+    decode_tensor,
+)
 
 __all__ = [
     "apply_rollout_image_response",
@@ -210,6 +218,28 @@ def _parse_rollout_debug_tensors(
     )
 
 
+def _parse_extra_streams(
+    data: dict[str, dict[str, Any]] | None,
+    *,
+    deserialize_func: Callable[[Any], torch.Tensor | None],
+) -> dict[str, RolloutStreamData]:
+    """The extra streams the engine rolled out; one that only carries its decoded output is left out."""
+    # An engine without per-stream rollout settings echoes no rollout_sde_kernel.
+    return {
+        stream_name: RolloutStreamData(
+            rollout_log_probs=deserialize_func(stream["rollout_log_probs"]),
+            rollout_debug_tensors=_parse_rollout_debug_tensors(
+                stream["rollout_debug_tensors"],
+                deserialize_func=deserialize_func,
+            ),
+            dit_trajectory=_parse_dit_trajectory(stream["dit_trajectory"], deserialize_func=deserialize_func),
+            rollout_sde_kernel=stream.get("rollout_sde_kernel"),
+        )
+        for stream_name, stream in (data or {}).items()
+        if stream["rollout_log_probs"] is not None
+    }
+
+
 def apply_rollout_image_response(
     sample: Sample,
     body: dict[str, Any],
@@ -235,8 +265,10 @@ def apply_rollout_image_response(
         if isinstance(generated_output, StoredTensor)
         else _normalize_generated_output(generated_output)
     )
-    sample.generated_audio = deserialize_func(body.get("generated_audio"))
-    sample.audio_sample_rate = body.get("audio_sample_rate")
+    # The waveform is the audio stream's decoded output; a pipeline without audio sends no such stream.
+    audio_stream = (body.get("extra_streams") or {}).get("audio") or {}
+    sample.generated_audio = deserialize_func(audio_stream.get("generated_output"))
+    sample.audio_sample_rate = audio_stream.get("sample_rate")
     # Eval-mode rollout (rollout=False) sends no log_probs; train-mode always does.
     sample.rollout_log_probs = deserialize_func(body.get("rollout_log_probs"))
     sample.rollout_debug_tensors = _parse_rollout_debug_tensors(
@@ -245,6 +277,7 @@ def apply_rollout_image_response(
     )
     sample.denoising_env = _parse_denoising_env(body.get("denoising_env"), deserialize_func=deserialize_func)
     sample.dit_trajectory = _parse_dit_trajectory(body.get("dit_trajectory"), deserialize_func=deserialize_func)
+    sample.extra_streams = _parse_extra_streams(body.get("extra_streams"), deserialize_func=deserialize_func)
 
     if "inference_time_s" in body and body["inference_time_s"] is not None:
         sample.inference_time_s = float(body["inference_time_s"])

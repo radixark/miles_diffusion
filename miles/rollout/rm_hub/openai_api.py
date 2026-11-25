@@ -8,12 +8,11 @@ import os
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
-import torch
 from PIL import Image
 
 from miles.utils.api_rm_config import OpenAIImageRewardConfig
 from miles.utils.processing_utils import encode_image_as_png_data_url, generated_output_to_rgb_hwc_uint8_frames
-from miles.utils.types import Sample
+from miles.utils.types import GeneratedMedia, Sample
 
 from .api import ApiRewardActor, AsyncApiRewardPool
 from .core import record_reward_queue_depth
@@ -40,6 +39,8 @@ _RESPONSE_FORMAT = {
 class OpenAIImageRewardActor(ApiRewardActor):
     """Score prompt/image pairs using the OpenAI-compatible Chat Completions API."""
 
+    required_media = frozenset({"visual"})
+
     def __init__(self, **kwargs) -> None:
         from openai import OpenAI
 
@@ -51,8 +52,8 @@ class OpenAIImageRewardActor(ApiRewardActor):
             max_retries=2,
         )
 
-    def build_request(self, output: torch.Tensor, prompt: str) -> dict[str, Any]:
-        (frame,) = generated_output_to_rgb_hwc_uint8_frames(output, None, round_normalized=True)
+    def build_request(self, output: GeneratedMedia, prompt: str) -> dict[str, Any]:
+        (frame,) = generated_output_to_rgb_hwc_uint8_frames(output.visual, None, round_normalized=True)
         image = Image.fromarray(frame)
         return {
             "model": self.config.model,
@@ -90,6 +91,6 @@ class AsyncOpenAIPool(AsyncApiRewardPool):
 
 async def openai_api_rm(args, samples: Sequence[Sample], **kwargs) -> list[float]:
     pool = AsyncOpenAIPool(args)
-    scores, max_queue_depth = await pool.score([s.generated_output for s in samples], [s.prompt for s in samples])
+    scores, max_queue_depth = await pool.score([s.generated_media for s in samples], [s.prompt for s in samples])
     record_reward_queue_depth(samples, "openai_api", max_queue_depth)
     return scores

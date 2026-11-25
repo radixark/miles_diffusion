@@ -185,6 +185,7 @@ def score_centering_term(
     step_out: SdeStepOutput,
     rollout_prev_mean: torch.Tensor | None,
     *,
+    stream_name: str,
     next_latents: torch.Tensor,
     log_ratio: torch.Tensor,
     advantage: torch.Tensor,
@@ -195,10 +196,11 @@ def score_centering_term(
     """Per-pair term to add to the clipped PPO loss for --diffusion-score-centering.
 
     It is zero-valued, so the logged loss and the clip mask are unchanged; only the gradient moves.
+    ``step_out``, ``next_latents`` and ``rollout_prev_mean`` are those of the latent stream ``stream_name``;
     ``rollout_prev_mean`` is the stacked ``rollout_step_prev_sample_mean``, already on ``step_out``'s
     device in float32.
     """
-    rollout_noise_std = stack_train_pair_rollout_debug(batch, "rollout_step_noise_std_dev")
+    rollout_noise_std = stack_train_pair_rollout_debug(batch, "rollout_step_noise_std_dev", stream_name)
     if rollout_prev_mean is None or rollout_noise_std is None:
         raise ValueError(
             "--diffusion-score-centering needs the rollout's per-step prev-sample means and noise stds; "

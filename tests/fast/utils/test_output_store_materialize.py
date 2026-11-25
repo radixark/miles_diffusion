@@ -1,5 +1,7 @@
 """The trainer reads a shard's stored tensors back into the tensors the inline path would have carried."""
 
+from types import SimpleNamespace
+
 import msgspec
 import torch
 
@@ -13,6 +15,8 @@ from radix_transfer_plugins.stashes.tensor_stash import TensorStash
 from miles.ray.data_conversion_hub.flow_grpo import expand_samples_to_train_pairs
 from miles.utils.output_store import StoredTensor, materialize_stored_tensors
 from miles.utils.types import CondKwargs, DenoisingEnv, DiTTrajectory, RolloutDebugTensors, Sample
+
+_ARGS = SimpleNamespace(primary_stream="visual", rollout_extra_streams=[])
 
 B, T = 2, 3
 K = T + 1
@@ -142,9 +146,9 @@ def test_pairs_read_back_equal_the_inline_pairs():
         for b in range(B)
     ]
     rewards = [0.5, -0.5]
-    expected = expand_samples_to_train_pairs(None, inline, rewards, rewards)["train_data"]
-    pairs = expand_samples_to_train_pairs(None, stored, rewards, rewards)["train_data"]
-    assert isinstance(pairs[0]["latent"], StoredTensor)
+    expected = expand_samples_to_train_pairs(_ARGS, inline, rewards, rewards)["train_data"]
+    pairs = expand_samples_to_train_pairs(_ARGS, stored, rewards, rewards)["train_data"]
+    assert isinstance(pairs[0]["latent"]["visual"], StoredTensor)
 
     materialize_stored_tensors(pairs, store=store)
 
@@ -159,11 +163,11 @@ def test_pairs_read_back_equal_the_inline_pairs():
     assert len(pairs) == len(expected) == B * len(SDE)
     for pair, want in zip(pairs, expected, strict=True):
         for key in ("latent", "next_latent", "timestep", "sigma", "log_prob_old"):
-            assert torch.equal(pair[key], want[key]), key
-        assert pair["latent"].dtype == torch.bfloat16
+            assert torch.equal(pair[key]["visual"], want[key]["visual"]), key
+        assert pair["latent"]["visual"].dtype == torch.bfloat16
         assert torch.equal(
-            pair["rollout_debug_tensors"]["rollout_step_model_output"],
-            want["rollout_debug_tensors"]["rollout_step_model_output"],
+            pair["rollout_debug_tensors"]["visual"]["rollout_step_model_output"],
+            want["rollout_debug_tensors"]["visual"]["rollout_step_model_output"],
         )
         cond, want_cond = pair["denoising_env"].pos_cond_kwargs, want["denoising_env"].pos_cond_kwargs
         assert torch.equal(cond.encoder_hidden_states[0], want_cond.encoder_hidden_states[0])

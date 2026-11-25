@@ -63,14 +63,18 @@ def build_rollout_sampling_params(
         sampling_params.update(
             {
                 "rollout": True,
-                "rollout_sde_type": args.diffusion_sde_type,
-                "rollout_noise_level": args.diffusion_noise_level,
-                "rollout_log_prob_no_const": args.diffusion_log_prob_no_const,
+                "rollout_sde_type": args.diffusion_sde_type[args.primary_stream],
+                "rollout_noise_level": args.diffusion_noise_level[args.primary_stream],
+                "rollout_log_prob_no_const": args.diffusion_log_prob_no_const[args.primary_stream],
                 "rollout_debug_mode": args.diffusion_debug_mode,
                 "rollout_return_denoising_env": True,
                 "rollout_return_dit_trajectory": True,
             }
         )
+        if args.rollout_extra_streams:
+            sampling_params["rollout_extra_streams"] = args.rollout_extra_streams
+        if args.rollout_extra_stream_sde_args:
+            sampling_params["rollout_extra_stream_sde_args"] = args.rollout_extra_stream_sde_args
         if args.use_output_store:
             sampling_params["rollout_return_outputs_via_store"] = True
         if args.rm_type == "none" and args.custom_rm_path is None:
@@ -179,6 +183,29 @@ class GenerateState(metaclass=SingletonMeta):
         self.remaining_batch_size += len(samples)
 
 
+def check_extra_stream_sde_args(args: Namespace, samples: list[Sample]) -> None:
+    """Reject a response whose extra stream was not rolled out with the settings the request gave it.
+
+    An engine without per-stream settings ignores the request field and echoes nothing; Flow-GRPO would score the
+    stream with settings the engine never used.
+    """
+    for sample in samples:
+        for stream_name, sde_args in args.rollout_extra_stream_sde_args.items():
+            # A stream the engine did not roll out at all is the converter's error to report.
+            if stream_name not in sample.extra_streams:
+                continue
+            echoed = sample.extra_streams[stream_name].rollout_sde_kernel
+            # An ode stream steps without noise, so the engine may report any noise level for it.
+            compared = [
+                key for key in sde_args if key != "rollout_noise_level" or sde_args["rollout_sde_type"] != "ode"
+            ]
+            if echoed is None or any(echoed.get(key) != sde_args[key] for key in compared):
+                raise ValueError(
+                    f"stream {stream_name!r} was rolled out with {echoed}, not {sde_args} "
+                    f"(sample_index={sample.index}); the engine must apply and echo rollout_extra_stream_sde_args"
+                )
+
+
 async def generate_microgroup(
     args: Namespace, microgroup: list[Sample], sampling_params: dict[str, Any], *, evaluation: bool = False
 ) -> list[Sample]:
@@ -239,6 +266,8 @@ async def generate_microgroup(
     for sample in microgroup:
         sample.parser_max_queue_depth = float(queued)
     st.attach(microgroup)
+    if not evaluation:
+        check_extra_stream_sde_args(args, microgroup)
 
     # Stash the SDE/training step indices on each sample so _train_core can
     # slice the full-length trajectory & rollout_log_probs down to the window.
@@ -259,32 +288,40 @@ async def generate_microgroup(
 async def release_generated_outputs(state: GenerateState, samples: list[Sample]) -> None:
     """Delete the stored outputs of scored samples from the store, first reading the few media logging keeps.
 
-    The samples' outputs become ``None``, except the kept ones, which become tensors. The rollout's release deletes
-    whatever a failed delete leaves.
+    The samples' outputs become ``None``, except the kept ones, which become tensors; a waveform follows its
+    sample's output. The rollout's release deletes whatever a failed delete leaves.
     """
+    # The engine stores a response's outputs together: where the output is stored, so is the waveform, if any.
     stored_samples = [sample for sample in samples if isinstance(sample.generated_output, StoredTensor)]
     if not stored_samples:
         return
     # taken before the read is awaited, so concurrent microgroups keep at most --wandb-log-num-images in all
     media_samples = stored_samples[: state.media_outputs_left]
     state.media_outputs_left -= len(media_samples)
-    media_tensors = []
+    waveform_samples = [sample for sample in media_samples if sample.generated_audio is not None]
+    media_tensors, media_waveforms = [], []
     if media_samples:
         media_outputs = [sample.generated_output for sample in media_samples]
+        stored_waveforms = [sample.generated_audio for sample in waveform_samples]
         try:
             media_tensors = await asyncio.to_thread(read_generated_outputs, state.output_reader, media_outputs)
+            if stored_waveforms:
+                # not read_generated_outputs: a waveform has no video layout to normalize
+                media_waveforms = await asyncio.to_thread(state.output_reader.read, stored_waveforms)
         except Exception:
             logger.warning(
                 "Failed to read %d outputs kept for media; they are not logged", len(media_samples), exc_info=True
             )
-            media_samples = []
-    output_refs = [
-        msgspec.structs.replace(
-            stored_output.ref,
-            fields=tuple(spec for spec in stored_output.ref.fields if spec.name == stored_output.field),
+            media_samples, waveform_samples, media_tensors = [], [], []
+    output_refs = []
+    for sample in stored_samples:
+        ref = sample.generated_output.ref
+        output_fields = {sample.generated_output.field}
+        if sample.generated_audio is not None:
+            output_fields.add(sample.generated_audio.field)
+        output_refs.append(
+            msgspec.structs.replace(ref, fields=tuple(spec for spec in ref.fields if spec.name in output_fields))
         )
-        for stored_output in (sample.generated_output for sample in stored_samples)
-    ]
     try:
         await asyncio.to_thread(state.output_store.delete_many, output_refs)
     except Exception:
@@ -293,8 +330,11 @@ async def release_generated_outputs(state: GenerateState, samples: list[Sample])
         )
     for sample in stored_samples:
         sample.generated_output = None
+        sample.generated_audio = None
     for sample, tensor in zip(media_samples, media_tensors, strict=True):
         sample.generated_output = tensor
+    for sample, waveform in zip(waveform_samples, media_waveforms, strict=True):
+        sample.generated_audio = waveform
 
 
 async def generate_and_rm_microgroup(

@@ -142,9 +142,10 @@ def nft_loss_formula(
     r_b = r.to(dtype=pos_loss.dtype)
     per_pair = (r_b * pos_loss / beta + (1.0 - r_b) * neg_loss / beta) * adv_clip_max
     kl = None
-    if args.diffusion_kl_beta > 0:
-        kl = ((new_pred["visual"] - ref_pred["visual"]) ** 2).mean(dim=tuple(range(1, x0.ndim)))
-        per_pair = per_pair + args.diffusion_kl_beta * kl
+    kl_beta = args.diffusion_kl_beta[args.primary_stream]
+    if kl_beta > 0:
+        kl = ((new_pred[args.primary_stream] - ref_pred[args.primary_stream]) ** 2).mean(dim=tuple(range(1, x0.ndim)))
+        per_pair = per_pair + kl_beta * kl
     loss_sum = per_pair.sum()
 
     with torch.no_grad():

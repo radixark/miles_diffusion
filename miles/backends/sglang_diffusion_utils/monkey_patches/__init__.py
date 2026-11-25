@@ -9,6 +9,7 @@ those groups before model construction.
 - ``qwen_image21``: Qwen-Image 2.1 recomputes the text prefix every step instead of caching its K/V,
   like the trainer.
 - ``ltx``:  LTX rollout cond kwargs + AV cross-off (video-only train parity).
+- ``ltx_av``:  LTX rollout cond kwargs only; audio-video cross-attention stays on, as the joint train forward runs it.
 
 Patch modules are imported inside ``apply_*`` only, so CPU-only Ray actors
 can import this package without pulling sglang triton kernels. Adding a
@@ -66,6 +67,13 @@ def apply_ltx2_rollout_patches() -> None:
 
     patch_ltx2_rollout_cond_kwargs.apply()
     patch_ltx2_disable_av_cross.apply()
+
+
+@register_rollout_patch_group("ltx_av")
+def apply_ltx2_av_rollout_patches() -> None:
+    from miles.backends.sglang_diffusion_utils.monkey_patches import patch_ltx2_rollout_cond_kwargs
+
+    patch_ltx2_rollout_cond_kwargs.apply()
 
 
 def validate_rollout_patch_groups(names: list[str]) -> None:

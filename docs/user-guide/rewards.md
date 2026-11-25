@@ -240,8 +240,8 @@ PickScore/26 ≈ 0.8–0.9, OCR ∈ [0, 1], default OpenAI API rubric ∈ [0, 4]
 scales in mind. A zero weight keeps a reward as a monitor only, e.g.
 `--custom-rm-args "hpsv3=1.0,hps=0,pickscore=0" --reward-key hpsv3` trains on HPSv3 and plots the
 other two to catch reward hacking. Colocated pools share one slot ledger, so several rewards
-can colocate without overlapping. Rewards receive `generated_output` itself, and every reward actor
-quantises it to uint8 on its own terms.
+can colocate without overlapping. Rewards receive each sample's `GeneratedMedia` (see § 3), and every reward actor
+quantises its `visual` to uint8 on its own terms.
 
 A shipped recipe uses it: `scripts/run_diffusion_grpo_sd3_ocr_pickscore_sglang.py` trains SD3.5 on
 0.8 OCR + 0.2 PickScore with `--rollout-shuffle`; see [SD3](../models/sd3/sd3.md) § 5.4 for the
@@ -290,6 +290,10 @@ for a JSON `score`. Its kwargs are `model` and `api_key_env` (required), `base_u
 built-in 0–4 rubric is used), `score_min` / `score_max` (default 0 / 4), and `timeout_s`; scores outside that range
 raise. It accepts image outputs only (one frame).
 
+An `ApiRewardActor` subclass declares `required_media`, the `GeneratedMedia` fields its requests use
+(`OpenAIImageRewardActor`: `frozenset({"visual"})`), and its `build_request(output, prompt)` receives only those; a pool
+rejects a subclass that declares none.
+
 ### Remote RM (`--rm-type remote_rm`)
 
 The CLI exposes `--rm-url` for a remote reward service, but **`rm_hub` does not
@@ -316,6 +320,12 @@ generate_and_rm_microgroup()
 RolloutManager._convert_samples_to_train_data()
   → _post_process_rewards()                     # GRPO advantage normalization
 ```
+
+Every built-in reward hands its pool one `GeneratedMedia` per sample (`miles/utils/types.py`): `visual` is
+`generated_output` (`[C, F, H, W]`), `audio` is `generated_audio` (`[C, L]`) with its `audio_sample_rate`. The scorer
+class declares `required_media`, e.g. `frozenset({"visual"})` for the image rewards; the pool rejects a sample that
+lacks one of them and sends no other tensor field, so an image reward never moves or reads a waveform. With
+`--use-output-store` the fields are `StoredTensor`s, which the reward actor reads.
 
 After rollout, `RolloutManager._post_process_rewards` subtracts the mean and
 optionally divides by std to produce normalized advantages for training.

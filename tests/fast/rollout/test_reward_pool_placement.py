@@ -26,6 +26,8 @@ from miles.rollout.rm_hub.core import AsyncRewardActorPool, ColocatedRewardSlots
 class _FakeActorCls:
     """Records the options each worker was created with instead of starting Ray actors."""
 
+    required_media = frozenset({"visual"})
+
     def __init__(self):
         self.created = []
 
