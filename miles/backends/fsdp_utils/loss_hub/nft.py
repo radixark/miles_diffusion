@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import torch
 
-from miles.backends.fsdp_utils.loss_hub.types import DiffusionLossContext, PreparedBatch
+from miles.backends.fsdp_utils.loss_hub.types import DiffusionLossContext, PreparedBatch, PreparedBatches
 from miles.utils.hash_utils import stable_hash
 from miles.utils.metric_buffer import MetricBuffer
 
@@ -20,7 +20,7 @@ def corrupt(x0: torch.Tensor, t: torch.Tensor, eps: torch.Tensor) -> torch.Tenso
     return (1.0 - t) * x0 + t * eps
 
 
-def prepare_nft_batch(
+def nft_batch(
     ctx: DiffusionLossContext,
     batch: list[dict],
     *,
@@ -63,6 +63,20 @@ def prepare_nft_batch(
         joint_cond=None,
         advantage=advantage,
         extras={"x0": x0},
+    )
+
+
+def prepare_nft_batch(
+    ctx: DiffusionLossContext,
+    batch: list[dict],
+    *,
+    microbatch_id: int,
+    optim_step_idx: int,
+    pad_to_len: int | None = None,
+) -> PreparedBatches:
+    """The NFT hook: one stage, the training forward on ``nft_batch``'s corruption."""
+    return PreparedBatches(
+        actor=nft_batch(ctx, batch, microbatch_id=microbatch_id, optim_step_idx=optim_step_idx, pad_to_len=pad_to_len)
     )
 
 
@@ -114,6 +128,9 @@ def nft_loss_formula(
     old_pred: dict[str, torch.Tensor] | None,
     ref_pred: dict[str, torch.Tensor] | None,
     teacher_pred: dict[str, torch.Tensor] | None = None,
+    teacher_batch: PreparedBatch | None = None,
+    actor_forward_pred: dict[str, torch.Tensor] | None = None,
+    actor_forward_batch: PreparedBatch | None = None,
     metrics: MetricBuffer,
     optim_step_idx: int,
     train_output_inputs: list,

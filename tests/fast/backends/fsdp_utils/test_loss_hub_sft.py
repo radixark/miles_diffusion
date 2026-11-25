@@ -2,7 +2,7 @@
 
     cached pair["latent"]: {"visual": T}  (single-stream families)  or  {"visual": T, "audio": T}  (joint)
                 │
-    prepare_sft_batch:
+    sft_batch:
       grid       ──► FlowNoiseSchedule.shifted(--fsdp-flow-shift[name])
       select_component(visual grid, microbatch_id), once, rank-aligned ──► DiT component + the visual grid points it serves
       each stream gets its own seeded generator
@@ -43,7 +43,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from miles.backends.fsdp_utils.loss_hub.sft import prepare_sft_batch, select_component, sft_loss_formula
+from miles.backends.fsdp_utils.loss_hub.sft import select_component, sft_batch, sft_loss_formula
 from miles.backends.fsdp_utils.loss_hub.types import DiffusionLossContext, FlowNoiseSchedule
 from miles.utils.hash_utils import stable_hash
 
@@ -130,7 +130,7 @@ class TestPrepareSftBatch:
         torch.manual_seed(0)
         ctx = _ctx({"transformer": nn.Identity()})
         batch = _batch()
-        prepared = prepare_sft_batch(ctx, batch, microbatch_id=0, optim_step_idx=0)
+        prepared = sft_batch(ctx, batch, microbatch_id=0, optim_step_idx=0)
 
         x0 = torch.stack([pair["latent"]["visual"] for pair in batch]).float()
         sigma = (prepared.timesteps["visual"] / NUM_TRAIN_TIMESTEPS).view(-1, 1, 1, 1, 1)
@@ -179,11 +179,11 @@ class TestPrepareSftBatch:
         torch.manual_seed(0)
         global_state = torch.get_rng_state()
 
-        first = prepare_sft_batch(_ctx({"transformer": nn.Identity()}), batch, microbatch_id=0, optim_step_idx=0)
+        first = sft_batch(_ctx({"transformer": nn.Identity()}), batch, microbatch_id=0, optim_step_idx=0)
         assert torch.equal(torch.get_rng_state(), global_state)
 
         torch.rand(1000)
-        second = prepare_sft_batch(_ctx({"transformer": nn.Identity()}), batch, microbatch_id=0, optim_step_idx=0)
+        second = sft_batch(_ctx({"transformer": nn.Identity()}), batch, microbatch_id=0, optim_step_idx=0)
         assert torch.equal(first.timesteps["visual"], second.timesteps["visual"])
         assert torch.equal(first.latents["visual"], second.latents["visual"])
         assert torch.equal(_visual_target(first), _visual_target(second))
@@ -193,7 +193,7 @@ class TestPrepareSftBatch:
         # the draws single-stream SFT made before latents were keyed by stream, rebuilt by hand.
         ctx = _ctx({"transformer": nn.Identity()})
         batch = _batch()
-        prepared = prepare_sft_batch(ctx, batch, microbatch_id=0, optim_step_idx=0)
+        prepared = sft_batch(ctx, batch, microbatch_id=0, optim_step_idx=0)
 
         generator = torch.Generator().manual_seed(stable_hash("sample", 42, 3, 0, 0))
         noise_schedule = FlowNoiseSchedule.shifted(FLOW_SHIFT, NUM_TRAIN_TIMESTEPS)
@@ -206,19 +206,19 @@ class TestPrepareSftBatch:
 
     def test_samples_within_microbatch_use_different_noise(self):
         batch = _batch(bsz=4)
-        prepared = prepare_sft_batch(_ctx({"transformer": nn.Identity()}), batch, microbatch_id=0, optim_step_idx=0)
+        prepared = sft_batch(_ctx({"transformer": nn.Identity()}), batch, microbatch_id=0, optim_step_idx=0)
         x0 = torch.stack([pair["latent"]["visual"] for pair in batch]).float()
         noise = _visual_target(prepared) + x0
         assert all(not torch.equal(noise[0], noise[i]) for i in range(1, len(batch)))
 
     def test_identity_changes_draws(self):
         batch = _batch()
-        base = prepare_sft_batch(_ctx({"transformer": nn.Identity()}), batch, microbatch_id=0, optim_step_idx=0)
-        other_rollout = prepare_sft_batch(
+        base = sft_batch(_ctx({"transformer": nn.Identity()}), batch, microbatch_id=0, optim_step_idx=0)
+        other_rollout = sft_batch(
             _ctx({"transformer": nn.Identity()}, rollout_id=4), batch, microbatch_id=0, optim_step_idx=0
         )
-        other_slot = prepare_sft_batch(_ctx({"transformer": nn.Identity()}), batch, microbatch_id=1, optim_step_idx=0)
-        other_dp_rank = prepare_sft_batch(
+        other_slot = sft_batch(_ctx({"transformer": nn.Identity()}), batch, microbatch_id=1, optim_step_idx=0)
+        other_dp_rank = sft_batch(
             _ctx({"transformer": nn.Identity()}, dp_rank=1), batch, microbatch_id=0, optim_step_idx=0
         )
         for other in (other_rollout, other_slot, other_dp_rank):
@@ -228,8 +228,8 @@ class TestPrepareSftBatch:
         models = {"transformer": nn.Identity(), "transformer_2": nn.Identity()}
         for slot in range(10):
             # Different DP ranks choose the same expert but use independent sample RNG.
-            a = prepare_sft_batch(_ctx(models, dp_rank=0), _batch(), microbatch_id=slot, optim_step_idx=0)
-            b = prepare_sft_batch(_ctx(models, dp_rank=1), _batch(), microbatch_id=slot, optim_step_idx=0)
+            a = sft_batch(_ctx(models, dp_rank=0), _batch(), microbatch_id=slot, optim_step_idx=0)
+            b = sft_batch(_ctx(models, dp_rank=1), _batch(), microbatch_id=slot, optim_step_idx=0)
             assert a.component_name == b.component_name
             assert not torch.equal(_visual_target(a), _visual_target(b))
 
@@ -238,9 +238,7 @@ class TestPrepareSftBatch:
         noise_schedule = FlowNoiseSchedule.shifted(3.0, 4)
         torch.testing.assert_close(noise_schedule.sigmas, torch.tensor([1.0, 0.9, 0.75, 0.5, 0.0]))
         torch.testing.assert_close(noise_schedule.timesteps, torch.tensor([4.0, 3.6, 3.0, 2.0]))
-        prepared = prepare_sft_batch(
-            _ctx({"transformer": nn.Identity()}), _batch(bsz=16), microbatch_id=0, optim_step_idx=0
-        )
+        prepared = sft_batch(_ctx({"transformer": nn.Identity()}), _batch(bsz=16), microbatch_id=0, optim_step_idx=0)
         grid = FlowNoiseSchedule.shifted(FLOW_SHIFT, NUM_TRAIN_TIMESTEPS)
         assert set(prepared.extras["sigmas"]["visual"].tolist()) <= set(grid.sigmas[:-1].tolist())
         assert set(prepared.timesteps["visual"].tolist()) <= set(grid.timesteps.tolist())
@@ -251,7 +249,7 @@ class TestSftLossFormula:
         ctx = _ctx({"transformer": nn.Identity()})
         ctx.args.log_loss_sigma_bucket = log_loss_sigma_bucket
         batch = _batch()
-        prepared = prepare_sft_batch(ctx, batch, microbatch_id=0, optim_step_idx=0)
+        prepared = sft_batch(ctx, batch, microbatch_id=0, optim_step_idx=0)
         new_pred = {"visual": _visual_target(prepared) + prediction_offset}
         return prepared, sft_loss_formula(
             ctx,
@@ -314,7 +312,7 @@ class TestJointStreams:
     def test_each_stream_draws_from_its_own_flow_shift_grid(self):
         # --fsdp-flow-shift visual=3,audio=1: each stream's sigmas lie on its own grid, not on the other's.
         batch = _joint_batch(16)
-        prepared = prepare_sft_batch(
+        prepared = sft_batch(
             _ctx({"transformer": nn.Identity()}, config=_SingleConfig()), batch, microbatch_id=0, optim_step_idx=0
         )
         assert set(prepared.latents) == {"visual", "audio"}
@@ -337,14 +335,14 @@ class TestJointStreams:
         batch = _joint_batch(32)
         for pair in batch:
             pair["latent"]["audio"] = pair["latent"]["visual"].clone()
-        first = prepare_sft_batch(ctx, batch, microbatch_id=0, optim_step_idx=0)
+        first = sft_batch(ctx, batch, microbatch_id=0, optim_step_idx=0)
         grids = {name: FlowNoiseSchedule.shifted(FLOW_SHIFTS[name], NUM_TRAIN_TIMESTEPS) for name in FLOW_SHIFTS}
         idx = torch.searchsorted(-grids["visual"].sigmas.float(), -first.extras["sigmas"]["visual"])
         assert torch.equal(first.extras["sigmas"]["audio"], grids["audio"].sigmas.float()[idx])
         assert not torch.equal(first.extras["target"]["visual"], first.extras["target"]["audio"])
         for pair in batch:
             pair["latent"]["action"] = torch.ones(10, 7)
-        second = prepare_sft_batch(ctx, batch, microbatch_id=0, optim_step_idx=0)
+        second = sft_batch(ctx, batch, microbatch_id=0, optim_step_idx=0)
         for name in ("visual", "audio"):
             assert torch.equal(first.extras["target"][name], second.extras["target"][name])
             assert torch.equal(first.timesteps[name], second.timesteps[name])
@@ -353,7 +351,7 @@ class TestJointStreams:
         # visual (96 elements) off by 1, audio (12 elements) off by 2: per pair 1 + 4, not a size-weighted mix.
         ctx = _ctx({"transformer": nn.Identity()}, config=_SingleConfig())
         batch = _joint_batch(2)
-        prepared = prepare_sft_batch(ctx, batch, microbatch_id=0, optim_step_idx=0)
+        prepared = sft_batch(ctx, batch, microbatch_id=0, optim_step_idx=0)
         predictions = {
             "visual": (prepared.extras["target"]["visual"] + 1.0).requires_grad_(),
             "audio": (prepared.extras["target"]["audio"] + 2.0).requires_grad_(),
@@ -383,7 +381,7 @@ class TestJointStreams:
 
         ctx = _ctx({"transformer": nn.Identity()}, config=_SingleConfig())
         batch = _joint_batch(2)
-        prepared = prepare_sft_batch(ctx, batch, microbatch_id=0, optim_step_idx=0)
+        prepared = sft_batch(ctx, batch, microbatch_id=0, optim_step_idx=0)
         predictions = {
             "visual": prepared.extras["target"]["visual"] + 1.0,
             "audio": prepared.extras["target"]["audio"] + 2.0,
@@ -419,7 +417,7 @@ class TestJointStreams:
         # H3 Ref2VA on a silent target: the audio stream is noised and fed to the DiT, but only visual is predicted.
         ctx = _ctx({"transformer": nn.Identity()}, config=_SingleConfig())
         batch = _joint_batch(2)
-        prepared = prepare_sft_batch(ctx, batch, microbatch_id=0, optim_step_idx=0)
+        prepared = sft_batch(ctx, batch, microbatch_id=0, optim_step_idx=0)
         loss = sft_loss_formula(
             ctx,
             batch,
@@ -438,7 +436,7 @@ class TestJointStreams:
         ctx = _ctx({"transformer": nn.Identity()}, config=_SingleConfig())
         ctx.args.fsdp_supervised_streams = ["visual"]
         batch = _joint_batch(2)
-        prepared = prepare_sft_batch(ctx, batch, microbatch_id=0, optim_step_idx=0)
+        prepared = sft_batch(ctx, batch, microbatch_id=0, optim_step_idx=0)
         metrics = _Metrics()
         loss = sft_loss_formula(
             ctx,
@@ -464,9 +462,7 @@ class TestJointStreams:
         batch = _joint_batch(4)
         for slot in range(5):
             contexts = [_ctx(models, dp_rank=rank) for rank in (0, 1)]
-            first, second = [
-                prepare_sft_batch(context, batch, microbatch_id=slot, optim_step_idx=0) for context in contexts
-            ]
+            first, second = [sft_batch(context, batch, microbatch_id=slot, optim_step_idx=0) for context in contexts]
             assert first.component_name == second.component_name
             for timestep in first.timesteps["visual"]:
                 component = contexts[0].train_pipeline_config.component_for_timestep(float(timestep))
@@ -475,7 +471,7 @@ class TestJointStreams:
     def test_rejects_misshaped_predictions(self):
         ctx = _ctx({"transformer": nn.Identity()}, config=_SingleConfig())
         batch = _joint_batch(1)
-        prepared = prepare_sft_batch(ctx, batch, microbatch_id=0, optim_step_idx=0)
+        prepared = sft_batch(ctx, batch, microbatch_id=0, optim_step_idx=0)
         predictions = dict(prepared.extras["target"])
         predictions["audio"] = predictions["audio"][0]
         with pytest.raises(ValueError, match="prediction shape"):
@@ -495,4 +491,4 @@ class TestJointStreams:
         batch = _joint_batch(2)
         del batch[1]["latent"]["audio"]
         with pytest.raises(ValueError, match="latent streams"):
-            prepare_sft_batch(_ctx({"transformer": nn.Identity()}), batch, microbatch_id=0, optim_step_idx=0)
+            sft_batch(_ctx({"transformer": nn.Identity()}), batch, microbatch_id=0, optim_step_idx=0)

@@ -56,9 +56,11 @@ input_dtype_policy = {"latents": "default", "cond": "default", "timestep": None}
 input_dtype_policy = {"latents": "default", "cond": None, "timestep": "fp32"}
 ```
 
-**Division of labour:** `input_dtype_policy` owns the boundary; autocast owns the interior. That
-split also keeps gradient-checkpointing recompute consistent, since the recomputed forward sees
-the same ambient autocast as the original. Autocast is off when `--diffusion-forward-dtype` is
+**Division of labour:** `input_dtype_policy` owns the boundary; autocast owns the interior. The
+trainer resolves the policy once per run and casts each stage's inputs with it as it sends them to the
+model, the teacher's and the actor's extra forward included; the prepared batch itself keeps the rollout
+dtypes for the loss. That split also keeps gradient-checkpointing recompute consistent, since the
+recomputed forward sees the same ambient autocast as the original. Autocast is off when `--diffusion-forward-dtype` is
 `fp32` and for families that set `enable_autocast = False` (MiniMax H3).
 
 ## 3. Per-parameter dtype overrides

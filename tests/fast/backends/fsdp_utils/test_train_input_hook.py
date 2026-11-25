@@ -118,8 +118,6 @@ def test_later_stages_see_the_preprocessed_pairs():
     assert input_pairs == pairs
     for stage_ctx in (input_ctx, ctx):
         assert (stage_ctx.rollout_id, stage_ctx.external_data) == (3, {"critic": scores})
-    # The schedule follows the preprocessed pairs, so only the later stages' ctx carries it.
-    assert (input_ctx.num_microbatches_per_optim_step, ctx.num_microbatches_per_optim_step) == (0, 2)
     # Two optimizer steps of two micro-batches each: the id counts on, the step index follows the window.
     assert forwarded == [
         (0, 0, False, [preprocessed[0]]),

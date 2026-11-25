@@ -24,7 +24,7 @@ import torch
 
 from miles.backends.fsdp_utils.configs.qwen_image import QwenImageTrainPipelineConfig
 from miles.backends.fsdp_utils.configs.train_pipeline_config import TrainPipelineConfig
-from miles.backends.fsdp_utils.loss_hub.nft import corrupt, nft_loss_formula, nft_r_from_advantages, prepare_nft_batch
+from miles.backends.fsdp_utils.loss_hub.nft import corrupt, nft_batch, nft_loss_formula, nft_r_from_advantages
 from miles.backends.fsdp_utils.loss_hub.types import DiffusionLossContext
 from miles.ray.data_conversion_hub.nft import expand_samples_to_train_pairs
 from miles.utils.hash_utils import stable_hash
@@ -272,18 +272,18 @@ class TestPrepareNftBatch:
                 seen["sigmas"] = sigmas.clone()
                 return sigmas
 
-        prepare_nft_batch(self._ctx(_Recording()), self._batch(), microbatch_id=0, optim_step_idx=0)
+        nft_batch(self._ctx(_Recording()), self._batch(), microbatch_id=0, optim_step_idx=0)
         assert torch.equal(seen["sigmas"], torch.tensor(self.SIGMAS))
 
     def test_sd3_style_family_gets_sigma_times_num_train_timesteps(self):
-        prepared = prepare_nft_batch(self._ctx(_Sd3StyleConfig()), self._batch(), microbatch_id=0, optim_step_idx=0)
+        prepared = nft_batch(self._ctx(_Sd3StyleConfig()), self._batch(), microbatch_id=0, optim_step_idx=0)
         assert torch.equal(prepared.timesteps["visual"], torch.tensor(self.SIGMAS))
         assert torch.equal(
             prepared.timesteps_for_model["visual"], torch.tensor(self.SIGMAS) * float(_StubConfig.num_train_timesteps)
         )
 
     def test_qwen_style_family_gets_the_sigma_bit_exactly(self):
-        prepared = prepare_nft_batch(self._ctx(_QwenStyleConfig()), self._batch(), microbatch_id=0, optim_step_idx=0)
+        prepared = nft_batch(self._ctx(_QwenStyleConfig()), self._batch(), microbatch_id=0, optim_step_idx=0)
         # equal, not allclose: the wrong hook would still pass allclose.
         assert torch.equal(prepared.timesteps_for_model["visual"], torch.tensor(self.SIGMAS))
 
@@ -355,14 +355,12 @@ class TestNftDeterminism:
     def test_corruption_noise_reproduces(self):
         ctx = TestPrepareNftBatch()._ctx(_Sd3StyleConfig())
         batch = TestPrepareNftBatch()._batch()
-        first = prepare_nft_batch(ctx, batch, microbatch_id=0, optim_step_idx=0)
-        second = prepare_nft_batch(ctx, batch, microbatch_id=0, optim_step_idx=0)
+        first = nft_batch(ctx, batch, microbatch_id=0, optim_step_idx=0)
+        second = nft_batch(ctx, batch, microbatch_id=0, optim_step_idx=0)
         assert torch.equal(first.latents["visual"], second.latents["visual"])
 
     def test_a_different_microbatch_draws_different_noise(self):
         harness = TestPrepareNftBatch()
-        first = prepare_nft_batch(harness._ctx(_Sd3StyleConfig()), harness._batch(), microbatch_id=0, optim_step_idx=0)
-        second = prepare_nft_batch(
-            harness._ctx(_Sd3StyleConfig()), harness._batch(), microbatch_id=1, optim_step_idx=0
-        )
+        first = nft_batch(harness._ctx(_Sd3StyleConfig()), harness._batch(), microbatch_id=0, optim_step_idx=0)
+        second = nft_batch(harness._ctx(_Sd3StyleConfig()), harness._batch(), microbatch_id=1, optim_step_idx=0)
         assert not torch.equal(first.latents["visual"], second.latents["visual"])

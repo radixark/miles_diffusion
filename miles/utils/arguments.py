@@ -965,8 +965,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help=(
                     "Dotted path to prepare hook "
-                    "`fn(ctx, batch, *, microbatch_id, optim_step_idx, pad_to_len=None) -> PreparedBatch`. "
-                    "Builds DiT inputs; --loss-type custom_loss only, default is Flow-GRPO SDE-pair stacking."
+                    "`fn(ctx, batch, *, microbatch_id, optim_step_idx, pad_to_len=None) -> PreparedBatches`. "
+                    "Builds the micro-batch's stages (the training forward's input, plus the teacher's and the actor's "
+                    "extra no-grad forward's when the loss wants them); --loss-type custom_loss only, default is "
+                    "Flow-GRPO SDE-pair stacking."
                 ),
             )
             parser.add_argument(
@@ -975,7 +977,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help=(
                     "Dotted path to a loss *formula* only: "
-                    "`fn(ctx, batch, prepared, *, new_pred, ref_pred, metrics, ...) -> Tensor`. "
+                    "`fn(ctx, batch, prepared, *, new_pred, old_pred, ref_pred, teacher_pred, teacher_batch, "
+                    "actor_forward_pred, actor_forward_batch, metrics, ...) -> Tensor`. "
                     "--loss-type custom_loss only, default is Flow-GRPO's. "
                     "DiT forward is owned by the actor; this hook only computes the objective."
                 ),

@@ -5,7 +5,7 @@ from __future__ import annotations
 import torch
 
 from miles.backends.fsdp_utils.loss_hub.score_centering import score_centering_term
-from miles.backends.fsdp_utils.loss_hub.types import DiffusionLossContext, PreparedBatch
+from miles.backends.fsdp_utils.loss_hub.types import DiffusionLossContext, PreparedBatch, PreparedBatches
 from miles.backends.fsdp_utils.metrics import record_prev_mean_diff_over_noise_std, record_rollout_train_abs_diff
 from miles.utils.metric_buffer import MetricBuffer
 from miles.utils.train_data_utils import stack_train_pair_rollout_debug
@@ -15,7 +15,7 @@ def _stack_pair_field(batch: list[dict], key: str, device: torch.device) -> torc
     return torch.stack([pair[key] for pair in batch]).to(device=device, dtype=torch.float32)
 
 
-def prepare_flow_grpo_batch(
+def flow_grpo_batch(
     ctx: DiffusionLossContext,
     batch: list[dict],
     *,
@@ -112,6 +112,22 @@ def prepare_flow_grpo_batch(
     )
 
 
+def prepare_flow_grpo_batch(
+    ctx: DiffusionLossContext,
+    batch: list[dict],
+    *,
+    microbatch_id: int,
+    optim_step_idx: int,
+    pad_to_len: int | None = None,
+) -> PreparedBatches:
+    """The Flow-GRPO hook: one stage, the training forward on the stacked SDE pairs."""
+    return PreparedBatches(
+        actor=flow_grpo_batch(
+            ctx, batch, microbatch_id=microbatch_id, optim_step_idx=optim_step_idx, pad_to_len=pad_to_len
+        )
+    )
+
+
 def flow_grpo_loss_formula(
     ctx: DiffusionLossContext,
     batch: list[dict],
@@ -121,6 +137,9 @@ def flow_grpo_loss_formula(
     old_pred: dict[str, torch.Tensor] | None,
     ref_pred: dict[str, torch.Tensor] | None,
     teacher_pred: dict[str, torch.Tensor] | None = None,
+    teacher_batch: PreparedBatch | None = None,
+    actor_forward_pred: dict[str, torch.Tensor] | None = None,
+    actor_forward_batch: PreparedBatch | None = None,
     metrics: MetricBuffer,
     optim_step_idx: int,
     train_output_inputs: list,

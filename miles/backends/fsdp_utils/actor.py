@@ -1,4 +1,3 @@
-import dataclasses
 import logging
 from argparse import Namespace
 from contextlib import nullcontext
@@ -40,8 +39,8 @@ from .diffusion_update_weight_utils import (
     DiffusionUpdateWeightLoRADistributed,
 )
 from .ema import EMAOptimizer, reshard_model
-from .input_dtype_policy import apply_input_dtype_policy
-from .loss_hub import DiffusionLossContext, get_loss_hooks
+from .input_dtype_policy import InputDtypes
+from .loss_hub import DiffusionLossContext, PreparedBatches, get_loss_hooks
 from .lr_scheduler import get_lr_scheduler
 from .metrics import new_metric_buffer
 from .mixed_precision import parse_dtype_from_str
@@ -109,6 +108,8 @@ class FSDPTrainRayActor(TrainRayActor):
 
         self.train_pipeline_config = load_function(args.train_pipeline_config_path)()
         self.train_pipeline_config.configure(args)
+        # The family's boundary dtypes, resolved once; every stage's inputs are cast with them as they are sent.
+        self._input_dtypes = InputDtypes.resolve(self.train_pipeline_config.input_dtype_policy, self._forward_dtype)
         self.model_backend = load_function(args.model_backend_path)(self.train_pipeline_config)
         if args.deterministic_mode:
             # flash-attn is opaque to torch's determinism flag; backends patch their own dispatch.
@@ -398,7 +399,6 @@ class FSDPTrainRayActor(TrainRayActor):
                 train_pairs=train_pairs,
                 microbatch_schedule=microbatch_schedule,
             )
-        loss_ctx = dataclasses.replace(loss_ctx, num_microbatches_per_optim_step=len(microbatch_schedule[0]))
 
         # ------------- Recompute old log-probs (impl-consistent PPO ratio) -------------
         if self.args.diffusion_recompute_old_log_prob:
@@ -524,94 +524,69 @@ class FSDPTrainRayActor(TrainRayActor):
     ) -> torch.Tensor | None:
         """Run one prepared diffusion micro-batch: number ``microbatch_id`` of the rollout, in optimizer step
         ``optim_step_idx``."""
-        prepared = self.loss_hooks.prepare(
+        prepared_batches = self.loss_hooks.prepare(
             ctx, batch, microbatch_id=microbatch_id, optim_step_idx=optim_step_idx, pad_to_len=pad_to_len
         )
+        if not isinstance(prepared_batches, PreparedBatches):
+            raise TypeError(
+                f"the prepare hook (--custom-prepare-train-batch-path) must return PreparedBatches, "
+                f"got {type(prepared_batches).__name__}"
+            )
         train_pipeline_config = self.train_pipeline_config
         forward_dtype = self._forward_dtype
+        prepared = prepared_batches.actor
 
-        def _forward_teacher_and_model(prepared):
-            """``prepared``'s DiT forward by model, the teacher prediction it asks for and its model's prediction."""
-            # Boundary dtypes are family policy; op interiors stay autocast-managed.
-            latents_in, timesteps_in, (pos_cond_in, neg_cond_in, joint_cond_in) = apply_input_dtype_policy(
-                train_pipeline_config.input_dtype_policy,
-                latents=prepared.latents,
-                timesteps=prepared.timesteps_for_model,
-                conds=(prepared.pos_cond, prepared.neg_cond, prepared.joint_cond),
-                default_dtype=forward_dtype,
-            )
-
-            def _compute_noise_pred(
-                model,
-                *,
-                use_cfg: bool = prepared.use_cfg,
-                cfg_batching: bool = prepared.cfg_batching,
-                guidance_scale: float = prepared.guidance_scale,
-                true_cfg_scale: float | None = prepared.true_cfg_scale,
-            ) -> dict[str, torch.Tensor]:
-                with torch.autocast(
-                    "cuda",
-                    dtype=forward_dtype,
-                    enabled=forward_dtype != torch.float32 and train_pipeline_config.enable_autocast,
-                ):
-                    return train_pipeline_config.compute_noise_pred(
-                        model=model,
-                        latents_input=latents_in,
-                        timesteps_input=timesteps_in,
-                        pos_cond=pos_cond_in,
-                        neg_cond=neg_cond_in,
-                        joint_cond=joint_cond_in,
-                        use_cfg=use_cfg,
-                        cfg_batching=cfg_batching,
-                        guidance_scale=guidance_scale,
-                        true_cfg_scale=true_cfg_scale,
-                    )
-
-            # The frozen teacher runs before the training forward, so its gather never overlaps the activations.
-            teacher_pred = None
-            if prepared.teacher_guidance_scale is not None:
-                if prepared.component_name not in self.teacher_models:
-                    raise ValueError("the prepared batch asks for a teacher forward, which needs --teacher-load")
-                teacher = self.teacher_models[prepared.component_name]
-                use_cfg = prepared.teacher_guidance_scale > 1.0
-                with torch.no_grad():
-                    teacher_pred = _compute_noise_pred(
-                        teacher,
-                        use_cfg=use_cfg,
-                        cfg_batching=use_cfg and train_pipeline_config.cfg_batching,
-                        guidance_scale=prepared.teacher_guidance_scale,
-                        true_cfg_scale=None,
-                    )
-                # A no-grad forward leaves FSDP's root parameters gathered; sleep must move the shards.
-                reshard_model(teacher)
-            return _compute_noise_pred, teacher_pred, _compute_noise_pred(prepared.model)
-
-        forward_only_preds = {}
-        if prepared.forward_only_batch is not None:
-            with torch.no_grad():
-                _, forward_only_teacher_pred, forward_only_pred = _forward_teacher_and_model(
-                    prepared.forward_only_batch
+        def _compute_noise_pred(model, batch_in) -> dict[str, torch.Tensor]:
+            # The batch's inputs are cast to the family's boundary dtypes as they are sent; op interiors stay
+            # autocast-managed.
+            with torch.autocast(
+                "cuda",
+                dtype=forward_dtype,
+                enabled=forward_dtype != torch.float32 and train_pipeline_config.enable_autocast,
+            ):
+                return train_pipeline_config.compute_noise_pred(
+                    model=model,
+                    **batch_in.model_inputs(self._input_dtypes),
+                    use_cfg=batch_in.use_cfg,
+                    cfg_batching=batch_in.cfg_batching,
+                    guidance_scale=batch_in.guidance_scale,
+                    true_cfg_scale=batch_in.true_cfg_scale,
                 )
-            forward_only_preds = dict(
-                forward_only_pred=forward_only_pred, forward_only_teacher_pred=forward_only_teacher_pred
-            )
 
-        _compute_noise_pred, teacher_pred, new_pred = _forward_teacher_and_model(prepared)
+        # The frozen teacher runs before the training forward, so its gather never overlaps the activations.
+        teacher_pred = None
+        teacher_batch = prepared_batches.teacher
+        if teacher_batch is not None:
+            if teacher_batch.component_name not in self.teacher_models:
+                raise ValueError("the prepared batches ask for a teacher forward, which needs --teacher-load")
+            teacher = self.teacher_models[teacher_batch.component_name]
+            with torch.no_grad():
+                teacher_pred = _compute_noise_pred(teacher, teacher_batch)
+            # A no-grad forward leaves FSDP's root parameters gathered; sleep must move the shards.
+            reshard_model(teacher)
+
+        actor_forward_pred = None
+        actor_forward_batch = prepared_batches.actor_forward
+        if actor_forward_batch is not None:
+            with torch.no_grad():
+                actor_forward_pred = _compute_noise_pred(actor_forward_batch.model, actor_forward_batch)
+
+        new_pred = _compute_noise_pred(prepared.model, prepared)
 
         # pi_old: the latest EMA, also when an async batch was sampled with the EMA before it.
         old_pred = None
         if self.args.loss_type == "nft":
             with torch.no_grad(), self.ema_optimizer.use_weights(prepared.model):
-                old_pred = _compute_noise_pred(prepared.model)
+                old_pred = _compute_noise_pred(prepared.model, prepared)
 
         # KL reference.
         ref_pred = None
         if self.args.ref_mode == "ref":
             with torch.no_grad():
-                ref_pred = _compute_noise_pred(self.reference_models[prepared.component_name])
+                ref_pred = _compute_noise_pred(self.reference_models[prepared.component_name], prepared)
         elif self.args.ref_mode == "lora_base":
             with torch.no_grad(), prepared.model.disable_adapter():
-                ref_pred = _compute_noise_pred(prepared.model)
+                ref_pred = _compute_noise_pred(prepared.model, prepared)
                 # PEFT re-enables adapter gradients on exit; reshard first so that lands on the shards, not gathered copies.
                 reshard_model(prepared.model)
 
@@ -623,10 +598,12 @@ class FSDPTrainRayActor(TrainRayActor):
             old_pred=old_pred,
             ref_pred=ref_pred,
             teacher_pred=teacher_pred,
+            teacher_batch=teacher_batch,
+            actor_forward_pred=actor_forward_pred,
+            actor_forward_batch=actor_forward_batch,
             metrics=metrics,
             optim_step_idx=optim_step_idx,
             train_output_inputs=train_output_inputs,
             write_old_log_prob=write_old_log_prob,
             old_log_prob_from_new=old_log_prob_from_new,
-            **forward_only_preds,
         )
