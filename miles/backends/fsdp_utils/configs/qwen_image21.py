@@ -177,9 +177,15 @@ class QwenImage21TrainPipelineConfig(TrainPipelineConfig):
         guidance_scale: float,
         true_cfg_scale: float | None,
     ) -> dict[str, torch.Tensor]:
-        # The 2.1 DiT projects the joint text+image sequence; keep the target image tail.
-        pred = super().compute_noise_pred(
-            model=model,
+        # The 2.1 DiT projects the joint text+image sequence; keep the target image tail of each CFG branch, whose
+        # text lengths differ.
+        target_tokens = latents_input["visual"].shape[1]
+
+        def target_tail(**kwargs):
+            return (model(**kwargs)[0][:, -target_tokens:],)
+
+        return super().compute_noise_pred(
+            model=target_tail,
             latents_input=latents_input,
             timesteps_input=timesteps_input,
             pos_cond=pos_cond,
@@ -190,8 +196,6 @@ class QwenImage21TrainPipelineConfig(TrainPipelineConfig):
             guidance_scale=guidance_scale,
             true_cfg_scale=true_cfg_scale,
         )
-        target_tokens = latents_input["visual"].shape[1]
-        return {"visual": pred["visual"][:, -target_tokens:]}
 
     def cfg_combine(
         self,

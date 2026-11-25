@@ -76,8 +76,8 @@ class TestQwenImage21Cond:
 
 
 class _TailDiT(torch.nn.Module):
-    def forward(self, hidden_states, timestep, return_dict=False, **kwargs):
-        extra = hidden_states.new_ones(hidden_states.shape[0], 3, hidden_states.shape[-1])
+    def forward(self, hidden_states, timestep, return_dict=False, text_len=3, **kwargs):
+        extra = hidden_states.new_ones(hidden_states.shape[0], text_len, hidden_states.shape[-1])
         return (torch.cat([extra, hidden_states * 2], dim=1),)
 
 
@@ -95,5 +95,25 @@ def test_compute_noise_pred_keeps_target_tail():
         cfg_batching=False,
         guidance_scale=1.0,
         true_cfg_scale=1.0,
+    )
+    torch.testing.assert_close(pred["visual"], latents * 2)
+
+
+def test_cfg_combines_the_target_tails_of_branches_with_different_text_lengths():
+    """A negative prompt is rarely as long as the prompt; combined before the tail is cut, the joint outputs of the
+    two branches do not even have the same length."""
+    cfg = QwenImage21TrainPipelineConfig()
+    latents = torch.arange(8.0).reshape(1, 4, 2)
+    pred = cfg.compute_noise_pred(
+        model=_TailDiT(),
+        latents_input={"visual": latents},
+        timesteps_input={"visual": torch.tensor([0.5])},
+        pos_cond={"text_len": 3},
+        neg_cond={"text_len": 5},
+        joint_cond=None,
+        use_cfg=True,
+        cfg_batching=False,
+        guidance_scale=4.0,
+        true_cfg_scale=None,
     )
     torch.testing.assert_close(pred["visual"], latents * 2)
