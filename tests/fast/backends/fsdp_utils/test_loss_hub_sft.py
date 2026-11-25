@@ -82,7 +82,7 @@ def _ctx(models, rollout_id=3, dp_rank=0, config=None):
     return DiffusionLossContext(
         models=models,
         train_pipeline_config=config if config is not None else _Config(),
-        sde_backend=None,
+        sde_backends={},
         args=Namespace(
             seed=42,
             log_loss_sigma_bucket=5,

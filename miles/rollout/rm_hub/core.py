@@ -4,11 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import replace
 
 import ray
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from miles.ray.utils import COLOCATED_REWARD_GPU
+from miles.utils.diffusion_rollout_response import read_generated_outputs
+from miles.utils.logging_utils import configure_logger
+from miles.utils.output_store import StoredTensor, StoredTensorReader, connect_output_store
+from miles.utils.types import GeneratedMedia
 
 logger = logging.getLogger(__name__)
 
@@ -79,10 +84,41 @@ def record_reward_queue_depth(samples, name: str, max_queue_depth: int) -> None:
         sample.reward_max_queue_depth = depths
 
 
+class _StoredOutputRewardActor:
+    """A reward actor that reads the stored outputs it is given from the output store, then scores them."""
+
+    def __init__(self, *, scorer_cls, scorer_kwargs: dict, args) -> None:
+        # like the train and rollout actors, so the reader's registrations are logged
+        configure_logger()
+        self._scorer = scorer_cls(**scorer_kwargs)
+        self._reader = StoredTensorReader(connect_output_store(args))
+
+    def score_batch(self, outputs: list[GeneratedMedia], prompts: list[str]) -> list[float]:
+        # eval outputs arrive inline
+        stored_visuals = [output.visual for output in outputs if isinstance(output.visual, StoredTensor)]
+        if stored_visuals:
+            visuals = iter(read_generated_outputs(self._reader, stored_visuals))
+            outputs = [
+                replace(output, visual=next(visuals)) if isinstance(output.visual, StoredTensor) else output
+                for output in outputs
+            ]
+        stored_audios = [output.audio for output in outputs if isinstance(output.audio, StoredTensor)]
+        if stored_audios:
+            # not read_generated_outputs: a waveform has no video layout to normalize
+            audios = iter(self._reader.read(stored_audios))
+            outputs = [
+                replace(output, audio=next(audios)) if isinstance(output.audio, StoredTensor) else output
+                for output in outputs
+            ]
+        return self._scorer.score_batch(outputs, prompts)
+
+
 class AsyncRewardActorPool:
     """Round-robin pool for Ray reward actors exposing ``score_batch(outputs, prompts)``.
 
-    Actors receive the float ``generated_output`` tensors and quantise to uint8 themselves.
+    The actor class declares ``required_media``, the `GeneratedMedia` fields it scores; the pool checks each sample
+    has them and sends no other field. Actors receive float tensors and quantise to uint8 themselves. With the output
+    store on they are given stored tensors and read them first.
     Colocated pools take one slot per rollout bundle from the manager's
     ``slots``; standalone pools are default-scheduled at ``num_gpus_per_worker``, which
     only lands on GPUs outside every placement group.
@@ -91,6 +127,7 @@ class AsyncRewardActorPool:
     def __init__(
         self,
         *,
+        args,
         actor_cls,
         actor_kwargs: dict,
         num_workers: int,
@@ -113,6 +150,17 @@ class AsyncRewardActorPool:
             num_gpus_per_worker = COLOCATED_REWARD_GPU
         else:
             strategies = ["DEFAULT"] * num_workers
+        required_media = actor_cls.required_media
+        if not required_media or not required_media <= {"visual", "audio"}:
+            raise TypeError(
+                f"{actor_cls.__name__}.required_media must name visual, audio or both; got {set(required_media)}"
+            )
+        self._requires_visual = "visual" in required_media
+        self._requires_audio = "audio" in required_media
+        self._name = name
+        if args.use_output_store:
+            actor_kwargs = {"scorer_cls": actor_cls, "scorer_kwargs": actor_kwargs, "args": args}
+            actor_cls = _StoredOutputRewardActor
 
         self._actors = [
             ray.remote(actor_cls)
@@ -141,8 +189,9 @@ class AsyncRewardActorPool:
         self._round_robin_index += 1
         return i
 
-    async def score(self, outputs: list, prompts: list[str]) -> tuple[list[float], int]:
+    async def score(self, outputs: list[GeneratedMedia], prompts: list[str]) -> tuple[list[float], int]:
         """Score samples in batches; also report the deepest dispatch-time backlog this call saw."""
+        outputs = [self._only_required_fields(output) for output in outputs]
         refs, idxs, max_queue_depth = [], [], 0
         for start in range(0, len(outputs), self._batch_size):
             end = start + self._batch_size
@@ -159,3 +208,16 @@ class AsyncRewardActorPool:
             for i in idxs:
                 self._inflight[i] -= 1
         return [float(score) for chunk in chunked_scores for score in chunk], max_queue_depth
+
+    def _only_required_fields(self, output: GeneratedMedia) -> GeneratedMedia:
+        """``output`` without the fields this pool's scorer does not require, so they neither cross Ray nor are read
+        from the store."""
+        if self._requires_visual and output.visual is None:
+            raise ValueError(f"the {self._name} reward requires visual, but a sample generated none")
+        if self._requires_audio and output.audio is None:
+            raise ValueError(f"the {self._name} reward requires audio, but a sample generated none")
+        return replace(
+            output,
+            visual=output.visual if self._requires_visual else None,
+            audio=output.audio if self._requires_audio else None,
+        )

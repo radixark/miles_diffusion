@@ -30,7 +30,7 @@ def _args(**overrides):
         loss_type="grpo",
         custom_expand_samples_to_train_pairs_path=None,
         ref_mode="none",
-        diffusion_kl_beta=0.0,
+        diffusion_kl_beta={None: 0.0},
     )
     base.update(overrides)
     return Namespace(**base)

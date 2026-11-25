@@ -24,6 +24,7 @@ import miles.rollout.rm_hub.core as core_module
 from miles.rollout.rm_hub.api import ApiRewardActor, AsyncApiRewardPool
 from miles.rollout.rm_hub.openai_api import AsyncOpenAIPool, OpenAIImageRewardActor
 from miles.utils.api_rm_config import ApiRewardConfig, load_api_rm_config
+from miles.utils.types import GeneratedMedia
 
 
 @pytest.fixture
@@ -59,7 +60,7 @@ def api_transport(monkeypatch):
 def test_pool_reuses_one_concurrent_zero_gpu_worker(ray_worker, pool_cls):
     remote, actor_cls = ray_worker
     config = ApiRewardConfig(actor_kwargs={"model": "judge", "api_key_env": "TEST_RM_KEY"}, max_concurrency=2)
-    args = Namespace(**{f"_{pool_cls.name}_rm_config": config})
+    args = Namespace(use_output_store=False, **{f"_{pool_cls.name}_rm_config": config})
     pool = pool_cls(args)
     assert pool_cls(args) is pool
 
@@ -72,11 +73,13 @@ def test_pool_reuses_one_concurrent_zero_gpu_worker(ray_worker, pool_cls):
 class CustomApiRewardActor(ApiRewardActor):
     """A user-owned service with its own payload, no model/key, and no OpenAI schema."""
 
+    required_media = frozenset({"visual"})
+
     def __init__(self, *, endpoint, timeout_s):
         self.client = httpx.Client(base_url=endpoint, timeout=timeout_s)
 
     def build_request(self, output, prompt):
-        return {"prompt": prompt, "num_frames": output.shape[1]}
+        return {"prompt": prompt, "num_frames": output.visual.shape[1]}
 
     def send_request(self, request):
         response = self.client.post("/score", json=request)
@@ -120,12 +123,12 @@ def test_custom_api_loads_config_and_owns_request_and_response_formats(
         return httpx.Response(200, json={"reward": float(payload["prompt"])})
 
     api_transport(handler)
-    pool = AsyncApiRewardPool(Namespace(_custom_api_rm_config=config))
+    pool = AsyncApiRewardPool(Namespace(use_output_store=False, _custom_api_rm_config=config))
     remote.assert_called_once_with(CustomApiRewardActor)
     actor_cls.remote.assert_called_once_with(**kwargs)
     actor_cls.options.assert_called_once_with(num_cpus=0, num_gpus=0, scheduling_strategy="DEFAULT", max_concurrency=3)
     actor = pool._actors[0]
-    outputs = [torch.zeros(3, 2, 8, 8), torch.zeros(3, 1, 8, 8)]
+    outputs = [GeneratedMedia(visual=torch.zeros(3, 2, 8, 8)), GeneratedMedia(visual=torch.zeros(3, 1, 8, 8))]
     assert actor.score_batch(outputs, ["-7", "12.5"]) == [-7.0, 12.5]
     assert payloads == [{"prompt": "-7", "num_frames": 2}, {"prompt": "12.5", "num_frames": 1}]
 
@@ -155,7 +158,7 @@ def test_custom_and_openai_pools_use_independent_configs_and_workers(ray_worker)
         max_concurrency=3,
     )
     openai_config = ApiRewardConfig(actor_kwargs={"model": "judge", "api_key_env": "TEST_RM_KEY"}, max_concurrency=7)
-    args = Namespace(_custom_api_rm_config=custom_config, _openai_api_rm_config=openai_config)
+    args = Namespace(use_output_store=False, _custom_api_rm_config=custom_config, _openai_api_rm_config=openai_config)
     custom_pool = AsyncApiRewardPool(args)
     openai_pool = AsyncOpenAIPool(args)
     assert custom_pool is not openai_pool

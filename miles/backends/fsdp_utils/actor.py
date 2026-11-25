@@ -169,7 +169,9 @@ class FSDPTrainRayActor(TrainRayActor):
         else:
             self.model = torch.nn.ModuleDict(self.models)
 
-        self.sde_backend = load_function(args.sde_step_backend_path)()
+        self.sde_backends = {
+            stream_name: load_function(path)() for stream_name, path in args.sde_step_backend_path.items()
+        }
         self.loss_hooks = get_loss_hooks(args, role)
 
         if args.optimizer == "adam":
@@ -361,7 +363,7 @@ class FSDPTrainRayActor(TrainRayActor):
             models=self.models,
             reference_models=self.reference_models,
             train_pipeline_config=self.train_pipeline_config,
-            sde_backend=self.sde_backend,
+            sde_backends=self.sde_backends,
             args=self.args,
             forward_dtype=self._forward_dtype,
             device=device,
@@ -447,6 +449,7 @@ class FSDPTrainRayActor(TrainRayActor):
                     self.models,
                     sigma_buckets=self.args.log_loss_sigma_bucket,
                     num_rollout_steps=self.args.diffusion_num_steps,
+                    streams=(self.args.primary_stream, *self.args.rollout_extra_streams),
                 )
 
                 for pair_lo, pair_hi in microbatch_ranges:

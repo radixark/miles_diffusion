@@ -9,8 +9,14 @@ from tests.ci.e2e_metrics_registry import register_e2e_ci
 register_e2e_ci(
     est_time=1800,
     suite="stage-c-5-gpu-h200",
+    labels=["basic", "e2e"],
     script="scripts/run_diffusion_grpo_ltx23_sglang.py",
-    args=["--num-rollout", "2", "--extra-args", "--use-output-store --output-store-mooncake-master 127.0.0.1:50064"],
+    args=[
+        "--num-rollout",
+        "2",
+        "--extra-args",
+        "--use-output-store --output-store-mooncake-master 127.0.0.1:50064 --output-store-protocol rdma",
+    ],
     metrics=[
         "rollout/reward/raw_num_samples",
         "rollout/reward/raw_mean",

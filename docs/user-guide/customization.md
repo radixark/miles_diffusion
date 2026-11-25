@@ -57,6 +57,10 @@ def generate_rollout(
 Legacy list/dict returns are still wrapped into the corresponding output dataclass by
 `miles.rollout.base_types.call_rollout_fn`.
 
+With `--use-output-store`, a rollout function that does not go through `generate_rollout_async` sets
+`GenerateState(args).media_outputs_left` to the number of outputs to keep for its media logging at the start of each
+rollout, and calls `release_generated_outputs` after a reward it runs itself.
+
 ### `--eval-function-path`
 
 Same shape as the rollout function. Defaults to `--rollout-function-path` when
@@ -92,10 +96,8 @@ async def custom_generate(
 
 `evaluation=` is optional — if your signature omits it, the caller skips that kwarg.
 
-With `--use-output-store`, `generate_microgroup` leaves `sample.generated_output` as a `StoredTensor`.
-`generate_and_rm_microgroup` reads it into the tensor after your function returns and before the reward. Code that
-reads the output earlier, such as a custom generate function that refines its own first pass, calls
-`await load_generated_outputs(GenerateState(args), microgroup)` first.
+With `--use-output-store`, `generate_microgroup` leaves `sample.generated_output` as a `StoredTensor`: the output
+stays in the store for the reward actors, and a custom generate function cannot read it.
 
 ### `--diffusion-step-strategy-path`
 
@@ -133,6 +135,14 @@ DiffusionNFT picks the timesteps it trains on with a separate hook,
 Built-in scorers (`--rm-type pickscore` / `hps` / `ocr` / `custom_api` / `openai_api`) are documented in
 [Rewards](rewards.md). `--custom-rm-path` replaces that dispatch entirely; `--custom-reward-post-process-path`
 replaces the normalization that runs after scoring.
+
+With `--use-output-store`, the rollout process does not read a training rollout's output. There,
+`sample.generated_output` (and `sample.generated_audio`, when the engine returns audio) is a `StoredTensor`, and the
+actors of a reward pool read it when they score it. A
+`--custom-rm-path` function therefore scores through a pool, a built-in `*_rm` or its own `AsyncRewardActorPool`, and
+does not read the tensor itself. Once a sample is scored its output is `None`; the first `--wandb-log-num-images`
+scored samples of a rollout that logs media keep it as a tensor, so a rollout whose first groups a filter drops logs
+fewer. Every hook that runs after scoring sees that.
 
 ### `--custom-rm-path`
 
@@ -182,6 +192,11 @@ async def api_rm(args, samples: list[Sample], **kwargs) -> list[float]:
 --custom-rm-path my_project.rewards.api_rm \
 --rm-url http://localhost:8000/score
 ```
+
+With `--use-output-store` this function cannot read the output. Send it through `--custom-api-rm-config`, whose
+`ApiRewardActor` reads it in the actor, or through your own `AsyncRewardActorPool(args=args, ...)`, whose actor class
+declares `required_media` and implements `score_batch(outputs: list[GeneratedMedia], prompts)` (see
+[Rewards](rewards.md) § 3).
 
 ### `--custom-reward-post-process-path`
 
@@ -357,8 +372,9 @@ train pairs) as `ctx.external_data[<role>]`.
 ### `--sde-step-backend-path`
 
 **Class** implementing `SdeStepBackend`. Auto-selected from
-`--diffusion-sde-type` (`sde` / `ode` → `FlowSdeStepBackend`, `cps` →
-`CpsSdeStepBackend`) unless overridden. See
+`--diffusion-sde-type` (`sde` → `FlowSdeStepBackend`, `cps` →
+`CpsSdeStepBackend`; an `ode` stream gets none) unless overridden. One backend per scored latent stream, in
+`ctx.sde_backends[stream_name]`. See
 [SDE step backend](../advanced/sde-backend.md).
 
 ***
@@ -392,6 +408,14 @@ resolves to `qwen_image21`. `--diffusion-task` (e.g. `t2i`) must be one of the
 
 **Class** for loading components / FSDP. Default comes from the
 family config (usually a `DiffusersModelBackend`).
+
+`DiffusersModelBackend` lets every rank read its own shards of a component from the checkpoint's safetensors
+files (`safetensors_files`). A subclass whose `load_component` loads other weights overrides `safetensors_files`
+too, naming the files that hold what it loads or `None` for "rank 0 loads and broadcasts". A backend that names
+files gives every tensor its final dtype when `load_component` builds without weights (`materialize_weights=False`):
+the file values are cast into those dtypes, and no rank loads a model the others could copy them from. Files that
+exist but do not hold the model's state dict, or that only some ranks see, are an error, not a fallback; a file may
+hold tensors the model does not have.
 
 ***
 

@@ -128,7 +128,7 @@ def _ctx(teacher_guidance_scale=3.0, critic_scale=1.0):
     return DiffusionLossContext(
         models={"transformer": _CondVelocity(critic_scale)},
         train_pipeline_config=SD3TrainPipelineConfig(),
-        sde_backend=None,
+        sde_backends={},
         args=Namespace(
             seed=7,
             micro_batch_size=2,

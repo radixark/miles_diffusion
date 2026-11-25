@@ -1,13 +1,13 @@
-"""Rewards receive ``generated_output`` itself and quantise to uint8 inside each actor.
+"""Rewards receive the sample's ``GeneratedMedia`` and quantise ``visual`` to uint8 inside each actor.
 
 Mental model (one sample scored by two rewards):
 
-    sample.generated_output (float CFHW)
+    sample.generated_media.visual (float CFHW)
         -> HPSRewardActor.score_batch       : round    -> uint8 -> HPSv2
         -> PickScoreRewardActor.score_batch : truncate -> uint8 -> mean over frames -> PickScore
 
 Covered: HPS rounds when quantising (1); PickScore truncates and returns one mean per sample (2);
-hps_rm and pickscore_rm hand the raw tensor to their pool and record their own queue depth (3);
+hps_rm and pickscore_rm hand the raw tensor to their pool as ``visual`` and record their own queue depth (3);
 pickscore_rm keeps only --pickscore-num-frames frames before shipping (4); batched_async_rm takes
 the HPS fast path (5) and keeps sample order for mixed rm_types (6).
 """
@@ -28,7 +28,7 @@ import miles.rollout.rm_hub.pickscore as pickscore_module
 from miles.rollout.rm_hub import batched_async_rm
 from miles.rollout.rm_hub.hps import HPSRewardActor
 from miles.rollout.rm_hub.pickscore import PickScoreRewardActor
-from miles.utils.types import Sample
+from miles.utils.types import GeneratedMedia, Sample
 
 # one pixel row [0, 0.5, 1] per channel; rounding gives 128 in the middle, truncation 127
 _ROW = torch.tensor([0.0, 0.5, 1.0]).reshape(1, 1, 1, 3).repeat(3, 1, 1, 1)
@@ -43,7 +43,7 @@ def test_hps_actor_rounds_when_quantising():
     actor = HPSRewardActor.__new__(HPSRewardActor)
     actor.scorer = lambda prompts, images: _middle_pixel(images)
 
-    assert actor.score_batch([_ROW], ["prompt"]) == [128.0]
+    assert actor.score_batch([GeneratedMedia(visual=_ROW)], ["prompt"]) == [128.0]
 
 
 def test_pickscore_actor_truncates_and_averages_frames_per_sample():
@@ -51,6 +51,7 @@ def test_pickscore_actor_truncates_and_averages_frames_per_sample():
     --pickscore-batch-size frames (the chunking the e2e standards were recorded with), not one sample."""
     actor = PickScoreRewardActor.__new__(PickScoreRewardActor)
     actor.frames_per_forward = 1
+    actor.num_frames = None
     forward_sizes = []
 
     def scorer(prompts, images):
@@ -60,7 +61,7 @@ def test_pickscore_actor_truncates_and_averages_frames_per_sample():
     actor.scorer = scorer
     two_frames = torch.cat([_ROW, _ROW], dim=1)
 
-    assert actor.score_batch([two_frames], [1000.0]) == [1127.0]
+    assert actor.score_batch([GeneratedMedia(visual=two_frames)], [1000.0]) == [1127.0]
     assert forward_sizes == [1, 1]
 
 
@@ -78,7 +79,7 @@ async def test_rm_functions_hand_the_raw_tensor_to_their_pool(monkeypatch):
 
     calls = pool.score.await_args_list
     assert [call.args[1] for call in calls] == [["prompt"]] * 2
-    assert all(torch.equal(call.args[0][0], _ROW) for call in calls)
+    assert all(torch.equal(call.args[0][0].visual, _ROW) for call in calls)
     assert sample.reward_max_queue_depth == {"hps": 2.0, "pickscore": 1.0}
 
 
@@ -95,7 +96,7 @@ async def test_pickscore_rm_selects_frames_before_shipping(monkeypatch):
     )
 
     (shipped,), _ = pool.score.await_args.args
-    assert shipped.shape[1] == 1 and torch.equal(shipped[:, 0], _ROW[:, 0])
+    assert shipped.visual.shape[1] == 1 and torch.equal(shipped.visual[:, 0], _ROW[:, 0])
 
 
 @pytest.mark.asyncio

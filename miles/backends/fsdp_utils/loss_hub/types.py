@@ -21,7 +21,8 @@ class DiffusionLossContext:
 
     models: dict[str, torch.nn.Module]
     train_pipeline_config: Any
-    sde_backend: Any
+    # Keyed by latent stream.
+    sde_backends: dict[str, Any]
     args: Namespace
     forward_dtype: torch.dtype
     device: torch.device

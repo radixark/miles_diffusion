@@ -8,10 +8,8 @@ from collections.abc import Sequence
 from numbers import Real
 from typing import Any
 
-import torch
-
 from miles.utils.misc import SingletonMeta, load_function
-from miles.utils.types import Sample
+from miles.utils.types import GeneratedMedia, Sample
 
 from .core import AsyncRewardActorPool, record_reward_queue_depth
 
@@ -19,11 +17,12 @@ from .core import AsyncRewardActorPool, record_reward_queue_depth
 class ApiRewardActor(ABC):
     """Build, send, and parse one request per output using backend-specific hooks.
 
-    Hooks may run concurrently on the same actor and must keep per-request state
+    A subclass declares ``required_media``, the `GeneratedMedia` fields its requests use, e.g.
+    ``frozenset({"visual"})``. Hooks may run concurrently on the same actor and must keep per-request state
     local. The transport owns retries and timeouts; exceptions propagate to the caller.
     """
 
-    def score_batch(self, outputs: list[torch.Tensor], prompts: list[str]) -> list[float]:
+    def score_batch(self, outputs: list[GeneratedMedia], prompts: list[str]) -> list[float]:
         if len(outputs) != len(prompts):
             raise ValueError("API reward requires one prompt per output")
         scores = []
@@ -37,8 +36,8 @@ class ApiRewardActor(ABC):
         return scores
 
     @abstractmethod
-    def build_request(self, output: torch.Tensor, prompt: str) -> Any:
-        """Build a backend request from one raw CFHW tensor and its prompt."""
+    def build_request(self, output: GeneratedMedia, prompt: str) -> Any:
+        """Build a backend request from one sample's output and its prompt; only its ``required_media`` fields are set."""
         raise NotImplementedError
 
     @abstractmethod
@@ -66,6 +65,7 @@ class AsyncApiRewardPool(AsyncRewardActorPool, metaclass=SingletonMeta):
         if not isinstance(actor_cls, type) or not issubclass(actor_cls, self.actor_base_cls):
             raise TypeError(f"API reward actor_class must be an {self.actor_base_cls.__name__} subclass")
         super().__init__(
+            args=args,
             actor_cls=actor_cls,
             actor_kwargs=config.actor_kwargs,
             num_workers=1,
@@ -79,6 +79,6 @@ class AsyncApiRewardPool(AsyncRewardActorPool, metaclass=SingletonMeta):
 
 async def custom_api_rm(args, samples: Sequence[Sample], **kwargs) -> list[float]:
     pool = AsyncApiRewardPool(args)
-    scores, max_queue_depth = await pool.score([s.generated_output for s in samples], [s.prompt for s in samples])
+    scores, max_queue_depth = await pool.score([s.generated_media for s in samples], [s.prompt for s in samples])
     record_reward_queue_depth(samples, "custom_api", max_queue_depth)
     return scores

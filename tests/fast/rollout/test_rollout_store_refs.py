@@ -61,6 +61,8 @@ def _args() -> Namespace:
         n_samples_per_prompt=1,
         dynamic_sampling_filter_path=f"{__name__}.drop_zero_reward",
         rollout_sample_filter_path=None,
+        wandb_log_num_images=0,
+        wandb_log_image_interval=1,
     )
 
 

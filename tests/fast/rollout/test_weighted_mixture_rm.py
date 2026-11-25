@@ -26,7 +26,7 @@ import miles.rollout.rm_hub.openai_api as openai_api_module
 import miles.rollout.rm_hub.weighted_mixture_rm as weighted_mixture_rm_module
 from miles.rollout.rm_hub.weighted_mixture_rm import parse_weights, weighted_mixture_rm
 from miles.utils.api_rm_config import ApiRewardConfig
-from miles.utils.types import Sample
+from miles.utils.types import GeneratedMedia, Sample
 
 
 def _fake_rewards(calls):
@@ -94,4 +94,4 @@ async def test_local_and_api_rewards_mix(monkeypatch, module, pool_name, rm_type
     assert [(r["hps"], r[rm_type]) for r in rewards] == [(0.1, 1.0), (0.2, 2.0)]
     assert all(sample.reward_max_queue_depth == {rm_type: 0.0} for sample in samples)
     hps_rm.assert_awaited_once_with(args, samples)
-    pool.score.assert_awaited_once_with([None, None], ["first", "second"])
+    pool.score.assert_awaited_once_with([GeneratedMedia(), GeneratedMedia()], ["first", "second"])

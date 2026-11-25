@@ -15,6 +15,9 @@ places:
 validation. A key that collides with an existing argument **overrides it** (with a logged warning) —
 the YAML wins over the command line, but the override skips every check and derived value computed
 before it (a YAML `global_batch_size`, for example, does not re-derive `num_steps_per_rollout`).
+By then `diffusion_sde_type`, `diffusion_noise_level`, `diffusion_log_prob_no_const`,
+`sde_step_backend_path` and `diffusion_kl_beta` are resolved into a mapping from latent stream to value,
+so the YAML gives them in that form (`diffusion_noise_level: {visual: 0.5}`).
 
 `--config <file.yaml>` is different: it only adds YAML keys that are not arguments at all, so it
 cannot change any flag.
@@ -104,7 +107,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--advantage-estimator` | `grpo` | Only `grpo` today. |
 | `--diffusion-clip-range` | `1e-4` | PPO ratio clip. |
 | `--diffusion-adv-clip-max` | `5.0` | Advantage clamp. |
-| `--diffusion-kl-beta` | `0.0` | Reference-KL coefficient; `> 0` turns on a reference forward. |
+| `--diffusion-kl-beta` | `0.0` | Reference-KL coefficient, one value or one per stream; any `> 0` turns on a reference forward. |
 | `--globalize-reward-std` | off | Batch-wide std instead of per-group. |
 | `--globalize-reward-mean` | off | Batch-wide mean instead of per-prompt. |
 
@@ -144,7 +147,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--ulysses-degree` | int | `0` | `0` = auto (Ulysses fills SP). Ring degree > 1 needs torch ≥ 2.11 and a ring-capable attention backend. |
 | `--fsdp-attention-backend` | str | – | diffusers `set_attention_backend` value. |
 | `--fsdp-flow-shift` | str | – | SFT training sigma grid shift per latent stream, e.g. `visual=12,audio=3`; a bare number is the visual shift. RL pairs carry their rollout sigmas instead. Distinct from `--diffusion-flow-shift`. |
-| `--fsdp-supervised-streams` | str | `visual,audio` | Comma-separated latent streams the SFT loss supervises, among those the pair carries; must include `visual`. A stream left out is still noised and fed to the DiT but adds no loss. RL trajectories carry only the visual stream. |
+| `--fsdp-supervised-streams` | str | `visual,audio` | Comma-separated latent streams the SFT loss supervises, among those the pair carries; must include `visual`. A stream left out is still noised and fed to the DiT but adds no loss. RL trajectories carry the primary stream, plus any `--rollout-extra-streams`. |
 | `--gradient-checkpointing` | flag | off | |
 | `--deterministic-mode` | flag | off | See [Deterministic Training](../advanced/deterministic.md). |
 | `--train-env-vars` | JSON | `{}` | Extra env for the training processes. |
@@ -184,18 +187,19 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--rollout-microgroup-size` | int | `1` | |
 | `--diffusion-fps` | float | – | Video only. Also the fps logged and saved media play at (8 when unset); H3 drops it from the request, so set it to 24 there. |
 | `--diffusion-output-num-frames` | int | `1` | |
+| `--rollout-extra-streams` | str | – | Comma-separated latent streams the engine rolls out besides the primary one, e.g. `audio`. The Flow-GRPO converter pairs them with the primary stream; the model must list them in its `trainable_extra_streams`. LTX-2.3 trains `audio`, with `--rollout-patch-group ltx_av`. |
 | `--rollout-video-dtype` | enum | `keep` | `keep` / `uint8`: dtype of the decoded video in rollout and eval responses. `uint8` quantizes engine-side by truncation (×255, then clamp), cutting the response ~4x (with `--use-output-store`, the stored output). That matches the PickScore reward path; HPS, OCR and the OpenAI-API reward round instead, so keep `keep` for them and for any consumer that needs the float tensor. |
 | `--diffusion-guidance-scale` | float | `4.0` | |
 | `--diffusion-guidance-scale-2` | float | – | Wan2.2 low-noise expert; **required** when training it. |
 | `--diffusion-true-cfg-scale` | float | – | |
 | `--diffusion-negative-prompt` | str | – | Unset sends none, so the engine's per-model default applies; flow_grpo recipes pass `" "`. |
-| `--diffusion-noise-level` | float | `0.7` | |
+| `--diffusion-noise-level` | str | `0.7` | One value, or one per latent stream (`visual=0.7,audio=0.3`); must be positive for an `sde` or `cps` stream, and an `ode` stream ignores it. |
 | `--diffusion-quality` | enum | `exact` | `exact` / `lossless` / `high`: sglang-diffusion request quality level. `exact` is the bit-identical reference path; the looser levels mount rounding-changing fusions. |
 | `--diffusion-height` / `--diffusion-width` | int | `512` | Rollout output size; SFT target media must already be this size. |
 | `--diffusion-h3-aspect-ratio` | str | `16:9` | MiniMax H3 only: `21:9` / `16:9` / `4:3` / `1:1` / `3:4` / `9:16`. |
 | `--diffusion-h3-duration-seconds` | float | `5.0` | MiniMax H3 only: rollout duration, 4.0–15.0 s. |
 | `--diffusion-audio-flow-shift` | float | `3.0` | MiniMax H3 only: audio flow shift for rollout. |
-| `--diffusion-sde-type` | str | `sde` | `sde` / `cps` / `ode`, checked at startup unless `--sde-step-backend-path` is set. Selects the train-side SDE backend too. |
+| `--diffusion-sde-type` | str | `sde` | `sde` / `cps` / `ode`, checked at startup unless `--sde-step-backend-path` is set. Selects the train-side SDE backend too. One value, or one per latent stream (`visual=cps,audio=ode`); Flow-GRPO does not score an `ode` stream ([SDE Step Backends](../advanced/sde-backend.md)). |
 | `--sde-step-backend-path` | str | – | Custom dynamics. See [SDE backends](#sde-step-backends). |
 | `--diffusion-num-sde-steps` | int | `0` | Read by the step strategy. |
 | `--diffusion-sde-window-range` | `"lo,hi"` | – | For `sde_window`. Defaults to `[0, num_inference_steps)`. |
@@ -204,7 +208,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--rollout-return-full-trajectory` | flag | off | Ask the engine for the whole denoising trajectory instead of only the steps the step strategy requests. The train tensors are identical; kept for debugging and A/B runs. |
 | `--diffusion-log-prob-no-const` | flag | off | Drop log-prob constants on the engine (pairs with the CPS backend). Forced on for `cps` / `ode`. |
 | `--diffusion-generator-device` | str | `cuda` | |
-| `--rollout-patch-group` | str | – | Comma-separated numeric-parity patch groups: `qwen_image`, `wan`, `ltx`. |
+| `--rollout-patch-group` | str | – | Comma-separated numeric-parity patch groups: `qwen_image`, `wan`, `ltx`, `ltx_av` (LTX with `--rollout-extra-streams audio`). |
 | `--update-weight-target-module` | str | `transformer` | Modules to train and sync. Wan2.2: `transformer,transformer_2`. |
 | `--update-weight-buffer-size` | int | 512 MiB | Weight-sync chunk size in bytes. |
 | `--rollout-seed` | int | `42` | |
@@ -269,8 +273,8 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--diffusion-adv-clip-max` | float | `5.0` | Under `nft` this also sets the advantage-to-`r` slope. |
 | `--diffusion-recompute-old-log-prob` | flag | off | Recompute old log-probs with the trainer forward instead of trusting the rollout's. `policy_loss` only. |
 | `--diffusion-score-centering` | flag | off | Experimental: cancels the train/rollout drift in the PPO gradient with a closed-form centering term ([SDE Step Backend §5](../advanced/sde-backend.md#5-score-centering-experimental)); needs `--diffusion-sde-type sde` and `--diffusion-debug-mode`, not with `--diffusion-recompute-old-log-prob`. |
-| `--diffusion-kl-beta` | float | `0.0` | KL to the `--ref-mode` model; under `nft` adds `kl_beta * mean((v_θ − v_ref)²)` per pair. |
-| `--ref-mode` | enum | – | KL reference: `none` / `lora_base` (actor with adapters disabled) / `ref` (the model from `--ref-load`). Auto: `lora_base` when KL > 0. |
+| `--diffusion-kl-beta` | str | `0.0` | Weight of the pull toward the `--ref-mode` model, one value or one per stream (`visual=0,audio=0.0001`). A scored Flow-GRPO stream adds the squared gap of its step means over `2·std²` ([SDE Step Backend](../advanced/sde-backend.md#per-latent-stream)); an `ode` stream, and every pair under `nft`, adds the velocity MSE `mean((v_θ − v_ref)²)`, which DiffusionNFT's code weights by `1e-4`. |
+| `--ref-mode` | enum | – | KL reference: `none` / `lora_base` (actor with adapters disabled) / `ref` (the model from `--ref-load`). Auto: `lora_base` when any stream's KL > 0. |
 | `--ref-load` | str | – | HF pipeline checkpoint of an independent frozen reference model. Requires `--ref-mode ref`. |
 | `--ref-lora-adapter-path` | str+ | – | PEFT adapter directories applied to `--ref-load`, one per `--update-weight-target-module` entry, in order. |
 | `--ref-cpu-offload` | flag | off | Keep the reference shards in pinned CPU memory between forwards (FSDP `CPUOffloadPolicy`). |
@@ -433,7 +437,7 @@ not meant for manual runs.
 | `--diffusion-sde-type` | Backend | Dynamics |
 |---|---|---|
 | `sde` | `FlowSdeStepBackend` | Flow-matching SDE over the rollout's recorded sigmas. |
-| `ode` | `FlowSdeStepBackend` | Same class; deterministic rollout (used by NFT). |
+| `ode` | none | Deterministic rollout (NFT, DMD2); Flow-GRPO does not score an `ode` stream. |
 | `cps` | `CpsSdeStepBackend` | CPS kernel over the rollout's recorded sigmas, log-prob without constants. |
 
 `--sde-step-backend-path` overrides the mapping with your own `SdeStepBackend` subclass.

@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 from safetensors.torch import load
+
+if TYPE_CHECKING:
+    from miles.utils.output_store import StoredTensor
 
 
 def decode_tensor(data: bytes) -> torch.Tensor:
@@ -62,6 +65,33 @@ class DiTTrajectory:
 
 
 @dataclass
+class RolloutStreamData:
+    """One latent stream's rollout data; the primary stream's is the same three fields at a response's top level."""
+
+    rollout_log_probs: torch.Tensor | None = None
+    rollout_debug_tensors: RolloutDebugTensors | None = None
+    dit_trajectory: DiTTrajectory | None = None
+    # An extra stream's rollout settings as the engine applied them, echoed in its response.
+    rollout_sde_kernel: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class GeneratedMedia:
+    """What one sample generated, by stream name; the record every reward scores.
+
+    ``visual`` is ``Sample.generated_output`` and ``audio`` is ``Sample.generated_audio``, renamed only in
+    `Sample.generated_media`. With ``--use-output-store`` a tensor field is a ``StoredTensor`` until a reward actor
+    reads it.
+    """
+
+    # [C, F, H, W]; F == 1 for an image.
+    visual: torch.Tensor | StoredTensor | None = None
+    # [C, L] waveform at audio_sample_rate.
+    audio: torch.Tensor | StoredTensor | None = None
+    audio_sample_rate: int | None = None
+
+
+@dataclass
 class Sample:
     """The sample generated.
 
@@ -82,15 +112,19 @@ class Sample:
     # reproducibility
     seed: int | None = None
     # Eager tensor on CPU. Image rollout shape: ``[C, T, H, W]`` (``T==1`` typical).
-    # With --use-output-store, a StoredTensor between generation and load_generated_outputs.
+    # With --use-output-store, a StoredTensor from generation until its reward, then None (or a tensor kept for media).
     generated_output: torch.Tensor | None = None
     # [C, L] waveform at audio_sample_rate, for engines that also return audio (e.g. H3 t2va).
+    # With --use-output-store it is stored and released with generated_output.
     generated_audio: torch.Tensor | None = None
     audio_sample_rate: int | None = None
     rollout_log_probs: torch.Tensor | None = None
     rollout_debug_tensors: RolloutDebugTensors | None = None
     denoising_env: DenoisingEnv | None = None
     dit_trajectory: DiTTrajectory | None = None
+    # The other latent streams the engine rolled out, by name; rollout_log_probs, rollout_debug_tensors and
+    # dit_trajectory above are the primary stream's.
+    extra_streams: dict[str, RolloutStreamData] = field(default_factory=dict)
     # The output store object holding this sample's stored tensors (a radix_transfer_plugins StoreRef).
     rollout_store_ref: Any | None = None
 
@@ -143,3 +177,12 @@ class Sample:
 
     def get_reward_value(self, args) -> float:
         return self.reward if not args.reward_key else self.reward[args.reward_key]
+
+    @property
+    def generated_media(self) -> GeneratedMedia:
+        """What this sample generated, as rewards score it."""
+        return GeneratedMedia(
+            visual=self.generated_output,
+            audio=self.generated_audio,
+            audio_sample_rate=self.audio_sample_rate,
+        )

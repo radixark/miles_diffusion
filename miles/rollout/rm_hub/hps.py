@@ -10,7 +10,7 @@ from torchvision.transforms import functional as vision_functional
 
 from miles.utils.misc import SingletonMeta
 from miles.utils.processing_utils import generated_output_to_rgb_hwc_uint8_frames
-from miles.utils.types import Sample
+from miles.utils.types import GeneratedMedia, Sample
 
 from .core import AsyncRewardActorPool, record_reward_queue_depth
 
@@ -104,6 +104,8 @@ class HPSScorer(torch.nn.Module):
 
 
 class HPSRewardActor:
+    required_media = frozenset({"visual"})
+
     def __init__(self, *, hps_version: str, checkpoint_path: str | None = None) -> None:
         use_cuda = bool(ray.get_gpu_ids()) and torch.cuda.is_available()
         if use_cuda:
@@ -114,11 +116,11 @@ class HPSRewardActor:
             checkpoint_path=checkpoint_path,
         )
 
-    def score_batch(self, outputs: list[torch.Tensor], prompts: list[str]) -> list[float]:
+    def score_batch(self, outputs: list[GeneratedMedia], prompts: list[str]) -> list[float]:
         # HPSv2 rounds when quantising to uint8; matching it keeps scores comparable with the reference
         images = []
         for output in outputs:
-            (image,) = generated_output_to_rgb_hwc_uint8_frames(output, None, round_normalized=True)
+            (image,) = generated_output_to_rgb_hwc_uint8_frames(output.visual, None, round_normalized=True)
             images.append(Image.fromarray(image))
         return self.scorer(prompts, images)
 
@@ -128,6 +130,7 @@ class AsyncHPSPool(AsyncRewardActorPool, metaclass=SingletonMeta):
 
     def __init__(self, args, placement_group=None, slots=None) -> None:
         super().__init__(
+            args=args,
             actor_cls=HPSRewardActor,
             actor_kwargs={
                 "hps_version": args.hps_version,
@@ -145,6 +148,6 @@ class AsyncHPSPool(AsyncRewardActorPool, metaclass=SingletonMeta):
 
 async def hps_rm(args, samples: Sequence[Sample]) -> list[float]:
     pool = AsyncHPSPool(args)
-    scores, max_queue_depth = await pool.score([s.generated_output for s in samples], [s.prompt for s in samples])
+    scores, max_queue_depth = await pool.score([s.generated_media for s in samples], [s.prompt for s in samples])
     record_reward_queue_depth(samples, "hps", max_queue_depth)
     return scores

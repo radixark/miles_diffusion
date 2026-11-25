@@ -35,6 +35,8 @@ def args(monkeypatch: pytest.MonkeyPatch) -> Namespace:
 
     class Config:
         model_backend_path = "external.Backend"
+        primary_stream = "visual"
+        trainable_extra_streams = ()
         supports_cfg_training = True
         tasks = ("t2v",)
 
