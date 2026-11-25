@@ -4,7 +4,7 @@ The converter, prepare hook and loss never name a stream: they carry whatever st
 here are called "wide" and "narrow" (6 and 4 elements per pair) because no model has them.
 
     rollout sample ──expand──► pair: per-step fields keyed by stream   {"latent": {"wide": x_w, "narrow": x_n}, ...}
-                                 │ prepare_flow_grpo_batch: stack each stream across the micro-batch
+                                 │ flow_grpo_batch: stack each stream across the micro-batch
                                  ▼
     PreparedBatch.latents / timesteps / extras[...]   every one a {stream: tensor} dict
                                  │ flow_grpo_loss_formula
@@ -50,8 +50,8 @@ import torch
 from miles.backends.fsdp_utils.loss_hub.flow_grpo import (
     _combine_streams,
     _stream_weights,
+    flow_grpo_batch,
     flow_grpo_loss_formula,
-    prepare_flow_grpo_batch,
 )
 from miles.backends.fsdp_utils.metrics import new_metric_buffer
 from miles.backends.fsdp_utils.sde_step_backend import CpsSdeStepBackend, FlowSdeStepBackend
@@ -215,7 +215,7 @@ def test_converted_pairs_are_keyed_by_the_primary_stream_and_prepare_reads_them(
     args = SimpleNamespace(primary_stream="main", rollout_extra_streams=[])
     pairs = expand_samples_to_train_pairs(args, [sample], [0.5], [0.5])["train_data"]
 
-    prepared = prepare_flow_grpo_batch(_prepare_ctx(), pairs, microbatch_id=0, optim_step_idx=0)
+    prepared = flow_grpo_batch(_prepare_ctx(), pairs, microbatch_id=0, optim_step_idx=0)
 
     assert list(prepared.latents) == ["main"]
     assert torch.equal(prepared.latents["main"], latents[sde_steps])
@@ -312,7 +312,7 @@ def test_prepare_stacks_every_stream_of_the_pairs(rollout):
         for index in range(BATCH_SIZE)
     ]
 
-    prepared = prepare_flow_grpo_batch(_prepare_ctx(), pairs, microbatch_id=0, optim_step_idx=0)
+    prepared = flow_grpo_batch(_prepare_ctx(), pairs, microbatch_id=0, optim_step_idx=0)
 
     for stream_name, stream in rollout.streams.items():
         assert torch.equal(prepared.latents[stream_name], stream.latent)
@@ -349,7 +349,7 @@ def test_a_multi_dit_family_routes_by_the_primary_streams_timestep(rollout):
         "log_prob_old": {stream_name: stream.log_prob_old[0] for stream_name, stream in rollout.streams.items()},
     }
 
-    prepared = prepare_flow_grpo_batch(ctx, [pair], microbatch_id=0, optim_step_idx=0)
+    prepared = flow_grpo_batch(ctx, [pair], microbatch_id=0, optim_step_idx=0)
 
     assert prepared.component_name == "high_noise"
     assert prepared.model is ctx.models["high_noise"]
