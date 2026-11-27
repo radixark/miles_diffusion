@@ -46,33 +46,18 @@ class TestRolloutPatchGroups:
         assert "qwen_image" in mp._ROLLOUT_PATCH_APPLIERS
         assert "wan" in mp._ROLLOUT_PATCH_APPLIERS
         assert "ltx" in mp._ROLLOUT_PATCH_APPLIERS
-        assert "ltx_av" in mp._ROLLOUT_PATCH_APPLIERS
 
 
 class TestLtxPatchGroups:
-    # The two LTX groups share the cond-kwargs patch; only the video-only group turns AV cross-attention off:
-    #   ltx     --> cond kwargs + AV cross-attention off   (video-only training forward)
-    #   ltx_av  --> cond kwargs                             (joint audio-video training forward)
-    @pytest.fixture
-    def applied(self, monkeypatch):
-        from miles.backends.sglang_diffusion_utils.monkey_patches import (
-            patch_ltx2_disable_av_cross,
-            patch_ltx2_rollout_cond_kwargs,
-        )
+    # The LTX group only turns AV cross-attention off, for the video-only training forward.
+    def test_group_applies_its_patches(self, monkeypatch):
+        from miles.backends.sglang_diffusion_utils.monkey_patches import patch_ltx2_disable_av_cross
 
         calls = []
-        monkeypatch.setattr(patch_ltx2_rollout_cond_kwargs, "apply", lambda: calls.append("cond_kwargs"))
         monkeypatch.setattr(patch_ltx2_disable_av_cross, "apply", lambda: calls.append("disable_av_cross"))
-        return calls
-
-    @pytest.mark.parametrize(
-        ("group", "expected"),
-        [("ltx", ["cond_kwargs", "disable_av_cross"]), ("ltx_av", ["cond_kwargs"])],
-    )
-    def test_group_applies_its_patches(self, applied, monkeypatch, group, expected):
-        monkeypatch.setenv(mp.ROLLOUT_PATCH_GROUPS_ENV, group)
+        monkeypatch.setenv(mp.ROLLOUT_PATCH_GROUPS_ENV, "ltx")
         mp.apply_env_selected_rollout_patches()
-        assert applied == expected
+        assert calls == ["disable_av_cross"]
 
 
 class TestValidateRolloutPatchGroups:
@@ -80,6 +65,6 @@ class TestValidateRolloutPatchGroups:
     #   --rollout-patch-group "qwen_image,ltx"  ──► registered appliers ──► pass
     #   --rollout-patch-group "qwen_image,bogus" ─► "bogus" unregistered ─► ValueError
     def test_known_pass_unknown_raises(self):
-        mp.validate_rollout_patch_groups(["qwen_image", "ltx", "ltx_av", "wan"])
+        mp.validate_rollout_patch_groups(["qwen_image", "ltx", "wan"])
         with pytest.raises(ValueError, match="Unknown rollout patch group"):
             mp.validate_rollout_patch_groups(["qwen_image", "bogus"])
