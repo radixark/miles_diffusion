@@ -41,6 +41,8 @@ class CondKwargs:
     h3_token_tags: torch.Tensor | None = None
     # Krea2: joint text+image 3-axis RoPE coordinates (seq_len, 3).
     pos: torch.Tensor | None = None
+    # Krea2: joint text+image key mask (seq_len,); None when every text token is valid.
+    mask: torch.Tensor | None = None
     # Cosmos3: token-level conditioning (no separate text encoder).
     text_ids: torch.Tensor | None = None
     text_mask: torch.Tensor | None = None
