@@ -40,13 +40,16 @@ def build_rollout_sampling_params(
     neg = args.diffusion_negative_prompt
     eval_steps = args.diffusion_eval_num_steps
     num_steps = eval_steps if evaluation and eval_steps is not None else args.diffusion_num_steps
+    guidance_scale = args.diffusion_guidance_scale
+    if evaluation and args.diffusion_eval_guidance_scale is not None:
+        guidance_scale = args.diffusion_eval_guidance_scale
 
     sampling_params: dict[str, Any] = {
         "generator_device": args.diffusion_generator_device,
         "width": args.diffusion_width,
         "height": args.diffusion_height,
         "num_inference_steps": num_steps,
-        "guidance_scale": args.diffusion_guidance_scale,
+        "guidance_scale": guidance_scale,
         "true_cfg_scale": args.diffusion_true_cfg_scale,
         "rollout_video_dtype": args.rollout_video_dtype,
     }

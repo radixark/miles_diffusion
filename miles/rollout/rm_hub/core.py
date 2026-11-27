@@ -93,7 +93,7 @@ class _StoredOutputRewardActor:
         self._scorer = scorer_cls(**scorer_kwargs)
         self._reader = StoredTensorReader(connect_output_store(args))
 
-    def score_batch(self, outputs: list[GeneratedMedia], prompts: list[str]) -> list[float]:
+    def score_batch(self, outputs: list[GeneratedMedia], prompts: list[str]) -> list[float | dict[str, float]]:
         # eval outputs arrive inline
         stored_visuals = [output.visual for output in outputs if isinstance(output.visual, StoredTensor)]
         if stored_visuals:
@@ -189,7 +189,7 @@ class AsyncRewardActorPool:
         self._round_robin_index += 1
         return i
 
-    async def score(self, outputs: list[GeneratedMedia], prompts: list[str]) -> tuple[list[float], int]:
+    async def score(self, outputs: list[GeneratedMedia], prompts: list[str]) -> tuple[list[float | dict[str, float]], int]:
         """Score samples in batches; also report the deepest dispatch-time backlog this call saw."""
         outputs = [self._only_required_fields(output) for output in outputs]
         refs, idxs, max_queue_depth = [], [], 0
@@ -207,17 +207,6 @@ class AsyncRewardActorPool:
         finally:
             for i in idxs:
                 self._inflight[i] -= 1
-        return [float(score) for chunk in chunked_scores for score in chunk], max_queue_depth
-
-    def _only_required_fields(self, output: GeneratedMedia) -> GeneratedMedia:
-        """``output`` without the fields this pool's scorer does not require, so they neither cross Ray nor are read
-        from the store."""
-        if self._requires_visual and output.visual is None:
-            raise ValueError(f"the {self._name} reward requires visual, but a sample generated none")
-        if self._requires_audio and output.audio is None:
-            raise ValueError(f"the {self._name} reward requires audio, but a sample generated none")
-        return replace(
-            output,
-            visual=output.visual if self._requires_visual else None,
-            audio=output.audio if self._requires_audio else None,
-        )
+        return [
+            score if isinstance(score, dict) else float(score) for chunk in chunked_scores for score in chunk
+        ], max_queue_depth

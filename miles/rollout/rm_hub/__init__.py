@@ -38,6 +38,10 @@ async def async_rm(args, sample: Sample, **kwargs):
         from .openai_api import openai_api_rm
 
         return (await openai_api_rm(args, [sample]))[0]
+    elif rm_type == "videoalign":
+        from .videoalign import videoalign_rm
+
+        return (await videoalign_rm(args, [sample]))[0]
     else:
         raise NotImplementedError(f"Rule-based RM for {rm_type!r} is not implemented.")
 
@@ -57,6 +61,10 @@ def create_colocated_reward_pools(args, placement_group, slots) -> list:
         from .hpsv3 import AsyncHPSv3Pool
 
         pools.append(AsyncHPSv3Pool(args, placement_group=placement_group, slots=slots))
+    if args.videoalign_reward_colocate:
+        from .videoalign import AsyncVideoAlignPool
+
+        pools.append(AsyncVideoAlignPool(args, placement_group=placement_group, slots=slots))
     return pools
 
 
@@ -97,6 +105,10 @@ async def batched_async_rm(
             from .openai_api import openai_api_rm
 
             return await openai_api_rm(args, samples)
+        if all(rm_type == "videoalign" for rm_type in rm_types):
+            from .videoalign import videoalign_rm
+
+            return await videoalign_rm(args, samples)
 
     tasks = [async_rm(args, sample, **kwargs) for sample in samples]
     rewards = await asyncio.gather(*tasks)
