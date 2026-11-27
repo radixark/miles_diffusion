@@ -36,6 +36,8 @@ def _run_ported_test(filename, *selectors):
     assert result.returncode == 0, result.stdout + result.stderr
     # site.py swallows sitecustomize errors, which would run the ported tests unpatched
     assert "Error in sitecustomize" not in result.stderr, result.stderr
+    # a thread that raises outside its test body fails no test; only its traceback shows it
+    assert "Exception in thread" not in result.stderr, result.stderr
 
 
 def test_fully_shard_mixed_precision():
