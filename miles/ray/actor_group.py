@@ -32,11 +32,13 @@ class RayTrainGroup:
         pg: tuple[PlacementGroup, list[int], list[int]],
         num_gpus_per_actor: float = 1,
         role: str = "actor",
+        master_port_start: int = 20000,
     ) -> None:
         self.args = args
         self._num_nodes = num_nodes
         self._num_gpus_per_node = num_gpus_per_node
         self.role = role
+        self._master_port_start = master_port_start
 
         # Allocate the GPUs for actors w/o instantiating them
         self._allocate_gpus_for_actor(pg, num_gpus_per_actor)
@@ -88,7 +90,7 @@ class RayTrainGroup:
                     placement_group=pg,
                     placement_group_bundle_index=reordered_bundle_indices[rank],
                 ),
-            ).remote(world_size, rank, master_addr, master_port)
+            ).remote(world_size, rank, master_addr, master_port, self._master_port_start)
             if rank == 0:
                 master_addr, master_port = ray.get(actor.get_master_addr_and_port.remote())
             self._actor_handlers.append(actor)

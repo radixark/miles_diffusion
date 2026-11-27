@@ -88,7 +88,12 @@ def _create_training_models(monkeypatch, start_rollout_ids):
         placement_module, "compute_trainer_args", lambda args, config: Namespace(name=f"{config.role}_args")
     )
     monkeypatch.setattr(placement_module, "allocate_train_group", fake_allocate)
-    monkeypatch.setattr(placement_module.ray, "get", lambda refs: refs)
+
+    def fake_get(refs):
+        events.append(("get", refs))
+        return refs
+
+    monkeypatch.setattr(placement_module.ray, "get", fake_get)
     args = _args(start_rollout_id=None, rollout_global_dataset=False)
     groups = placement_module.create_training_models(args, {"actor": "actor_pg"}, rollout_manager=None)
     return args, groups, events, allocations
@@ -103,7 +108,12 @@ def test_trainer_groups_split_the_train_gpu_share(monkeypatch, roles):
     assert [a["num_gpus_per_actor"] for a in allocations] == [TRAIN_ACTOR_GPU / len(roles)] * len(roles)
     assert sum(int(a["num_gpus_per_actor"] * 10_000) for a in allocations) <= int(TRAIN_ACTOR_GPU * 10_000)
     assert all(a["pg"] == "actor_pg" and a["args"].name == f"{a['role']}_args" for a in allocations)
-    assert events == [("init", role, f"{role}_args") for role in roles] + [("set_rollout_manager", "actor")]
+    assert [a["master_port_start"] for a in allocations] == [20000 + 1000 * index for index in range(len(roles))]
+    # Every group's init is in flight before any is waited for.
+    assert events == [("init", role, f"{role}_args") for role in roles] + [
+        ("get", [3, 3] * len(roles)),
+        ("set_rollout_manager", "actor"),
+    ]
 
 
 def test_trainers_restored_to_different_rollouts_are_rejected(monkeypatch):
