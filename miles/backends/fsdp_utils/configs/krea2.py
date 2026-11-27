@@ -65,12 +65,12 @@ class Krea2TrainPipelineConfig(TrainPipelineConfig):
         if cond.encoder_hidden_states:
             # (seq_len, num_text_layers, dim) -> (1, seq_len, num_text_layers, dim)
             kwargs["encoder_hidden_states"] = cond.encoder_hidden_states[0].to(device).unsqueeze(0)
+            # The engine's joint mask leads with the text tokens; it is None when every text token is valid.
+            text_len = kwargs["encoder_hidden_states"].shape[1]
+            text_mask = cond.mask[:text_len] if cond.mask is not None else torch.ones(text_len)
+            kwargs["encoder_attention_mask"] = text_mask.to(device=device, dtype=torch.bool).unsqueeze(0)
         if cond.pos is not None:
             kwargs["position_ids"] = cond.pos.to(device)
-        if cond.encoder_attention_mask:
-            kwargs["encoder_attention_mask"] = (
-                cond.encoder_attention_mask[0].to(device=device, dtype=torch.bool).unsqueeze(0)
-            )
         return kwargs
 
     def collate_cond_for_sample_batch(

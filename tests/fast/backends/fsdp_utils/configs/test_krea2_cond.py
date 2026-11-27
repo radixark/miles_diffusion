@@ -1,4 +1,4 @@
-"""Krea2 cond plumbing: layer-stacked text embeds, position_ids rebuild, key-padding mask."""
+"""Krea2 cond plumbing: layer-stacked text embeds, position_ids rebuild, key-padding mask from the joint mask."""
 
 from tests.ci.ci_register import register_cpu_ci
 
@@ -16,12 +16,12 @@ CPU = torch.device("cpu")
 LAYERS, DIM, IMG_LEN = 3, 5, 4
 
 
-def _cond(seq_len: int, img_len: int = IMG_LEN) -> CondKwargs:
+def _cond(seq_len: int, img_len: int = IMG_LEN, mask: torch.Tensor | None = None) -> CondKwargs:
     img_rows = torch.arange(img_len * 3, dtype=torch.float32).reshape(img_len, 3)
     return CondKwargs(
         encoder_hidden_states=[torch.randn(seq_len, LAYERS, DIM)],
-        encoder_attention_mask=[torch.ones(seq_len, dtype=torch.bool)],
         pos=torch.cat([torch.zeros(seq_len, 3), img_rows]),
+        mask=mask,
     )
 
 
@@ -30,6 +30,13 @@ def test_prepare_shapes():
     assert kw["encoder_hidden_states"].shape == (1, 7, LAYERS, DIM)
     assert kw["encoder_attention_mask"].shape == (1, 7)
     assert kw["position_ids"].shape == (7 + IMG_LEN, 3)
+
+
+def test_text_mask_is_the_joint_mask_text_prefix():
+    # The engine's joint mask is text tokens then image tokens; the trainer's DiT takes the text part alone.
+    joint = torch.tensor([True, True, True, False, False] + [True] * IMG_LEN)
+    kw = Krea2TrainPipelineConfig().prepare_cond_kwargs(_cond(5, mask=joint), CPU)
+    assert kw["encoder_attention_mask"].tolist() == [[True, True, True, False, False]]
 
 
 def test_collate_pads_ragged_text_and_rebuilds_position_ids():
@@ -67,11 +74,11 @@ def test_parse_cond_kwargs_reads_krea2_env_keys():
     cond = _parse_cond_kwargs(
         {
             "encoder_hidden_states": ser(torch.randn(7, LAYERS, DIM)),
-            "encoder_hidden_states_mask": ser(torch.ones(7, dtype=torch.bool)),
             "pos": ser(torch.zeros(7 + IMG_LEN, 3)),
+            "mask": ser(torch.ones(7 + IMG_LEN, dtype=torch.bool)),
         },
         deserialize_func=_default_deserialize_func,
     )
     assert cond.encoder_hidden_states[0].shape == (7, LAYERS, DIM)
-    assert cond.encoder_attention_mask[0].dtype == torch.bool
     assert cond.pos.shape == (7 + IMG_LEN, 3)
+    assert cond.mask.shape == (7 + IMG_LEN,)
