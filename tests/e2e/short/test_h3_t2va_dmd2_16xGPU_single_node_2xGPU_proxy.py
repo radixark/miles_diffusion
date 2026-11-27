@@ -15,7 +15,7 @@ from tests.ci.e2e_metrics_registry import register_e2e_ci
 register_e2e_ci(
     est_time=1200,
     suite="stage-c-3-gpu-h200",
-    labels=["e2e"],
+    labels=["e2e", "h3-probe"],
     script="scripts/run_diffusion_dmd2_h3_t2va_16gpu_multinode.py",
     args=[
         "--num-nodes",
