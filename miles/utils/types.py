@@ -49,10 +49,8 @@ class CondKwargs:
 
 @dataclass
 class DenoisingEnv:
-    image_kwargs: Any | None = None
     pos_cond_kwargs: CondKwargs | None = None
     neg_cond_kwargs: CondKwargs | None = None
-    guidance: Any | None = None
 
 
 @dataclass

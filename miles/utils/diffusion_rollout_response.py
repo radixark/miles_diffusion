@@ -181,10 +181,8 @@ def _parse_denoising_env(
     if not data:
         return None
     return DenoisingEnv(
-        image_kwargs=data.get("image_kwargs"),
         pos_cond_kwargs=_parse_cond_kwargs(data.get("pos_cond_kwargs"), deserialize_func=deserialize_func),
         neg_cond_kwargs=_parse_cond_kwargs(data.get("neg_cond_kwargs"), deserialize_func=deserialize_func),
-        guidance=data.get("guidance"),
     )
 
 
