@@ -1028,8 +1028,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help=(
                     "Dotted path to prepare hook "
-                    "`fn(ctx, batch, *, microbatch_id, optim_step_idx, pad_to_len=None) -> PreparedBatch`. "
-                    "Builds DiT inputs; --loss-type custom_loss only, default is Flow-GRPO SDE-pair stacking."
+                    "`fn(ctx, batch, *, microbatch_id, optim_step_idx, pad_to_len=None) -> PreparedBatches`. "
+                    "Builds the micro-batch's stages (the training forward's input, plus the teacher's and the actor's "
+                    "extra no-grad forward's when the loss wants them); --loss-type custom_loss only, default is "
+                    "Flow-GRPO SDE-pair stacking."
                 ),
             )
             parser.add_argument(
@@ -1038,7 +1040,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help=(
                     "Dotted path to a loss *formula* only: "
-                    "`fn(ctx, batch, prepared, *, new_pred, ref_pred, metrics, ...) -> Tensor`. "
+                    "`fn(ctx, batch, prepared, *, new_pred, old_pred, ref_pred, teacher_pred, teacher_batch, "
+                    "actor_forward_pred, actor_forward_batch, metrics, ...) -> Tensor`. "
                     "--loss-type custom_loss only, default is Flow-GRPO's. "
                     "DiT forward is owned by the actor; this hook only computes the objective."
                 ),
@@ -1123,6 +1126,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default="velocity",
                 help="Space of the DMD2 critic's flow-matching loss: velocity, or x0 = x_sigma - sigma * v, "
                 "which weights the velocity MSE by sigma^2.",
+            )
+            parser.add_argument(
+                "--dmd2-critic-scoring",
+                type=str,
+                choices=["reuse-critic-step", "original"],
+                default="reuse-critic-step",
+                help="How the DMD2 critic scores its last step's samples. reuse-critic-step: that step's training "
+                "forward, drawn in --dmd2-score-sigma-range, is the critic's score, so only the teacher's forward "
+                "is added. original: tianweiy/DMD2's order, a separate draw and critic forward on those samples "
+                "before the critic trains on them, which costs a critic forward per scored sample.",
             )
             parser.add_argument(
                 "--critic-load",

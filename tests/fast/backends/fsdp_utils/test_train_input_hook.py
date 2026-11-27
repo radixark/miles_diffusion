@@ -19,6 +19,7 @@ from tests.ci.ci_register import register_cpu_ci
 register_cpu_ci(est_time=5, suite="stage-a-cpu", labels=["fsdp"])
 
 import ast
+import dataclasses
 from argparse import Namespace
 from contextlib import nullcontext
 from pathlib import Path
@@ -44,6 +45,7 @@ def _load_train_core(new_metric_buffer=lambda *args, **kwargs: SimpleNamespace(r
     )
     namespace = dict(
         Any=Any,
+        dataclasses=dataclasses,
         torch=torch,
         DiffusionLossContext=DiffusionLossContext,
         build_microbatch_schedule=build_microbatch_schedule,
@@ -118,8 +120,10 @@ def test_later_stages_see_the_preprocessed_pairs():
     )
 
     preprocessed = [{"sample_index": index, "score": scores[index]} for index in (1, 2, 4, 5)]
-    assert seen_by_input == [(ctx, pairs)]
-    assert (ctx.rollout_id, ctx.external_data) == (3, {"critic": scores})
+    [(input_ctx, input_pairs)] = seen_by_input
+    assert input_pairs == pairs
+    for stage_ctx in (input_ctx, ctx):
+        assert (stage_ctx.rollout_id, stage_ctx.external_data) == (3, {"critic": scores})
     # Two optimizer steps of two micro-batches each: the id counts on, the step index follows the window.
     assert forwarded == [
         (0, 0, False, [preprocessed[0]]),

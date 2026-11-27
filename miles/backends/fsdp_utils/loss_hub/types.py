@@ -9,6 +9,8 @@ from typing import Any
 import torch
 import torch.nn as nn
 
+from miles.backends.fsdp_utils.input_dtype_policy import InputDtypes, cast_input
+
 
 @dataclass(frozen=True, eq=False)
 class DiffusionLossContext:
@@ -50,7 +52,7 @@ class FlowNoiseSchedule:
 
 @dataclass
 class PreparedBatch:
-    """Actor-owned DiT forward inputs produced by a prepare hook.
+    """One stage's DiT forward input, built by a prepare hook.
 
     ``latents`` and both timestep fields are keyed by latent stream name: "visual", plus e.g.
     "audio" for joint audio-video models. The DiT prediction comes back keyed the same way.
@@ -70,5 +72,36 @@ class PreparedBatch:
     joint_cond: dict | None
     advantage: torch.Tensor
     extras: dict[str, Any] = field(default_factory=dict)
-    # CFG scale of the frozen teacher's no-grad forward on this batch; None runs no teacher forward.
-    teacher_guidance_scale: float | None = None
+
+    def model_inputs(self, input_dtypes: InputDtypes) -> dict[str, Any]:
+        """What the forward sends the model: the latents, model timesteps and conds cast per ``input_dtypes``, under
+        ``compute_noise_pred``'s kwarg names. The raw fields stay as rollout handed them, for the formulas."""
+
+        def cond(value: dict | None) -> dict | None:
+            return None if value is None else {key: cast_input(item, input_dtypes.cond) for key, item in value.items()}
+
+        return {
+            "latents_input": {name: cast_input(x, input_dtypes.latents) for name, x in self.latents.items()},
+            "timesteps_input": {
+                name: cast_input(t, input_dtypes.timestep) for name, t in self.timesteps_for_model.items()
+            },
+            "pos_cond": cond(self.pos_cond),
+            "neg_cond": cond(self.neg_cond),
+            "joint_cond": cond(self.joint_cond),
+        }
+
+
+@dataclass(frozen=True, eq=False)
+class PreparedBatches:
+    """The stages of one micro-batch, as the prepare hook returns them.
+
+    ``actor`` is the training forward's input; the EMA and reference forwards take it too. ``teacher`` is the frozen
+    teacher's input with its own CFG fields: the trunk runs the teacher loaded by --teacher-load for its
+    ``component_name`` on it (its ``model`` field is not read). ``actor_forward`` is a second, no-grad forward of the
+    actor's model. Each stage's prediction reaches the formula next to its batch: ``new_pred``; ``teacher_pred`` and
+    ``teacher_batch``; ``actor_forward_pred`` and ``actor_forward_batch``.
+    """
+
+    actor: PreparedBatch
+    teacher: PreparedBatch | None = None
+    actor_forward: PreparedBatch | None = None

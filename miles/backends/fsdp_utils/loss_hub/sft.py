@@ -5,7 +5,12 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from miles.backends.fsdp_utils.loss_hub.types import DiffusionLossContext, FlowNoiseSchedule, PreparedBatch
+from miles.backends.fsdp_utils.loss_hub.types import (
+    DiffusionLossContext,
+    FlowNoiseSchedule,
+    PreparedBatch,
+    PreparedBatches,
+)
 from miles.backends.fsdp_utils.metrics import sigma_bucket_key
 from miles.utils.hash_utils import stable_hash
 from miles.utils.metric_buffer import MetricBuffer
@@ -34,7 +39,7 @@ def select_component(
     return component_name, model, torch.tensor(served, device=device)
 
 
-def prepare_sft_batch(
+def sft_batch(
     ctx: DiffusionLossContext,
     batch: list[dict],
     *,
@@ -42,13 +47,15 @@ def prepare_sft_batch(
     optim_step_idx: int,
     pad_to_len: int | None = None,
     grid_index_range: tuple[int, int] | None = None,
+    draw: str = "sample",
 ) -> PreparedBatch:
     """Corrupt every latent stream at one shared grid index, each through its own shifted grid; CFG-free cached cond.
 
     The visual grid picks the DiT component and the index is drawn uniformly from the points it serves, within
     ``grid_index_range`` (inclusive) when given. Sharing the index pairs the streams' sigmas as inference steps them,
-    one step index read through each stream's shift. ``microbatch_id`` seeds the draws; ``optim_step_idx`` is part of
-    every prepare hook's signature and unused here.
+    one step index read through each stream's shift. ``microbatch_id`` seeds the draws and ``draw`` names the draw:
+    a second draw on the same micro-batch (DMD2's scoring draw) passes its own name and gets its own noise.
+    ``optim_step_idx`` is part of every prepare hook's signature and unused here.
     """
     device = ctx.device
     config = ctx.train_pipeline_config
@@ -69,7 +76,7 @@ def prepare_sft_batch(
 
     # The visual stream keeps the single-stream seed, so single-stream runs draw as before; other streams add their
     # name, so adding a stream never changes another stream's noise.
-    seed_parts = ("sample", int(ctx.args.seed), ctx.rollout_id, microbatch_id, ctx.dp_rank)
+    seed_parts = (draw, int(ctx.args.seed), ctx.rollout_id, microbatch_id, ctx.dp_rank)
     generators = {
         stream_name: torch.Generator(device=device).manual_seed(
             stable_hash(*seed_parts) if stream_name == "visual" else stable_hash(*seed_parts, stream_name)
@@ -119,6 +126,20 @@ def prepare_sft_batch(
     )
 
 
+def prepare_sft_batch(
+    ctx: DiffusionLossContext,
+    batch: list[dict],
+    *,
+    microbatch_id: int,
+    optim_step_idx: int,
+    pad_to_len: int | None = None,
+) -> PreparedBatches:
+    """The SFT hook: one stage, the training forward on ``sft_batch``'s draw."""
+    return PreparedBatches(
+        actor=sft_batch(ctx, batch, microbatch_id=microbatch_id, optim_step_idx=optim_step_idx, pad_to_len=pad_to_len)
+    )
+
+
 def sft_loss_formula(
     ctx: DiffusionLossContext,
     batch: list[dict],
@@ -128,6 +149,9 @@ def sft_loss_formula(
     old_pred: dict[str, torch.Tensor] | None,
     ref_pred: dict[str, torch.Tensor] | None,
     teacher_pred: dict[str, torch.Tensor] | None = None,
+    teacher_batch: PreparedBatch | None = None,
+    actor_forward_pred: dict[str, torch.Tensor] | None = None,
+    actor_forward_batch: PreparedBatch | None = None,
     metrics: MetricBuffer,
     optim_step_idx: int,
     train_output_inputs: list,

@@ -20,25 +20,28 @@ from miles.backends.fsdp_utils.loss_hub.dmd2 import (
 from miles.backends.fsdp_utils.loss_hub.flow_grpo import flow_grpo_loss_formula, prepare_flow_grpo_batch
 from miles.backends.fsdp_utils.loss_hub.nft import nft_loss_formula, prepare_nft_batch
 from miles.backends.fsdp_utils.loss_hub.sft import prepare_sft_batch, sft_loss_formula
-from miles.backends.fsdp_utils.loss_hub.types import DiffusionLossContext, PreparedBatch
+from miles.backends.fsdp_utils.loss_hub.types import DiffusionLossContext, PreparedBatch, PreparedBatches
 from miles.utils.misc import load_function
 
-__all__ = ["LOSS_HOOKS", "DiffusionLossContext", "LossHooks", "PreparedBatch", "get_loss_hooks"]
+__all__ = ["LOSS_HOOKS", "DiffusionLossContext", "LossHooks", "PreparedBatch", "PreparedBatches", "get_loss_hooks"]
 
 
 @dataclass(frozen=True)
 class LossHooks:
     """The hooks one trainer group runs on a rollout.
 
-    ``prepare(ctx, batch, *, microbatch_id, optim_step_idx, pad_to_len=None)`` builds a micro-batch's DiT inputs,
-    ``formula(ctx, batch, prepared, *, new_pred, old_pred, ref_pred, metrics, optim_step_idx, train_output_inputs,
-    ...)`` turns the predictions into its loss, ``train_input`` preprocesses the rank's train pairs before
-    micro-batching, and ``train_output(ctx, train_pairs, train_output_inputs)`` runs after the train steps and hands
-    its return value to the groups that train later; ``train_output_inputs`` is the list the formulas filled during
-    this train call.
+    ``prepare(ctx, batch, *, microbatch_id, optim_step_idx, pad_to_len=None) -> PreparedBatches`` builds a
+    micro-batch's stages: the training forward's input and, when the loss wants them, the teacher's and the actor's
+    extra no-grad forward's. ``formula(ctx, batch, prepared, *, new_pred, old_pred, ref_pred, teacher_pred,
+    teacher_batch, actor_forward_pred, actor_forward_batch, metrics, optim_step_idx, train_output_inputs,
+    write_old_log_prob, old_log_prob_from_new)`` turns the predictions into its loss, each stage's prediction next to
+    its batch (None for a stage the prepare hook did not ask for). ``train_input`` preprocesses the rank's train pairs
+    before micro-batching, and ``train_output(ctx, train_pairs, train_output_inputs)`` runs after the train steps and
+    hands its return value to the groups that train later; ``train_output_inputs`` is the list the formulas filled
+    during this train call.
     """
 
-    prepare: Callable[..., PreparedBatch]
+    prepare: Callable[..., PreparedBatches]
     formula: Callable[..., torch.Tensor | None]
     train_input: Callable[[DiffusionLossContext, list], list] | None = None
     train_output: Callable[[DiffusionLossContext, list, list], Any] | None = None
