@@ -18,13 +18,17 @@ from miles.rollout.base_types import RolloutFnEvalOutput, RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
 from miles.utils.async_utils import run
 from miles.utils.diffusion_data import Dataset as DiffusionDataset
-from miles.utils.diffusion_rollout_response import RolloutImageResponseParserActor, read_generated_outputs
+from miles.utils.diffusion_rollout_response import (
+    RolloutImageResponseParserActor,
+    apply_rollout_image_response,
+    read_generated_outputs,
+)
 from miles.utils.eval_config import EvalDatasetConfig
 from miles.utils.http_utils import post
 from miles.utils.misc import SingletonMeta, load_function
 from miles.utils.output_store import StoredTensor, StoredTensorReader, connect_output_store, record_dropped_samples
 from miles.utils.tracking_utils import logs_rollout_media
-from miles.utils.types import Sample
+from miles.utils.types import CondKwargs, Sample
 
 from .rm_hub import batched_async_rm
 
@@ -112,6 +116,33 @@ def build_rollout_generate_payload(
     return sampling_params
 
 
+async def fetch_neg_cond(args: Namespace, sampling_params: dict[str, Any]) -> CondKwargs:
+    """The negative cond of the run's samples, from one request that runs CFG and stops after its first step.
+
+    The negative cond depends on the negative prompt and the sample size, not on the prompt or the seed, so one
+    request serves every sample.
+    """
+    payload = build_rollout_generate_payload(
+        sampling_params
+        | {
+            "seed": args.rollout_seed,
+            "guidance_scale": args.rollout_neg_cond_guidance_scale,
+            "rollout_stop_step_index": 0,
+            # no rollout's release would own a stored copy
+            "rollout_return_outputs_via_store": False,
+        },
+        prompt="",
+    )
+    bodies = await post(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/rollout/generate", payload)
+    neg_cond = apply_rollout_image_response(Sample(), bodies[0]).denoising_env.neg_cond_kwargs
+    if neg_cond is None:
+        raise ValueError(
+            f"the request at guidance scale {args.rollout_neg_cond_guidance_scale} returned no negative cond; "
+            "the engine runs CFG only with a negative prompt (--diffusion-negative-prompt)"
+        )
+    return neg_cond
+
+
 class GenerateState(metaclass=SingletonMeta):
     """Global state for sglang-diffusion image rollout."""
 
@@ -140,6 +171,7 @@ class GenerateState(metaclass=SingletonMeta):
         self.output_reader = StoredTensorReader(self.output_store) if args.use_output_store else None
         # outputs of the running rollout still to keep for its media logging
         self.media_outputs_left = 0
+        self.neg_cond: CondKwargs | None = None
 
         self.reset()
 
@@ -344,6 +376,12 @@ async def generate_and_rm_microgroup(
             else:
                 microgroup = await generate_microgroup(args, microgroup, sampling_params, evaluation=evaluation)
 
+    if not evaluation and state.neg_cond is not None:
+        for sample in microgroup:
+            # a sample whose engine always returns one keeps its own
+            if sample.denoising_env.neg_cond_kwargs is None:
+                sample.denoising_env.neg_cond_kwargs = state.neg_cond
+
     # for the rm that need the whole group, we will not do the rm here
     if args.group_rm:
         return microgroup
@@ -414,6 +452,8 @@ async def generate_rollout_async(
 
     state = GenerateState(args)
     state.media_outputs_left = args.wandb_log_num_images if logs_rollout_media(args, rollout_id) else 0
+    if args.rollout_neg_cond_guidance_scale is not None and state.neg_cond is None:
+        state.neg_cond = await fetch_neg_cond(args, state.sampling_params)
 
     # instantiate data filters
     dynamic_filter = (

@@ -95,6 +95,28 @@ def test_each_loss_type_recipe_parses_and_validates(parse, loss_type):
     assert args.loss_type == loss_type
 
 
+@pytest.mark.parametrize(("teacher_scale", "fetch_scale"), [("1.0", None), ("4.5", 4.5)])
+def test_a_dmd2_teacher_that_runs_cfg_has_the_rollout_fetch_the_neg_cond(parse, teacher_scale, fetch_scale):
+    """The student's unguided rollouts return no negative cond; left unset, the teacher's first CFG forward fails."""
+    argv = ARGV_BY_LOSS_TYPE["dmd2"].replace(
+        "--dmd2-teacher-guidance-scale 1.0", f"--dmd2-teacher-guidance-scale {teacher_scale}"
+    )
+    assert parse(argv).rollout_neg_cond_guidance_scale == fetch_scale
+    other_loss = ARGV_BY_LOSS_TYPE["policy_loss"] + f" --dmd2-teacher-guidance-scale {teacher_scale}"
+    assert parse(other_loss).rollout_neg_cond_guidance_scale is None
+
+
+def test_a_dmd2_teacher_that_runs_cfg_is_rejected_on_a_model_that_trains_unguided(parse, monkeypatch):
+    """Such a model's forward drops the negative branch, so the teacher would score unguided without any error."""
+    from miles.backends.fsdp_utils.configs import train_pipeline_config
+
+    monkeypatch.setattr(train_pipeline_config.get_train_pipeline_config_cls("sd3"), "supports_cfg_training", False)
+    with pytest.raises(ValueError, match="trains unguided"):
+        parse(
+            ARGV_BY_LOSS_TYPE["dmd2"].replace("--dmd2-teacher-guidance-scale 1.0", "--dmd2-teacher-guidance-scale 4.5")
+        )
+
+
 def test_the_models_primary_stream_is_resolved_into_args(parse):
     """The rollout side keys train pairs by ``args.primary_stream``; left unresolved, it fails on the first GPU rollout."""
     assert parse(ARGV_BY_LOSS_TYPE["policy_loss"]).primary_stream == "main"

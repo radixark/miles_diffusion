@@ -63,6 +63,7 @@ def _args() -> Namespace:
         rollout_sample_filter_path=None,
         wandb_log_num_images=0,
         wandb_log_image_interval=1,
+        rollout_neg_cond_guidance_scale=None,
     )
 
 

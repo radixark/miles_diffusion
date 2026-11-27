@@ -66,10 +66,7 @@ def _request_teacher_forward(
         return dataclasses.replace(prepared, teacher_guidance_scale=guidance_scale)
     envs = [pair["denoising_env"] for pair in batch]
     if any(env.neg_cond_kwargs is None for env in envs):
-        raise ValueError(
-            "--dmd2-teacher-guidance-scale > 1 needs the rollout's negative cond, "
-            "which the engine returns only for requests that run CFG"
-        )
+        raise ValueError("--dmd2-teacher-guidance-scale > 1 needs the rollout's negative cond")
     pos_list = [config.prepare_cond_kwargs(env.pos_cond_kwargs, ctx.device) for env in envs]
     neg_list = [config.prepare_cond_kwargs(env.neg_cond_kwargs, ctx.device) for env in envs]
     if config.cfg_batching:
