@@ -251,7 +251,7 @@ class TestValidateArgs:
 
     @pytest.mark.parametrize(
         ("extra_streams", "patch_groups"),
-        [([], ["ltx"]), (["audio"], ["ltx_av"]), (["audio"], ["ltx_av", "wan"])],
+        [([], ["ltx"]), (["audio"], []), (["audio"], ["wan"])],
     )
     def test_accepted(self, extra_streams, patch_groups):
         LTXTrainPipelineConfig.validate_args(self._args(extra_streams, patch_groups))
@@ -260,12 +260,10 @@ class TestValidateArgs:
     @pytest.mark.parametrize(
         ("extra_streams", "patch_groups", "message"),
         [
-            (["audio"], ["ltx"], "needs --rollout-patch-group ltx_av"),
-            (["audio"], [], "needs --rollout-patch-group ltx_av"),
-            (["audio"], ["ltx_av", "ltx"], "needs --rollout-patch-group ltx_av"),
-            ([], ["ltx_av"], "needs --rollout-patch-group ltx,"),
-            ([], [], "needs --rollout-patch-group ltx,"),
-            ([], ["ltx", "ltx_av"], "needs --rollout-patch-group ltx,"),
+            (["audio"], ["ltx"], "must not use --rollout-patch-group ltx"),
+            (["audio"], ["wan", "ltx"], "must not use --rollout-patch-group ltx"),
+            ([], [], "needs --rollout-patch-group ltx"),
+            ([], ["wan"], "needs --rollout-patch-group ltx"),
         ],
     )
     def test_patch_group_must_match_the_streams(self, extra_streams, patch_groups, message):
@@ -290,7 +288,7 @@ class TestValidateArgs:
     ):
         args = self._args(
             ["audio"],
-            ["ltx_av"],
+            [],
             gpus_per_engine=gpus_per_engine,
             tp_size=tp_size,
             sp_degree=sp_degree,
@@ -305,7 +303,7 @@ class TestValidateArgs:
     def test_video_only_keeps_engine_sequence_parallelism(self):
         LTXTrainPipelineConfig.validate_args(self._args([], ["ltx"], gpus_per_engine=2, tp_size=1))
 
-    def _parse(self, monkeypatch, patch_group, gpus_per_engine=1):
+    def _parse(self, monkeypatch, patch_group=None, gpus_per_engine=1):
         # Through parse: LTX declares audio, and its checks run after the defaults set TP and split the patch groups.
         from miles.backends.fsdp_utils.arguments import load_fsdp_args
         from miles.utils.arguments import (
@@ -320,7 +318,7 @@ class TestValidateArgs:
             f"--actor-num-gpus-per-node 2 --rollout-num-gpus 2 --rollout-num-gpus-per-engine {gpus_per_engine} "
             "--micro-batch-size 1 --rollout-function-path miles.rollout.sglang_diffusion_rollout.generate_rollout "
             "--rm-type pickscore --diffusion-sde-type cps --diffusion-guidance-scale 1.0 "
-            f"--rollout-extra-streams audio --rollout-patch-group {patch_group}"
+            "--rollout-extra-streams audio" + (f" --rollout-patch-group {patch_group}" if patch_group else "")
         )
         monkeypatch.setattr(sys, "argv", shlex.split(argv))
         args = load_fsdp_args(extra_args_provider=get_miles_extra_args_provider())
@@ -330,14 +328,14 @@ class TestValidateArgs:
 
     @pytest.mark.parametrize("gpus_per_engine", [1, 2])
     def test_audio_command_line_parses(self, monkeypatch, gpus_per_engine):
-        args = self._parse(monkeypatch, "ltx_av", gpus_per_engine)
+        args = self._parse(monkeypatch, gpus_per_engine=gpus_per_engine)
         assert args.diffusion_model_family == "ltx"
         assert args.rollout_extra_streams == ["audio"]
-        assert args.rollout_patch_groups == ["ltx_av"]
+        assert "ltx" not in args.rollout_patch_groups
         assert args.sglang_tp_size == gpus_per_engine
 
     def test_a_parsed_command_line_reaches_the_ltx_checks(self, monkeypatch):
         """The rules are tested on hand-built namespaces; a parser that no longer called them would roll audio out
         with the engine's audio-video cross-attention off while the trainer runs the joint forward."""
-        with pytest.raises(ValueError, match="not ltx"):
+        with pytest.raises(ValueError, match="must not use --rollout-patch-group ltx"):
             self._parse(monkeypatch, "ltx")

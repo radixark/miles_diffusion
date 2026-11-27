@@ -41,7 +41,7 @@ Registered in `miles/backends/fsdp_utils/configs/ltx.py`:
 | Precision | bf16 end to end (master, reduce, forward, engine); the trainer runs math-SDPA (`--fsdp-attention-backend sdpa_math`), the engine `torch_sdpa`, where LTX lets PyTorch pick its fused kernels (cuDNN first) | Math-SDPA keeps the training forward deterministic; the e2e standards are recorded with this pairing |
 | SDE | CPS kernel | Each train pair carries the σ the engine stepped with, so no scheduler lookup; log-prob is `−(x − μ)²`, without the Gaussian constants or the 1/(2σ²) scale |
 | LoRA targets | Attention + FFN: `to_q`, `to_k`, `to_v`, `to_out.0`, `net.0.proj`, `net.2` | |
-| Rollout patches | `--rollout-patch-group ltx`: `patch_ltx2_rollout_cond_kwargs`, `patch_ltx2_disable_av_cross` | Video-only training forward needs AV cross-attention off engine-side |
+| Rollout patches | `--rollout-patch-group ltx`: `patch_ltx2_disable_av_cross` | Video-only training forward needs AV cross-attention off engine-side |
 
 ## 4. Launch
 

@@ -5,7 +5,7 @@ per epoch from candidate steps 0-9. Everything runs bf16 end to end — master, 
 forward and the sgl-d engine — on the sdpa_math attention backend.
 
 --audio also rolls out the audio stream and trains the joint audio-video forward: the engine keeps
-its audio-video cross-attention on (patch group ltx_av), and each step's action is both streams'
+its audio-video cross-attention on (no ltx patch group), and each step's action is both streams'
 next latents. The reward still scores video frames only.
 
 Video rollouts take minutes per request, so the health checker gets a far longer interval
@@ -42,9 +42,7 @@ def prepare(args: ScriptArgs) -> str:
 
 def execute(args: ScriptArgs, data_dir: str) -> None:
     run_name = f"diffusion_grpo_ltx23{'_av' if args.audio else ''}_pickscore_{U.create_run_id()}"
-    stream_args = (
-        "--rollout-patch-group ltx_av --rollout-extra-streams audio " if args.audio else "--rollout-patch-group ltx "
-    )
+    stream_args = "--rollout-extra-streams audio " if args.audio else "--rollout-patch-group ltx "
 
     ckpt_args = (
         f"--hf-checkpoint {MODEL} --diffusion-task t2v --save {args.output_dir}/{run_name}/ckpt --save-interval 50 "

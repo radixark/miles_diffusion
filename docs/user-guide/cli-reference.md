@@ -187,7 +187,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--rollout-microgroup-size` | int | `1` | |
 | `--diffusion-fps` | float | – | Video only. Also the fps logged and saved media play at (8 when unset); H3 drops it from the request, so set it to 24 there. |
 | `--diffusion-output-num-frames` | int | `1` | |
-| `--rollout-extra-streams` | str | – | Comma-separated latent streams the engine rolls out besides the primary one, e.g. `audio`. The Flow-GRPO converter pairs them with the primary stream; the model must list them in its `trainable_extra_streams`. LTX-2.3 trains `audio`, with `--rollout-patch-group ltx_av`. |
+| `--rollout-extra-streams` | str | – | Comma-separated latent streams the engine rolls out besides the primary one, e.g. `audio`. The Flow-GRPO converter pairs them with the primary stream; the model must list them in its `trainable_extra_streams`. LTX-2.3 trains `audio`, without `--rollout-patch-group ltx`. |
 | `--rollout-video-dtype` | enum | `keep` | `keep` / `uint8`: dtype of the decoded video in rollout and eval responses. `uint8` quantizes engine-side by truncation (×255, then clamp), cutting the response ~4x (with `--use-output-store`, the stored output). That matches the PickScore reward path; HPS, OCR and the OpenAI-API reward round instead, so keep `keep` for them and for any consumer that needs the float tensor. |
 | `--diffusion-guidance-scale` | float | `4.0` | |
 | `--diffusion-guidance-scale-2` | float | – | Wan2.2 low-noise expert; **required** when training it. |
@@ -208,7 +208,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--rollout-return-full-trajectory` | flag | off | Ask the engine for the whole denoising trajectory instead of only the steps the step strategy requests. The train tensors are identical; kept for debugging and A/B runs. |
 | `--diffusion-log-prob-no-const` | flag | off | Drop log-prob constants on the engine (pairs with the CPS backend). Forced on for `cps` / `ode`. |
 | `--diffusion-generator-device` | str | `cuda` | |
-| `--rollout-patch-group` | str | – | Comma-separated numeric-parity patch groups: `qwen_image`, `wan`, `ltx`, `ltx_av` (LTX with `--rollout-extra-streams audio`). |
+| `--rollout-patch-group` | str | – | Comma-separated numeric-parity patch groups: `qwen_image`, `wan`, `ltx` (video-only LTX; leave it out with `--rollout-extra-streams audio`). |
 | `--update-weight-target-module` | str | `transformer` | Modules to train and sync. Wan2.2: `transformer,transformer_2`. |
 | `--update-weight-buffer-size` | int | 512 MiB | Weight-sync chunk size in bytes. |
 | `--rollout-seed` | int | `42` | |
