@@ -13,7 +13,7 @@ gets its own ``rollout/reward/<name>_mean`` panel while ``--reward-key`` picks w
 on. Each named reward scores the whole batch once. Local rewards keep their own placement flags
 (``--<rm>-reward-colocate``, ``--<rm>-num-gpus-per-worker``). Weights apply to raw scores,
 whose scales differ: HPSv2.1 ~0.3, HPSv3 mu unbounded (roughly -10..16), PickScore/26 ~0.85, OCR in [0, 1],
-default OpenAI API rubric in [0, 4].
+CLAP cosine in [-1, 1], default OpenAI API rubric in [0, 4].
 API rewards use their YAML settings and do not consume local GPU reward slots.
 """
 
@@ -23,6 +23,7 @@ from collections.abc import Sequence
 from miles.utils.types import Sample
 
 from .api import custom_api_rm
+from .clap import clap_rm
 from .hps import hps_rm
 from .hpsv3 import hpsv3_rm
 from .ocr import ocr_rm
@@ -34,6 +35,7 @@ _REWARDS = {
     "hpsv3": hpsv3_rm,
     "pickscore": pickscore_rm,
     "ocr": ocr_rm,
+    "clap": clap_rm,
     "custom_api": custom_api_rm,
     "openai_api": openai_api_rm,
 }

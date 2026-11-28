@@ -1557,7 +1557,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--rm-type",
                 type=str,
                 default=None,
-                help="Built-in reward (pickscore / hps / hpsv3 / ocr / openai_api), custom_api for a configurable actor, "
+                help="Built-in reward (pickscore / hps / hpsv3 / ocr / clap / openai_api), custom_api for a configurable actor, "
                 "or none for a constant 0 when the loss reads no reward; none also has the engine skip decoding "
                 "training rollouts, whose media nothing reads. Ignored when --custom-rm-path is set.",
             )
@@ -1733,6 +1733,37 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help="Optional local HPSv3.safetensors; otherwise download it from MizzenAI/HPSv3.",
+            )
+            parser.add_argument(
+                "--clap-num-workers",
+                type=int,
+                default=1,
+                help="Number of Ray CLAP actors used when --rm-type clap.",
+            )
+            parser.add_argument(
+                "--clap-num-gpus-per-worker",
+                type=float,
+                default=1.0,
+                help="GPU resources per CLAP actor when reward is not colocated. "
+                "Use a fractional value below 1.0 to share a GPU with other reward models.",
+            )
+            parser.add_argument(
+                "--clap-reward-colocate",
+                action="store_true",
+                default=False,
+                help="Seat CLAP actors on the rollout GPUs, one per placement-group bundle. Requires --colocate.",
+            )
+            parser.add_argument(
+                "--clap-batch-size",
+                type=int,
+                default=8,
+                help="Batch size per CLAP actor call.",
+            )
+            parser.add_argument(
+                "--clap-model-path",
+                type=str,
+                default="laion/larger_clap_general",
+                help="CLAP checkpoint (transformers ClapModel) for --rm-type clap: a Hugging Face repo or a local path.",
             )
 
             parser.add_argument(
@@ -2465,6 +2496,12 @@ def miles_validate_args(args):
         raise ValueError(f"--hpsv3-batch-size must be positive, got {args.hpsv3_batch_size}")
     if args.hpsv3_num_gpus_per_worker < 0:
         raise ValueError(f"--hpsv3-num-gpus-per-worker must be non-negative, got {args.hpsv3_num_gpus_per_worker}")
+    if args.clap_num_workers <= 0:
+        raise ValueError(f"--clap-num-workers must be positive, got {args.clap_num_workers}")
+    if args.clap_batch_size <= 0:
+        raise ValueError(f"--clap-batch-size must be positive, got {args.clap_batch_size}")
+    if args.clap_num_gpus_per_worker < 0:
+        raise ValueError(f"--clap-num-gpus-per-worker must be non-negative, got {args.clap_num_gpus_per_worker}")
 
     colocated_reward_workers = {
         name: num_workers
@@ -2472,6 +2509,7 @@ def miles_validate_args(args):
             ("pickscore", args.pickscore_reward_colocate, args.pickscore_num_workers),
             ("hps", args.hps_reward_colocate, args.hps_num_workers),
             ("hpsv3", args.hpsv3_reward_colocate, args.hpsv3_num_workers),
+            ("clap", args.clap_reward_colocate, args.clap_num_workers),
         )
         if colocate
     }

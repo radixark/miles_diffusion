@@ -301,7 +301,7 @@ See [Dtype Control](../advanced/dtype-control.md).
 
 | Flag | Type | Default | Notes |
 |---|---|---|---|
-| `--rm-type` | str | – | `pickscore` / `hps` / `hpsv3` / `ocr` / `openai_api` / `custom_api`, or `none` (constant 0, for a loss that reads no reward such as `dmd2`; training rollouts then skip the engine's VAE decode, which needs an engine with `rollout_return_generated_output`, while eval still decodes). Overridable per sample via `metadata.rm_type`. Ignored when `--custom-rm-path` is set. |
+| `--rm-type` | str | – | `pickscore` / `hps` / `hpsv3` / `ocr` / `clap` / `openai_api` / `custom_api`, or `none` (constant 0, for a loss that reads no reward such as `dmd2`; training rollouts then skip the engine's VAE decode, which needs an engine with `rollout_return_generated_output`, while eval still decodes). Overridable per sample via `metadata.rm_type`. Ignored when `--custom-rm-path` is set. |
 | `--custom-api-rm-config` | str | – | Required for `--rm-type custom_api`: a YAML file or inline `base64:<payload>` with `actor_class`, `actor_kwargs`, `max_concurrency`. A flat mapping configures the default OpenAI-compatible image actor. |
 | `--openai-api-rm-config` | str | – | Required for `--rm-type openai_api`; same format as `--custom-api-rm-config`. |
 | `--group-rm` | flag | off | Score a whole prompt group at once. |
@@ -328,6 +328,11 @@ See [Dtype Control](../advanced/dtype-control.md).
 | `--hpsv3-reward-colocate` | flag | off | Seats `--hpsv3-num-workers` actors on the rollout GPUs, one per placement-group bundle, sharing them with the train actor and rollout engine. Requires `--colocate`. |
 | `--hpsv3-batch-size` | int | `8` | |
 | `--hpsv3-checkpoint-path` | str | – | Local `HPSv3.safetensors`; unset downloads from `MizzenAI/HPSv3`. |
+| `--clap-num-workers` | int | `1` | |
+| `--clap-num-gpus-per-worker` | float | `1.0` | Standalone workers only; fractional values allowed. |
+| `--clap-reward-colocate` | flag | off | Seats `--clap-num-workers` actors on the rollout GPUs, one per placement-group bundle, sharing them with the train actor and rollout engine. Requires `--colocate`. |
+| `--clap-batch-size` | int | `8` | |
+| `--clap-model-path` | str | `laion/larger_clap_general` | CLAP checkpoint (transformers `ClapModel`) for `--rm-type clap`, which scores the rollout's waveform against its prompt. |
 | `--ocr-num-workers` | int | `4` | |
 | `--rollout-parser-num-workers` | int | `1` | Ray actors deserializing rollout responses. Raise when trajectory tensors are large. |
 | `--rollout-fetch-in-parser` | flag | off | Parser actors pick the least-loaded engine through the miles router, then fetch and parse its response in place, skipping the router's data plane and the manager's event loop. Requires `--use-miles-router` and at least as many parser workers as concurrency slots. |
