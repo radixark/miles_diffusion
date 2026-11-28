@@ -13,7 +13,7 @@ For `--custom-rm-path`, `--custom-reward-post-process-path`, and other
 
 | Stage | Flag | Role |
 |---|---|---|
-| Reward type | `--rm-type` | Selects built-in scorer (`pickscore`, `hps`, `hpsv3`, `ocr`, `openai_api`, `custom_api`), or `none` for a constant 0 when the loss reads no reward (DMD2), which also skips decoding training rollouts; ignored when `--custom-rm-path` is set |
+| Reward type | `--rm-type` | Selects built-in scorer (`pickscore`, `hps`, `hpsv3`, `ocr`, `openai_api`, `custom_api`, `audiobox`), or `none` for a constant 0 when the loss reads no reward (DMD2), which also skips decoding training rollouts; ignored when `--custom-rm-path` is set |
 | API reward config | `--openai-api-rm-config`, `--custom-api-rm-config` | YAML file or inline `base64:<payload>` for the two API rewards |
 | Per-sample override | `metadata.rm_type` in JSONL | Overrides global `--rm-type` |
 | Custom reward / norm | see [Customization](customization.md) | `--custom-rm-path`, `--custom-reward-post-process-path` |
@@ -141,6 +141,57 @@ Example from `scripts/run_diffusion_grpo_sd3_hpsv3_sglang.py`:
 --hpsv3-reward-colocate
 ```
 
+### AudioBox Aesthetics (`--rm-type audiobox`)
+
+Implementation: `miles/rollout/rm_hub/audiobox.py`, with the model vendored under
+`miles/rollout/rm_hub/_audiobox/`.
+
+[Meta's Audiobox-Aesthetics](https://arxiv.org/abs/2502.05139) scores the **audio track** of a
+joint audio-video generation (MiniMax H3 `t2va`) on four perceptual axes:
+
+- `pq` Production Quality — acoustic fidelity / clarity
+- `pc` Production Complexity — how involved the content is
+- `ce` Content Enjoyment — how pleasant the content is
+- `cu` Content Usefulness — how useful the content is
+
+- Checkpoint: `--audiobox-checkpoint-path` (optional; defaults to `facebook/audiobox-aesthetics`)
+- Model: a WavLM encoder plus one 5-layer MLP head per axis, running in fp32
+
+Scoring: the predictor resamples the `[C, L]` waveform to 16 kHz mono, windows it into 10 s
+chunks (a 4 s H3 clip is one chunk), averages the per-chunk scores, and de-normalises each head
+with the mean/std shipped in the checkpoint. The raw scores land near the 1–10 human scale.
+
+It returns a dict per sample `{"pq", "pc", "ce", "cu", "overall"}`, where
+`overall = pq_weight*pq + pc_weight*pc + ce_weight*ce + cu_weight*cu`. `--reward-key` picks the
+entry GRPO trains on; every key also gets its own `rollout/reward/<name>_mean` panel.
+
+AudioBox is **no-reference**: it scores the audio itself, not its alignment to the prompt.
+`audiobox_rm` reads `sample.generated_audio` and `sample.audio_sample_rate` and raises when the
+engine returns no audio, so it only makes sense for recipes whose rollout returns the soundtrack
+(H3 `t2va` with the sglang-miles audio response).
+
+| Flag | Default | Description |
+|---|---|---|
+| `--audiobox-num-workers` | 1 | Ray actor count |
+| `--audiobox-num-gpus-per-worker` | 1.0 | GPU per worker (non-colocate) |
+| `--audiobox-batch-size` | 1 | Samples scored per actor call |
+| `--audiobox-checkpoint-path` | None | `facebook/audiobox-aesthetics` repo id or local dir |
+| `--audiobox-reward-colocate` | False | Seat the `--audiobox-num-workers` actors on rollout GPUs, one per placement-group bundle (requires `--colocate`) |
+| `--audiobox-pq-weight` | 1.0 | Weight of `pq` in `overall` |
+| `--audiobox-pc-weight` | 1.0 | Weight of `pc` in `overall` |
+| `--audiobox-ce-weight` | 1.0 | Weight of `ce` in `overall` |
+| `--audiobox-cu-weight` | 1.0 | Weight of `cu` in `overall` |
+
+Example from `scripts/run_diffusion_grpo_h3_t2va_audiobox.py` (H3 `t2va`, trained on PQ):
+
+```bash
+--rm-type audiobox \
+--reward-key pq \
+--audiobox-num-workers 1 \
+--audiobox-batch-size 1 \
+--audiobox-reward-colocate
+```
+
 ### Reward placement
 
 Every GPU reward pool is placed one of two ways:
@@ -253,7 +304,8 @@ generate_and_rm_microgroup()
     → all ocr?         ocr_rm (batched, one image per actor call)
     → all custom_api?  custom_api_rm (batched, one request per actor call)
     → all openai_api?  openai_api_rm (batched, one request per actor call)
-    → else             per-sample async_rm → ocr / pickscore / hps / hpsv3 / custom_api / openai_api / NotImplementedError
+    → all audiobox?    audiobox_rm (batched)
+    → else             per-sample async_rm → ocr / pickscore / hps / hpsv3 / custom_api / openai_api / audiobox / NotImplementedError
   → sample.reward = score
 
 # after the rollout, in the RolloutManager Ray actor:
